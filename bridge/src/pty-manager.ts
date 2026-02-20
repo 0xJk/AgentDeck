@@ -5,7 +5,7 @@ import { debug } from './logger.js';
 export class PtyManager extends EventEmitter {
   private ptyProcess: pty.IPty | null = null;
 
-  spawn(command = 'claude'): void {
+  spawn(command = 'claude', extraEnv?: Record<string, string>): void {
     if (this.ptyProcess) {
       throw new Error('PTY process already running');
     }
@@ -16,12 +16,14 @@ export class PtyManager extends EventEmitter {
 
     debug('PTY', `spawn: shell=${shell} cmd="${command}" cols=${cols} rows=${rows} cwd=${process.cwd()}`);
 
+    const env = { ...(process.env as Record<string, string>), ...extraEnv };
+
     this.ptyProcess = pty.spawn(shell, ['-l', '-c', command], {
       name: 'xterm-256color',
       cols,
       rows,
       cwd: process.cwd(),
-      env: process.env as Record<string, string>,
+      env,
       handleFlowControl: true,
     });
 

@@ -2,8 +2,6 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
-const BRIDGE_URL = 'http://localhost:9120';
-
 const HOOK_EVENTS = [
   'SessionStart',
   'SessionEnd',
@@ -14,11 +12,12 @@ const HOOK_EVENTS = [
   'UserPromptSubmit',
 ] as const;
 
-// Build hook config for each event
+// Build hook config for each event — uses $AGENTDECK_PORT env var so each
+// bridge session's Claude process POSTs to the correct port.
 function buildHookEntry(eventName: string) {
   const entry: any = {
     type: 'command',
-    command: `curl -sf -X POST ${BRIDGE_URL}/hooks/${eventName} -H 'Content-Type: application/json' -d @- 2>/dev/null || true`,
+    command: `curl -sf -X POST http://localhost:\${AGENTDECK_PORT:-9120}/hooks/${eventName} -H 'Content-Type: application/json' -d @- 2>/dev/null || true`,
   };
   // SessionEnd should be async
   if (eventName === 'SessionEnd') {
@@ -54,9 +53,11 @@ export function installHooks(): void {
       settings.hooks[event] = [];
     }
 
-    // Remove any existing AgentDeck hooks (identified by localhost:9120)
+    // Remove any existing AgentDeck hooks (old hardcoded port or new env-var pattern)
     settings.hooks[event] = settings.hooks[event].filter(
-      (h: any) => !h.command?.includes('localhost:9120')
+      (h: any) =>
+        !h.command?.includes('localhost:9120') &&
+        !h.command?.includes('AGENTDECK_PORT')
     );
 
     // Add our hook
@@ -78,7 +79,9 @@ export function uninstallHooks(): void {
   for (const event of HOOK_EVENTS) {
     if (settings.hooks[event]) {
       settings.hooks[event] = settings.hooks[event].filter(
-        (h: any) => !h.command?.includes('localhost:9120')
+        (h: any) =>
+          !h.command?.includes('localhost:9120') &&
+          !h.command?.includes('AGENTDECK_PORT')
       );
       if (settings.hooks[event].length === 0) {
         delete settings.hooks[event];

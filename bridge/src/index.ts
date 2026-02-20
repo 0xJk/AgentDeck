@@ -366,9 +366,9 @@ async function startBridge(port: number, command: string): Promise<void> {
     }
   });
 
-  // 9. Spawn Claude via PTY
+  // 9. Spawn Claude via PTY (with AGENTDECK_PORT so hooks POST to this bridge)
   try {
-    ptyManager.spawn(command);
+    ptyManager.spawn(command, { AGENTDECK_PORT: String(port) });
     log(`[sdc] Spawned: ${command}`);
   } catch (err) {
     log(`[sdc] Failed to spawn ${command}: ${err}`);
@@ -473,6 +473,14 @@ async function startBridge(port: number, command: string): Promise<void> {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  process.on('uncaughtException', (err) => {
+    log(`[sdc] Uncaught exception: ${err}`);
+    shutdown();
+  });
+  process.on('unhandledRejection', (reason) => {
+    log(`[sdc] Unhandled rejection: ${reason}`);
+    shutdown();
+  });
 }
 
 function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null): BridgeEvent {

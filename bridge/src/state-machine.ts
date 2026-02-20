@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import {
   State,
   PermissionMode,
+  STUCK_TIMEOUT_MS,
   type StateSnapshot,
   type PromptOption,
   type StateTransition,
@@ -20,6 +21,7 @@ export class StateMachine extends EventEmitter {
   private projectName: string | null = null;
   private modelName: string | null = null;
   private usageTracker: UsageTracker;
+  private stuckTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(usageTracker: UsageTracker) {
     super();
@@ -232,16 +234,34 @@ export class StateMachine extends EventEmitter {
     );
 
     if (!valid) {
-      const fromStr = this.state;
-      debug('SM', `Unregistered transition: ${fromStr} -> ${to} (trigger: ${trigger}, source: ${source})`);
+      debug('SM', `Invalid transition blocked: ${this.state} -> ${to} (trigger: ${trigger}, source: ${source})`);
+      return;
     }
 
     const prev = this.state;
     this.state = to;
 
+    // Manage stuck-state timer
+    this.resetStuckTimer();
+    if (to === State.PROCESSING) {
+      this.stuckTimer = setTimeout(() => {
+        debug('SM', `Stuck timeout: PROCESSING for >${STUCK_TIMEOUT_MS / 1000}s, recovering to IDLE`);
+        this.currentTool = null;
+        this.toolProgress = null;
+        this.transition(State.IDLE, 'stuck_timeout', 'internal');
+      }, STUCK_TIMEOUT_MS);
+    }
+
     if (prev !== to) {
       debug('SM', `${prev} -> ${to} (trigger: ${trigger}, source: ${source})`);
       this.emitSnapshot();
+    }
+  }
+
+  private resetStuckTimer(): void {
+    if (this.stuckTimer) {
+      clearTimeout(this.stuckTimer);
+      this.stuckTimer = null;
     }
   }
 
