@@ -1,7 +1,7 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "./bound.serendipity.claude-code.sdPlugin/bin",
+    "outDir": "./bound.serendipity.agentdeck.sdPlugin/bin",
     "rootDir": "./src",
     "declaration": false,
     "declarationMap": false,

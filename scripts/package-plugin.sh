@@ -3,9 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PLUGIN_DIR="$PROJECT_DIR/plugin/bound.serendipity.claude-code.sdPlugin"
+PLUGIN_DIR="$PROJECT_DIR/plugin/bound.serendipity.agentdeck.sdPlugin"
 OUTPUT_DIR="$PROJECT_DIR/dist"
-PLUGIN_ID="bound.serendipity.claude-code"
+PLUGIN_ID="bound.serendipity.agentdeck"
 
 # Build in production mode (strips debug logs from plugin)
 echo "Building project (production)..."

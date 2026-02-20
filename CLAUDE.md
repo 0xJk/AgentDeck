@@ -22,7 +22,7 @@ pnpm generate-icons         # SVG → PNG icons (first build or after icon chang
 
 ```bash
 pnpm setup                  # one-click install (deps, build, icons, hooks, link)
-pnpm package                # create dist/bound.serendipity.claude-code.streamDeckPlugin
+pnpm package                # create dist/bound.serendipity.agentdeck.streamDeckPlugin
 bash scripts/uninstall.sh   # remove hooks, unlink CLI and plugin
 ```
 

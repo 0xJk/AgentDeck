@@ -183,7 +183,7 @@ function escXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-@action({ UUID: 'bound.serendipity.claude-code.usage-button' })
+@action({ UUID: 'bound.serendipity.agentdeck.usage-button' })
 export class UsageButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
     if (!actionIds.includes(ev.action.id)) {

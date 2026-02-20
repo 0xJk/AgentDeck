@@ -208,7 +208,7 @@ function escXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-@action({ UUID: 'bound.serendipity.claude-code.session-button' })
+@action({ UUID: 'bound.serendipity.agentdeck.session-button' })
 export class SessionButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
     if (!actionIds.includes(ev.action.id)) {

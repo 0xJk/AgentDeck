@@ -144,7 +144,7 @@ function truncateVoice(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
 }
 
-@action({ UUID: 'bound.serendipity.claude-code.voice-dial' })
+@action({ UUID: 'bound.serendipity.agentdeck.voice-dial' })
 export class VoiceDialAction extends SingletonAction {
   static actionIds: string[] = [];
 

@@ -71,7 +71,7 @@ interface ContextEntry {
   slot: number;
 }
 
-@action({ UUID: 'bound.serendipity.claude-code.response-button' })
+@action({ UUID: 'bound.serendipity.agentdeck.response-button' })
 export class ResponseButtonAction extends SingletonAction {
   private static contexts: ContextEntry[] = [];
 

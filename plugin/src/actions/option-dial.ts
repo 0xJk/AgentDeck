@@ -97,7 +97,7 @@ function truncate(str: string, max: number): string {
   return str.length > max ? str.substring(0, max - 1) + '\u2026' : str;
 }
 
-@action({ UUID: 'bound.serendipity.claude-code.option-dial' })
+@action({ UUID: 'bound.serendipity.agentdeck.option-dial' })
 export class OptionDialAction extends SingletonAction {
   static actionIds: string[] = [];
 

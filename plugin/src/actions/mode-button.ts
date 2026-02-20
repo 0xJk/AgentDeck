@@ -93,7 +93,7 @@ function escXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-@action({ UUID: 'bound.serendipity.claude-code.mode-button' })
+@action({ UUID: 'bound.serendipity.agentdeck.mode-button' })
 export class ModeButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
     if (!actionIds.includes(ev.action.id)) {

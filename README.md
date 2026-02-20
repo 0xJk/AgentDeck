@@ -454,7 +454,7 @@ pnpm package
 이 명령은:
 1. 프로젝트를 빌드하고
 2. `plugin/.sdPlugin` 디렉터리를 zip으로 패키징하여
-3. `dist/bound.serendipity.claude-code.streamDeckPlugin` 파일을 생성합니다.
+3. `dist/bound.serendipity.agentdeck.streamDeckPlugin` 파일을 생성합니다.
 
 배포받은 사용자는 `.streamDeckPlugin` 파일을 더블클릭하면 Stream Deck 앱에 자동 설치됩니다. 단, Bridge 서버(`sdc`)와 Claude Code CLI는 별도로 설치해야 합니다.
 

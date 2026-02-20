@@ -4,7 +4,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const outputDir = resolve(__dirname, '../plugin/bound.serendipity.claude-code.sdPlugin/static/imgs');
+const outputDir = resolve(__dirname, '../plugin/bound.serendipity.agentdeck.sdPlugin/static/imgs');
 
 mkdirSync(outputDir, { recursive: true });
 

@@ -14,7 +14,7 @@ cd "$PROJECT_DIR/bridge"
 pnpm unlink --global 2>/dev/null || true
 
 # Unlink plugin
-PLUGIN_DIR="$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/bound.serendipity.claude-code.sdPlugin"
+PLUGIN_DIR="$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/bound.serendipity.agentdeck.sdPlugin"
 if [ -L "$PLUGIN_DIR" ]; then
   rm "$PLUGIN_DIR"
   echo "Plugin unlinked"
