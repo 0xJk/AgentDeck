@@ -48,7 +48,8 @@ const MODE_ACCEPT = /⏵⏵?\s*accept\s*edits?\s*on/i;
 const MODE_DEFAULT = /\?\s*for\s*shortcuts/;
 
 // Model info line: "Sonnet 4.6 · Claude Max" or "Claude 4 Sonnet (id) · api.anthropic.com"
-const MODEL_INFO = /((?:Opus|Sonnet|Haiku)\s+[\d.]+|Claude\s+[\d.]+\s+(?:Opus|Sonnet|Haiku))(?:\s*(?:\([^)]+\))?\s*[·•]\s*(.+))?/i;
+// ANSI stripping can remove inter-word spaces (e.g. "Opus4.6·ClaudeMax")
+const MODEL_INFO = /((?:Opus|Sonnet|Haiku)\s*[\d.]+|Claude\s*[\d.]+\s*(?:Opus|Sonnet|Haiku))(?:\s*(?:\([^)]+\))?\s*[·•]\s*(.+))?/i;
 
 const SPINNER_DEBOUNCE_MS = 2000;
 const IDLE_DEBOUNCE_MS = 300;
@@ -361,9 +362,9 @@ export class OutputParser extends EventEmitter {
   }
 
   /** Extract permission option labels from cursor-selection UI lines */
-  private parsePermissionOptions(chunk: string): PromptOption[] {
-    const tail = this.buffer.slice(-500);
-    const text = tail + chunk;
+  private parsePermissionOptions(_chunk: string): PromptOption[] {
+    // buffer already includes chunk (appended in feed() before detectPatterns)
+    const text = this.buffer.slice(-500);
     const options: PromptOption[] = [];
 
     for (const line of text.split('\n')) {
@@ -385,9 +386,9 @@ export class OutputParser extends EventEmitter {
   }
 
   /** Extract diff option labels from inline (X)word patterns */
-  private parseDiffOptions(chunk: string): PromptOption[] {
-    const tail = this.buffer.slice(-500);
-    const text = tail + chunk;
+  private parseDiffOptions(_chunk: string): PromptOption[] {
+    // buffer already includes chunk (appended in feed() before detectPatterns)
+    const text = this.buffer.slice(-500);
     const options: PromptOption[] = [];
 
     // Match "(V)iew diff", "(A)pply", "(D)eny" patterns
