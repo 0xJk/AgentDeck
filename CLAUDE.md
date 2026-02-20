@@ -30,6 +30,7 @@ bash scripts/uninstall.sh   # remove hooks, unlink CLI and plugin
 
 ```bash
 pnpm -r --parallel dev   # watch mode for all packages
+pnpm test                # run unit tests (vitest)
 cd plugin && streamdeck link   # link plugin to Stream Deck app
 ```
 
@@ -46,7 +47,7 @@ sdc stop           # stop bridge and session
 - **pnpm workspaces** for monorepo management
 - **ES modules** throughout (type: "module")
 - **Node16 module resolution** in TypeScript
-- **Port 9120** shared by HTTP (hooks) and WebSocket (plugin communication)
+- **Port 9120–9129** for multi-session (base 9120, auto-increment). `AGENTDECK_PORT` env var injected into Claude process so hooks POST to correct bridge
 - **Shift+Tab** (`\x1b[Z`) for Claude Code mode switching (800ms debounce)
 - **sox/rec** for audio capture, **whisper.cpp** for transcription
 - Hook scripts use `|| true` to avoid blocking Claude when bridge is down
