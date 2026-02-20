@@ -241,13 +241,20 @@ export class StateMachine extends EventEmitter {
     const prev = this.state;
     this.state = to;
 
-    // Manage stuck-state timer
+    // Manage stuck-state timer for any non-terminal active state
     this.resetStuckTimer();
-    if (to === State.PROCESSING) {
+    if (
+      to === State.PROCESSING ||
+      to === State.AWAITING_PERMISSION ||
+      to === State.AWAITING_OPTION ||
+      to === State.AWAITING_DIFF
+    ) {
       this.stuckTimer = setTimeout(() => {
-        debug('SM', `Stuck timeout: PROCESSING for >${STUCK_TIMEOUT_MS / 1000}s, recovering to IDLE`);
+        debug('SM', `Stuck timeout: ${to} for >${STUCK_TIMEOUT_MS / 1000}s, recovering to IDLE`);
         this.currentTool = null;
         this.toolProgress = null;
+        this.options = [];
+        this.question = null;
         this.transition(State.IDLE, 'stuck_timeout', 'internal');
       }, STUCK_TIMEOUT_MS);
     }

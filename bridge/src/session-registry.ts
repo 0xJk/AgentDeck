@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
 import { join } from 'path';
 import { homedir } from 'os';
+import { randomUUID } from 'crypto';
 import { debug } from './logger.js';
 
 const SESSIONS_DIR = join(homedir(), '.agentdeck');
@@ -34,9 +35,12 @@ function readSessions(): SessionEntry[] {
   }
 }
 
+/** Atomic write: write to temp file then rename to prevent corruption */
 function writeSessions(sessions: SessionEntry[]): void {
   ensureDir();
-  writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf-8');
+  const tmpFile = join(SESSIONS_DIR, `.sessions.${randomUUID()}.tmp`);
+  writeFileSync(tmpFile, JSON.stringify(sessions, null, 2), 'utf-8');
+  renameSync(tmpFile, SESSIONS_FILE);
 }
 
 /** Check if a PID is alive */

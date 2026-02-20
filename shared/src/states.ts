@@ -37,6 +37,9 @@ export const transitions: StateTransition[] = [
   { from: State.AWAITING_OPTION, to: State.PROCESSING, trigger: 'user_selection', source: 'user' },
   { from: State.AWAITING_DIFF, to: State.PROCESSING, trigger: 'user_response', source: 'user' },
   { from: State.PROCESSING, to: State.IDLE, trigger: 'stuck_timeout', source: 'internal' },
+  { from: State.AWAITING_PERMISSION, to: State.IDLE, trigger: 'stuck_timeout', source: 'internal' },
+  { from: State.AWAITING_OPTION, to: State.IDLE, trigger: 'stuck_timeout', source: 'internal' },
+  { from: State.AWAITING_DIFF, to: State.IDLE, trigger: 'stuck_timeout', source: 'internal' },
   { from: '*', to: State.DISCONNECTED, trigger: 'session_end', source: 'hook' },
   { from: '*', to: State.IDLE, trigger: 'interrupt', source: 'user' },
 ];
