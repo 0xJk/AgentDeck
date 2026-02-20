@@ -12,7 +12,7 @@ import {
 
 import { BridgeClient } from './bridge-client.js';
 import { LayoutManager } from './layout-manager.js';
-import { dlog } from './log.js';
+import { dlog, dinfo } from './log.js';
 
 // Keypad button actions
 import {
@@ -61,9 +61,6 @@ import {
   initCommandDial,
   updateCommandDialState,
 } from './actions/command-dial.js';
-
-// ---- Logging ----
-streamDeck.logger.setLevel('trace');
 
 // ---- Shared state ----
 let currentState = State.DISCONNECTED;
@@ -129,7 +126,7 @@ bridge.on('usage_update', (ev: UsageEvent) => {
 });
 
 bridge.on('connection', (ev: ConnectionEvent) => {
-  dlog('Plugin', `connection: ${ev.status}`);
+  dinfo('Plugin', `connection: ${ev.status}`);
   if (ev.status === 'disconnected') {
     currentState = State.DISCONNECTED;
     currentOptions = [];
@@ -158,11 +155,11 @@ bridge.on('voice_state', (ev: VoiceStateEvent) => {
 });
 
 bridge.on('connected', () => {
-  dlog('Plugin', 'bridge connected');
+  dinfo('Plugin', 'bridge connected');
 });
 
 bridge.on('disconnected', () => {
-  dlog('Plugin', 'bridge disconnected');
+  dinfo('Plugin', 'bridge disconnected');
   currentState = State.DISCONNECTED;
   currentOptions = [];
   broadcastStateUpdate();
@@ -194,6 +191,6 @@ streamDeck.actions.registerAction(new CommandDialAction());
 
 // ---- Connect ----
 streamDeck.connect().then(() => {
-  dlog('Plugin', 'Stream Deck connected, starting bridge client');
+  dinfo('Plugin', 'Stream Deck connected, starting bridge client');
   bridge.connect();
 });
