@@ -45,6 +45,7 @@ const USAGE_TIME_REMAINING = /(\d+)\s*(?:min(?:utes?)?|hr|hours?)\s*(?:remaining
 // e.g. "⏵⏵ accept edits on" → "⏵⏵accepteditson"
 const MODE_PLAN = /⏸\s*plan\s*mode\s*on/i;
 const MODE_ACCEPT = /⏵⏵?\s*accept\s*edits?\s*on/i;
+const MODE_DEFAULT = /\?\s*for\s*shortcuts/;
 
 // Model info line: "Sonnet 4.6 · Claude Max" or "Claude 4 Sonnet (id) · api.anthropic.com"
 const MODEL_INFO = /((?:Opus|Sonnet|Haiku)\s+[\d.]+|Claude\s+[\d.]+\s+(?:Opus|Sonnet|Haiku))(?:\s*(?:\([^)]+\))?\s*[·•]\s*(.+))?/i;
@@ -145,13 +146,13 @@ export class OutputParser extends EventEmitter {
     if (DIFF_PROMPT.test(chunk)) {
       debug('Parser', 'EMIT diff_prompt');
       this.resetIdleTimer();
-      this.emit('diff_prompt', {
-        options: [
-          { index: 0, label: 'View diff', shortcut: 'v' },
-          { index: 1, label: 'Apply', shortcut: 'a' },
-          { index: 2, label: 'Deny', shortcut: 'd' },
-        ],
-      });
+      const parsed = this.parseDiffOptions(chunk);
+      const options = parsed.length > 0 ? parsed : [
+        { index: 0, label: 'View diff', shortcut: 'v' },
+        { index: 1, label: 'Apply', shortcut: 'a' },
+        { index: 2, label: 'Deny', shortcut: 'd' },
+      ];
+      this.emit('diff_prompt', { options });
       return;
     }
 
@@ -159,14 +160,13 @@ export class OutputParser extends EventEmitter {
     if (YES_NO_ALWAYS.test(chunk)) {
       debug('Parser', 'EMIT permission_prompt (yes_no_always)');
       this.resetIdleTimer();
-      this.emit('permission_prompt', {
-        options: [
-          { index: 0, label: 'Yes, allow once', shortcut: 'y' },
-          { index: 1, label: 'No, deny', shortcut: 'n' },
-          { index: 2, label: 'Always allow', shortcut: 'a' },
-        ],
-        promptType: 'yes_no_always',
-      });
+      const parsed = this.parsePermissionOptions(chunk);
+      const options = parsed.length > 0 ? parsed : [
+        { index: 0, label: 'Yes, allow once', shortcut: 'y' },
+        { index: 1, label: 'No, deny', shortcut: 'n' },
+        { index: 2, label: 'Always allow', shortcut: 'a' },
+      ];
+      this.emit('permission_prompt', { options, promptType: 'yes_no_always' });
       return;
     }
 
@@ -339,6 +339,10 @@ export class OutputParser extends EventEmitter {
       this.pendingModeSwitch = false;
       debug('Parser', 'EMIT mode_change: acceptEdits');
       this.emit('mode_change', { mode: 'acceptEdits' });
+    } else if (this.pendingModeSwitch && MODE_DEFAULT.test(chunk)) {
+      this.pendingModeSwitch = false;
+      debug('Parser', 'EMIT mode_change: default (default banner detected)');
+      this.emit('mode_change', { mode: 'default' });
     }
   }
 
@@ -347,9 +351,69 @@ export class OutputParser extends EventEmitter {
     this.pendingModeSwitch = true;
     if (this.modeSwitchTimer) clearTimeout(this.modeSwitchTimer);
     this.modeSwitchTimer = setTimeout(() => {
-      this.pendingModeSwitch = false;
+      if (this.pendingModeSwitch) {
+        this.pendingModeSwitch = false;
+        debug('Parser', 'EMIT mode_change: default (timeout — no mode banner detected)');
+        this.emit('mode_change', { mode: 'default' });
+      }
       this.modeSwitchTimer = null;
     }, 2000);
+  }
+
+  /** Extract permission option labels from cursor-selection UI lines */
+  private parsePermissionOptions(chunk: string): PromptOption[] {
+    const tail = this.buffer.slice(-500);
+    const text = tail + chunk;
+    const options: PromptOption[] = [];
+
+    for (const line of text.split('\n')) {
+      // Cursor selection lines: "  ❯ Yes, allow once" or "    No, deny"
+      const m = line.match(/^\s*❯?\s+(Yes[,\s].+|No[,\s].+|Always\s+.+)$/i);
+      if (m) {
+        const label = m[1].trim();
+        if (!options.some(o => o.label === label)) {
+          options.push({
+            index: options.length,
+            label,
+            shortcut: this.inferShortcut(label),
+          });
+        }
+      }
+    }
+
+    return options;
+  }
+
+  /** Extract diff option labels from inline (X)word patterns */
+  private parseDiffOptions(chunk: string): PromptOption[] {
+    const tail = this.buffer.slice(-500);
+    const text = tail + chunk;
+    const options: PromptOption[] = [];
+
+    // Match "(V)iew diff", "(A)pply", "(D)eny" patterns
+    const re = /\(([A-Za-z])\)(\w+)(?:\s+(\w+))?/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const shortcut = m[1].toLowerCase();
+      const word = m[1].toUpperCase() + m[2];
+      const label = m[3] ? `${word} ${m[3]}` : word;
+      if (!options.some(o => o.shortcut === shortcut)) {
+        options.push({ index: options.length, label: label.trim(), shortcut });
+      }
+    }
+
+    return options;
+  }
+
+  /** Infer keyboard shortcut from option label text */
+  private inferShortcut(label: string): string {
+    const lower = label.toLowerCase();
+    if (/^yes\b/.test(lower)) return 'y';
+    if (/^no\b/.test(lower) || /^deny\b/.test(lower)) return 'n';
+    if (/^always\b/.test(lower)) return 'a';
+    if (/^view\b/.test(lower)) return 'v';
+    if (/^apply\b/.test(lower)) return 'a';
+    return lower.charAt(0);
   }
 
   private parseOptions(text: string): PromptOption[] {

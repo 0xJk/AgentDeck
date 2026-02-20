@@ -94,4 +94,4 @@ sdc stop           # stop bridge and session
 - **Extra Usage**: API usage page for pay-per-use billing (`extra_usage`)
 - **Quick Command dial**: New E3 encoder for slash commands
 - **Voice UX**: Min recording time, pulsing indicator bar, error clear, scroll transcription
-- **Mode debounce**: 800ms bridge debounce + 2s parser timeout prevents rapid-fire mode cycling
+- **Mode debounce**: 100ms bridge debounce + 2s parser timeout fallback for default mode detection

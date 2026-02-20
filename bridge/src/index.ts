@@ -304,8 +304,8 @@ async function startBridge(port: number, command: string): Promise<void> {
 
       case 'switch_mode': {
         const now = Date.now();
-        if (now - lastModeSwitchTime < 800) {
-          debug('sdc', `switch_mode: debounced (${now - lastModeSwitchTime}ms < 800ms)`);
+        if (now - lastModeSwitchTime < 100) {
+          debug('sdc', `switch_mode: debounced (${now - lastModeSwitchTime}ms < 100ms)`);
           break;
         }
         lastModeSwitchTime = now;

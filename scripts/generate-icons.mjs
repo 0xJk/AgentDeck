@@ -35,10 +35,12 @@ const svgs = {
     <rect x="14" y="14" width="12" height="12" rx="1" fill="white"/>
   </svg>`,
 
-  // Mode — gear/settings icon
+  // Mode — cycle arrows (toggle through Default/Plan/Accept)
   mode: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
-    <circle cx="20" cy="20" r="6" fill="none" stroke="white" stroke-width="2.5"/>
-    <path d="M20 4v4M20 32v4M4 20h4M32 20h4M8.7 8.7l2.8 2.8M28.5 28.5l2.8 2.8M31.3 8.7l-2.8 2.8M11.5 28.5l-2.8 2.8" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M30 14A11 11 0 0 0 10 14" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+    <polyline points="28,8 30,14 24,16" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M10 26A11 11 0 0 0 30 26" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+    <polyline points="12,32 10,26 16,24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`,
 
   // Option — list/menu icon (three lines with bullets)
