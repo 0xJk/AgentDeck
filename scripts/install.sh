@@ -18,7 +18,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo ""
 echo "========================================="
-echo "  StreamDeck-Claude Installer"
+echo "  AgentDeck Installer"
 echo "========================================="
 echo ""
 

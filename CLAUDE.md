@@ -1,4 +1,4 @@
-# StreamDeck-Claude
+# AgentDeck
 
 Stream Deck+ controller for Claude Code CLI — a bidirectional local control system.
 

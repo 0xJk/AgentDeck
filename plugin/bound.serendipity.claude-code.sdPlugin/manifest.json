@@ -119,7 +119,7 @@
       "UUID": "bound.serendipity.claude-code.voice-dial"
     }
   ],
-  "Author": "StreamDeck-Claude",
+  "Author": "AgentDeck",
   "Category": "Claude Code Controller",
   "CategoryIcon": "static/imgs/category",
   "CodePath": "bin/plugin.js",

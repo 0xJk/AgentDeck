@@ -70,7 +70,7 @@ const program = new Command();
 
 program
   .name('sdc')
-  .description('StreamDeck-Claude bridge server')
+  .description('AgentDeck bridge server')
   .version('0.1.0');
 
 // Default command: start bridge + spawn claude + attach terminal
@@ -151,7 +151,7 @@ async function startBridge(port: number, command: string): Promise<void> {
   const sessionId = randomUUID();
   const tmuxSession = detectTmuxSession();
 
-  log(`[sdc] Starting StreamDeck-Claude bridge on port ${port}...`);
+  log(`[sdc] Starting AgentDeck bridge on port ${port}...`);
 
   // API usage data (fetched from Anthropic, not from PTY)
   let cachedApiUsage: ApiUsageData | null = null;

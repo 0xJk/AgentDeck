@@ -1,4 +1,4 @@
-# StreamDeck-Claude Development Log
+# AgentDeck Development Log
 
 ---
 

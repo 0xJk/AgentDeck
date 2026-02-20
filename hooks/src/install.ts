@@ -54,7 +54,7 @@ export function installHooks(): void {
       settings.hooks[event] = [];
     }
 
-    // Remove any existing StreamDeck-Claude hooks (identified by localhost:9120)
+    // Remove any existing AgentDeck hooks (identified by localhost:9120)
     settings.hooks[event] = settings.hooks[event].filter(
       (h: any) => !h.command?.includes('localhost:9120')
     );

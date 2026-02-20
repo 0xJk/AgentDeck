@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-echo "Uninstalling StreamDeck-Claude..."
+echo "Uninstalling AgentDeck..."
 
 # Remove hooks
 node "$PROJECT_DIR/hooks/dist/install.js" uninstall 2>/dev/null || true
