@@ -67,11 +67,11 @@ const svgs = {
     <line x1="14" y1="37" x2="26" y2="37" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
   </svg>`,
 
-  // Status — signal/pulse icon
-  status: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
-    <circle cx="20" cy="20" r="5" fill="white"/>
-    <circle cx="20" cy="20" r="11" fill="none" stroke="white" stroke-width="2" opacity="0.6"/>
-    <circle cx="20" cy="20" r="17" fill="none" stroke="white" stroke-width="1.5" opacity="0.3"/>
+  // Session — terminal window with prompt
+  session: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+    <rect x="3" y="6" width="34" height="28" rx="3" fill="none" stroke="white" stroke-width="2.5"/>
+    <path d="M10 16l5 5-5 5" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="19" y1="26" x2="28" y2="26" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
   </svg>`,
 
   // Usage — bar chart icon
@@ -93,7 +93,7 @@ const sizeMap = {
   option:   [20, 40],
   history:  [20, 40],
   voice:    [20, 40],
-  status:   [20, 40],
+  session:  [20, 40],
   usage:    [20, 40],
 };
 

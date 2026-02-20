@@ -17,7 +17,7 @@ import { homedir } from 'os';
 const SIZE = 144;
 const LONG_PRESS_MS = 500;
 const SESSIONS_FILE = `${homedir()}/.agentdeck/sessions.json`;
-const MAX_CHARS_PER_LINE = 11;
+const MAX_CHARS_PER_LINE = 10;
 
 interface SessionEntry {
   id: string;
@@ -179,16 +179,39 @@ function renderSessionSvg(): string {
       const nameLines = splitProjectName(name, MAX_CHARS_PER_LINE);
       const isTwoLine = nameLines.length > 1;
       const total = sessions.length;
-      const modelLine = currentModel ? truncate(currentModel, 16) : '';
+      const modelLine = currentModel ? truncate(currentModel, 12) : '';
+      const nameFs = isTwoLine ? 20 : 26;
+      const modelFs = 20;
+
+      // Build text elements for auto-centering
+      const els: Array<{ text: string; fs: number; bold: boolean; opacity: number }> = [];
+      const gaps: number[] = []; // gap between el[i] and el[i+1]
+
+      for (const nl of nameLines) {
+        els.push({ text: nl, fs: nameFs, bold: true, opacity: 1 });
+      }
+      if (modelLine) {
+        els.push({ text: modelLine, fs: modelFs, bold: false, opacity: 0.65 });
+      }
+      for (let i = 0; i < els.length - 1; i++) {
+        gaps.push(i < nameLines.length - 1 ? 4 : 12);
+      }
+
+      // Auto-center: place visual centers around button center (72)
+      // Same approach as mode-button.ts which uses plain baseline y values
+      const BUTTON_CENTER = 72;
+      let span = 0;
+      for (let i = 0; i < gaps.length; i++) {
+        span += els[i].fs / 2 + gaps[i] + els[i + 1].fs / 2;
+      }
+      let cy = BUTTON_CENTER - span / 2;
 
       const lines: string[] = [
         `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
         `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a2e14"/>`,
-        // Green dot = connected
         `<circle cx="18" cy="18" r="5" fill="#4ade80"/>`,
       ];
 
-      // Change 3: Session count badge (top-right, only when >1 session)
       if (total > 1) {
         lines.push(
           `<rect x="102" y="6" width="36" height="20" rx="10" fill="#4ade80" opacity="0.25"/>`,
@@ -196,26 +219,15 @@ function renderSessionSvg(): string {
         );
       }
 
-      // Change 1: Project name — 1 or 2 lines
-      if (isTwoLine) {
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i];
+        const baseline = Math.round(cy + el.fs * 0.35);
         lines.push(
-          `<text x="72" y="44" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#4ade80">${escXml(nameLines[0])}</text>`,
-          `<text x="72" y="62" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#4ade80">${escXml(nameLines[1])}</text>`,
+          `<text x="72" y="${baseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${el.fs}"${el.bold ? ' font-weight="bold"' : ''} fill="#4ade80"${el.opacity < 1 ? ` opacity="${el.opacity}"` : ''}>${escXml(el.text)}</text>`,
         );
-      } else {
-        lines.push(
-          `<text x="72" y="52" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#4ade80">${escXml(nameLines[0])}</text>`,
-        );
-      }
-
-      // Change 2: Mode label removed (shown on Mode Toggle button instead)
-
-      // Change 4: Model name — larger
-      if (modelLine) {
-        const modelY = isTwoLine ? 90 : 82;
-        lines.push(
-          `<text x="72" y="${modelY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#4ade80" opacity="0.65">${escXml(modelLine)}</text>`,
-        );
+        if (i < els.length - 1) {
+          cy += els[i].fs / 2 + gaps[i] + els[i + 1].fs / 2;
+        }
       }
 
       lines.push(`</svg>`);

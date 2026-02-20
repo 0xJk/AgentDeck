@@ -38,11 +38,11 @@
       "UUID": "bound.serendipity.agentdeck.mode-button"
     },
     {
-      "Icon": "static/imgs/status",
+      "Icon": "static/imgs/session",
       "Name": "Session & Status",
       "States": [
         {
-          "Image": "static/imgs/status",
+          "Image": "static/imgs/session",
           "TitleAlignment": "middle"
         }
       ],
