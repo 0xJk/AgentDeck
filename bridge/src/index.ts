@@ -17,9 +17,10 @@ import {
   type BridgeEvent,
   type StateSnapshot,
 } from './types.js';
-import { readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import {
   register as registerSession,
@@ -142,11 +143,14 @@ async function startBridge(port: number, command: string): Promise<void> {
   }
 
   // Multi-session: find available port if default is taken
-  const actualPort = port === BRIDGE_WS_PORT ? findAvailablePort() : port;
+  const actualPort = port === BRIDGE_WS_PORT ? await findAvailablePort() : port;
   if (actualPort !== port) {
     log(`[sdc] Port ${port} in use, using ${actualPort}`);
   }
   port = actualPort;
+
+  // Auto-migrate old-format hooks (hardcoded port → env var)
+  migrateHooksIfNeeded();
 
   const sessionId = randomUUID();
   const tmuxSession = detectTmuxSession();
@@ -537,5 +541,42 @@ function handleVoiceCommand(
       voiceManager.cancel();
       wsServer.broadcast({ type: 'voice_state', state: 'idle' } as any);
       break;
+  }
+}
+
+/** Auto-migrate hooks from hardcoded localhost:9120 to $AGENTDECK_PORT env var */
+function migrateHooksIfNeeded(): void {
+  const settingsPath = join(homedir(), '.claude', 'settings.local.json');
+  try {
+    if (!existsSync(settingsPath)) return;
+    const raw = readFileSync(settingsPath, 'utf-8');
+
+    // Quick check: old format has literal "localhost:9120" but NOT "AGENTDECK_PORT"
+    if (!raw.includes('localhost:9120') || raw.includes('AGENTDECK_PORT')) return;
+
+    const settings = JSON.parse(raw);
+    if (!settings.hooks) return;
+
+    let migrated = false;
+    for (const event of Object.keys(settings.hooks)) {
+      const hooks = settings.hooks[event];
+      if (!Array.isArray(hooks)) continue;
+      for (const hook of hooks) {
+        if (hook.command?.includes('localhost:9120') && !hook.command?.includes('AGENTDECK_PORT')) {
+          hook.command = hook.command.replace(
+            /localhost:9120/g,
+            'localhost:${AGENTDECK_PORT:-9120}',
+          );
+          migrated = true;
+        }
+      }
+    }
+
+    if (migrated) {
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      log('[sdc] Auto-migrated hooks to dynamic port format');
+    }
+  } catch (err) {
+    debug('sdc', `Hook migration check failed: ${err}`);
   }
 }

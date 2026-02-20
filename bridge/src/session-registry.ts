@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
+import { createServer } from 'net';
 import { join } from 'path';
 import { homedir } from 'os';
 import { debug } from './logger.js';
@@ -88,11 +89,23 @@ export function listActive(): SessionEntry[] {
   return alive;
 }
 
-export function findAvailablePort(): number {
+/** Try to bind a TCP server to a port to verify it's actually free */
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+export async function findAvailablePort(): Promise<number> {
   const sessions = listActive();
   const usedPorts = new Set(sessions.map((s) => s.port));
   for (let port = BASE_PORT; port <= MAX_PORT; port++) {
-    if (!usedPorts.has(port)) {
+    if (!usedPorts.has(port) && await isPortFree(port)) {
       return port;
     }
   }
