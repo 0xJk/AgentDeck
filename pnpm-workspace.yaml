@@ -4,6 +4,9 @@ packages:
   - plugin
   - hooks
 
+ignoredBuiltDependencies:
+  - esbuild
+
 onlyBuiltDependencies:
   - node-pty
   - sharp
