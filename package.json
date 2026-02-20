@@ -10,12 +10,14 @@
     "typecheck": "pnpm -r typecheck",
     "generate-icons": "node scripts/generate-icons.mjs",
     "package": "bash scripts/package-plugin.sh",
-    "setup": "bash scripts/install.sh"
+    "setup": "bash scripts/install.sh",
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "devDependencies": {
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "vitest": "^4.0.18"
   }
 }
