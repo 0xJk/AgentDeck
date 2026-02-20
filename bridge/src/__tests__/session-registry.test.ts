@@ -11,8 +11,6 @@ import { randomUUID } from 'crypto';
 // Re-implement the core logic here for unit testing (avoids modifying source
 // for testability). This tests the algorithms, not the exact module wiring.
 
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-
 interface SessionEntry {
   id: string;
   port: number;
@@ -32,13 +30,7 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function pruneDeadSessions(sessions: SessionEntry[]): SessionEntry[] {
-  const now = Date.now();
-  return sessions.filter((s) => {
-    if (!isProcessAlive(s.pid)) return false;
-    const age = now - new Date(s.startedAt).getTime();
-    if (age > SESSION_TTL_MS) return false;
-    return true;
-  });
+  return sessions.filter((s) => isProcessAlive(s.pid));
 }
 
 describe('Session Registry Logic', () => {
@@ -67,27 +59,14 @@ describe('Session Registry Logic', () => {
       expect(result).toHaveLength(0);
     });
 
-    it('removes sessions older than 24h even with valid PID', () => {
-      const oldDate = new Date(Date.now() - SESSION_TTL_MS - 1000);
-      const entry: SessionEntry = {
-        id: randomUUID(),
-        port: 9120,
-        pid: process.pid, // alive, but too old
-        projectName: 'test',
-        startedAt: oldDate.toISOString(),
-      };
-      const result = pruneDeadSessions([entry]);
-      expect(result).toHaveLength(0);
-    });
-
-    it('keeps sessions just under 24h', () => {
-      const recentDate = new Date(Date.now() - SESSION_TTL_MS + 60_000);
+    it('keeps old sessions if PID is alive', () => {
+      const oldDate = new Date(Date.now() - 48 * 60 * 60 * 1000); // 48h ago
       const entry: SessionEntry = {
         id: randomUUID(),
         port: 9120,
         pid: process.pid,
         projectName: 'test',
-        startedAt: recentDate.toISOString(),
+        startedAt: oldDate.toISOString(),
       };
       const result = pruneDeadSessions([entry]);
       expect(result).toHaveLength(1);
@@ -113,13 +92,13 @@ describe('Session Registry Logic', () => {
           id: randomUUID(),
           port: 9122,
           pid: process.pid,
-          projectName: 'old',
-          startedAt: new Date(Date.now() - SESSION_TTL_MS - 1000).toISOString(),
+          projectName: 'old-but-alive',
+          startedAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
         },
       ];
       const result = pruneDeadSessions(sessions);
-      expect(result).toHaveLength(1);
-      expect(result[0].projectName).toBe('alive');
+      expect(result).toHaveLength(2);
+      expect(result.map((s) => s.projectName)).toEqual(['alive', 'old-but-alive']);
     });
   });
 

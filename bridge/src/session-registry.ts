@@ -53,18 +53,9 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/** Remove dead sessions (PID no longer alive or older than 24h) */
+/** Remove dead sessions (PID no longer alive) */
 function pruneDeadSessions(sessions: SessionEntry[]): SessionEntry[] {
-  const now = Date.now();
-  return sessions.filter((s) => {
-    if (!isProcessAlive(s.pid)) return false;
-    // Safety net: remove sessions older than 24h even if PID was reused
-    const age = now - new Date(s.startedAt).getTime();
-    if (age > SESSION_TTL_MS) return false;
-    return true;
-  });
+  return sessions.filter((s) => isProcessAlive(s.pid));
 }
 
 export function register(entry: SessionEntry): void {

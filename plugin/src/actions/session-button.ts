@@ -17,6 +17,7 @@ import { homedir } from 'os';
 const SIZE = 144;
 const LONG_PRESS_MS = 500;
 const SESSIONS_FILE = `${homedir()}/.agentdeck/sessions.json`;
+const MAX_CHARS_PER_LINE = 11;
 
 interface SessionEntry {
   id: string;
@@ -55,7 +56,10 @@ export function updateSessionButton(
   currentState = state;
   currentMode = mode;
   if (project) currentProjectName = project;
-  currentTool = tool;
+  // For AWAITING_ states, preserve currentTool from PROCESSING
+  if (state !== State.AWAITING_PERMISSION && state !== State.AWAITING_OPTION && state !== State.AWAITING_DIFF) {
+    currentTool = tool;
+  }
   if (model) currentModel = model;
 
   // Reload session list only on transition to IDLE (not on every render)
@@ -106,35 +110,111 @@ function refreshAll(): void {
   }
 }
 
+/** Split a project name into 1 or 2 lines at natural boundaries */
+function splitProjectName(name: string, maxChars: number): string[] {
+  if (name.length <= maxChars) return [name];
+
+  // Try splitting at camelCase boundary near midpoint
+  const mid = Math.floor(name.length / 2);
+  let bestSplit = -1;
+
+  // Look for split points: camelCase, kebab-case, spaces
+  for (let i = Math.max(1, mid - 4); i <= Math.min(name.length - 1, mid + 4); i++) {
+    // camelCase boundary: lowercase followed by uppercase
+    if (/[a-z]/.test(name[i - 1]) && /[A-Z]/.test(name[i])) {
+      bestSplit = i;
+      break;
+    }
+    // kebab-case or space
+    if (name[i] === '-' || name[i] === '_' || name[i] === ' ') {
+      bestSplit = i + 1;
+      break;
+    }
+  }
+
+  // Widen search if no split found near midpoint
+  if (bestSplit === -1) {
+    for (let i = 1; i < name.length; i++) {
+      if (/[a-z]/.test(name[i - 1]) && /[A-Z]/.test(name[i])) {
+        bestSplit = i;
+        break;
+      }
+      if (name[i] === '-' || name[i] === '_' || name[i] === ' ') {
+        bestSplit = i + 1;
+        break;
+      }
+    }
+  }
+
+  // Hard split if no natural boundary
+  if (bestSplit === -1 || bestSplit < 1 || bestSplit >= name.length) {
+    bestSplit = maxChars;
+  }
+
+  const line1 = name.slice(0, bestSplit).replace(/[-_ ]$/, '');
+  const line2 = name.slice(bestSplit).replace(/^[-_ ]/, '');
+
+  // Truncate each line if still too long
+  return [
+    truncate(line1, maxChars),
+    truncate(line2, maxChars),
+  ];
+}
+
 function renderSessionSvg(): string {
-  switch (currentState) {
+  // Change 6: AWAITING_ states render same as PROCESSING
+  const effectiveState =
+    currentState === State.AWAITING_PERMISSION ||
+    currentState === State.AWAITING_OPTION ||
+    currentState === State.AWAITING_DIFF
+      ? State.PROCESSING
+      : currentState;
+
+  switch (effectiveState) {
     case State.DISCONNECTED:
       return simpleSvg('NO', 'SESSION', '#666666', '#1a1a1a');
 
     case State.IDLE: {
-      const name = truncate(currentProjectName || 'Session', 12);
-      const modeLabel =
-        currentMode === PermissionMode.PLAN ? 'Plan Mode'
-        : currentMode === PermissionMode.ACCEPT_EDITS ? 'Accept Edits'
-        : 'Default';
+      const name = currentProjectName || 'Session';
+      const nameLines = splitProjectName(name, MAX_CHARS_PER_LINE);
+      const isTwoLine = nameLines.length > 1;
       const total = sessions.length;
-      const indicator = total > 1 ? ` [${currentSessionIndex + 1}/${total}]` : '';
-      const modelLine = currentModel ? truncate(currentModel, 20) : '';
+      const modelLine = currentModel ? truncate(currentModel, 16) : '';
 
       const lines: string[] = [
         `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
         `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a2e14"/>`,
         // Green dot = connected
         `<circle cx="18" cy="18" r="5" fill="#4ade80"/>`,
-        // Project name (large)
-        `<text x="72" y="48" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#4ade80">${escXml(name)}</text>`,
-        // Mode label
-        `<text x="72" y="72" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#4ade80" opacity="0.7">${escXml(modeLabel)}${escXml(indicator)}</text>`,
       ];
 
-      if (modelLine) {
+      // Change 3: Session count badge (top-right, only when >1 session)
+      if (total > 1) {
         lines.push(
-          `<text x="72" y="96" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#4ade80" opacity="0.4">${escXml(modelLine)}</text>`,
+          `<rect x="102" y="6" width="36" height="20" rx="10" fill="#4ade80" opacity="0.25"/>`,
+          `<text x="120" y="20" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#4ade80">${currentSessionIndex + 1}/${total}</text>`,
+        );
+      }
+
+      // Change 1: Project name — 1 or 2 lines
+      if (isTwoLine) {
+        lines.push(
+          `<text x="72" y="44" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#4ade80">${escXml(nameLines[0])}</text>`,
+          `<text x="72" y="62" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#4ade80">${escXml(nameLines[1])}</text>`,
+        );
+      } else {
+        lines.push(
+          `<text x="72" y="52" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#4ade80">${escXml(nameLines[0])}</text>`,
+        );
+      }
+
+      // Change 2: Mode label removed (shown on Mode Toggle button instead)
+
+      // Change 4: Model name — larger
+      if (modelLine) {
+        const modelY = isTwoLine ? 90 : 82;
+        lines.push(
+          `<text x="72" y="${modelY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#4ade80" opacity="0.65">${escXml(modelLine)}</text>`,
         );
       }
 
@@ -143,43 +223,23 @@ function renderSessionSvg(): string {
     }
 
     case State.PROCESSING: {
+      // Change 5: Star spinner animation
       const tool = truncate(currentTool || 'Thinking...', 14);
       return [
         `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
         `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#2a1f00"/>`,
-        `<circle cx="72" cy="28" r="8" fill="#fbbf24"><animate attributeName="opacity" values="1;0.3;1" dur="1.2s" repeatCount="indefinite"/></circle>`,
+        // 4-point star with rotation + breathing opacity
+        `<g transform="translate(72, 28)">`,
+        `<path d="M0,-10 L2,-3 L10,0 L2,3 L0,10 L-2,3 L-10,0 L-2,-3Z" fill="#fbbf24">`,
+        `<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s" repeatCount="indefinite"/>`,
+        `<animate attributeName="opacity" values="0.9;0.5;0.9" dur="1.2s" repeatCount="indefinite"/>`,
+        `</path>`,
+        `</g>`,
         `<text x="72" y="68" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="#fbbf24">RUNNING</text>`,
         `<text x="72" y="96" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#fbbf24" opacity="0.7">${escXml(tool)}</text>`,
         `</svg>`,
       ].join('');
     }
-
-    case State.AWAITING_PERMISSION:
-      return [
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
-        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#2a0a0a"/>`,
-        `<text x="72" y="56" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="#f87171">PERMISSION</text>`,
-        `<text x="72" y="88" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#f87171" opacity="0.7">Yes / No / Always</text>`,
-        `</svg>`,
-      ].join('');
-
-    case State.AWAITING_OPTION:
-      return [
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
-        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a1a2e"/>`,
-        `<text x="72" y="56" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="#60a5fa">SELECT</text>`,
-        `<text x="72" y="88" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#60a5fa" opacity="0.7">Choose option</text>`,
-        `</svg>`,
-      ].join('');
-
-    case State.AWAITING_DIFF:
-      return [
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
-        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#1a0a2e"/>`,
-        `<text x="72" y="56" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="#c084fc">DIFF</text>`,
-        `<text x="72" y="88" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#c084fc" opacity="0.7">Apply / Deny / View</text>`,
-        `</svg>`,
-      ].join('');
 
     default:
       return simpleSvg('???', '', '#666666', '#1a1a1a');

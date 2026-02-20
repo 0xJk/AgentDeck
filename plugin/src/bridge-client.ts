@@ -13,15 +13,18 @@ export class BridgeClient extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setInterval> | null = null;
   private _connected = false;
   private _port = BRIDGE_WS_PORT;
+  private _connectGeneration = 0;
 
   connect(port?: number): void {
     if (port != null) this._port = port;
     dlog('Bridge', `connect(port=${this._port})`);
     this.cleanup();
-    this.attemptConnect();
+    this._connectGeneration++;
+    const gen = this._connectGeneration;
+    this.attemptConnect(gen);
     this.reconnectTimer = setInterval(() => {
-      if (!this._connected) {
-        this.attemptConnect();
+      if (!this._connected && gen === this._connectGeneration) {
+        this.attemptConnect(gen);
       }
     }, RECONNECT_INTERVAL_MS);
   }
@@ -30,7 +33,14 @@ export class BridgeClient extends EventEmitter {
   reconnectTo(port: number): void {
     dlog('Bridge', `reconnectTo(port=${port})`);
     this._port = port;
-    this.disconnect();
+    // Clean up old connection without emitting 'disconnected'
+    this.cleanup();
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      this.ws.close();
+      this.ws = null;
+    }
+    this._connected = false;
     this.connect(port);
   }
 
@@ -62,7 +72,9 @@ export class BridgeClient extends EventEmitter {
     return this._port;
   }
 
-  private attemptConnect(): void {
+  private attemptConnect(gen: number): void {
+    if (gen !== this._connectGeneration) return;
+
     if (this.ws) {
       this.ws.removeAllListeners();
       this.ws.close();
@@ -70,16 +82,18 @@ export class BridgeClient extends EventEmitter {
     }
 
     try {
-      dlog('Bridge', `attemptConnect ws://localhost:${this._port}`);
+      dlog('Bridge', `attemptConnect ws://localhost:${this._port} (gen=${gen})`);
       this.ws = new WebSocket(`ws://localhost:${this._port}`);
 
       this.ws.on('open', () => {
+        if (gen !== this._connectGeneration) return;
         dlog('Bridge', 'WebSocket open');
         this._connected = true;
         this.emit('connected');
       });
 
       this.ws.on('message', (data: WebSocket.Data) => {
+        if (gen !== this._connectGeneration) return;
         try {
           const event = JSON.parse(data.toString()) as BridgeEvent;
           dlog('Bridge', `recv(${event.type})`);
@@ -90,6 +104,7 @@ export class BridgeClient extends EventEmitter {
       });
 
       this.ws.on('close', () => {
+        if (gen !== this._connectGeneration) return;
         const wasConnected = this._connected;
         this._connected = false;
         if (wasConnected) {
@@ -99,6 +114,7 @@ export class BridgeClient extends EventEmitter {
       });
 
       this.ws.on('error', (err) => {
+        if (gen !== this._connectGeneration) return;
         dlog('Bridge', `WebSocket error: ${err.message}`);
       });
     } catch (err) {
