@@ -13,6 +13,16 @@ import { isEncoderTakeoverActive } from '../encoder-takeover.js';
 import { handleTakeoverPush, handleTakeoverRotate } from './option-dial.js';
 import { encoderRegistry } from '../encoder-registry.js';
 import { dlog } from '../log.js';
+import { svgToDataUrl } from '../renderers/button-renderer.js';
+import {
+  renderVoiceReady,
+  renderVoiceIdle,
+  renderVoiceRecording,
+  renderVoiceTranscribing,
+  renderVoiceError,
+  renderVoiceDisabled,
+  estimateTextWidth,
+} from '../renderers/voice-renderer.js';
 
 let bridge: BridgeClient;
 let currentState = State.DISCONNECTED;
@@ -20,14 +30,28 @@ let currentState = State.DISCONNECTED;
 type VoiceState = 'idle' | 'recording' | 'transcribing' | 'error';
 let voiceState: VoiceState = 'idle';
 let lastTranscription: string | undefined;
+let errorMessage: string | undefined;
 let recordStartTime = 0;
-let scrollOffset = 0;
 
-// Pulsing animation for recording indicator
-let pulseTimer: ReturnType<typeof setInterval> | null = null;
-let pulseOn = true;
+// Scroll state (pixel-based)
+let scrollPx = 0;
+let textTotalWidth = 0;
+
+// Auto-scroll state
+let autoScrollActive = false;
+let autoScrollPauseUntil = 0;
+let autoScrollStartDelay = 0;
+const AUTO_SCROLL_INITIAL_DELAY = 1500;
+const AUTO_SCROLL_PAUSE_DURATION = 3000;
+const AUTO_SCROLL_END_PAUSE = 2000;
+let autoScrollEndPauseUntil = 0;
+
+// Unified animation
+let animationTimer: ReturnType<typeof setInterval> | null = null;
+let animationFrame = 0;
 
 const MIN_RECORDING_MS = 500;
+const MAX_VISIBLE_PX = 184;
 
 export function initVoiceDial(b: BridgeClient): void {
   bridge = b;
@@ -37,7 +61,7 @@ export function updateVoiceDialState(state: State): void {
   currentState = state;
   if (state !== State.IDLE) {
     voiceState = 'idle';
-    stopPulse();
+    stopAnimation();
   }
   refreshVoiceDials();
 }
@@ -45,10 +69,16 @@ export function updateVoiceDialState(state: State): void {
 export function setVoiceRecordingState(vs: VoiceState): void {
   dlog('VoiceDial', `voiceState: ${voiceState} -> ${vs}`);
   voiceState = vs;
+
   if (vs === 'recording') {
-    startPulse();
+    startAnimation(60);
+  } else if (vs === 'transcribing') {
+    startAnimation(100);
   } else {
-    stopPulse();
+    stopAnimation();
+    if (vs === 'idle' && lastTranscription) {
+      startAutoScroll();
+    }
   }
   refreshVoiceDials();
 }
@@ -56,26 +86,88 @@ export function setVoiceRecordingState(vs: VoiceState): void {
 export function setVoiceTranscription(text: string): void {
   dlog('VoiceDial', `transcription(${text.length} chars): "${text.slice(0, 60)}"`);
   lastTranscription = text;
-  scrollOffset = 0;
+  scrollPx = 0;
+  textTotalWidth = estimateTextWidth(text);
+  autoScrollStartDelay = Date.now() + AUTO_SCROLL_INITIAL_DELAY;
+  autoScrollEndPauseUntil = 0;
+  autoScrollPauseUntil = 0;
+  startAutoScroll();
   refreshVoiceDials();
 }
 
-function startPulse(): void {
-  stopPulse();
-  pulseOn = true;
-  pulseTimer = setInterval(() => {
-    pulseOn = !pulseOn;
-    refreshVoiceDials();
-  }, 500);
+export function setVoiceError(msg?: string): void {
+  errorMessage = msg;
+  voiceState = 'error';
+  stopAnimation();
+  refreshVoiceDials();
 }
 
-function stopPulse(): void {
-  if (pulseTimer) {
-    clearInterval(pulseTimer);
-    pulseTimer = null;
-  }
-  pulseOn = true;
+// --- Animation ---
+
+function startAnimation(intervalMs: number): void {
+  stopAnimation();
+  animationFrame = 0;
+  animationTimer = setInterval(() => {
+    animationFrame++;
+    refreshVoiceDials();
+  }, intervalMs);
 }
+
+function startAutoScroll(): void {
+  if (autoScrollActive) return;
+  if (!lastTranscription || textTotalWidth <= MAX_VISIBLE_PX) return;
+  autoScrollActive = true;
+  if (!animationTimer) {
+    animationFrame = 0;
+    animationTimer = setInterval(() => {
+      animationFrame++;
+      tickAutoScroll();
+      refreshVoiceDials();
+    }, 80);
+  }
+}
+
+function stopAutoScroll(): void {
+  autoScrollActive = false;
+  if (voiceState === 'idle' && animationTimer) {
+    clearInterval(animationTimer);
+    animationTimer = null;
+  }
+}
+
+function tickAutoScroll(): void {
+  if (!autoScrollActive || !lastTranscription) return;
+  const now = Date.now();
+
+  if (now < autoScrollStartDelay) return;
+  if (now < autoScrollPauseUntil) return;
+  if (now < autoScrollEndPauseUntil) return;
+
+  const maxScroll = Math.max(0, textTotalWidth - MAX_VISIBLE_PX);
+  if (maxScroll <= 0) { stopAutoScroll(); return; }
+
+  scrollPx += 2;
+
+  if (scrollPx >= maxScroll) {
+    scrollPx = maxScroll;
+    autoScrollEndPauseUntil = now + AUTO_SCROLL_END_PAUSE;
+    setTimeout(() => {
+      scrollPx = 0;
+      autoScrollStartDelay = Date.now() + 500;
+    }, AUTO_SCROLL_END_PAUSE);
+  }
+}
+
+function stopAnimation(): void {
+  if (animationTimer) {
+    clearInterval(animationTimer);
+    animationTimer = null;
+  }
+  autoScrollActive = false;
+  animationFrame = 0;
+}
+
+// --- Rendering ---
 
 function refreshVoiceDials(): void {
   if (isEncoderTakeoverActive()) return;
@@ -89,64 +181,35 @@ function refreshVoiceDials(): void {
 }
 
 function getVoiceFeedback(): Record<string, unknown> {
+  let svg: string;
+
   if (currentState !== State.IDLE) {
-    return {
-      title: 'VOICE',
-      value: '--',
-      indicator: { value: 0 },
-    };
+    svg = renderVoiceDisabled();
+  } else {
+    switch (voiceState) {
+      case 'recording':
+        svg = renderVoiceRecording(Date.now() - recordStartTime, animationFrame);
+        break;
+      case 'transcribing':
+        svg = renderVoiceTranscribing(animationFrame);
+        break;
+      case 'error':
+        svg = renderVoiceError(errorMessage);
+        break;
+      default:
+        if (lastTranscription) {
+          svg = renderVoiceIdle(lastTranscription, scrollPx, textTotalWidth);
+        } else {
+          svg = renderVoiceReady();
+        }
+        break;
+    }
   }
 
-  switch (voiceState) {
-    case 'recording':
-      return {
-        title: '\ud83c\udfa4 REC',
-        value: 'Recording...',
-        indicator: {
-          value: pulseOn ? 100 : 0,
-          bar_fill_c: '#ef4444',
-        },
-      };
-    case 'transcribing':
-      return {
-        title: 'VOICE',
-        value: 'Transcribing...',
-        indicator: {
-          value: 50,
-          bar_fill_c: '#fbbf24',
-        },
-      };
-    case 'error':
-      return {
-        title: 'VOICE',
-        value: 'ERROR - push to clear',
-        indicator: {
-          value: 100,
-          bar_fill_c: '#991b1b',
-        },
-      };
-    default:
-      if (lastTranscription) {
-        const display = scrollOffset > 0
-          ? lastTranscription.substring(scrollOffset)
-          : lastTranscription;
-        return {
-          title: 'VOICE',
-          value: truncateVoice(display, 60),
-          indicator: { value: 0 },
-        };
-      }
-      return {
-        title: 'VOICE',
-        value: 'Ready',
-        indicator: { value: 0 },
-      };
-  }
+  return { canvas: svgToDataUrl(svg) };
 }
 
-function truncateVoice(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
-}
+// --- Action ---
 
 @action({ UUID: 'bound.serendipity.agentdeck.voice-dial' })
 export class VoiceDialAction extends SingletonAction {
@@ -163,10 +226,10 @@ export class VoiceDialAction extends SingletonAction {
     if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
     if (currentState !== State.IDLE) return;
 
-    // Error state: clear error on push
     if (voiceState === 'error') {
       voiceState = 'idle';
-      stopPulse();
+      errorMessage = undefined;
+      stopAnimation();
       refreshVoiceDials();
       return;
     }
@@ -175,7 +238,7 @@ export class VoiceDialAction extends SingletonAction {
     recordStartTime = Date.now();
     voiceState = 'recording';
     bridge.send({ type: 'voice', action: 'start' });
-    startPulse();
+    startAnimation(60);
     refreshVoiceDials();
   }
 
@@ -188,7 +251,7 @@ export class VoiceDialAction extends SingletonAction {
       dlog('VoiceDial', `dialUp: cancel (${elapsed}ms < ${MIN_RECORDING_MS}ms)`);
       voiceState = 'idle';
       bridge.send({ type: 'voice', action: 'cancel' });
-      stopPulse();
+      stopAnimation();
       refreshVoiceDials();
       return;
     }
@@ -196,20 +259,22 @@ export class VoiceDialAction extends SingletonAction {
     dlog('VoiceDial', `dialUp: stop recording (${elapsed}ms)`);
     voiceState = 'transcribing';
     bridge.send({ type: 'voice', action: 'stop' });
-    stopPulse();
+    startAnimation(100);
     refreshVoiceDials();
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
     if (isEncoderTakeoverActive()) { handleTakeoverRotate(ev.payload.ticks); return; }
-    // Scroll through last transcription text
     if (voiceState === 'idle' && lastTranscription && currentState === State.IDLE) {
+      const step = 20;
       if (ev.payload.ticks > 0) {
-        scrollOffset += 20;
+        scrollPx += step;
       } else {
-        scrollOffset -= 20;
+        scrollPx -= step;
       }
-      scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, lastTranscription.length - 30)));
+      const maxScroll = Math.max(0, textTotalWidth - MAX_VISIBLE_PX);
+      scrollPx = Math.max(0, Math.min(scrollPx, maxScroll));
+      autoScrollPauseUntil = Date.now() + AUTO_SCROLL_PAUSE_DURATION;
       refreshVoiceDials();
     }
   }
@@ -218,6 +283,9 @@ export class VoiceDialAction extends SingletonAction {
     const idx = encoderRegistry.voiceIds.indexOf(ev.action.id);
     if (idx !== -1) {
       encoderRegistry.voiceIds.splice(idx, 1);
+    }
+    if (encoderRegistry.voiceIds.length === 0) {
+      stopAnimation();
     }
   }
 }

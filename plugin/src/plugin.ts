@@ -67,6 +67,7 @@ import {
   updateVoiceDialState,
   setVoiceRecordingState,
   setVoiceTranscription,
+  setVoiceError,
 } from './actions/voice-dial.js';
 import {
   CommandDialAction,
@@ -212,11 +213,14 @@ bridge.on('user_prompt', (ev: UserPromptEvent) => {
 
 bridge.on('voice_state', (ev: VoiceStateEvent) => {
   dlog('Plugin', `voice_state: ${ev.state} text=${ev.text ? `"${ev.text.slice(0, 40)}"` : '-'} err=${ev.error || '-'}`);
-  const vs = ev.state === 'recording' ? 'recording'
-    : ev.state === 'transcribing' ? 'transcribing'
-    : ev.state === 'error' ? 'error'
-    : 'idle';
-  setVoiceRecordingState(vs);
+  if (ev.state === 'error') {
+    setVoiceError(ev.error);
+  } else {
+    const vs = ev.state === 'recording' ? 'recording'
+      : ev.state === 'transcribing' ? 'transcribing'
+      : 'idle';
+    setVoiceRecordingState(vs);
+  }
   // Show transcribed text on voice dial LCD
   if (ev.state === 'idle' && ev.text) {
     setVoiceTranscription(ev.text);
