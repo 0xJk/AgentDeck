@@ -37,6 +37,11 @@ let currentModel: string | undefined;
 let currentSessionIndex = 0;
 let sessions: SessionEntry[] = [];
 let keyDownTime = 0;
+let animTimer: ReturnType<typeof setInterval> | null = null;
+let animFrame = 0;
+
+const ANIM_INTERVAL_MS = 150; // ~6.7 FPS
+const ANIM_TOTAL_FRAMES = 24; // full rotation = 24 frames × 150ms = 3.6s
 
 const actionIds: string[] = [];
 
@@ -71,6 +76,25 @@ export function updateSessionButton(
   if (state === State.DISCONNECTED && wasConnected) {
     dlog('SesBut', 'disconnected — attempting auto-reconnect');
     autoReconnect();
+  }
+
+  // Start/stop spinner animation for PROCESSING / AWAITING states
+  const needsAnim =
+    state === State.PROCESSING ||
+    state === State.AWAITING_PERMISSION ||
+    state === State.AWAITING_OPTION ||
+    state === State.AWAITING_DIFF;
+
+  if (needsAnim && !animTimer) {
+    animFrame = 0;
+    animTimer = setInterval(() => {
+      animFrame = (animFrame + 1) % ANIM_TOTAL_FRAMES;
+      refreshAll();
+    }, ANIM_INTERVAL_MS);
+  } else if (!needsAnim && animTimer) {
+    clearInterval(animTimer);
+    animTimer = null;
+    animFrame = 0;
   }
 
   refreshAll();
@@ -161,16 +185,49 @@ function splitProjectName(name: string, maxChars: number): string[] {
   ];
 }
 
+function getStatusInfo(): { label: string; detail: string; color: string; bg: string } {
+  switch (currentState) {
+    case State.PROCESSING:
+      return {
+        label: 'RUNNING',
+        detail: currentTool || 'Thinking...',
+        color: '#fbbf24',
+        bg: '#2a1f00',
+      };
+    case State.AWAITING_PERMISSION:
+      return {
+        label: 'PERMIT?',
+        detail: currentTool || 'Allow?',
+        color: '#f87171',
+        bg: '#2a0f0f',
+      };
+    case State.AWAITING_OPTION:
+      return {
+        label: 'SELECT',
+        detail: currentTool || 'Choose...',
+        color: '#60a5fa',
+        bg: '#0f1a2a',
+      };
+    case State.AWAITING_DIFF:
+      return {
+        label: 'DIFF',
+        detail: currentTool || 'Review...',
+        color: '#a78bfa',
+        bg: '#1a0f2a',
+      };
+    default:
+      return { label: 'RUNNING', detail: 'Thinking...', color: '#fbbf24', bg: '#2a1f00' };
+  }
+}
+
 function renderSessionSvg(): string {
-  // Change 6: AWAITING_ states render same as PROCESSING
-  const effectiveState =
+  const isActive =
+    currentState === State.PROCESSING ||
     currentState === State.AWAITING_PERMISSION ||
     currentState === State.AWAITING_OPTION ||
-    currentState === State.AWAITING_DIFF
-      ? State.PROCESSING
-      : currentState;
+    currentState === State.AWAITING_DIFF;
 
-  switch (effectiveState) {
+  switch (isActive ? 'active' : currentState) {
     case State.DISCONNECTED:
       return simpleSvg('NO', 'SESSION', '#666666', '#1a1a1a');
 
@@ -234,34 +291,37 @@ function renderSessionSvg(): string {
       return lines.join('');
     }
 
-    case State.PROCESSING: {
-      // Change 5: Star spinner animation — auto-centered
-      const tool = truncate(currentTool || 'Thinking...', 14);
+    case 'active': {
+      // Frame-based star spinner animation with state-specific colors
+      const info = getStatusInfo();
+      const detail = truncate(info.detail, 14);
       const BUTTON_CENTER = 72;
       const starH = 20;
-      const runFs = 24;
-      const toolFs = 16;
-      const gap1 = 6;   // star ↔ RUNNING
-      const gap2 = 8;   // RUNNING ↔ tool
-      const span = starH / 2 + gap1 + runFs / 2 + runFs / 2 + gap2 + toolFs / 2;
+      const labelFs = 24;
+      const detailFs = 16;
+      const gap1 = 6;   // star ↔ label
+      const gap2 = 8;   // label ↔ detail
+      const span = starH / 2 + gap1 + labelFs / 2 + labelFs / 2 + gap2 + detailFs / 2;
       let cy = BUTTON_CENTER - span / 2;
       const starY = Math.round(cy);
-      cy += starH / 2 + gap1 + runFs / 2;
-      const runBaseline = Math.round(cy + runFs * 0.35);
-      cy += runFs / 2 + gap2 + toolFs / 2;
-      const toolBaseline = Math.round(cy + toolFs * 0.35);
+      cy += starH / 2 + gap1 + labelFs / 2;
+      const labelBaseline = Math.round(cy + labelFs * 0.35);
+      cy += labelFs / 2 + gap2 + detailFs / 2;
+      const detailBaseline = Math.round(cy + detailFs * 0.35);
+
+      // Rotation: 360° over ANIM_TOTAL_FRAMES
+      const angle = Math.round((animFrame / ANIM_TOTAL_FRAMES) * 360);
+      // Breathing opacity: sinusoidal 0.5–1.0
+      const opacity = (0.75 + 0.25 * Math.sin((animFrame / ANIM_TOTAL_FRAMES) * Math.PI * 2)).toFixed(2);
+
       return [
         `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
-        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#2a1f00"/>`,
-        // 4-point star with rotation + breathing opacity
-        `<g transform="translate(72, ${starY})">`,
-        `<path d="M0,-10 L2,-3 L10,0 L2,3 L0,10 L-2,3 L-10,0 L-2,-3Z" fill="#fbbf24">`,
-        `<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s" repeatCount="indefinite"/>`,
-        `<animate attributeName="opacity" values="0.9;0.5;0.9" dur="1.2s" repeatCount="indefinite"/>`,
-        `</path>`,
+        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="${info.bg}"/>`,
+        `<g transform="translate(72, ${starY}) rotate(${angle})">`,
+        `<path d="M0,-10 L2,-3 L10,0 L2,3 L0,10 L-2,3 L-10,0 L-2,-3Z" fill="${info.color}" opacity="${opacity}"/>`,
         `</g>`,
-        `<text x="72" y="${runBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="#fbbf24">RUNNING</text>`,
-        `<text x="72" y="${toolBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#fbbf24" opacity="0.7">${escXml(tool)}</text>`,
+        `<text x="72" y="${labelBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="${info.color}">${info.label}</text>`,
+        `<text x="72" y="${detailBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="${info.color}" opacity="0.7">${escXml(detail)}</text>`,
         `</svg>`,
       ].join('');
     }

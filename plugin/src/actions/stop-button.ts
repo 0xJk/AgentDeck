@@ -39,6 +39,10 @@ function getButtonConfig(state: State) {
   if (isAwaiting(state)) {
     return { title: 'ESC', color: '#b45309', textColor: '#ffffff', enabled: true };
   }
+  if (state === State.IDLE) {
+    // Dim ESC — clears typed text if any, harmless if empty
+    return { title: 'ESC', color: '#3d2607', textColor: '#a0855a', enabled: true };
+  }
   return { title: 'STOP', color: '#3a1111', textColor: '#666666', enabled: false };
 }
 
@@ -67,7 +71,7 @@ export class StopButtonAction extends SingletonAction {
   }
 
   override async onKeyDown(_ev: KeyDownEvent): Promise<void> {
-    if (isAwaiting(currentState)) {
+    if (isAwaiting(currentState) || currentState === State.IDLE) {
       dlog('StpBut', `keyDown: escape (state=${currentState})`);
       bridge.send({ type: 'escape' });
     } else {

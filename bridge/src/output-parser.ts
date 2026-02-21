@@ -114,17 +114,24 @@ export class OutputParser extends EventEmitter {
         this.emit('spinner_stop');
         // Fall through to prompt detection below
       } else if (hasIdlePrompt) {
-        // Pure idle prompt during spinner → spinner is done, transition to idle
-        debug('Parser', 'idle prompt during spinner — stopping spinner, emitting idle');
-        this.resetSpinnerTimer();
-        this.spinnerActive = false;
-        this.seenFirstIdle = true;
-        this.emit('spinner_stop');
-        this.resetIdleTimer();
-        this.idleTimer = setTimeout(() => {
-          debug('Parser', 'EMIT idle');
-          this.emit('idle');
-        }, IDLE_DEBOUNCE_MS);
+        // Idle prompt during spinner — but ignore if chunk is large (screen redraw).
+        // Real idle prompts come in small chunks; screen redraws include ❯ in 200+ char chunks.
+        const nonWs = chunk.replace(/\s/g, '').length;
+        if (nonWs < 80) {
+          debug('Parser', 'idle prompt during spinner — stopping spinner, emitting idle');
+          this.resetSpinnerTimer();
+          this.spinnerActive = false;
+          this.seenFirstIdle = true;
+          this.emit('spinner_stop');
+          this.resetIdleTimer();
+          this.idleTimer = setTimeout(() => {
+            debug('Parser', 'EMIT idle');
+            this.emit('idle');
+          }, IDLE_DEBOUNCE_MS);
+          return;
+        }
+        // Large chunk with ❯ — screen redraw, ignore idle signal
+        debug('Parser', `idle prompt in large chunk (${nonWs} non-ws) during spinner — ignoring`);
         return;
       }
     }
