@@ -7,7 +7,9 @@ import streamDeck, {
 } from '@elgato/streamdeck';
 import { State, PermissionMode } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
-import { svgToDataUrl } from '../renderers/button-renderer.js';
+import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { ButtonConfig } from '../layout-manager.js';
+import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
 
 const SIZE = 144;
@@ -15,6 +17,7 @@ const SIZE = 144;
 let bridge: BridgeClient;
 let currentState = State.DISCONNECTED;
 let currentMode = PermissionMode.DEFAULT;
+let overrideConfig: ButtonConfig | null = null;
 
 const actionIds: string[] = [];
 
@@ -28,9 +31,15 @@ export function updateModeButton(state: State, mode: PermissionMode): void {
   refreshAll();
 }
 
+export function overrideModeButton(config: ButtonConfig | null): void {
+  overrideConfig = config;
+  refreshAll();
+}
+
 function refreshAll(): void {
-  const svg = renderModeSvg();
-  const dataUrl = svgToDataUrl(svg);
+  const dataUrl = overrideConfig
+    ? svgToDataUrl(renderButton(overrideConfig))
+    : svgToDataUrl(renderModeSvg());
   for (const id of actionIds) {
     const act = streamDeck.actions.getActionById(id);
     if (act) {
@@ -104,6 +113,11 @@ export class ModeButtonAction extends SingletonAction {
   }
 
   override async onKeyDown(_ev: KeyDownEvent): Promise<void> {
+    if (overrideConfig?.action) {
+      dlog('ModeBut', `keyDown: override action="${overrideConfig.action}"`);
+      handleExpandedAction(overrideConfig.action, bridge);
+      return;
+    }
     if (currentState !== State.IDLE) return;
     dlog('ModeBut', `keyDown: switch_mode (current=${currentMode})`);
     bridge.send({ type: 'switch_mode' });

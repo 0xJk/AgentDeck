@@ -5,13 +5,16 @@ import streamDeck, {
   WillAppearEvent,
   WillDisappearEvent,
 } from '@elgato/streamdeck';
-import { State } from '@agentdeck/shared';
+import { State, PromptOption } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
 import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { ButtonConfig } from '../layout-manager.js';
+import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
 
 let bridge: BridgeClient;
 let currentState = State.DISCONNECTED;
+let overrideConfig: ButtonConfig | null = null;
 
 const actionIds: string[] = [];
 
@@ -19,8 +22,14 @@ export function initStopButton(b: BridgeClient): void {
   bridge = b;
 }
 
-export function updateStopState(state: State): void {
+export function updateStopState(state: State, options?: PromptOption[]): void {
   currentState = state;
+  // overrideConfig is set externally by overrideStopButton
+  refreshStopButtons();
+}
+
+export function overrideStopButton(config: ButtonConfig | null): void {
+  overrideConfig = config;
   refreshStopButtons();
 }
 
@@ -32,7 +41,7 @@ function isAwaiting(state: State): boolean {
   );
 }
 
-function getButtonConfig(state: State) {
+function getButtonConfig(state: State): ButtonConfig {
   if (state === State.PROCESSING) {
     return { title: 'STOP', color: '#cc0000', textColor: '#ffffff', enabled: true };
   }
@@ -47,7 +56,7 @@ function getButtonConfig(state: State) {
 }
 
 function refreshStopButtons(): void {
-  const cfg = getButtonConfig(currentState);
+  const cfg = overrideConfig ?? getButtonConfig(currentState);
   const svg = renderButton(cfg);
   const dataUrl = svgToDataUrl(svg);
 
@@ -65,12 +74,17 @@ export class StopButtonAction extends SingletonAction {
     if (!actionIds.includes(ev.action.id)) {
       actionIds.push(ev.action.id);
     }
-    const cfg = getButtonConfig(currentState);
+    const cfg = overrideConfig ?? getButtonConfig(currentState);
     const svg = renderButton(cfg);
     await ev.action.setImage(svgToDataUrl(svg));
   }
 
   override async onKeyDown(_ev: KeyDownEvent): Promise<void> {
+    if (overrideConfig?.action) {
+      dlog('StpBut', `keyDown: override action="${overrideConfig.action}"`);
+      handleExpandedAction(overrideConfig.action, bridge);
+      return;
+    }
     if (isAwaiting(currentState) || currentState === State.IDLE) {
       dlog('StpBut', `keyDown: escape (state=${currentState})`);
       bridge.send({ type: 'escape' });

@@ -4,12 +4,31 @@ import streamDeck, {
   KeyDownEvent,
   WillAppearEvent,
   WillDisappearEvent,
+  DidReceiveSettingsEvent,
 } from '@elgato/streamdeck';
 import { State, PromptOption } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
 import { LayoutManager, ButtonConfig } from '../layout-manager.js';
 import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
+
+import type { JsonValue } from '@elgato/utils';
+
+interface ResponseButtonSettings {
+  [key: string]: JsonValue;
+  label?: string;
+  action?: string;
+}
+
+const DEFAULT_IDLE_SETTINGS: ResponseButtonSettings[] = [
+  { label: 'FIX', action: 'Please fix the bug described above' },
+  { label: 'TEST', action: 'Write tests for the changes made' },
+  { label: 'COMPACT', action: '/compact' },
+];
+
+/** Per-instance IDLE settings cache */
+const idleSettingsMap = new Map<string, ResponseButtonSettings>();
 
 let bridge: BridgeClient;
 let layoutManager: LayoutManager;
@@ -28,18 +47,58 @@ export function initResponseButtons(
   layoutManager = lm;
 }
 
+let overrideConfigs: ButtonConfig[] | null = null;
+
 export function updateResponseState(
   state: State,
   mode: string,
   options: PromptOption[],
+  expandedConfigs?: ButtonConfig[],
 ): void {
   currentState = state;
   currentMode = mode;
   currentOptions = options;
+  overrideConfigs = expandedConfigs ?? null;
   refreshAllButtons();
 }
 
+function idleButtonConfig(s: ResponseButtonSettings): ButtonConfig {
+  const label = s.label ?? '';
+  const isCommand = (s.action ?? '').startsWith('/');
+  return {
+    title: label,
+    color: isCommand ? '#1e293b' : '#1e3a2f',
+    textColor: isCommand ? '#94a3b8' : '#6ee7b7',
+    enabled: true,
+    action: `command:${s.action ?? ''}`,
+  };
+}
+
 function refreshAllButtons(): void {
+  if (currentState === State.IDLE && !overrideConfigs) {
+    // IDLE: use per-instance PI settings
+    dlog('RspBut', `refresh IDLE: ids=${actionIds.length}`);
+    for (let i = 0; i < actionIds.length; i++) {
+      const s = idleSettingsMap.get(actionIds[i]) ?? DEFAULT_IDLE_SETTINGS[i] ?? {};
+      applyButtonConfig(actionIds[i], idleButtonConfig(s));
+    }
+    return;
+  }
+
+  if (overrideConfigs) {
+    // Expanded mode: use externally provided configs for slots 3-5
+    dlog('RspBut', `refresh expanded: ids=${actionIds.length} configs=${overrideConfigs.length}`);
+    for (let i = 0; i < actionIds.length; i++) {
+      if (i < overrideConfigs.length) {
+        applyButtonConfig(actionIds[i], overrideConfigs[i]);
+      } else {
+        applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false });
+      }
+    }
+    return;
+  }
+
+  // Non-IDLE: delegate to layoutManager
   const buttons = layoutManager.getButtonLayout(
     currentState,
     currentMode as any,
@@ -51,7 +110,6 @@ function refreshAllButtons(): void {
     if (i < buttons.length) {
       applyButtonConfig(actionIds[i], buttons[i]);
     } else {
-      // Extra buttons beyond 3 slots → dim them
       applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false });
     }
   }
@@ -77,36 +135,76 @@ export class ResponseButtonAction extends SingletonAction {
     const slot = actionIds.indexOf(ev.action.id);
     dlog('RspBut', `onWillAppear: id=${ev.action.id} slot=${slot} total=${actionIds.length}`);
 
-    const buttons = layoutManager.getButtonLayout(
-      currentState,
-      currentMode as any,
-      currentOptions,
-    );
-    const config = (slot >= 0 && slot < buttons.length)
-      ? buttons[slot]
-      : { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false };
-    await ev.action.setImage(svgToDataUrl(renderButton(config)));
+    // Persist slot defaults if settings are empty, so PI shows actual values
+    const settings = (ev.payload?.settings ?? {}) as ResponseButtonSettings;
+    if (settings.label || settings.action) {
+      idleSettingsMap.set(ev.action.id, settings);
+    } else if (slot >= 0 && slot < DEFAULT_IDLE_SETTINGS.length) {
+      const defaults = DEFAULT_IDLE_SETTINGS[slot];
+      idleSettingsMap.set(ev.action.id, defaults);
+      void ev.action.setSettings(defaults).catch(() => {});
+    }
+
+    if (currentState === State.IDLE) {
+      const s = idleSettingsMap.get(ev.action.id) ?? DEFAULT_IDLE_SETTINGS[slot] ?? {};
+      await ev.action.setImage(svgToDataUrl(renderButton(idleButtonConfig(s))));
+    } else {
+      const buttons = layoutManager.getButtonLayout(
+        currentState,
+        currentMode as any,
+        currentOptions,
+      );
+      const config = (slot >= 0 && slot < buttons.length)
+        ? buttons[slot]
+        : { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false };
+      await ev.action.setImage(svgToDataUrl(renderButton(config)));
+    }
+  }
+
+  override onDidReceiveSettings(ev: DidReceiveSettingsEvent<ResponseButtonSettings>): void {
+    const settings = ev.payload.settings;
+    dlog('RspBut', `onDidReceiveSettings: id=${ev.action.id} label=${settings.label} action=${settings.action}`);
+    idleSettingsMap.set(ev.action.id, settings);
+    // Refresh to reflect changes immediately if IDLE
+    if (currentState === State.IDLE) {
+      refreshAllButtons();
+    }
   }
 
   override async onKeyDown(ev: KeyDownEvent): Promise<void> {
     const slot = actionIds.indexOf(ev.action.id);
     if (slot < 0) return;
 
-    const buttons = layoutManager.getButtonLayout(
-      currentState,
-      currentMode as any,
-      currentOptions,
-    );
+    let actionStr: string | undefined;
 
-    if (slot >= buttons.length) return;
+    if (overrideConfigs) {
+      // Expanded mode: use override configs
+      const config = slot < overrideConfigs.length ? overrideConfigs[slot] : undefined;
+      if (!config?.enabled || !config.action) return;
+      actionStr = config.action;
+    } else if (currentState === State.IDLE) {
+      // Use per-instance PI settings for IDLE
+      const s = idleSettingsMap.get(ev.action.id) ?? DEFAULT_IDLE_SETTINGS[slot] ?? {};
+      actionStr = `command:${s.action ?? ''}`;
+    } else {
+      const buttons = layoutManager.getButtonLayout(
+        currentState,
+        currentMode as any,
+        currentOptions,
+      );
+      if (slot >= buttons.length) return;
+      const config = buttons[slot];
+      if (!config.enabled || !config.action) return;
+      actionStr = config.action;
+    }
 
-    const config = buttons[slot];
-    if (!config.enabled || !config.action) return;
-
-    const actionStr = config.action;
+    if (!actionStr) return;
     dlog('RspBut', `keyDown slot=${slot} action="${actionStr}"`);
 
-    if (actionStr === 'interrupt') {
+    if (actionStr === 'expand_options') {
+      // Handled by plugin.ts enterExpandedMode — delegate via handleExpandedAction
+      handleExpandedAction(actionStr, bridge);
+    } else if (actionStr === 'interrupt') {
       bridge.send({ type: 'interrupt' });
     } else if (actionStr.startsWith('respond:')) {
       bridge.send({ type: 'respond', value: actionStr.split(':')[1] });
@@ -122,11 +220,6 @@ export class ResponseButtonAction extends SingletonAction {
       });
     } else if (actionStr.startsWith('command:')) {
       bridge.send({ type: 'send_prompt', text: actionStr.substring('command:'.length) });
-    } else if (actionStr.startsWith('template:')) {
-      bridge.send({
-        type: 'send_prompt',
-        text: `__template:${actionStr.split(':')[1]}`,
-      });
     }
   }
 

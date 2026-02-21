@@ -51,6 +51,8 @@ export interface PromptOption {
   index: number;
   label: string;
   shortcut?: string;
+  recommended?: boolean;
+  selected?: boolean;
 }
 
 export interface StateSnapshot {

@@ -441,13 +441,28 @@ export class OutputParser extends EventEmitter {
   }
 
   private parseOptions(text: string): PromptOption[] {
+    // ANSI cursor movement removal can leave numbered options concatenated without newlines.
+    // Insert a newline before number patterns that aren't preceded by one.
+    const normalized = text.replace(/([^\n])((?:\s*)❯?\s*\d+[.)])/g, '$1\n$2');
+
     // Use a Map keyed by index so later (newer) lines overwrite earlier (stale) ones
     const byIndex = new Map<number, PromptOption>();
-    for (const line of text.split('\n')) {
+    for (const line of normalized.split('\n')) {
       const nm = line.match(/^\s*❯?\s*(\d+)[.)]\s*(.+)/);
       if (nm) {
         const idx = parseInt(nm[1], 10) - 1;
-        byIndex.set(idx, { index: idx, label: nm[2].trim() });
+        const raw = nm[2].trim();
+        const recommended = /\(recommended\)/i.test(raw);
+        const selected = /✔/.test(raw);
+        const label = raw
+          .replace(/\s*\(recommended\)/i, '')
+          .replace(/\s*✔\s*/, ' ')
+          .replace(/\s{2,}/g, ' · ')
+          .trim();
+        const opt: PromptOption = { index: idx, label };
+        if (recommended) opt.recommended = true;
+        if (selected) opt.selected = true;
+        byIndex.set(idx, opt);
         continue;
       }
       const bm = line.match(/^\s*([►▸●○])\s+(.+)/);

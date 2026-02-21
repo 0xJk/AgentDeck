@@ -2,6 +2,8 @@ import { State, PermissionMode, PromptOption } from '@agentdeck/shared';
 
 export interface ButtonConfig {
   title: string;
+  subtitle?: string;
+  badge?: string;
   color: string;
   textColor: string;
   enabled: boolean;
@@ -21,6 +23,27 @@ const DIM: ButtonConfig = {
   textColor: '#444444',
   enabled: false,
 };
+
+interface ProcessedLabel {
+  main: string;
+  sub?: string;
+}
+
+function processLabel(raw: string): ProcessedLabel {
+  // " · " separator from parseOptions normalization
+  const parts = raw.split(' · ');
+  if (parts.length >= 2) {
+    return { main: parts[0].trim(), sub: parts.slice(1).join(' · ').trim() };
+  }
+  // Long labels: split at first space
+  if (raw.length > 12) {
+    const firstSpace = raw.indexOf(' ');
+    if (firstSpace > 0 && firstSpace < 15) {
+      return { main: raw.slice(0, firstSpace), sub: raw.slice(firstSpace + 1) };
+    }
+  }
+  return { main: raw };
+}
 
 /** Shorten permission/diff option label for button display (max ~9 chars) */
 function truncateLabel(label: string): string {
@@ -57,6 +80,14 @@ function colorForOption(opt: PromptOption): { color: string; textColor: string }
   return { color: '#1e3a5f', textColor: '#93c5fd' };
 }
 
+function isInteractive(state: State): boolean {
+  return (
+    state === State.AWAITING_PERMISSION ||
+    state === State.AWAITING_OPTION ||
+    state === State.AWAITING_DIFF
+  );
+}
+
 export class LayoutManager {
   /**
    * Returns 3 ButtonConfigs for dynamic response slots 3-5
@@ -71,7 +102,8 @@ export class LayoutManager {
       case State.DISCONNECTED:
         return this.disconnectedButtons();
       case State.IDLE:
-        return this.idleButtons();
+        // IDLE rendering handled by response-button.ts per-instance PI settings
+        return [DIM, DIM, DIM];
       case State.PROCESSING:
         return this.processingButtons();
       case State.AWAITING_PERMISSION:
@@ -85,34 +117,71 @@ export class LayoutManager {
     }
   }
 
-  private disconnectedButtons(): ButtonConfig[] {
-    return [DIM, DIM, DIM];
-  }
+  /**
+   * Returns a ButtonConfig for the stop slot (slot 6) when it should show
+   * a 4th option or a MORE button instead of ESC/STOP.
+   */
+  getStopSlotOverride(state: State, options: PromptOption[]): ButtonConfig | null {
+    if (!isInteractive(state)) return null;
 
-  private idleButtons(): ButtonConfig[] {
-    return [
-      {
-        title: 'FIX',
-        color: '#1e3a2f',
-        textColor: '#6ee7b7',
-        enabled: true,
-        action: 'template:0',
-      },
-      {
-        title: 'TEST',
-        color: '#1e3a2f',
-        textColor: '#6ee7b7',
-        enabled: true,
-        action: 'template:1',
-      },
-      {
-        title: 'COMPACT',
-        color: '#1e293b',
+    // Permission/diff prompts always use ≤3 options — no override needed
+    if (state === State.AWAITING_PERMISSION || state === State.AWAITING_DIFF) return null;
+
+    if (options.length === 4) {
+      return this.optionToConfig(options[3], state);
+    }
+    if (options.length >= 5) {
+      return {
+        title: 'MORE \u25BC',
+        color: '#334155',
         textColor: '#94a3b8',
         enabled: true,
-        action: 'command:/compact',
-      },
-    ];
+        action: 'expand_options',
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Expanded layout: returns 7 ButtonConfigs for slots 0-6.
+   * Shows up to 7 options across the entire keypad.
+   */
+  getExpandedLayout(state: State, options: PromptOption[]): ButtonConfig[] {
+    const capped = options.slice(0, 7);
+    const configs: ButtonConfig[] = [];
+    for (let i = 0; i < 7; i++) {
+      if (i < capped.length) {
+        configs.push(this.optionToConfig(capped[i], state));
+      } else {
+        configs.push(DIM);
+      }
+    }
+    return configs;
+  }
+
+  private optionToConfig(opt: PromptOption, state: State): ButtonConfig {
+    const label = processLabel(opt.label);
+    const badge = opt.recommended ? '\u2605' : opt.selected ? '\u2713' : undefined;
+
+    // Permission/diff states use semantic colors; option state uses themed colors
+    const colors = (state === State.AWAITING_PERMISSION || state === State.AWAITING_DIFF)
+      ? colorForOption(opt)
+      : opt.recommended
+        ? { color: '#1e4d2b', textColor: '#86efac' }
+        : { color: '#1e3a5f', textColor: '#93c5fd' };
+
+    return {
+      title: label.main,
+      subtitle: label.sub,
+      badge,
+      ...colors,
+      enabled: true,
+      action: `select_option:${opt.index}`,
+    };
+  }
+
+  private disconnectedButtons(): ButtonConfig[] {
+    return [DIM, DIM, DIM];
   }
 
   private processingButtons(): ButtonConfig[] {
@@ -137,18 +206,11 @@ export class LayoutManager {
   }
 
   private optionButtons(options: PromptOption[]): ButtonConfig[] {
+    // Show first 3 options in slots 3-5 using optionToConfig for rich display
     const buttons: ButtonConfig[] = [];
     for (let i = 0; i < 3; i++) {
       if (i < options.length) {
-        buttons.push({
-          title: options[i].label.length > 8
-            ? options[i].label.substring(0, 7) + '\u2026'
-            : options[i].label,
-          color: '#1e3a5f',
-          textColor: '#93c5fd',
-          enabled: true,
-          action: `select_option:${options[i].index}`,
-        });
+        buttons.push(this.optionToConfig(options[i], State.AWAITING_OPTION));
       } else {
         buttons.push(DIM);
       }

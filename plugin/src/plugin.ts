@@ -13,6 +13,7 @@ import {
 
 import { BridgeClient } from './bridge-client.js';
 import { LayoutManager } from './layout-manager.js';
+import { setExpandCallback } from './expanded-actions.js';
 import { dlog, dinfo } from './log.js';
 
 // Keypad button actions
@@ -25,16 +26,19 @@ import {
   StopButtonAction,
   initStopButton,
   updateStopState,
+  overrideStopButton,
 } from './actions/stop-button.js';
 import {
   ModeButtonAction,
   initModeButton,
   updateModeButton,
+  overrideModeButton,
 } from './actions/mode-button.js';
 import {
   SessionButtonAction,
   initSessionButton,
   updateSessionButton,
+  overrideSessionButton,
 } from './actions/session-button.js';
 
 // Keypad button actions (usage)
@@ -42,6 +46,7 @@ import {
   UsageButtonAction,
   initUsageButton,
   updateUsageButton,
+  overrideUsageButton,
 } from './actions/usage-button.js';
 
 // Encoder actions
@@ -72,6 +77,22 @@ let currentModelName: string | undefined;
 let currentBillingType: BillingType = 'unknown';
 let currentOptions: import('@agentdeck/shared').PromptOption[] = [];
 
+// ---- Expanded mode state ----
+let expandedMode = false;
+
+export function enterExpandedMode(): void {
+  expandedMode = true;
+  broadcastStateUpdate();
+}
+
+export function exitExpandedMode(): void {
+  expandedMode = false;
+  broadcastStateUpdate();
+}
+
+// Wire up expand callback
+setExpandCallback(enterExpandedMode);
+
 // ---- Instances ----
 const bridge = new BridgeClient();
 const layoutManager = new LayoutManager();
@@ -89,7 +110,7 @@ initCommandDial(bridge);
 // ---- Bridge event handlers ----
 
 bridge.on('state_update', (ev: StateUpdateEvent) => {
-  dlog('Plugin', `state_update: ${ev.state} mode=${ev.permissionMode} tool=${ev.currentTool || '-'} project=${ev.projectName || '-'}`);
+  dlog('Plugin', `state_update: ${ev.state} mode=${ev.permissionMode} tool=${ev.currentTool || '-'} project=${ev.projectName || '-'} opts=${ev.options?.length ?? '-'}`);
   currentState = ev.state;
   currentMode = ev.permissionMode;
   currentTool = ev.currentTool;
@@ -97,8 +118,10 @@ bridge.on('state_update', (ev: StateUpdateEvent) => {
   if (ev.modelName) currentModelName = ev.modelName;
   if (ev.billingType) currentBillingType = ev.billingType;
 
-  // Clear options when leaving interactive states
-  if (
+  // Use options from state_update atomically (avoids race with separate prompt_options)
+  if (ev.options && ev.options.length > 0) {
+    currentOptions = ev.options;
+  } else if (
     ev.state !== State.AWAITING_OPTION &&
     ev.state !== State.AWAITING_PERMISSION &&
     ev.state !== State.AWAITING_DIFF
@@ -171,15 +194,50 @@ bridge.on('disconnected', () => {
   broadcastStateUpdate();
 });
 
-function broadcastStateUpdate(): void {
-  dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length}`);
-  // Keypad buttons — slots 0-2 dedicated, slots 3-5 dynamic, slot 6 = STOP
-  updateModeButton(currentState, currentMode);
-  updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName);
-  updateResponseState(currentState, currentMode, currentOptions);
-  updateStopState(currentState);
+function isInteractiveState(state: State): boolean {
+  return (
+    state === State.AWAITING_PERMISSION ||
+    state === State.AWAITING_OPTION ||
+    state === State.AWAITING_DIFF
+  );
+}
 
-  // Encoder actions
+function broadcastStateUpdate(): void {
+  // Auto-exit expanded mode on non-interactive state transitions
+  if (expandedMode && !isInteractiveState(currentState)) {
+    expandedMode = false;
+  }
+
+  dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length} expanded=${expandedMode}`);
+
+  if (expandedMode && currentOptions.length > 4) {
+    // Expanded mode: all 7 keypad slots show options
+    const configs = layoutManager.getExpandedLayout(currentState, currentOptions);
+    overrideModeButton(configs[0]);
+    overrideSessionButton(configs[1]);
+    overrideUsageButton(configs[2]);
+    updateResponseState(currentState, currentMode as any, currentOptions, configs.slice(3, 6));
+    overrideStopButton(configs[6]);
+  } else {
+    // Normal mode: clear overrides, render normally
+    overrideModeButton(null);
+    overrideSessionButton(null);
+    overrideUsageButton(null);
+    updateModeButton(currentState, currentMode);
+    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName);
+    updateResponseState(currentState, currentMode as any, currentOptions);
+
+    // Stop slot: may show 4th option or MORE button
+    const stopOverride = layoutManager.getStopSlotOverride(currentState, currentOptions);
+    if (stopOverride) {
+      overrideStopButton(stopOverride);
+    } else {
+      overrideStopButton(null);
+      updateStopState(currentState);
+    }
+  }
+
+  // Encoder actions (always)
   updateOptionDialState(currentState, currentOptions);
   updateVoiceDialState(currentState);
   updateCommandDialState(currentState);

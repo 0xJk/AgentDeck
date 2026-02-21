@@ -8,7 +8,9 @@ import streamDeck, {
 } from '@elgato/streamdeck';
 import { State, PermissionMode } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
-import { svgToDataUrl } from '../renderers/button-renderer.js';
+import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { ButtonConfig } from '../layout-manager.js';
+import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
 import { readFileSync } from 'fs';
 import { execSync } from 'child_process';
@@ -43,10 +45,17 @@ let animFrame = 0;
 const ANIM_INTERVAL_MS = 150; // ~6.7 FPS
 const ANIM_TOTAL_FRAMES = 24; // full rotation = 24 frames × 150ms = 3.6s
 
+let overrideConfig: ButtonConfig | null = null;
+
 const actionIds: string[] = [];
 
 export function initSessionButton(b: BridgeClient): void {
   bridge = b;
+}
+
+export function overrideSessionButton(config: ButtonConfig | null): void {
+  overrideConfig = config;
+  refreshAll();
 }
 
 export function updateSessionButton(
@@ -124,8 +133,9 @@ function loadSessions(): SessionEntry[] {
 }
 
 function refreshAll(): void {
-  const svg = renderSessionSvg();
-  const dataUrl = svgToDataUrl(svg);
+  const dataUrl = overrideConfig
+    ? svgToDataUrl(renderButton(overrideConfig))
+    : svgToDataUrl(renderSessionSvg());
   for (const id of actionIds) {
     const act = streamDeck.actions.getActionById(id);
     if (act) {
@@ -364,10 +374,16 @@ export class SessionButtonAction extends SingletonAction {
   }
 
   override async onKeyDown(_ev: KeyDownEvent): Promise<void> {
+    if (overrideConfig?.action) {
+      dlog('SesBut', `keyDown: override action="${overrideConfig.action}"`);
+      handleExpandedAction(overrideConfig.action, bridge);
+      return;
+    }
     keyDownTime = Date.now();
   }
 
   override async onKeyUp(_ev: KeyUpEvent): Promise<void> {
+    if (overrideConfig) return; // override handled in keyDown
     const elapsed = Date.now() - keyDownTime;
 
     if (elapsed >= LONG_PRESS_MS) {

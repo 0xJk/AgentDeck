@@ -7,7 +7,9 @@ import streamDeck, {
 } from '@elgato/streamdeck';
 import { State, type BillingType } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
-import { svgToDataUrl } from '../renderers/button-renderer.js';
+import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { ButtonConfig } from '../layout-manager.js';
+import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
 
 const SIZE = 144;
@@ -36,6 +38,8 @@ type Page = '5h' | '7d' | 'extra' | 'session';
 let pageIndex = 0;
 let billingType: BillingType = 'unknown';
 
+let overrideConfig: ButtonConfig | null = null;
+
 const actionIds: string[] = [];
 
 function getPages(): Page[] {
@@ -53,6 +57,11 @@ function getPages(): Page[] {
 
 export function initUsageButton(b: BridgeClient): void {
   bridge = b;
+}
+
+export function overrideUsageButton(config: ButtonConfig | null): void {
+  overrideConfig = config;
+  refreshAll();
 }
 
 export function updateUsageButton(
@@ -88,8 +97,9 @@ export function updateUsageButton(
 }
 
 function refreshAll(): void {
-  const svg = renderUsageSvg();
-  const dataUrl = svgToDataUrl(svg);
+  const dataUrl = overrideConfig
+    ? svgToDataUrl(renderButton(overrideConfig))
+    : svgToDataUrl(renderUsageSvg());
   for (const id of actionIds) {
     const act = streamDeck.actions.getActionById(id);
     if (act) {
@@ -200,6 +210,11 @@ export class UsageButtonAction extends SingletonAction {
   }
 
   override async onKeyDown(_ev: KeyDownEvent): Promise<void> {
+    if (overrideConfig?.action) {
+      dlog('UsaBut', `keyDown: override action="${overrideConfig.action}"`);
+      handleExpandedAction(overrideConfig.action, bridge);
+      return;
+    }
     const pages = getPages();
     pageIndex = (pageIndex + 1) % pages.length;
     dlog('UsaBut', `keyDown: page=${pages[pageIndex]} (${pageIndex + 1}/${pages.length})`);
