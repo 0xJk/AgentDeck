@@ -19,6 +19,8 @@ export class StateMachine extends EventEmitter {
   private toolProgress: string | null = null;
   private options: PromptOption[] = [];
   private question: string | null = null;
+  private navigable = false;
+  private cursorIndex = 0;
   private projectName: string | null = null;
   private modelName: string | null = null;
   private billingType: BillingType = 'unknown';
@@ -63,6 +65,8 @@ export class StateMachine extends EventEmitter {
         this.toolProgress = null;
         this.options = [];
         this.question = null;
+        this.navigable = false;
+        this.cursorIndex = 0;
         this.transition(State.IDLE, 'stop', 'hook');
         break;
 
@@ -97,7 +101,16 @@ export class StateMachine extends EventEmitter {
 
       case 'option_prompt': {
         this.options = (data?.options as PromptOption[]) || [];
-        this.transition(State.AWAITING_OPTION, 'option_ui_detected', 'pty');
+        this.navigable = (data?.navigable as boolean) ?? false;
+        this.cursorIndex = (data?.cursorIndex as number) ?? 0;
+        if (this.state === State.AWAITING_OPTION) {
+          // Already in AWAITING_OPTION — just update options and re-emit snapshot
+          // (debounced chunks may re-parse with more complete data)
+          debug('SM', `option_prompt update: ${this.options.length} options, nav=${this.navigable}, cursor=${this.cursorIndex}`);
+          this.emitSnapshot();
+        } else {
+          this.transition(State.AWAITING_OPTION, 'option_ui_detected', 'pty');
+        }
         break;
       }
 
@@ -109,6 +122,17 @@ export class StateMachine extends EventEmitter {
 
       case 'spinner_start':
         if (this.state !== State.PROCESSING) {
+          // Clean up awaiting state data if recovering from a prompt
+          if (
+            this.state === State.AWAITING_OPTION ||
+            this.state === State.AWAITING_PERMISSION ||
+            this.state === State.AWAITING_DIFF
+          ) {
+            this.options = [];
+            this.question = null;
+            this.navigable = false;
+            this.cursorIndex = 0;
+          }
           this.transition(State.PROCESSING, 'spinner_start', 'pty');
         }
         break;
@@ -125,6 +149,8 @@ export class StateMachine extends EventEmitter {
           this.toolProgress = null;
           this.options = [];
           this.question = null;
+          this.navigable = false;
+          this.cursorIndex = 0;
           this.transition(State.IDLE, 'idle_detected', 'pty');
         }
         break;
@@ -140,6 +166,8 @@ export class StateMachine extends EventEmitter {
           this.toolProgress = null;
           this.options = [];
           this.question = null;
+          this.navigable = false;
+          this.cursorIndex = 0;
           this.transition(State.IDLE, 'idle_detected', 'pty');
         }
         break;
@@ -218,6 +246,15 @@ export class StateMachine extends EventEmitter {
     }
   }
 
+  /** Update billing type from external source (e.g., OAuth API response) if still unknown */
+  inferBillingType(inferred: 'subscription' | 'api'): void {
+    if (this.billingType === 'unknown') {
+      this.billingType = inferred;
+      debug('SM', `billingType inferred from API: ${inferred}`);
+      this.emitSnapshot();
+    }
+  }
+
   handleUserAction(action: string): void {
     switch (action) {
       case 'respond':
@@ -227,6 +264,8 @@ export class StateMachine extends EventEmitter {
         ) {
           this.options = [];
           this.question = null;
+          this.navigable = false;
+          this.cursorIndex = 0;
           this.transition(State.PROCESSING, 'user_response', 'user');
         }
         break;
@@ -234,6 +273,8 @@ export class StateMachine extends EventEmitter {
       case 'select_option':
         if (this.state === State.AWAITING_OPTION) {
           this.options = [];
+          this.navigable = false;
+          this.cursorIndex = 0;
           this.transition(State.PROCESSING, 'user_selection', 'user');
         }
         break;
@@ -243,6 +284,8 @@ export class StateMachine extends EventEmitter {
         this.toolProgress = null;
         this.options = [];
         this.question = null;
+        this.navigable = false;
+        this.cursorIndex = 0;
         this.transition(State.IDLE, 'interrupt', 'user');
         break;
 
@@ -281,6 +324,8 @@ export class StateMachine extends EventEmitter {
         this.toolProgress = null;
         this.options = [];
         this.question = null;
+        this.navigable = false;
+        this.cursorIndex = 0;
         this.transition(State.IDLE, 'stuck_timeout', 'internal');
       }, STUCK_TIMEOUT_MS);
     }
@@ -302,6 +347,20 @@ export class StateMachine extends EventEmitter {
     this.emit('state_changed', this.getSnapshot());
   }
 
+  /** Update cursor index (called by bridge when navigate_option moves the PTY cursor) */
+  updateCursorIndex(idx: number): void {
+    this.cursorIndex = idx;
+    // No snapshot emit — cursor tracking is internal, avoid unnecessary broadcasts
+  }
+
+  getCursorIndex(): number {
+    return this.cursorIndex;
+  }
+
+  getOptionsCount(): number {
+    return this.options.length;
+  }
+
   getSnapshot(): StateSnapshot {
     const usage = this.usageTracker.getSnapshot();
     return {
@@ -311,6 +370,8 @@ export class StateMachine extends EventEmitter {
       toolProgress: this.toolProgress,
       options: this.options,
       question: this.question,
+      navigable: this.navigable,
+      cursorIndex: this.cursorIndex,
       projectName: this.projectName,
       modelName: this.modelName,
       billingType: this.billingType,

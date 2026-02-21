@@ -20,6 +20,7 @@ export {
   type BridgeEvent,
   type ResponseCommand,
   type SelectOptionCommand,
+  type NavigateOptionCommand,
   type SendPromptCommand,
   type SwitchModeCommand,
   type InterruptCommand,

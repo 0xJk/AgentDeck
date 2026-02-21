@@ -36,9 +36,8 @@ let currentState = State.DISCONNECTED;
 let currentMode = 'default';
 let currentOptions: PromptOption[] = [];
 
-// Action IDs sorted by physical column position on the Stream Deck
+// Action IDs in arrival order (stable across refreshes — slot numbers shown on buttons)
 const actionIds: string[] = [];
-const actionColumns = new Map<string, number>();
 
 export function initResponseButtons(
   b: BridgeClient,
@@ -75,13 +74,24 @@ function idleButtonConfig(s: ResponseButtonSettings): ButtonConfig {
   };
 }
 
+/** Dimmed version of idle config — shows label but greyed out (for DISCONNECTED/PROCESSING) */
+function dimButtonConfig(s: ResponseButtonSettings): ButtonConfig {
+  const label = s.label ?? '';
+  return {
+    title: label,
+    color: '#1a1a1a',
+    textColor: '#444444',
+    enabled: false,
+  };
+}
+
 function refreshAllButtons(): void {
   if (currentState === State.IDLE && !overrideConfigs) {
     // IDLE: use per-instance PI settings
     dlog('RspBut', `refresh IDLE: ids=${actionIds.length}`);
     for (let i = 0; i < actionIds.length; i++) {
       const s = idleSettingsMap.get(actionIds[i]) ?? DEFAULT_IDLE_SETTINGS[i] ?? {};
-      applyButtonConfig(actionIds[i], idleButtonConfig(s));
+      applyButtonConfig(actionIds[i], idleButtonConfig(s), i);
     }
     return;
   }
@@ -91,32 +101,43 @@ function refreshAllButtons(): void {
     dlog('RspBut', `refresh expanded: ids=${actionIds.length} configs=${overrideConfigs.length}`);
     for (let i = 0; i < actionIds.length; i++) {
       if (i < overrideConfigs.length) {
-        applyButtonConfig(actionIds[i], overrideConfigs[i]);
+        applyButtonConfig(actionIds[i], overrideConfigs[i], i);
       } else {
-        applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false });
+        applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false }, i);
       }
     }
     return;
   }
 
-  // Non-IDLE: delegate to layoutManager
+  // DISCONNECTED / PROCESSING: show idle labels dimmed
+  if (currentState === State.DISCONNECTED || currentState === State.PROCESSING) {
+    dlog('RspBut', `refresh ${currentState}: ids=${actionIds.length} (dimmed idle labels)`);
+    for (let i = 0; i < actionIds.length; i++) {
+      const s = idleSettingsMap.get(actionIds[i]) ?? DEFAULT_IDLE_SETTINGS[i] ?? {};
+      applyButtonConfig(actionIds[i], dimButtonConfig(s), i);
+    }
+    return;
+  }
+
+  // Interactive states: delegate to layoutManager
   const buttons = layoutManager.getButtonLayout(
     currentState,
     currentMode as any,
     currentOptions,
   );
 
-  dlog('RspBut', `refresh: state=${currentState} ids=${actionIds.length} buttons=[${buttons.map(b => b.title || 'DIM').join(',')}]`);
+  dlog('RspBut', `refresh: state=${currentState} ids=${actionIds.length} buttons=[${buttons.map(b => b.title ? `"${b.badge ? b.badge + ' ' : ''}${b.title}${b.subtitle ? ' | ' + b.subtitle : ''}"` : 'DIM').join(', ')}]`);
   for (let i = 0; i < actionIds.length; i++) {
     if (i < buttons.length) {
-      applyButtonConfig(actionIds[i], buttons[i]);
+      applyButtonConfig(actionIds[i], buttons[i], i);
     } else {
-      applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false });
+      applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false }, i);
     }
   }
 }
 
-function applyButtonConfig(actionId: string, config: ButtonConfig): void {
+function applyButtonConfig(actionId: string, config: ButtonConfig, slotIndex?: number): void {
+  if (slotIndex != null) config.slotNumber = slotIndex + 1;
   const svg = renderButton(config);
   const dataUrl = svgToDataUrl(svg);
   const act = streamDeck.actions.getActionById(actionId);
@@ -130,16 +151,11 @@ function applyButtonConfig(actionId: string, config: ButtonConfig): void {
 @action({ UUID: 'bound.serendipity.agentdeck.response-button' })
 export class ResponseButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
-    // Track column coordinate for deterministic ordering
-    const col = !ev.payload.isInMultiAction ? ev.payload.coordinates.column : actionIds.length;
-    actionColumns.set(ev.action.id, col);
     if (!actionIds.includes(ev.action.id)) {
       actionIds.push(ev.action.id);
-      // Sort by physical column so slot 0 = leftmost button
-      actionIds.sort((a, b) => (actionColumns.get(a) ?? 0) - (actionColumns.get(b) ?? 0));
     }
     const slot = actionIds.indexOf(ev.action.id);
-    dlog('RspBut', `onWillAppear: id=${ev.action.id} col=${col} slot=${slot} total=${actionIds.length}`);
+    dlog('RspBut', `onWillAppear: id=${ev.action.id} slot=${slot} total=${actionIds.length}`);
 
     // Persist slot defaults if settings are empty, so PI shows actual values
     const settings = (ev.payload?.settings ?? {}) as ResponseButtonSettings;
@@ -151,20 +167,25 @@ export class ResponseButtonAction extends SingletonAction {
       void ev.action.setSettings(defaults).catch(() => {});
     }
 
+    const s = idleSettingsMap.get(ev.action.id) ?? DEFAULT_IDLE_SETTINGS[slot] ?? {};
+    let config: ButtonConfig;
+
     if (currentState === State.IDLE) {
-      const s = idleSettingsMap.get(ev.action.id) ?? DEFAULT_IDLE_SETTINGS[slot] ?? {};
-      await ev.action.setImage(svgToDataUrl(renderButton(idleButtonConfig(s))));
+      config = idleButtonConfig(s);
+    } else if (currentState === State.DISCONNECTED || currentState === State.PROCESSING) {
+      config = dimButtonConfig(s);
     } else {
       const buttons = layoutManager.getButtonLayout(
         currentState,
         currentMode as any,
         currentOptions,
       );
-      const config = (slot >= 0 && slot < buttons.length)
+      config = (slot >= 0 && slot < buttons.length)
         ? buttons[slot]
         : { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false };
-      await ev.action.setImage(svgToDataUrl(renderButton(config)));
     }
+    config.slotNumber = slot + 1;
+    await ev.action.setImage(svgToDataUrl(renderButton(config)));
   }
 
   override onDidReceiveSettings(ev: DidReceiveSettingsEvent<ResponseButtonSettings>): void {

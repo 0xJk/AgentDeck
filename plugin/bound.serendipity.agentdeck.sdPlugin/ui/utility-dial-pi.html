@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <script src="sdpi-components.js"></script>
+  <style>
+    .sdpi-info {
+      margin: 0 1em 0.5em;
+      padding: 0.5em 0.75em;
+      font-size: 11px;
+      color: #999;
+      line-height: 1.5;
+      border-left: 2px solid #444;
+    }
+  </style>
+</head>
+<body>
+  <sdpi-item label="Enabled Modes">
+    <sdpi-checkbox-list setting="enabledModes" columns="2">
+      <option value="volume">Volume</option>
+      <option value="mic">Microphone</option>
+      <option value="media">Media</option>
+      <option value="timer">Timer</option>
+    </sdpi-checkbox-list>
+  </sdpi-item>
+  <div class="sdpi-info">
+    Touch the LCD to cycle through enabled modes.
+  </div>
+</body>
+</html>

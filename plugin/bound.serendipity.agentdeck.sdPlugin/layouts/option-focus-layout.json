@@ -1,0 +1,46 @@
+{
+  "id": "option-focus-layout",
+  "items": [
+    {
+      "key": "opt-index",
+      "type": "text",
+      "rect": [120, 2, 76, 14],
+      "font": { "size": 10 },
+      "alignment": "right",
+      "color": "#64748b"
+    },
+    {
+      "key": "opt-name",
+      "type": "text",
+      "rect": [4, 16, 192, 34],
+      "font": { "size": 20, "weight": 700 },
+      "alignment": "center",
+      "text-overflow": "ellipsis",
+      "color": "#ffffff"
+    },
+    {
+      "key": "opt-sub",
+      "type": "text",
+      "rect": [4, 50, 192, 16],
+      "font": { "size": 11 },
+      "alignment": "center",
+      "text-overflow": "ellipsis",
+      "color": "#94a3b8"
+    },
+    {
+      "key": "opt-badge",
+      "type": "text",
+      "rect": [4, 68, 192, 16],
+      "font": { "size": 10, "weight": 600 },
+      "alignment": "center",
+      "color": "#86efac"
+    },
+    {
+      "key": "accent-bar",
+      "type": "bar",
+      "rect": [0, 92, 200, 6],
+      "bar_fill_c": "#2563eb",
+      "bar_bg_c": "#1e293b"
+    }
+  ]
+}

@@ -14,6 +14,11 @@ import {
 import { BridgeClient } from './bridge-client.js';
 import { LayoutManager } from './layout-manager.js';
 import { setExpandCallback } from './expanded-actions.js';
+import {
+  isEncoderTakeoverActive,
+  enterEncoderTakeover,
+  exitEncoderTakeover,
+} from './encoder-takeover.js';
 import { dlog, dinfo } from './log.js';
 
 // Keypad button actions
@@ -47,6 +52,7 @@ import {
   initUsageButton,
   updateUsageButton,
   overrideUsageButton,
+  setUsageBridgeConnected,
 } from './actions/usage-button.js';
 
 // Encoder actions
@@ -67,6 +73,15 @@ import {
   initCommandDial,
   updateCommandDialState,
 } from './actions/command-dial.js';
+import {
+  ContextDialAction,
+  updateContextDialState,
+} from './actions/context-dial.js';
+import {
+  UtilityDialAction,
+  initUtilityDial,
+  updateUtilityDialState,
+} from './actions/utility-dial.js';
 
 // ---- Shared state ----
 let currentState = State.DISCONNECTED;
@@ -76,6 +91,9 @@ let currentProjectName: string | undefined;
 let currentModelName: string | undefined;
 let currentBillingType: BillingType = 'unknown';
 let currentOptions: import('@agentdeck/shared').PromptOption[] = [];
+let currentQuestion: string | undefined;
+let currentNavigable = false;
+let currentCursorIndex = 0;
 
 // ---- Expanded mode state ----
 let expandedMode = false;
@@ -106,17 +124,31 @@ initUsageButton(bridge);
 initOptionDial(bridge);
 initVoiceDial(bridge);
 initCommandDial(bridge);
+initUtilityDial();
 
 // ---- Bridge event handlers ----
 
 bridge.on('state_update', (ev: StateUpdateEvent) => {
-  dlog('Plugin', `state_update: ${ev.state} mode=${ev.permissionMode} tool=${ev.currentTool || '-'} project=${ev.projectName || '-'} opts=${ev.options?.length ?? '-'}`);
+  dlog('Plugin', `state_update: ${ev.state} mode=${ev.permissionMode} tool=${ev.currentTool || '-'} project=${ev.projectName || '-'} opts=${ev.options?.length ?? '-'} nav=${ev.navigable ?? '-'}`);
   currentState = ev.state;
   currentMode = ev.permissionMode;
   currentTool = ev.currentTool;
   if (ev.projectName) currentProjectName = ev.projectName;
   if (ev.modelName) currentModelName = ev.modelName;
   if (ev.billingType) currentBillingType = ev.billingType;
+
+  // Capture question from state_update
+  if (ev.question !== undefined) {
+    currentQuestion = ev.question;
+  }
+
+  // Capture navigable/cursorIndex
+  if (ev.navigable !== undefined) {
+    currentNavigable = ev.navigable;
+  }
+  if (ev.cursorIndex !== undefined) {
+    currentCursorIndex = ev.cursorIndex;
+  }
 
   // Use options from state_update atomically (avoids race with separate prompt_options)
   if (ev.options && ev.options.length > 0) {
@@ -127,14 +159,18 @@ bridge.on('state_update', (ev: StateUpdateEvent) => {
     ev.state !== State.AWAITING_DIFF
   ) {
     currentOptions = [];
+    currentQuestion = undefined;
+    currentNavigable = false;
+    currentCursorIndex = 0;
   }
 
   broadcastStateUpdate();
 });
 
 bridge.on('prompt_options', (ev: PromptOptionsEvent) => {
-  dlog('Plugin', `prompt_options: type=${ev.promptType} count=${ev.options.length}`);
+  dlog('Plugin', `prompt_options: type=${ev.promptType} count=${ev.options.length} q=${ev.question ? `"${ev.question.slice(0, 40)}"` : '-'}`);
   currentOptions = ev.options;
+  if (ev.question) currentQuestion = ev.question;
   broadcastStateUpdate();
 });
 
@@ -144,6 +180,7 @@ bridge.on('usage_update', (ev: UsageEvent) => {
     sessionDurationSec: ev.sessionDurationSec,
     inputTokens: ev.inputTokens,
     outputTokens: ev.outputTokens,
+    estimatedCostUsd: ev.estimatedCostUsd,
     fiveHourPercent: ev.fiveHourPercent,
     fiveHourResetsAt: ev.fiveHourResetsAt,
     sevenDayPercent: ev.sevenDayPercent,
@@ -160,6 +197,9 @@ bridge.on('connection', (ev: ConnectionEvent) => {
   if (ev.status === 'disconnected') {
     currentState = State.DISCONNECTED;
     currentOptions = [];
+    currentQuestion = undefined;
+    currentNavigable = false;
+    currentCursorIndex = 0;
     broadcastStateUpdate();
   }
   // 'connected' case: state_update (sent before connection event) already
@@ -185,12 +225,19 @@ bridge.on('voice_state', (ev: VoiceStateEvent) => {
 
 bridge.on('connected', () => {
   dinfo('Plugin', 'bridge connected');
+  setUsageBridgeConnected(true);
+  // Request fresh usage data immediately on connect (covers sleep/wake recovery)
+  bridge.send({ type: 'query_usage' });
 });
 
 bridge.on('disconnected', () => {
   dinfo('Plugin', 'bridge disconnected');
+  setUsageBridgeConnected(false);
   currentState = State.DISCONNECTED;
   currentOptions = [];
+  currentQuestion = undefined;
+  currentNavigable = false;
+  currentCursorIndex = 0;
   broadcastStateUpdate();
 });
 
@@ -208,7 +255,7 @@ function broadcastStateUpdate(): void {
     expandedMode = false;
   }
 
-  dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length} expanded=${expandedMode}`);
+  dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length} expanded=${expandedMode} takeover=${isEncoderTakeoverActive()}`);
 
   if (expandedMode && currentOptions.length > 4) {
     // Expanded mode: all 7 keypad slots show options
@@ -237,10 +284,40 @@ function broadcastStateUpdate(): void {
     }
   }
 
-  // Encoder actions (always)
-  updateOptionDialState(currentState, currentOptions);
-  updateVoiceDialState(currentState);
-  updateCommandDialState(currentState);
+  // Encoder actions — manage takeover lifecycle
+  const shouldTakeover = isInteractiveState(currentState) && currentOptions.length > 0;
+
+  if (shouldTakeover && !isEncoderTakeoverActive()) {
+    // Enter takeover, then update option dial with full context
+    void enterEncoderTakeover().then(() => {
+      updateOptionDialState(
+        currentState, currentOptions, currentQuestion, currentTool,
+        currentNavigable, currentCursorIndex,
+      );
+    });
+  } else if (!shouldTakeover && isEncoderTakeoverActive()) {
+    // Exit takeover, then restore all dials
+    void exitEncoderTakeover().then(() => {
+      updateVoiceDialState(currentState);
+      updateCommandDialState(currentState);
+      updateContextDialState(currentState);
+      updateUtilityDialState(currentState);
+    });
+    updateOptionDialState(currentState, currentOptions);
+  } else if (shouldTakeover) {
+    // Already in takeover — just refresh
+    updateOptionDialState(
+      currentState, currentOptions, currentQuestion, currentTool,
+      currentNavigable, currentCursorIndex,
+    );
+  } else {
+    // Not in takeover, not entering — normal updates
+    updateOptionDialState(currentState, currentOptions);
+    updateVoiceDialState(currentState);
+    updateCommandDialState(currentState);
+    updateContextDialState(currentState);
+    updateUtilityDialState(currentState);
+  }
 }
 
 // ---- Register actions ----
@@ -252,6 +329,8 @@ streamDeck.actions.registerAction(new UsageButtonAction());
 streamDeck.actions.registerAction(new OptionDialAction());
 streamDeck.actions.registerAction(new VoiceDialAction());
 streamDeck.actions.registerAction(new CommandDialAction());
+streamDeck.actions.registerAction(new ContextDialAction());
+streamDeck.actions.registerAction(new UtilityDialAction());
 
 // ---- Connect ----
 streamDeck.connect().then(() => {

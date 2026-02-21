@@ -4,6 +4,7 @@ export interface ButtonConfig {
   title: string;
   subtitle?: string;
   badge?: string;
+  slotNumber?: number;
   color: string;
   textColor: string;
   enabled: boolean;
@@ -24,12 +25,12 @@ const DIM: ButtonConfig = {
   enabled: false,
 };
 
-interface ProcessedLabel {
+export interface ProcessedLabel {
   main: string;
   sub?: string;
 }
 
-function processLabel(raw: string): ProcessedLabel {
+export function processLabel(raw: string): ProcessedLabel {
   // Split on multi-space boundaries (TUI columns separated by 2+ spaces)
   const segments = raw.split(/\s{2,}/).map(s => s.trim()).filter(Boolean);
   if (segments.length >= 2) {
@@ -60,7 +61,7 @@ function truncateLabel(label: string): string {
 }
 
 /** Determine button colors based on shortcut or label semantics */
-function colorForOption(opt: PromptOption): { color: string; textColor: string } {
+export function colorForOption(opt: PromptOption): { color: string; textColor: string } {
   const s = opt.shortcut?.toLowerCase() ?? '';
   const lower = opt.label.toLowerCase();
 

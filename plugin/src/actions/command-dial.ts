@@ -9,6 +9,9 @@ import streamDeck, {
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
+import { isEncoderTakeoverActive } from '../encoder-takeover.js';
+import { handleTakeoverPush, handleTakeoverRotate } from './option-dial.js';
+import { encoderRegistry } from '../encoder-registry.js';
 import { dlog } from '../log.js';
 
 import type { JsonValue } from '@elgato/utils';
@@ -35,8 +38,9 @@ export function updateCommandDialState(state: State): void {
 }
 
 function refreshCommandDials(): void {
+  if (isEncoderTakeoverActive()) return;
   const feedback = getCommandFeedback();
-  for (const id of CommandDialAction.actionIds) {
+  for (const id of encoderRegistry.commandIds) {
     const dial = streamDeck.actions.getActionById(id) as any;
     if (dial) {
       void dial.setFeedback(feedback).catch(() => {});
@@ -60,11 +64,11 @@ function getCommandFeedback(): Record<string, unknown> {
 
 @action({ UUID: 'bound.serendipity.agentdeck.command-dial' })
 export class CommandDialAction extends SingletonAction {
-  static actionIds: string[] = [];
+  static get actionIds(): string[] { return encoderRegistry.commandIds; }
 
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
-    if (!CommandDialAction.actionIds.includes(ev.action.id)) {
-      CommandDialAction.actionIds.push(ev.action.id);
+    if (!encoderRegistry.commandIds.includes(ev.action.id)) {
+      encoderRegistry.commandIds.push(ev.action.id);
     }
     // Load saved settings; persist defaults if empty so PI shows actual values
     const settings = (ev.payload?.settings ?? {}) as CommandDialSettings;
@@ -95,6 +99,7 @@ export class CommandDialAction extends SingletonAction {
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
+    if (isEncoderTakeoverActive()) { handleTakeoverRotate(ev.payload.ticks); return; }
     if (ev.payload.ticks > 0) {
       selectedIndex = (selectedIndex + 1) % commands.length;
     } else {
@@ -105,6 +110,7 @@ export class CommandDialAction extends SingletonAction {
   }
 
   override async onDialDown(_ev: DialDownEvent): Promise<void> {
+    if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
     if (currentState !== State.IDLE) return;
     const cmd = commands[selectedIndex];
     dlog('CmdDial', `push: execute "${cmd}"`);
@@ -112,9 +118,9 @@ export class CommandDialAction extends SingletonAction {
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {
-    const idx = CommandDialAction.actionIds.indexOf(ev.action.id);
+    const idx = encoderRegistry.commandIds.indexOf(ev.action.id);
     if (idx !== -1) {
-      CommandDialAction.actionIds.splice(idx, 1);
+      encoderRegistry.commandIds.splice(idx, 1);
     }
   }
 }

@@ -17,6 +17,9 @@ export interface StateUpdateEvent {
   billingType?: BillingType;
   options?: PromptOption[];
   promptType?: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review';
+  question?: string;
+  navigable?: boolean;
+  cursorIndex?: number;
 }
 
 export interface PromptOptionsEvent {
@@ -89,6 +92,11 @@ export interface SelectOptionCommand {
   index: number; // 0-based option index
 }
 
+export interface NavigateOptionCommand {
+  type: 'navigate_option';
+  direction: 'up' | 'down';
+}
+
 export interface SendPromptCommand {
   type: 'send_prompt';
   text: string;
@@ -119,6 +127,7 @@ export interface QueryUsageCommand {
 export type PluginCommand =
   | ResponseCommand
   | SelectOptionCommand
+  | NavigateOptionCommand
   | SendPromptCommand
   | SwitchModeCommand
   | InterruptCommand

@@ -9,6 +9,9 @@ import streamDeck, {
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
+import { isEncoderTakeoverActive } from '../encoder-takeover.js';
+import { handleTakeoverPush, handleTakeoverRotate } from './option-dial.js';
+import { encoderRegistry } from '../encoder-registry.js';
 import { dlog } from '../log.js';
 
 let bridge: BridgeClient;
@@ -75,8 +78,9 @@ function stopPulse(): void {
 }
 
 function refreshVoiceDials(): void {
+  if (isEncoderTakeoverActive()) return;
   const feedback = getVoiceFeedback();
-  for (const id of VoiceDialAction.actionIds) {
+  for (const id of encoderRegistry.voiceIds) {
     const dial = streamDeck.actions.getActionById(id) as any;
     if (dial) {
       void dial.setFeedback(feedback).catch(() => {});
@@ -146,16 +150,17 @@ function truncateVoice(s: string, max: number): string {
 
 @action({ UUID: 'bound.serendipity.agentdeck.voice-dial' })
 export class VoiceDialAction extends SingletonAction {
-  static actionIds: string[] = [];
+  static get actionIds(): string[] { return encoderRegistry.voiceIds; }
 
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
-    if (!VoiceDialAction.actionIds.includes(ev.action.id)) {
-      VoiceDialAction.actionIds.push(ev.action.id);
+    if (!encoderRegistry.voiceIds.includes(ev.action.id)) {
+      encoderRegistry.voiceIds.push(ev.action.id);
     }
     await (ev.action as any).setFeedback(getVoiceFeedback());
   }
 
   override async onDialDown(_ev: DialDownEvent): Promise<void> {
+    if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
     if (currentState !== State.IDLE) return;
 
     // Error state: clear error on push
@@ -175,6 +180,7 @@ export class VoiceDialAction extends SingletonAction {
   }
 
   override async onDialUp(_ev: DialUpEvent): Promise<void> {
+    if (isEncoderTakeoverActive()) return;
     if (voiceState !== 'recording') return;
 
     const elapsed = Date.now() - recordStartTime;
@@ -195,6 +201,7 @@ export class VoiceDialAction extends SingletonAction {
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
+    if (isEncoderTakeoverActive()) { handleTakeoverRotate(ev.payload.ticks); return; }
     // Scroll through last transcription text
     if (voiceState === 'idle' && lastTranscription && currentState === State.IDLE) {
       if (ev.payload.ticks > 0) {
@@ -208,9 +215,9 @@ export class VoiceDialAction extends SingletonAction {
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {
-    const idx = VoiceDialAction.actionIds.indexOf(ev.action.id);
+    const idx = encoderRegistry.voiceIds.indexOf(ev.action.id);
     if (idx !== -1) {
-      VoiceDialAction.actionIds.splice(idx, 1);
+      encoderRegistry.voiceIds.splice(idx, 1);
     }
   }
 }

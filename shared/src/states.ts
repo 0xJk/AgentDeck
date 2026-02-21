@@ -42,6 +42,10 @@ export const transitions: StateTransition[] = [
   { from: State.AWAITING_PERMISSION, to: State.PROCESSING, trigger: 'user_response', source: 'user' },
   { from: State.AWAITING_OPTION, to: State.PROCESSING, trigger: 'user_selection', source: 'user' },
   { from: State.AWAITING_DIFF, to: State.PROCESSING, trigger: 'user_response', source: 'user' },
+  // Recovery: spinner_start from awaiting states (user responded via keyboard, not Stream Deck)
+  { from: State.AWAITING_PERMISSION, to: State.PROCESSING, trigger: 'spinner_start', source: 'pty' },
+  { from: State.AWAITING_OPTION, to: State.PROCESSING, trigger: 'spinner_start', source: 'pty' },
+  { from: State.AWAITING_DIFF, to: State.PROCESSING, trigger: 'spinner_start', source: 'pty' },
   { from: State.PROCESSING, to: State.IDLE, trigger: 'stuck_timeout', source: 'internal' },
   { from: State.AWAITING_PERMISSION, to: State.IDLE, trigger: 'stuck_timeout', source: 'internal' },
   { from: State.AWAITING_OPTION, to: State.IDLE, trigger: 'stuck_timeout', source: 'internal' },
@@ -65,6 +69,8 @@ export interface StateSnapshot {
   toolProgress: string | null;
   options: PromptOption[];
   question: string | null;
+  navigable: boolean;
+  cursorIndex: number;
   projectName: string | null;
   modelName: string | null;
   billingType: import('./protocol.js').BillingType;

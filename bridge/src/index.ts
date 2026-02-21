@@ -159,6 +159,7 @@ async function startBridge(port: number, command: string): Promise<void> {
 
   // API usage data (fetched from Anthropic, not from PTY)
   let cachedApiUsage: ApiUsageData | null = null;
+  let lastApiFetchTime = 0;
 
   // Mode switch debounce
   let lastModeSwitchTime = 0;
@@ -257,6 +258,9 @@ async function startBridge(port: number, command: string): Promise<void> {
       billingType: snapshot.billingType,
       options: snapshot.options.length > 0 ? snapshot.options : undefined,
       promptType,
+      question: snapshot.question ?? undefined,
+      navigable: snapshot.navigable || undefined,
+      cursorIndex: snapshot.navigable ? snapshot.cursorIndex : undefined,
     };
     wsServer.broadcast(stateEvent);
 
@@ -284,11 +288,44 @@ async function startBridge(port: number, command: string): Promise<void> {
         stateMachine.handleUserAction('respond');
         break;
 
-      case 'select_option':
-        debug('sdc', `select_option: idx=${cmd.index}`);
-        ptyManager.write(String(cmd.index + 1) + '\n');
+      case 'select_option': {
+        const snapshot = stateMachine.getSnapshot();
+        debug('sdc', `select_option: idx=${cmd.index} navigable=${snapshot.navigable} cursor=${snapshot.cursorIndex}`);
+        if (snapshot.navigable) {
+          // Arrow-key mode: navigate to desired option then press Enter
+          const delta = cmd.index - snapshot.cursorIndex;
+          if (delta !== 0) {
+            const arrow = delta > 0 ? '\x1b[B' : '\x1b[A';
+            const steps = Math.abs(delta);
+            debug('sdc', `select_option: navigating ${steps} steps ${delta > 0 ? 'down' : 'up'}`);
+            ptyManager.write(arrow.repeat(steps));
+          }
+          // Brief delay for PTY to process arrow keys, then confirm with Enter
+          setTimeout(() => {
+            ptyManager.write('\n');
+          }, 50);
+        } else {
+          // Number input mode: type the 1-based index
+          ptyManager.write(String(cmd.index + 1) + '\n');
+        }
         stateMachine.handleUserAction('select_option');
         break;
+      }
+
+      case 'navigate_option': {
+        const total = stateMachine.getOptionsCount();
+        const cur = stateMachine.getCursorIndex();
+        const newIdx = total > 0
+          ? (cmd.direction === 'up'
+              ? (cur - 1 + total) % total
+              : (cur + 1) % total)
+          : cur;
+        stateMachine.updateCursorIndex(newIdx);
+        debug('sdc', `navigate_option: ${cmd.direction} cursor=${cur}->${newIdx}`);
+        ptyManager.write(cmd.direction === 'up' ? '\x1b[A' : '\x1b[B');
+        // Don't call handleUserAction — cursor movement is not a selection
+        break;
+      }
 
       case 'send_prompt': {
         let text = cmd.text;
@@ -339,22 +376,19 @@ async function startBridge(port: number, command: string): Promise<void> {
         break;
 
       case 'query_usage': {
-        // Fetch usage from Anthropic API (no PTY echo)
-        // Skip OAuth fetch for API billing — no subscription data available
-        const snap = stateMachine.getSnapshot();
-        if (snap.billingType === 'api') {
-          debug('sdc', 'Skipping API usage fetch (api billing)');
-          wsServer.broadcast(buildUsageEvent(snap, cachedApiUsage));
-        } else {
-          debug('sdc', 'Fetching usage from API');
-          fetchUsageFromApi().then((apiUsage) => {
-            if (apiUsage) {
-              cachedApiUsage = apiUsage;
+        // Fetch fresh usage from Anthropic API (no PTY echo)
+        debug('sdc', 'Fetching usage from API (on demand)');
+        fetchUsageFromApi().then((apiUsage) => {
+          if (apiUsage) {
+            cachedApiUsage = apiUsage;
+            lastApiFetchTime = Date.now();
+            if (apiUsage.inferredBillingType) {
+              stateMachine.inferBillingType(apiUsage.inferredBillingType);
             }
-            const snapshot = stateMachine.getSnapshot();
-            wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage));
-          });
-        }
+          }
+          const snapshot = stateMachine.getSnapshot();
+          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage));
+        });
         break;
       }
     }
@@ -386,6 +420,9 @@ async function startBridge(port: number, command: string): Promise<void> {
       billingType: snapshot.billingType,
       options: snapshot.options.length > 0 ? snapshot.options : undefined,
       promptType: initPromptType,
+      question: snapshot.question ?? undefined,
+      navigable: snapshot.navigable || undefined,
+      cursorIndex: snapshot.navigable ? snapshot.cursorIndex : undefined,
     };
     wsServer.sendTo(ws, stateEvent);
 
@@ -407,12 +444,19 @@ async function startBridge(port: number, command: string): Promise<void> {
     };
     wsServer.sendTo(ws, connectEvt);
 
-    // Fetch API usage on first client connect (silent — no PTY echo)
-    // Skip for API billing — no subscription data available
-    if (!cachedApiUsage && snapshot.billingType !== 'api') {
+    // Fetch API usage on client connect:
+    // - Always fetch if no cache yet
+    // - Re-fetch if cache is stale (>5 min, e.g. after sleep/wake)
+    const cacheAge = Date.now() - lastApiFetchTime;
+    const cacheStale = lastApiFetchTime > 0 && cacheAge > 5 * 60 * 1000;
+    if (!cachedApiUsage || cacheStale) {
       fetchUsageFromApi().then((apiUsage) => {
         if (apiUsage) {
           cachedApiUsage = apiUsage;
+          lastApiFetchTime = Date.now();
+          if (apiUsage.inferredBillingType) {
+            stateMachine.inferBillingType(apiUsage.inferredBillingType);
+          }
           const snap2 = stateMachine.getSnapshot();
           wsServer.broadcast(buildUsageEvent(snap2, cachedApiUsage));
         }
@@ -485,12 +529,18 @@ async function startBridge(port: number, command: string): Promise<void> {
   }, 5000);
 
   // 14b. Periodic API usage refresh (silent — no PTY echo)
-  // Skipped for API billing — no subscription data available
   const apiUsageInterval = setInterval(() => {
-    if (wsServer.getClientCount() > 0 && stateMachine.getSnapshot().billingType !== 'api') {
+    if (wsServer.getClientCount() > 0) {
       fetchUsageFromApi().then((apiUsage) => {
         if (apiUsage) {
           cachedApiUsage = apiUsage;
+          lastApiFetchTime = Date.now();
+          if (apiUsage.inferredBillingType) {
+            stateMachine.inferBillingType(apiUsage.inferredBillingType);
+          }
+          // Broadcast updated usage so clients see fresh rate-limit data
+          const snapshot = stateMachine.getSnapshot();
+          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage));
         }
       });
     }

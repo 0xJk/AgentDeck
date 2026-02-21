@@ -83,6 +83,33 @@ const svgs = {
     <rect x="22" y="8" width="6" height="28" rx="1" fill="white" opacity="0.85"/>
     <rect x="30" y="18" width="6" height="18" rx="1" fill="white"/>
   </svg>`,
+
+  // Command — slash in a rounded box (quick commands)
+  command: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+    <rect x="4" y="6" width="32" height="28" rx="4" fill="none" stroke="white" stroke-width="2.5"/>
+    <text x="20" y="27" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="white">/</text>
+  </svg>`,
+
+  // Context — eye icon (display/observe)
+  context: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+    <path d="M4 20s6-12 16-12 16 12 16 12-6 12-16 12S4 20 4 20z" fill="none" stroke="white" stroke-width="2.5" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="5" fill="none" stroke="white" stroke-width="2.5"/>
+    <circle cx="20" cy="20" r="2" fill="white"/>
+  </svg>`,
+
+  // Utility — gear icon (system utilities)
+  utility: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+    <circle cx="20" cy="20" r="7" fill="none" stroke="white" stroke-width="2.5"/>
+    <circle cx="20" cy="20" r="3" fill="white"/>
+    <line x1="20" y1="3" x2="20" y2="9" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="20" y1="31" x2="20" y2="37" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="3" y1="20" x2="9" y2="20" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="31" y1="20" x2="37" y2="20" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="8" y1="8" x2="12.5" y2="12.5" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="27.5" y1="27.5" x2="32" y2="32" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="32" y1="8" x2="27.5" y2="12.5" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="12.5" y1="27.5" x2="8" y2="32" stroke="white" stroke-width="3" stroke-linecap="round"/>
+  </svg>`,
 };
 
 // Size specs: plugin/category are 28/56, action icons are 20/40
@@ -97,6 +124,9 @@ const sizeMap = {
   voice:    [20, 40],
   session:  [20, 40],
   usage:    [20, 40],
+  command:  [20, 40],
+  context:  [20, 40],
+  utility:  [20, 40],
 };
 
 let count = 0;

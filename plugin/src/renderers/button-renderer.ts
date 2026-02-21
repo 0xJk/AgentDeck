@@ -30,7 +30,7 @@ export function renderButton(config: ButtonConfig): string {
       y += subFontSize + 2;
     }
 
-    return svgFrame(config.color, elements.join(''));
+    return svgFrame(config.color, elements.join(''), config.slotNumber);
   }
 
   // Single-text layout with adaptive font size
@@ -47,14 +47,18 @@ export function renderButton(config: ButtonConfig): string {
     )
     .join('');
 
-  return svgFrame(config.color, textElements);
+  return svgFrame(config.color, textElements, config.slotNumber);
 }
 
-function svgFrame(bgColor: string, innerElements: string): string {
+function svgFrame(bgColor: string, innerElements: string, slotNumber?: number): string {
+  const slotLabel = slotNumber != null
+    ? `<text x="${SIZE - 10}" y="18" text-anchor="end" font-family="Arial,sans-serif" font-size="13" fill="#ffffff" opacity="0.3">${slotNumber}</text>`
+    : '';
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
     `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="${bgColor}"/>`,
     innerElements,
+    slotLabel,
     `</svg>`,
   ].join('');
 }

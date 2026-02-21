@@ -13,6 +13,8 @@ export interface ApiUsageData {
   extraUsageMonthlyLimit: number | null;
   extraUsageUsedCredits: number | null;
   extraUsageUtilization: number | null;
+  /** Inferred from API response: subscription if rate-limit fields present, api if 401/no fields */
+  inferredBillingType: 'subscription' | 'api' | null;
 }
 
 function getOAuthToken(): string | null {
@@ -60,6 +62,7 @@ export async function fetchUsageFromApi(): Promise<ApiUsageData | null> {
     }
 
     const extraUsage = data.extra_usage;
+    const hasRateLimitData = data.five_hour != null || data.seven_day != null;
     const result: ApiUsageData = {
       fiveHourPercent: data.five_hour?.utilization ?? null,
       fiveHourResetsAt: data.five_hour?.resets_at ?? null,
@@ -69,6 +72,7 @@ export async function fetchUsageFromApi(): Promise<ApiUsageData | null> {
       extraUsageMonthlyLimit: extraUsage?.monthly_limit ?? null,
       extraUsageUsedCredits: extraUsage?.used_credits ?? null,
       extraUsageUtilization: extraUsage?.utilization ?? null,
+      inferredBillingType: hasRateLimitData ? 'subscription' : 'api',
     };
 
     debug('UsageAPI', `5h: ${result.fiveHourPercent}%, 7d: ${result.sevenDayPercent}%, extra: ${result.extraUsageEnabled ? 'enabled' : 'disabled'}`);

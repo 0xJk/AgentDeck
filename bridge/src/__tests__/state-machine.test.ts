@@ -396,4 +396,67 @@ describe('StateMachine', () => {
       expect(snapshots[snapshots.length - 1].billingType).toBe('api');
     });
   });
+
+  // === Spinner recovery from AWAITING states ===
+
+  describe('spinner_start recovery from awaiting states', () => {
+    it('spinner_start transitions from AWAITING_OPTION to PROCESSING', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', { options: [{ index: 0, label: 'Default' }] });
+      expect(sm.getState()).toBe(State.AWAITING_OPTION);
+
+      sm.handleParserEvent('spinner_start');
+      expect(sm.getState()).toBe(State.PROCESSING);
+    });
+
+    it('spinner_start transitions from AWAITING_PERMISSION to PROCESSING', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('permission_prompt', { options: [{ index: 0, label: 'Yes', shortcut: 'y' }] });
+      expect(sm.getState()).toBe(State.AWAITING_PERMISSION);
+
+      sm.handleParserEvent('spinner_start');
+      expect(sm.getState()).toBe(State.PROCESSING);
+    });
+
+    it('spinner_start transitions from AWAITING_DIFF to PROCESSING', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('diff_prompt', { options: [{ index: 0, label: 'Apply', shortcut: 'a' }] });
+      expect(sm.getState()).toBe(State.AWAITING_DIFF);
+
+      sm.handleParserEvent('spinner_start');
+      expect(sm.getState()).toBe(State.PROCESSING);
+    });
+
+    it('clears options and navigable state on spinner_start from AWAITING_OPTION', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'Default' }],
+        navigable: true,
+        cursorIndex: 1,
+      });
+      expect(sm.getSnapshot().options).toHaveLength(1);
+      expect(sm.getSnapshot().navigable).toBe(true);
+
+      sm.handleParserEvent('spinner_start');
+      expect(sm.getState()).toBe(State.PROCESSING);
+      expect(sm.getSnapshot().options).toHaveLength(0);
+      expect(sm.getSnapshot().navigable).toBe(false);
+      expect(sm.getSnapshot().cursorIndex).toBe(0);
+    });
+
+    it('cursor index tracking via updateCursorIndex', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }, { index: 2, label: 'C' }],
+        navigable: true,
+        cursorIndex: 0,
+      });
+
+      sm.updateCursorIndex(2);
+      expect(sm.getCursorIndex()).toBe(2);
+
+      sm.updateCursorIndex(1);
+      expect(sm.getCursorIndex()).toBe(1);
+    });
+  });
 });

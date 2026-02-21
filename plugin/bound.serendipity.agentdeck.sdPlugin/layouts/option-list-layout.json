@@ -1,0 +1,52 @@
+{
+  "id": "option-list-layout",
+  "items": [
+    {
+      "key": "row0",
+      "type": "text",
+      "rect": [2, 4, 196, 16],
+      "font": { "size": 12 },
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "row1",
+      "type": "text",
+      "rect": [2, 20, 196, 16],
+      "font": { "size": 12 },
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "row2",
+      "type": "text",
+      "rect": [2, 36, 196, 16],
+      "font": { "size": 12 },
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "row3",
+      "type": "text",
+      "rect": [2, 52, 196, 16],
+      "font": { "size": 12 },
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "row4",
+      "type": "text",
+      "rect": [2, 68, 196, 16],
+      "font": { "size": 12 },
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "accent-bar",
+      "type": "bar",
+      "rect": [0, 92, 200, 6],
+      "bar_fill_c": "#2563eb",
+      "bar_bg_c": "#1e293b"
+    }
+  ]
+}

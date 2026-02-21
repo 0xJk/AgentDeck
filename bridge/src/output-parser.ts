@@ -12,13 +12,13 @@ const YES_NO_ALWAYS = /Yes,\s*allow once|No,\s*deny|Always allow/i;
 const PERMISSION_YN = /\(Y\)es.*\/\(N\)o|\(y\/n\)/i;
 const DIFF_PROMPT = /\(V\)iew diff.*\(A\)pply.*\(D\)eny|\(a\)pply.*\(d\)eny.*\(v\)iew/i;
 // ANSI stripping can remove spaces (e.g. "❯3.Haiku" instead of "❯ 3. Haiku")
-const OPTION_NUMBERED = /^\s*❯?\s*\d+[.)]\s*.+/m;
+const OPTION_NUMBERED = /^\s*❯?\s*\d{1,2}[.)]\s*.+/m;
 const OPTION_BULLET = /^\s*[►▸●○]\s+.+/m;
 
 // Claude Code uses ❯ as its prompt char. May have \u00A0 (nbsp) or spaces around it.
 // v2.1.49+: autocomplete suggestions appear on the same line (e.g. "❯ Try "refactor..."")
 // so we can't require end-of-line. Just check for ❯ at start of line.
-const IDLE_PROMPT = /^[❯>][\s\u00A0]/m;
+const IDLE_PROMPT = /^[❯>][ \t\u00A0]/m;
 
 // Status line: "✳Finagling… (1m 0s · ↓ 1.9k tokens)"
 const STATUS_LINE = /(\d+m\s*\d+s)\s*·\s*↓\s*([\d.]+)k?\s*tokens/;
@@ -31,7 +31,7 @@ const TOOL_ACTION = /⏺\s+(\w+)\(/;
 
 // User prompt echo: "❯ some text" — text the user typed
 // Require at least one word character to avoid matching box-drawing lines (─────)
-const USER_PROMPT = /^❯\s+(\S.*\w.*\S|\w.*)$/m;
+const USER_PROMPT = /^❯[ \t]+(\S.*\w.*\S|\w.*)$/m;
 
 // /usage command output patterns
 const USAGE_PERCENT = /(\d+)%\s*used/;
@@ -54,12 +54,14 @@ const MODEL_INFO = /((?:Opus|Sonnet|Haiku)\s*[\d.]+|Claude\s*[\d.]+\s*(?:Opus|So
 
 const SPINNER_DEBOUNCE_MS = 2000;
 const IDLE_DEBOUNCE_MS = 300;
+const OPTION_DEBOUNCE_MS = 150;
 
 export class OutputParser extends EventEmitter {
   private buffer = '';
   private spinnerActive = false;
   private spinnerTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private optionTimer: ReturnType<typeof setTimeout> | null = null;
   private projectName: string | null = null;
   private modelName: string | null = null;
   // Don't trigger spinner until we've seen the first idle prompt
@@ -155,8 +157,9 @@ export class OutputParser extends EventEmitter {
             this.emit('spinner_stop');
           }
         }, SPINNER_DEBOUNCE_MS);
-        // Cancel idle timer — we're processing now
+        // Cancel idle & option timers — we're processing now
         this.resetIdleTimer();
+        this.resetOptionTimer();
         return;
       }
     }
@@ -168,6 +171,7 @@ export class OutputParser extends EventEmitter {
     if (DIFF_PROMPT.test(chunk)) {
       debug('Parser', 'EMIT diff_prompt');
       this.resetIdleTimer();
+      this.resetOptionTimer();
       const parsed = this.parseDiffOptions(chunk);
       const options = parsed.length > 0 ? parsed : [
         { index: 0, label: 'View diff', shortcut: 'v' },
@@ -182,6 +186,7 @@ export class OutputParser extends EventEmitter {
     if (YES_NO_ALWAYS.test(chunk)) {
       debug('Parser', 'EMIT permission_prompt (yes_no_always)');
       this.resetIdleTimer();
+      this.resetOptionTimer();
       const parsed = this.parsePermissionOptions(chunk);
       const options = parsed.length > 0 ? parsed : [
         { index: 0, label: 'Yes, allow once', shortcut: 'y' },
@@ -196,6 +201,7 @@ export class OutputParser extends EventEmitter {
     if (PERMISSION_YN.test(chunk)) {
       debug('Parser', 'EMIT permission_prompt (yes_no)');
       this.resetIdleTimer();
+      this.resetOptionTimer();
       this.emit('permission_prompt', {
         options: [
           { index: 0, label: 'Yes', shortcut: 'y' },
@@ -206,17 +212,34 @@ export class OutputParser extends EventEmitter {
       return;
     }
 
-    // --- Option list ---
+    // --- Option list (debounced — PTY chunks may split option data) ---
     if (OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk)) {
-      // Use buffer (already includes chunk) to capture all option lines
-      // even if they arrived across multiple PTY chunks
-      const options = this.parseOptions(this.buffer.slice(-1000));
-      if (options.length > 0) {
-        debug('Parser', `EMIT option_prompt (${options.length} options)`);
-        this.resetIdleTimer();
-        this.emit('option_prompt', { options });
-        return;
-      }
+      debug('Parser', 'option pattern detected — starting/resetting debounce');
+      this.resetIdleTimer();
+      this.resetOptionTimer();
+      this.optionTimer = setTimeout(() => {
+        this.optionTimer = null;
+        const parsed = this.parseOptions(this.buffer.slice(-1000));
+        if (parsed.options.length > 0) {
+          // Check if this looks like a permission prompt (Yes/No style from tool approval)
+          if (this.looksLikePermission(parsed.options)) {
+            const options = parsed.options.map(opt => ({
+              ...opt,
+              shortcut: opt.shortcut || this.inferShortcut(opt.label),
+            }));
+            debug('Parser', `EMIT permission_prompt (${options.length} options, reclassified from numbered, debounced)`);
+            this.emit('permission_prompt', { options, promptType: 'yes_no_always' });
+          } else {
+            debug('Parser', `EMIT option_prompt (${parsed.options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, debounced)`);
+            this.emit('option_prompt', {
+              options: parsed.options,
+              navigable: parsed.navigable,
+              cursorIndex: parsed.cursorIndex,
+            });
+          }
+        }
+      }, OPTION_DEBOUNCE_MS);
+      return;
     }
 
     // --- Idle prompt ---
@@ -234,6 +257,7 @@ export class OutputParser extends EventEmitter {
       }
       debug('Parser', 'idle prompt detected');
       this.resetIdleTimer();
+      this.resetOptionTimer();
       this.idleTimer = setTimeout(() => {
         debug('Parser', 'EMIT idle');
         this.emit('idle');
@@ -307,7 +331,7 @@ export class OutputParser extends EventEmitter {
         !/esc\s*to\s*interrupt/i.test(text) &&      // "esc to interrupt"
         !/ctrl\+[a-z]\s+to\b/i.test(text) &&       // "ctrl+g to edit in VS Code"
         !/^⏵|^⏸|^⏺/.test(text) &&                 // UI indicator chars
-        !/^Try\s+[""].+[""]/i.test(text) &&          // autocomplete suggestion "Try "refactor...""
+        !/^Try\s+["\u201C\u201D].+["\u201C\u201D]/i.test(text) && // autocomplete suggestion "Try \u201Crefactor...\u201D"
         !/^\d+[.)]\s/.test(text) &&                  // numbered option lines ("3. Haiku ✔ ...")
         !/Enter\s*to\s*confirm/i.test(text) &&       // "Enter to confirm · Esc to exit"
         !/Esc\s*to\s*exit/i.test(text)               // option selector hint
@@ -443,25 +467,39 @@ export class OutputParser extends EventEmitter {
     return lower.charAt(0);
   }
 
-  private parseOptions(text: string): PromptOption[] {
+  /** Check if numbered options look like a permission prompt (Yes/No/Always style) */
+  private looksLikePermission(options: PromptOption[]): boolean {
+    const labels = options.map(o => o.label.toLowerCase());
+    const hasYes = labels.some(l => /^yes\b/.test(l));
+    const hasNo = labels.some(l => /^no\b/.test(l));
+    return hasYes && hasNo;
+  }
+
+  private parseOptions(text: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number } {
     // ANSI cursor movement removal can leave numbered options concatenated without newlines.
     // Insert a newline before number patterns that aren't preceded by one.
     // (?!\d) prevents matching version numbers like "4.6" in "Opus 4.6"
-    const normalized = text.replace(/([^\n])((?:\s*)❯?\s*\d+[.)](?!\d))/g, '$1\n$2');
+    const normalized = text.replace(/([^\n\d.])((?:\s*)❯?\s*\d{1,2}[.)](?!\d))/g, '$1\n$2');
+
+    let navigable = false;
+    let cursorIndex = 0;
 
     // Use a Map keyed by index so later (newer) lines overwrite earlier (stale) ones
     const byIndex = new Map<number, PromptOption>();
     for (const line of normalized.split('\n')) {
-      const nm = line.match(/^\s*❯?\s*(\d+)[.)]\s*(.+)/);
+      const hasCursor = /^\s*❯/.test(line);
+      const nm = line.match(/^\s*❯?\s*(\d{1,2})[.)]\s*(.+)/);
       if (nm) {
         const idx = parseInt(nm[1], 10) - 1;
+        if (hasCursor) {
+          navigable = true;
+          cursorIndex = idx;
+        }
         const raw = nm[2].trim();
         const recommended = /\(recommended\)/i.test(raw);
         const selected = /✔/.test(raw);
-        const label = raw
-          .replace(/\s*\(recommended\)/i, '')
-          .replace(/\s*✔\s*/, ' ')
-          .trim();
+        const label = this.cleanOptionLabel(raw);
+        debug('Parser', `option[${idx}]: "${label}"${recommended ? ' ★' : ''}${selected ? ' ✓' : ''}${hasCursor ? ' ❯' : ''}`);
         const opt: PromptOption = { index: idx, label };
         if (recommended) opt.recommended = true;
         if (selected) opt.selected = true;
@@ -474,7 +512,67 @@ export class OutputParser extends EventEmitter {
         byIndex.set(idx, { index: idx, label: bm[2].trim() });
       }
     }
-    return Array.from(byIndex.values());
+    return { options: Array.from(byIndex.values()), navigable, cursorIndex };
+  }
+
+  /**
+   * Clean an option label from TUI text that may have spaces stripped by ANSI cursor positioning.
+   * Uses · (U+00B7 middle dot) as a reliable delimiter — it survives ANSI stripping.
+   */
+  private cleanOptionLabel(raw: string): string {
+    let text = raw
+      .replace(/\s*\(recommended\)/i, '')
+      .replace(/✔/g, ' ')
+      .trim();
+
+    // · (middle dot) separates identity from description in Claude Code TUI
+    const dotIdx = text.indexOf('\u00B7');
+    if (dotIdx > 0) {
+      const identity = text.slice(0, dotIdx).trim();
+
+      // Extract version number (e.g. "4.6")
+      const versionMatch = identity.match(/(\d+\.\d+)/);
+      const version = versionMatch ? versionMatch[1] : null;
+      let clean = identity.replace(/\d+\.\d+\S*/g, '').trim();
+
+      // Split words: use spaces if present, else CamelCase boundaries
+      let parts: string[];
+      if (/\s/.test(clean)) {
+        parts = clean.split(/\s+/).filter(Boolean);
+      } else if (clean.length > 1) {
+        parts = clean.split(/(?<=[a-z])(?=[A-Z])/).filter(Boolean);
+      } else {
+        parts = [clean];
+      }
+
+      // Deduplicate exact and fuzzy matches (e.g. "SonnetSonnet" → "Sonnet", "SonnetSonnt" → "Sonnet")
+      const isFuzzyMatch = (a: string, b: string): boolean => {
+        const al = a.toLowerCase(), bl = b.toLowerCase();
+        if (al === bl) return true;
+        const [shorter, longer] = al.length <= bl.length ? [al, bl] : [bl, al];
+        return longer.length - shorter.length <= 2 && longer.startsWith(shorter.slice(0, -1));
+      };
+      const deduped: string[] = [];
+      for (const p of parts) {
+        const matchIdx = deduped.findIndex(existing => isFuzzyMatch(existing, p));
+        if (matchIdx === -1) {
+          deduped.push(p);
+        } else if (p.length > deduped[matchIdx].length) {
+          // Keep the longer/more complete variant
+          deduped[matchIdx] = p;
+        }
+      }
+
+      const name = deduped[0] || clean || identity;
+      const extra = deduped.slice(1);
+      if (version) extra.push(version);
+
+      // Double space separates main from subtitle for processLabel()
+      return extra.length > 0 ? `${name}  ${extra.join(' ')}` : name;
+    }
+
+    // No · — normal text with spaces preserved
+    return text;
   }
 
   private resetSpinnerTimer(): void {
@@ -483,6 +581,10 @@ export class OutputParser extends EventEmitter {
 
   private resetIdleTimer(): void {
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+  }
+
+  private resetOptionTimer(): void {
+    if (this.optionTimer) { clearTimeout(this.optionTimer); this.optionTimer = null; }
   }
 
   getProjectName(): string | null { return this.projectName; }
@@ -497,6 +599,7 @@ export class OutputParser extends EventEmitter {
     this.modelName = null;
     this.resetSpinnerTimer();
     this.resetIdleTimer();
+    this.resetOptionTimer();
     if (this.modeSwitchTimer) {
       clearTimeout(this.modeSwitchTimer);
       this.modeSwitchTimer = null;

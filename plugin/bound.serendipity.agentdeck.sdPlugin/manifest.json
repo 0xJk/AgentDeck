@@ -65,11 +65,7 @@
     {
       "Icon": "static/imgs/option",
       "Name": "Option Selector",
-      "States": [
-        {
-          "Image": "static/imgs/option"
-        }
-      ],
+      "States": [{}],
       "Controllers": ["Encoder"],
       "Encoder": {
         "layout": "$B1",
@@ -82,13 +78,9 @@
       "UUID": "bound.serendipity.agentdeck.option-dial"
     },
     {
-      "Icon": "static/imgs/option",
+      "Icon": "static/imgs/command",
       "Name": "Quick Command",
-      "States": [
-        {
-          "Image": "static/imgs/option"
-        }
-      ],
+      "States": [{}],
       "Controllers": ["Encoder"],
       "Encoder": {
         "layout": "$B1",
@@ -104,11 +96,7 @@
     {
       "Icon": "static/imgs/voice",
       "Name": "Voice Input",
-      "States": [
-        {
-          "Image": "static/imgs/voice"
-        }
-      ],
+      "States": [{}],
       "Controllers": ["Encoder"],
       "Encoder": {
         "layout": "layouts/voice-layout.json",
@@ -119,6 +107,37 @@
         }
       },
       "UUID": "bound.serendipity.agentdeck.voice-dial"
+    },
+    {
+      "Icon": "static/imgs/context",
+      "Name": "Context Display",
+      "States": [{}],
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Rotate": "—",
+          "Push": "—",
+          "Touch": "Show context"
+        }
+      },
+      "UUID": "bound.serendipity.agentdeck.context-dial"
+    },
+    {
+      "Icon": "static/imgs/utility",
+      "Name": "Utility Dial",
+      "States": [{}],
+      "Controllers": ["Encoder"],
+      "Encoder": {
+        "layout": "layouts/utility-layout.json",
+        "TriggerDescription": {
+          "Rotate": "Adjust value",
+          "Push": "Toggle/Action",
+          "Touch": "Switch mode"
+        }
+      },
+      "PropertyInspectorPath": "ui/utility-dial-pi.html",
+      "UUID": "bound.serendipity.agentdeck.utility-dial"
     }
   ],
   "Author": "AgentDeck",
