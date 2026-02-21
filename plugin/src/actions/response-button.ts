@@ -36,8 +36,9 @@ let currentState = State.DISCONNECTED;
 let currentMode = 'default';
 let currentOptions: PromptOption[] = [];
 
-// Simple string[] — same pattern as Mode/Stop/Session buttons
+// Action IDs sorted by physical column position on the Stream Deck
 const actionIds: string[] = [];
+const actionColumns = new Map<string, number>();
 
 export function initResponseButtons(
   b: BridgeClient,
@@ -129,11 +130,16 @@ function applyButtonConfig(actionId: string, config: ButtonConfig): void {
 @action({ UUID: 'bound.serendipity.agentdeck.response-button' })
 export class ResponseButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
+    // Track column coordinate for deterministic ordering
+    const col = !ev.payload.isInMultiAction ? ev.payload.coordinates.column : actionIds.length;
+    actionColumns.set(ev.action.id, col);
     if (!actionIds.includes(ev.action.id)) {
       actionIds.push(ev.action.id);
+      // Sort by physical column so slot 0 = leftmost button
+      actionIds.sort((a, b) => (actionColumns.get(a) ?? 0) - (actionColumns.get(b) ?? 0));
     }
     const slot = actionIds.indexOf(ev.action.id);
-    dlog('RspBut', `onWillAppear: id=${ev.action.id} slot=${slot} total=${actionIds.length}`);
+    dlog('RspBut', `onWillAppear: id=${ev.action.id} col=${col} slot=${slot} total=${actionIds.length}`);
 
     // Persist slot defaults if settings are empty, so PI shows actual values
     const settings = (ev.payload?.settings ?? {}) as ResponseButtonSettings;

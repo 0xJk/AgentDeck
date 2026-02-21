@@ -15,6 +15,8 @@ export interface StateUpdateEvent {
   projectName?: string;
   modelName?: string;
   billingType?: BillingType;
+  options?: PromptOption[];
+  promptType?: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review';
 }
 
 export interface PromptOptionsEvent {

@@ -234,6 +234,18 @@ async function startBridge(port: number, command: string): Promise<void> {
 
   // 6. Wire StateMachine state changes → WsServer broadcast
   stateMachine.on('state_changed', (snapshot: StateSnapshot) => {
+    // Compute promptType if options are present
+    let promptType: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review' | undefined;
+    if (snapshot.options.length > 0) {
+      promptType = 'multi_select';
+      if (snapshot.state === State.AWAITING_PERMISSION) {
+        promptType = snapshot.options.length > 2 ? 'yes_no_always' : 'yes_no';
+      } else if (snapshot.state === State.AWAITING_DIFF) {
+        promptType = 'diff_review';
+      }
+    }
+
+    // Include options atomically in state_update to avoid race conditions
     const stateEvent: BridgeEvent = {
       type: 'state_update',
       state: snapshot.state,
@@ -243,20 +255,16 @@ async function startBridge(port: number, command: string): Promise<void> {
       projectName: snapshot.projectName ?? undefined,
       modelName: snapshot.modelName ?? undefined,
       billingType: snapshot.billingType,
+      options: snapshot.options.length > 0 ? snapshot.options : undefined,
+      promptType,
     };
     wsServer.broadcast(stateEvent);
 
+    // Also send separate prompt_options for backward compatibility
     if (snapshot.options.length > 0) {
-      let promptType: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review' = 'multi_select';
-      if (snapshot.state === State.AWAITING_PERMISSION) {
-        promptType = snapshot.options.length > 2 ? 'yes_no_always' : 'yes_no';
-      } else if (snapshot.state === State.AWAITING_DIFF) {
-        promptType = 'diff_review';
-      }
-
       const promptEvent: BridgeEvent = {
         type: 'prompt_options',
-        promptType,
+        promptType: promptType!,
         question: snapshot.question ?? undefined,
         options: snapshot.options,
       };
@@ -355,6 +363,18 @@ async function startBridge(port: number, command: string): Promise<void> {
   // 8. Send current state to newly connected WebSocket clients
   wsServer.onClientConnect((ws) => {
     const snapshot = stateMachine.getSnapshot();
+
+    // Compute promptType for initial state
+    let initPromptType: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review' | undefined;
+    if (snapshot.options.length > 0) {
+      initPromptType = 'multi_select';
+      if (snapshot.state === State.AWAITING_PERMISSION) {
+        initPromptType = snapshot.options.length > 2 ? 'yes_no_always' : 'yes_no';
+      } else if (snapshot.state === State.AWAITING_DIFF) {
+        initPromptType = 'diff_review';
+      }
+    }
+
     const stateEvent: BridgeEvent = {
       type: 'state_update',
       state: snapshot.state,
@@ -364,20 +384,16 @@ async function startBridge(port: number, command: string): Promise<void> {
       projectName: snapshot.projectName ?? undefined,
       modelName: snapshot.modelName ?? undefined,
       billingType: snapshot.billingType,
+      options: snapshot.options.length > 0 ? snapshot.options : undefined,
+      promptType: initPromptType,
     };
     wsServer.sendTo(ws, stateEvent);
 
-    // Restore prompt options for reconnecting clients (e.g. after session switch)
+    // Also send separate prompt_options for backward compatibility
     if (snapshot.options.length > 0) {
-      let promptType: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review' = 'multi_select';
-      if (snapshot.state === State.AWAITING_PERMISSION) {
-        promptType = snapshot.options.length > 2 ? 'yes_no_always' : 'yes_no';
-      } else if (snapshot.state === State.AWAITING_DIFF) {
-        promptType = 'diff_review';
-      }
       wsServer.sendTo(ws, {
         type: 'prompt_options',
-        promptType,
+        promptType: initPromptType!,
         question: snapshot.question ?? undefined,
         options: snapshot.options,
       });

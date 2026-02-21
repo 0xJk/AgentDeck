@@ -11,6 +11,7 @@
       ],
       "Controllers": ["Keypad"],
       "SupportedInMultiActions": true,
+      "PropertyInspectorPath": "ui/response-button-pi.html",
       "UUID": "bound.serendipity.agentdeck.response-button"
     },
     {
@@ -97,6 +98,7 @@
           "Touch": "Show command"
         }
       },
+      "PropertyInspectorPath": "ui/command-dial-pi.html",
       "UUID": "bound.serendipity.agentdeck.command-dial"
     },
     {

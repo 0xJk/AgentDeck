@@ -30,12 +30,12 @@ interface ProcessedLabel {
 }
 
 function processLabel(raw: string): ProcessedLabel {
-  // " · " separator from parseOptions normalization
-  const parts = raw.split(' · ');
-  if (parts.length >= 2) {
-    return { main: parts[0].trim(), sub: parts.slice(1).join(' · ').trim() };
+  // Split on multi-space boundaries (TUI columns separated by 2+ spaces)
+  const segments = raw.split(/\s{2,}/).map(s => s.trim()).filter(Boolean);
+  if (segments.length >= 2) {
+    return { main: segments[0], sub: segments.slice(1).join(' \u00B7 ') };
   }
-  // Long labels: split at first space
+  // Long single-segment labels: split at first space
   if (raw.length > 12) {
     const firstSpace = raw.indexOf(' ');
     if (firstSpace > 0 && firstSpace < 15) {

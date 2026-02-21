@@ -114,19 +114,32 @@ export class StateMachine extends EventEmitter {
         break;
 
       case 'spinner_stop':
-        // Spinner stopped — if we're PROCESSING, go to IDLE
-        // (idle prompt already confirmed via output-parser before emitting this)
-        if (this.state === State.PROCESSING) {
+        // Spinner stopped — if we're in an active state, go to IDLE
+        if (
+          this.state === State.PROCESSING ||
+          this.state === State.AWAITING_PERMISSION ||
+          this.state === State.AWAITING_OPTION ||
+          this.state === State.AWAITING_DIFF
+        ) {
           this.currentTool = null;
           this.toolProgress = null;
+          this.options = [];
+          this.question = null;
           this.transition(State.IDLE, 'idle_detected', 'pty');
         }
         break;
 
       case 'idle':
-        if (this.state === State.PROCESSING) {
+        if (
+          this.state === State.PROCESSING ||
+          this.state === State.AWAITING_PERMISSION ||
+          this.state === State.AWAITING_OPTION ||
+          this.state === State.AWAITING_DIFF
+        ) {
           this.currentTool = null;
           this.toolProgress = null;
+          this.options = [];
+          this.question = null;
           this.transition(State.IDLE, 'idle_detected', 'pty');
         }
         break;

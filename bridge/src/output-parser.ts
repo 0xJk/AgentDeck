@@ -307,7 +307,10 @@ export class OutputParser extends EventEmitter {
         !/esc\s*to\s*interrupt/i.test(text) &&      // "esc to interrupt"
         !/ctrl\+[a-z]\s+to\b/i.test(text) &&       // "ctrl+g to edit in VS Code"
         !/^⏵|^⏸|^⏺/.test(text) &&                 // UI indicator chars
-        !/^Try\s+[""].+[""]/i.test(text)             // autocomplete suggestion "Try "refactor...""
+        !/^Try\s+[""].+[""]/i.test(text) &&          // autocomplete suggestion "Try "refactor...""
+        !/^\d+[.)]\s/.test(text) &&                  // numbered option lines ("3. Haiku ✔ ...")
+        !/Enter\s*to\s*confirm/i.test(text) &&       // "Enter to confirm · Esc to exit"
+        !/Esc\s*to\s*exit/i.test(text)               // option selector hint
       ) {
         debug('Parser', `user_prompt: "${text.slice(0, 50)}"`);
         this.emit('user_prompt', { text });
@@ -443,7 +446,8 @@ export class OutputParser extends EventEmitter {
   private parseOptions(text: string): PromptOption[] {
     // ANSI cursor movement removal can leave numbered options concatenated without newlines.
     // Insert a newline before number patterns that aren't preceded by one.
-    const normalized = text.replace(/([^\n])((?:\s*)❯?\s*\d+[.)])/g, '$1\n$2');
+    // (?!\d) prevents matching version numbers like "4.6" in "Opus 4.6"
+    const normalized = text.replace(/([^\n])((?:\s*)❯?\s*\d+[.)](?!\d))/g, '$1\n$2');
 
     // Use a Map keyed by index so later (newer) lines overwrite earlier (stale) ones
     const byIndex = new Map<number, PromptOption>();
@@ -457,7 +461,6 @@ export class OutputParser extends EventEmitter {
         const label = raw
           .replace(/\s*\(recommended\)/i, '')
           .replace(/\s*✔\s*/, ' ')
-          .replace(/\s{2,}/g, ' · ')
           .trim();
         const opt: PromptOption = { index: idx, label };
         if (recommended) opt.recommended = true;
