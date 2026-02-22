@@ -330,49 +330,129 @@ The Utility encoder supports multiple modes, switchable via touch (long press �
 
 ### Dynamic Button States
 
-The keypad reconfigures automatically based on agent state:
+Slots 3–6 (quick actions) and slot 7 (stop/escape) reconfigure based on agent state. Slots 0–2 (Mode, Session, Usage) always remain in place.
 
-**IDLE** — waiting for input:
-```
-[ MODE  ] [ SESS  ] [ USAGE ] [GO ON  ]
-[REVIEW ] [COMMIT ] [ CLEAR ] [ STOP  ]
-```
+#### Semantic Button Colors
 
-**PROCESSING** — agent working:
-```
-[ MODE  ] [ SESS  ] [ USAGE ] [START  ]
-[  dim  ] [  dim  ] [  dim  ] [ STOP  ]     ← STOP active, START spawns new session
-```
+Permission and diff response buttons are automatically color-coded by intent:
 
-**AWAITING PERMISSION** — Yes/No/Always (semantic colors: green=yes, red=deny, blue=always/"don't ask again"):
-```
-[ MODE  ] [ SESS  ] [ USAGE ] [  YES  ]
-[  NO   ] [ALWAYS ] [  dim  ] [ STOP  ]
-```
+| Color | Hex | Meaning | Matched by |
+|-------|-----|---------|------------|
+| Green | `#166534` | Approve | shortcut `y`/`a`, or label starts with *Yes* / *Allow* / *Apply* |
+| Red | `#991b1b` | Deny | shortcut `n`/`d`, or label starts with *No* / *Deny* |
+| Blue | `#1e40af` | Permanent | label starts with *Always*, or contains *Don't ask again* / *Allow all sessions* |
+| Teal | `#1e3a5f` | Other | Default for unrecognized options |
 
-**AWAITING OPTION** — multi-choice (≤4):
-```
-[ MODE  ] [ SESS  ] [ USAGE ] [ OPT 1 ]
-[ OPT 2 ] [ OPT 3 ] [ OPT 4 ] [ STOP  ]
-```
+Option buttons (non-permission) use teal `#1e3a5f` by default, green `#1e4d2b` for recommended options.
 
-**AWAITING OPTION** — multi-choice (5+):
+#### Per-State Layout
+
+**IDLE** — waiting for user input
+
 ```
-[ MODE  ] [ SESS  ] [ USAGE ] [ OPT 1 ]
-[ OPT 2 ] [ OPT 3 ] [MORE ▼] [ STOP  ]
+┌─────────┬─────────┬─────────┬─────────┐
+│  MODE   │ SESSION │  USAGE  │  GO ON  │  ← teal
+├─────────┼─────────┼─────────┼─────────┤
+│ REVIEW  │ COMMIT  │  CLEAR  │   ESC   │  ← slate, dim ESC
+└─────────┴─────────┴─────────┴─────────┘
 ```
 
-**AWAITING DIFF** — file edit review:
+| Slot | Default Label | Color | Action |
+|------|---------------|-------|--------|
+| 3 | GO ON | teal `#1e3a2f` | Send `continue` prompt |
+| 4 | REVIEW | slate `#1e293b` | Send `/review` |
+| 5 | COMMIT | slate `#1e293b` | Send `/commit` |
+| 6 | CLEAR | slate `#1e293b` | Send `/clear` |
+| 7 | ESC | dim `#3d2607` | Send escape key |
+
+All four quick-action labels and commands are customizable per-instance via the Stream Deck Property Inspector.
+
+**PROCESSING** — agent working
+
 ```
-[ MODE  ] [ SESS  ] [ USAGE ] [ APPLY ]
-[ DENY  ] [ VIEW  ] [  dim  ] [ STOP  ]
+┌─────────┬─────────┬─────────┬─────────┐
+│  MODE   │ SESSION │  USAGE  │  START  │  ← blue
+├─────────┼─────────┼─────────┼─────────┤
+│ REVIEW  │ COMMIT  │  CLEAR  │  STOP   │  ← greyed out, red STOP
+└─────────┴─────────┴─────────┴─────────┘
 ```
 
-**DISCONNECTED** — no session:
+| Slot | Label | Color | Action |
+|------|-------|-------|--------|
+| 3 | START | blue `#0f3460` | Open project picker, spawn parallel `sdc` session |
+| 4–6 | *(idle labels, greyed out)* | dim `#1a1a1a` | Disabled — labels remain visible but inactive |
+| 7 | **STOP** | red `#cc0000` | Send Ctrl+C interrupt |
+
+START appears only on slots with a `disconnectedAction` configured (default: slot 3 runs `sdc`).
+
+**AWAITING_PERMISSION** — tool/file approval prompt
+
 ```
-[  dim  ] [  dim  ] [  dim  ] [START  ]
-[  dim  ] [  dim  ] [  dim  ] [  dim  ]     ← START available if configured
+┌─────────┬─────────┬─────────┬─────────┐
+│  MODE   │ SESSION │  USAGE  │   YES   │  ← green
+├─────────┼─────────┼─────────┼─────────┤
+│   NO    │ ALWAYS  │ DON'T…  │   ESC   │  ← red, blue, blue, orange
+└─────────┴─────────┴─────────┴─────────┘
 ```
+
+Up to 4 options from the bridge, each auto-colored by semantic matching (see color table above). A typical Claude Code permission prompt shows: *Yes, allow once* (green) / *No, deny* (red) / *Always allow* (blue) / *Don't ask again for this tool* (blue). If the bridge sends no structured options, the fallback is hardcoded YES / NO / ALWAYS.
+
+| Slot | Color rule | Action |
+|------|------------|--------|
+| 3–6 | Semantic (green / red / blue / teal) | `respond:{shortcut}` |
+| 7 | ESC — orange `#b45309` | Cancel prompt |
+
+**AWAITING_OPTION** — multi-choice selection (≤4 options)
+
+```
+┌─────────┬─────────┬─────────┬─────────┐
+│  MODE   │ SESSION │  USAGE  │  Opt 1  │  ← teal (green if recommended)
+├─────────┼─────────┼─────────┼─────────┤
+│  Opt 2  │  Opt 3  │  Opt 4  │   ESC   │  ← teal, orange ESC
+└─────────┴─────────┴─────────┴─────────┘
+```
+
+**AWAITING_OPTION** — multi-choice selection (5+ options)
+
+```
+┌─────────┬─────────┬─────────┬─────────┐
+│  MODE   │ SESSION │  USAGE  │  Opt 1  │
+├─────────┼─────────┼─────────┼─────────┤
+│  Opt 2  │  Opt 3  │ MORE ▼  │   ESC   │  ← gray MORE, orange ESC
+└─────────┴─────────┴─────────┴─────────┘
+```
+
+Badges: ★ on recommended option (green `#1e4d2b`), ✓ on currently selected. MORE ▼ (gray `#334155`) triggers encoder takeover — wide-canvas LCD across E2–E4 shows the full scrollable list.
+
+**AWAITING_DIFF** — file edit review
+
+```
+┌─────────┬─────────┬─────────┬─────────┐
+│  MODE   │ SESSION │  USAGE  │  APPLY  │  ← green
+├─────────┼─────────┼─────────┼─────────┤
+│  DENY   │  VIEW   │  (dim)  │   ESC   │  ← red, teal, orange ESC
+└─────────┴─────────┴─────────┴─────────┘
+```
+
+Same semantic coloring as permission. Fallback if no options from bridge: APPLY (green) / DENY (red) / VIEW (teal).
+
+**DISCONNECTED** — no active session
+
+```
+┌─────────┬─────────┬─────────┬─────────┐
+│  (dim)  │  (dim)  │  USAGE  │  START  │  ← blue
+├─────────┼─────────┼─────────┼─────────┤
+│  (dim)  │  (dim)  │  (dim)  │  (dim)  │
+└─────────┴─────────┴─────────┴─────────┘
+```
+
+| Slot | Label | Color | Action |
+|------|-------|-------|--------|
+| 3 | START | blue `#0f3460` | Open project picker, run `sdc` |
+| 4–6 | — | dim `#1a1a1a` | Disabled |
+| 7 | STOP | dim red `#3a1111` | Disabled |
+
+START appears on any slot with `disconnectedAction` configured. Mode and Session dim; Usage remains active (independent render loop).
 
 ### Terminal Dial (E3) — iTerm Session Manager
 
