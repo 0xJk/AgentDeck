@@ -9,7 +9,8 @@ import streamDeck, {
 import { State, PromptOption } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
 import { LayoutManager, ButtonConfig } from '../layout-manager.js';
-import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { renderButton, svgToDataUrl, labelNeedsHaiku, BUTTON_MAX_CHARS } from '../renderers/button-renderer.js';
+import { requestAbbreviation } from '../label-summarizer.js';
 import { handleExpandedAction } from '../expanded-actions.js';
 import { isPickerActive, selectByButtonSlot, openPicker, setPickerButtonCallback } from '../project-picker.js';
 import { dlog, derr } from '../log.js';
@@ -18,6 +19,7 @@ import type { JsonValue } from '@elgato/utils';
 
 interface ResponseButtonSettings {
   [key: string]: JsonValue;
+  slotIndex?: number;
   label?: string;
   action?: string;
   disconnectedLabel?: string;
@@ -52,13 +54,13 @@ let currentState = State.DISCONNECTED;
 let currentMode = 'default';
 let currentOptions: PromptOption[] = [];
 
-// Action ID → column coordinate for physical position sorting
-const actionCoords = new Map<string, number>();
+// Action ID → fixed slot index (0-based, from PI settings)
+const actionSlots = new Map<string, number>();
 
-/** Return action IDs sorted by physical column position (left → right) */
+/** Return action IDs sorted by fixed slot index (0 → N) */
 function getSortedIds(): string[] {
-  return [...actionCoords.keys()].sort((a, b) =>
-    (actionCoords.get(a) ?? 99) - (actionCoords.get(b) ?? 99)
+  return [...actionSlots.keys()].sort((a, b) =>
+    (actionSlots.get(a) ?? 99) - (actionSlots.get(b) ?? 99)
   );
 }
 
@@ -195,6 +197,16 @@ function refreshAllButtons(): void {
       applyButtonConfig(sorted[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false }, i);
     }
   }
+
+  // Fire async Haiku summarization for labels that still overflow after heuristic abbreviation
+  for (const btn of buttons) {
+    const label = btn.badge ? `${btn.badge} ${btn.title}` : btn.title;
+    if (label && labelNeedsHaiku(label)) {
+      void requestAbbreviation(label, BUTTON_MAX_CHARS).then((result) => {
+        if (result) refreshAllButtons(); // re-render with cached Haiku result
+      });
+    }
+  }
 }
 
 function applyButtonConfig(actionId: string, config: ButtonConfig, slotIndex?: number): void {
@@ -212,15 +224,21 @@ function applyButtonConfig(actionId: string, config: ButtonConfig, slotIndex?: n
 @action({ UUID: 'bound.serendipity.agentdeck.response-button' })
 export class ResponseButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
-    actionCoords.set(ev.action.id, ev.action.coordinates?.column ?? 99);
+    const settings = (ev.payload?.settings ?? {}) as ResponseButtonSettings;
+    const rawSlot = settings.slotIndex;
+    const slotIndex = rawSlot != null ? Number(rawSlot) : this.autoAssignSlot();
+    actionSlots.set(ev.action.id, slotIndex);
     const sorted = getSortedIds();
     const slot = sorted.indexOf(ev.action.id);
-    dlog('RspBut', `onWillAppear: id=${ev.action.id} col=${ev.action.coordinates?.column} slot=${slot} total=${sorted.length}`);
+    dlog('RspBut', `onWillAppear: id=${ev.action.id} slotIndex=${slotIndex} slot=${slot} total=${sorted.length}`);
 
     // Only cache user-customised PI settings; defaults are computed dynamically from slot position
-    const settings = (ev.payload?.settings ?? {}) as ResponseButtonSettings;
     if (settings.label || settings.action) {
       userSettingsMap.set(ev.action.id, settings);
+    }
+    // If slotIndex was auto-assigned, persist it to settings
+    if (settings.slotIndex == null) {
+      void ev.action.setSettings({ ...settings, slotIndex }).catch(() => {});
     }
     // Refresh ALL buttons so every slot gets the correct number after sort
     refreshAllButtons();
@@ -245,7 +263,11 @@ export class ResponseButtonAction extends SingletonAction {
 
   override onDidReceiveSettings(ev: DidReceiveSettingsEvent<ResponseButtonSettings>): void {
     const settings = ev.payload.settings;
-    dlog('RspBut', `onDidReceiveSettings: id=${ev.action.id} label=${settings.label} action=${settings.action}`);
+    dlog('RspBut', `onDidReceiveSettings: id=${ev.action.id} slotIndex=${settings.slotIndex} label=${settings.label} action=${settings.action}`);
+    // Update slot index if changed
+    if (settings.slotIndex != null) {
+      actionSlots.set(ev.action.id, Number(settings.slotIndex));
+    }
     if (settings.label || settings.action) {
       userSettingsMap.set(ev.action.id, settings);
     } else {
@@ -327,8 +349,17 @@ export class ResponseButtonAction extends SingletonAction {
     }
   }
 
+  /** Auto-assign next available slot index for buttons without explicit slotIndex */
+  private autoAssignSlot(): number {
+    const used = new Set(actionSlots.values());
+    for (let i = 0; i < DEFAULT_IDLE_SETTINGS.length; i++) {
+      if (!used.has(i)) return i;
+    }
+    return actionSlots.size;
+  }
+
   override onWillDisappear(ev: WillDisappearEvent): void {
-    actionCoords.delete(ev.action.id);
+    actionSlots.delete(ev.action.id);
     userSettingsMap.delete(ev.action.id);
   }
 }

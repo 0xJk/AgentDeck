@@ -1,5 +1,6 @@
 import { State, PromptOption } from '@agentdeck/shared';
 import { processLabel, colorForOption } from '../layout-manager.js';
+import { measureTextWidth, sliceByPx } from './text-utils.js';
 
 const W = 200;
 const H = 100;
@@ -17,8 +18,24 @@ function svgWrap(inner: string, defs = ''): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${defs}${inner}</svg>`;
 }
 
-function truncate(str: string, max: number): string {
+/** Truncate by pixel width at given fontSize. Falls back to char count if no fontSize. */
+function truncate(str: string, max: number, fontSize?: number): string {
+  if (fontSize) {
+    const maxPx = max * fontSize * 0.55; // approximate: max chars × average char width
+    if (measureTextWidth(str, fontSize) <= maxPx) return str;
+    const ellipsisPx = measureTextWidth('\u2026', fontSize);
+    const [fit] = sliceByPx(str, maxPx - ellipsisPx, fontSize);
+    return fit + '\u2026';
+  }
   return str.length > max ? str.slice(0, max - 1) + '\u2026' : str;
+}
+
+/** Truncate by pixel width directly (for wide canvas). */
+function truncateByPx(str: string, maxPx: number, fontSize: number): string {
+  if (measureTextWidth(str, fontSize) <= maxPx) return str;
+  const ellipsisPx = measureTextWidth('\u2026', fontSize);
+  const [fit] = sliceByPx(str, maxPx - ellipsisPx, fontSize);
+  return fit + '\u2026';
 }
 
 function wrapTextLines(text: string, maxChars: number, maxLines: number): string[] {
@@ -176,7 +193,7 @@ export function renderListPanel(data: ListPanelData): string {
     const isSelected = optIdx === selectedIndex;
     const y = 2 + i * ROW_H;
     const label = processLabel(rowOpt.label);
-    const text = truncate(`${optIdx + 1}. ${label.main}`, 26);
+    const text = truncate(`${optIdx + 1}. ${label.main}`, 26, 14);
 
     // Use color to distinguish recommended/selected instead of badges
     const rowColors = isPermOrDiff ? colorForOption(rowOpt) : null;
@@ -325,9 +342,11 @@ export function renderWideOptionList(
     const isRecommended = !isPermOrDiff && opt.recommended;
     const isChosen = !isPermOrDiff && opt.selected;
 
-    // Truncate to fit wide canvas
-    const maxChars = Math.floor((totalW - 40) / 9);
-    const text = truncate(`${i + 1}. ${label.main}`, maxChars);
+    // Use full label on wide canvas — pixel-based truncation for CJK support
+    const fullText = label.sub ? `${label.main} ${label.sub}` : label.main;
+    const numberedText = `${i + 1}. ${fullText}`;
+    const maxPx = totalW - 40; // 10px pad each side + 20px badge area
+    const text = truncateByPx(numberedText, maxPx, 14);
 
     if (isSelected) {
       const bgColor = rowColors?.color ?? (isRecommended ? '#1e4d2b' : '#1e3a5f');

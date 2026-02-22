@@ -80,12 +80,18 @@ export class OutputParser extends EventEmitter {
   // Ghost text suggestion detection
   private suggestedPromptTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSuggestedPrompt: string | null = null;
+  // Cursor-only redraw detection for navigable option lists
+  private lastNavigableEmit = false;
+  private lastCursorIndex = 0;
 
   feed(rawData: string): void {
     // Detect ghost text from raw ANSI before stripping
     this.detectGhostText(rawData);
 
-    const clean = stripAnsi(rawData);
+    // Replace cursor-forward sequences (e.g. \x1b[1C) with spaces before stripping ANSI,
+    // so word spacing is preserved (Claude Code TUI uses cursor movement instead of spaces)
+    const spaced = rawData.replace(/\x1b\[\d*C/g, ' ');
+    const clean = stripAnsi(spaced);
     this.buffer += clean;
 
     if (this.buffer.length > 8192) {
@@ -273,6 +279,7 @@ export class OutputParser extends EventEmitter {
     // --- Diff prompt ---
     if (DIFF_PROMPT.test(chunk)) {
       debug('Parser', 'EMIT diff_prompt');
+      this.lastNavigableEmit = false;
       this.resetIdleTimer();
       this.resetOptionTimer();
       const parsed = this.parseDiffOptions(chunk);
@@ -288,6 +295,7 @@ export class OutputParser extends EventEmitter {
     // --- Permission: "Yes, allow once" / "No, deny" / "Always allow" ---
     if (YES_NO_ALWAYS.test(chunk)) {
       debug('Parser', 'EMIT permission_prompt (yes_no_always)');
+      this.lastNavigableEmit = false;
       this.resetIdleTimer();
       this.resetOptionTimer();
       const parsed = this.parsePermissionOptions(chunk);
@@ -303,6 +311,7 @@ export class OutputParser extends EventEmitter {
     // --- Permission: (Y)es / (N)o ---
     if (PERMISSION_YN.test(chunk)) {
       debug('Parser', 'EMIT permission_prompt (yes_no)');
+      this.lastNavigableEmit = false;
       this.resetIdleTimer();
       this.resetOptionTimer();
       this.emit('permission_prompt', {
@@ -331,8 +340,11 @@ export class OutputParser extends EventEmitter {
               shortcut: opt.shortcut || this.inferShortcut(opt.label),
             }));
             debug('Parser', `EMIT permission_prompt (${options.length} options, reclassified from numbered, debounced)`);
+            this.lastNavigableEmit = false;
             this.emit('permission_prompt', { options, promptType: 'yes_no_always' });
           } else {
+            this.lastNavigableEmit = parsed.navigable;
+            this.lastCursorIndex = parsed.cursorIndex;
             debug('Parser', `EMIT option_prompt (${parsed.options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, debounced)`);
             this.emit('option_prompt', {
               options: parsed.options,
@@ -340,6 +352,25 @@ export class OutputParser extends EventEmitter {
               cursorIndex: parsed.cursorIndex,
             });
           }
+        }
+      }, OPTION_DEBOUNCE_MS);
+      return;
+    }
+
+    // --- Cursor-only redraw detection (navigable option state) ---
+    // ink's minimal redraw: only moves ❯ character. Chunk lacks digits, so
+    // OPTION_NUMBERED won't match. Re-parse buffer tail to detect cursor change.
+    if (this.lastNavigableEmit && chunk.includes('❯')) {
+      debug('Parser', 'cursor-only redraw detected — debouncing buffer re-parse');
+      this.resetIdleTimer();
+      this.resetOptionTimer();
+      this.optionTimer = setTimeout(() => {
+        this.optionTimer = null;
+        const parsed = this.parseOptions(this.buffer.slice(-1000));
+        if (parsed.navigable && parsed.cursorIndex !== this.lastCursorIndex) {
+          this.lastCursorIndex = parsed.cursorIndex;
+          debug('Parser', `EMIT cursor_update: cursorIndex=${parsed.cursorIndex}`);
+          this.emit('cursor_update', { cursorIndex: parsed.cursorIndex });
         }
       }, OPTION_DEBOUNCE_MS);
       return;
@@ -627,7 +658,18 @@ export class OutputParser extends EventEmitter {
         byIndex.set(idx, { index: idx, label: bm[2].trim() });
       }
     }
-    return { options: Array.from(byIndex.values()).sort((a, b) => a.index - b.index), navigable, cursorIndex };
+    const sorted = Array.from(byIndex.values()).sort((a, b) => a.index - b.index);
+
+    // Filter to contiguous run starting from index 0 to discard ghost options
+    // from stale buffer content (e.g. idx=98 from previous numbered lists)
+    const contiguous: PromptOption[] = [];
+    for (const opt of sorted) {
+      if (opt.index === contiguous.length) {
+        contiguous.push(opt);
+      }
+    }
+    const finalOptions = contiguous.length >= 2 ? contiguous : sorted;
+    return { options: finalOptions, navigable, cursorIndex };
   }
 
   /**
@@ -713,6 +755,8 @@ export class OutputParser extends EventEmitter {
     this.projectName = null;
     this.modelName = null;
     this.lastSuggestedPrompt = null;
+    this.lastNavigableEmit = false;
+    this.lastCursorIndex = 0;
     this.resetSpinnerTimer();
     this.resetIdleTimer();
     this.resetOptionTimer();

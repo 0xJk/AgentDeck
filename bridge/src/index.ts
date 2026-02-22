@@ -17,6 +17,7 @@ import {
   type BridgeEvent,
   type StateSnapshot,
 } from './types.js';
+import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -28,7 +29,6 @@ import {
   listActive as listActiveSessions,
   findAvailablePort,
   detectTmuxSession,
-  detectTty,
 } from './session-registry.js';
 import { fetchUsageFromApi, type ApiUsageData } from './usage-api.js';
 
@@ -156,6 +156,10 @@ async function startBridge(port: number, command: string): Promise<void> {
 
   const sessionId = randomUUID();
   const tmuxSession = detectTmuxSession();
+  const parentTty = (() => {
+    try { return execSync('tty', { stdio: ['inherit', 'pipe', 'pipe'] }).toString().trim(); }
+    catch { return undefined; }
+  })();
   const projectName = process.cwd().split('/').pop() || 'unknown';
 
   // Warn if same project is already running in another session
@@ -230,6 +234,12 @@ async function startBridge(port: number, command: string): Promise<void> {
       stateMachine.handleParserEvent(eventName, data);
     });
   }
+
+  // 5a. Wire cursor_update → StateMachine (separate from parser events — not a state transition)
+  outputParser.on('cursor_update', (data?: Record<string, unknown>) => {
+    const idx = (data?.cursorIndex as number) ?? 0;
+    stateMachine.updateCursorIndex(idx);
+  });
 
   // 5b. Wire usage_info events → UsageTracker
   outputParser.on('usage_info', (data?: Record<string, unknown>) => {
@@ -507,13 +517,15 @@ async function startBridge(port: number, command: string): Promise<void> {
     pid: process.pid,
     projectName: outputParser.getProjectName() || projectName,
     tmuxSession,
-    tty: detectTty(),
+    parentTty,
+    tty: ptyManager.getTtyPath(),
     startedAt: new Date().toISOString(),
   });
 
   // 10. Feed PTY output to OutputParser
   ptyManager.on('data', (data: string) => {
     outputParser.feed(data);
+    stateMachine.onPtyActivity();
   });
 
   // 11. Handle PTY exit

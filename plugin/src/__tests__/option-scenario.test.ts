@@ -21,31 +21,48 @@ describe('6-option SELECT scenario', () => {
   const lm = new LayoutManager();
   const opts = makeOptions(6);
 
-  it('Quick Action slots: 2 options + MORE (not on STOP slot)', () => {
+  it('Quick Action slots: 3 options + MORE (6 options)', () => {
     const buttons = lm.getButtonLayout(State.AWAITING_OPTION, PermissionMode.DEFAULT, opts);
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(4);
     expect(buttons[0].action).toBe('select_option:0');
     expect(buttons[1].action).toBe('select_option:1');
-    expect(buttons[2].title).toBe('MORE ▼');
-    expect(buttons[2].action).toBe('expand_options');
+    expect(buttons[2].action).toBe('select_option:2');
+    expect(buttons[3].title).toBe('MORE ▼');
+    expect(buttons[3].action).toBe('expand_options');
   });
 
   it('STOP slot is always preserved (getStopSlotOverride returns null)', () => {
     expect(lm.getStopSlotOverride(State.AWAITING_OPTION, opts)).toBeNull();
   });
 
-  it('3 options: all shown in Quick Action slots, no MORE', () => {
+  it('3 options: all shown in Quick Action slots, 4th slot DIM', () => {
     const opts3 = makeOptions(3);
     const buttons = lm.getButtonLayout(State.AWAITING_OPTION, PermissionMode.DEFAULT, opts3);
+    expect(buttons).toHaveLength(4);
     expect(buttons[0].action).toBe('select_option:0');
     expect(buttons[1].action).toBe('select_option:1');
     expect(buttons[2].action).toBe('select_option:2');
+    expect(buttons[3].enabled).toBe(false);
   });
 
-  it('4 options: 2 options + MORE', () => {
+  it('4 options: all 4 shown, no MORE', () => {
     const opts4 = makeOptions(4);
     const buttons = lm.getButtonLayout(State.AWAITING_OPTION, PermissionMode.DEFAULT, opts4);
-    expect(buttons[2].title).toBe('MORE ▼');
+    expect(buttons).toHaveLength(4);
+    expect(buttons[0].action).toBe('select_option:0');
+    expect(buttons[1].action).toBe('select_option:1');
+    expect(buttons[2].action).toBe('select_option:2');
+    expect(buttons[3].action).toBe('select_option:3');
+  });
+
+  it('5 options: 3 options + MORE', () => {
+    const opts5 = makeOptions(5);
+    const buttons = lm.getButtonLayout(State.AWAITING_OPTION, PermissionMode.DEFAULT, opts5);
+    expect(buttons).toHaveLength(4);
+    expect(buttons[0].action).toBe('select_option:0');
+    expect(buttons[1].action).toBe('select_option:1');
+    expect(buttons[2].action).toBe('select_option:2');
+    expect(buttons[3].title).toBe('MORE ▼');
   });
 
   it('E2 Focus panel renders with adaptive font', () => {

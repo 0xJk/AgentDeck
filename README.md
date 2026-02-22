@@ -593,6 +593,25 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 
 ---
 
+## Button Label Intelligence
+
+Permission and option labels can be long (e.g. "Yes, allow and don't ask again"). AgentDeck uses a 3-tier system to fit them on 144×144px buttons:
+
+| Tier | Method | Latency | Example |
+|------|--------|---------|---------|
+| 1. **Pixel-aware wrap** | CJK-aware text measurement + multi-line wrap | Instant | "Yes, allow once" → fits as-is |
+| 2. **Local abbreviation** | Pattern-based heuristic (known phrases) | Instant | "Yes, I trust this folder" → "Trust folder" |
+| 3. **Haiku summarization** | `claude -p --model haiku` CLI fallback | ~1-3s | Unknown long label → AI-shortened version |
+
+- **CJK support**: Korean, Chinese, and Japanese characters are measured at double-width (1em vs 0.55em for Latin), preventing overflow on CJK labels
+- **Haiku fallback**: Only triggers when tiers 1-2 fail. First render shows ellipsis (`…`), then re-renders with the AI summary once it arrives. Results are cached (200 entries) so repeated labels are instant
+- **Abbreviated indicator**: Buttons that were shortened show a subtle `~` mark at the bottom-right corner
+- **Wide canvas unaffected**: Encoder LCD option lists (E2-E4) have enough horizontal space to display full labels without abbreviation
+
+> **Requirement**: Tier 3 (Haiku) requires Claude Code CLI (`claude`) installed and authenticated. Subscription accounts work — no separate API key needed.
+
+---
+
 <p align="center">
 <strong>AgentDeck</strong> — Physical Control Surface for AI Coding Agents
 </p>

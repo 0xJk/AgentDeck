@@ -406,6 +406,30 @@ export class StateMachine extends EventEmitter {
     }
   }
 
+  /** Reset stuck timer on PTY activity while in an interactive state */
+  onPtyActivity(): void {
+    if (
+      this.stuckTimer &&
+      (this.state === State.AWAITING_OPTION ||
+       this.state === State.AWAITING_PERMISSION ||
+       this.state === State.AWAITING_DIFF)
+    ) {
+      debug('SM', 'PTY activity — resetting stuck timer');
+      this.resetStuckTimer();
+      this.stuckTimer = setTimeout(() => {
+        debug('SM', `Stuck timeout: ${this.state} for >${STUCK_TIMEOUT_MS / 1000}s, recovering to IDLE`);
+        this.currentTool = null;
+        this.toolInput = null;
+        this.toolProgress = null;
+        this.options = [];
+        this.question = null;
+        this.navigable = false;
+        this.cursorIndex = 0;
+        this.transition(State.IDLE, 'stuck_timeout', 'internal');
+      }, STUCK_TIMEOUT_MS);
+    }
+  }
+
   private resetStuckTimer(): void {
     if (this.stuckTimer) {
       clearTimeout(this.stuckTimer);

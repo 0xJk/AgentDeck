@@ -96,6 +96,7 @@ let currentQuestion: string | undefined;
 let currentNavigable = false;
 let currentCursorIndex = 0;
 let currentSuggestedPrompt: string | undefined;
+let takeoverGeneration = 0;
 
 // ---- Expanded mode state ----
 let expandedMode = false;
@@ -318,7 +319,9 @@ function broadcastStateUpdate(): void {
     // Exit VT before encoder takeover (clears all panels atomically)
     updateVoiceDialState(currentState);
     // Enter takeover, then update option dial with full context
+    const enterGen = ++takeoverGeneration;
     void enterEncoderTakeover().then(() => {
+      if (enterGen !== takeoverGeneration) return; // superseded by newer transition
       updateOptionDialState(
         currentState, currentOptions, currentQuestion, currentTool,
         currentNavigable, currentCursorIndex, currentToolInput,
@@ -327,7 +330,9 @@ function broadcastStateUpdate(): void {
     });
   } else if (!shouldTakeover && isEncoderTakeoverActive()) {
     // Exit takeover, then restore all dials
+    const exitGen = ++takeoverGeneration;
     void exitEncoderTakeover().then(() => {
+      if (exitGen !== takeoverGeneration) return; // superseded by newer transition
       updateVoiceDialState(currentState);
       updateUtilityDialState(currentState);
       updateItermDialState(currentState);

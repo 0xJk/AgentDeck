@@ -18,6 +18,7 @@ export interface SessionEntry {
   projectName: string;
   tmuxSession?: string;
   tty?: string;
+  parentTty?: string;
   startedAt: string;
 }
 
@@ -107,16 +108,6 @@ export async function findAvailablePort(): Promise<number> {
   }
   // All ports exhausted — throw instead of silently colliding
   throw new Error(`All AgentDeck ports (${BASE_PORT}–${MAX_PORT}) are in use. Stop an existing session first.`);
-}
-
-/** Detect the tty device path of the current process */
-export function detectTty(): string | undefined {
-  try {
-    const result = execSync('tty', { encoding: 'utf-8', timeout: 2000 }).trim();
-    return result && result !== 'not a tty' ? result : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Detect tmux session name if running inside tmux */

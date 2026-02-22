@@ -108,4 +108,8 @@ export class PtyManager extends EventEmitter {
   getPid(): number | null {
     return this.ptyProcess?.pid ?? null;
   }
+
+  getTtyPath(): string | undefined {
+    return (this.ptyProcess as any)?._pty as string | undefined;
+  }
 }

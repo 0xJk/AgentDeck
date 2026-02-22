@@ -124,7 +124,8 @@ function getAllEncoderIds(): string[] {
 }
 
 async function launchSdc(projectPath: string): Promise<void> {
-  const cmd = `cd ${JSON.stringify(projectPath)} && sdc`;
+  const resolved = projectPath.startsWith('~/') ? projectPath.replace('~', process.env.HOME || '~') : projectPath;
+  const cmd = `cd ${JSON.stringify(resolved)} && sdc`;
   const script = [
     'tell application "iTerm"',
     '  create window with default profile',

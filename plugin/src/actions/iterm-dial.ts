@@ -39,6 +39,7 @@ interface AgentDeckSession {
   port: number;
   pid: number;
   tty?: string;
+  parentTty?: string;
   tmuxSession?: string;
 }
 
@@ -134,10 +135,13 @@ async function syncFromSystem(): Promise<void> {
     if (activeTty && bridgeRef) {
       const currentPort = bridgeRef.getPort();
 
-      // 1. Direct tty match (non-tmux sessions)
-      let match = adSessions.find((s) => s.tty && s.tty === activeTty);
+      // 1. parentTty match (non-tmux: sdc's stdin tty === iTerm tty)
+      let match = adSessions.find((s) => s.parentTty && s.parentTty === activeTty);
 
-      // 2. tmux match: active tty → tmux session name → AgentDeck tmuxSession
+      // 2. Legacy direct tty match
+      if (!match) match = adSessions.find((s) => s.tty && s.tty === activeTty);
+
+      // 3. tmux match: active tty → tmux session name → AgentDeck tmuxSession
       if (!match) {
         const tmuxName = tmuxClientMap.get(activeTty);
         if (tmuxName) {

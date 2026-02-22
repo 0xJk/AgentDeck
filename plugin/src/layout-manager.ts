@@ -91,8 +91,9 @@ function isInteractive(state: State): boolean {
 
 export class LayoutManager {
   /**
-   * Returns 3 ButtonConfigs for dynamic response slots 3-5
-   * (Slot 0 = MODE, Slot 1 = SESSION & STATUS, Slot 2 = USAGE, Slot 6 = STOP — handled separately)
+   * Returns 4 ButtonConfigs for dynamic response slots 3-6
+   * (Slot 0 = MODE, Slot 1 = SESSION & STATUS, Slot 2 = USAGE — handled separately)
+   * When fewer than 4 configs are needed, remaining slots are DIM.
    */
   getButtonLayout(
     state: State,
@@ -104,7 +105,7 @@ export class LayoutManager {
         return this.disconnectedButtons();
       case State.IDLE:
         // IDLE rendering handled by response-button.ts per-instance PI settings
-        return [DIM, DIM, DIM];
+        return [DIM, DIM, DIM, DIM];
       case State.PROCESSING:
         return this.processingButtons();
       case State.AWAITING_PERMISSION:
@@ -155,9 +156,11 @@ export class LayoutManager {
         ? { color: '#1e4d2b', textColor: '#86efac' }
         : { color: '#1e3a5f', textColor: '#93c5fd' };
 
+    // For long labels, use full text as title (button-renderer handles word wrap + adaptive font)
+    const fullLabel = label.sub ? `${label.main} ${label.sub}` : label.main;
+
     return {
-      title: label.main,
-      subtitle: label.sub,
+      title: fullLabel,
       badge,
       ...colors,
       enabled: true,
@@ -166,35 +169,38 @@ export class LayoutManager {
   }
 
   private disconnectedButtons(): ButtonConfig[] {
-    return [DIM, DIM, DIM];
+    return [DIM, DIM, DIM, DIM];
   }
 
   private processingButtons(): ButtonConfig[] {
-    return [DIM, DIM, DIM];
+    return [DIM, DIM, DIM, DIM];
   }
 
   private permissionButtons(options: PromptOption[]): ButtonConfig[] {
     if (options.length === 0) {
-      // Fallback: hardcoded YES/NO/ALWAYS
+      // Fallback: hardcoded YES/NO/ALWAYS + DIM
       return [
         { title: 'YES', color: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:y' },
         { title: 'NO', color: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:n' },
         { title: 'ALWAYS', color: '#1e40af', textColor: '#ffffff', enabled: true, action: 'respond:a' },
+        DIM,
       ];
     }
-    return options.slice(0, 3).map(opt => ({
+    const buttons: ButtonConfig[] = options.slice(0, 4).map(opt => ({
       title: truncateLabel(opt.label),
       ...colorForOption(opt),
       enabled: true,
       action: `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
     }));
+    while (buttons.length < 4) buttons.push(DIM);
+    return buttons;
   }
 
   private optionButtons(options: PromptOption[]): ButtonConfig[] {
-    // ≤3 options: show all in slots 3-5
-    if (options.length <= 3) {
+    // ≤4 options: show all (pad with DIM)
+    if (options.length <= 4) {
       const buttons: ButtonConfig[] = [];
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 4; i++) {
         if (i < options.length) {
           buttons.push(this.optionToConfig(options[i], State.AWAITING_OPTION));
         } else {
@@ -203,10 +209,11 @@ export class LayoutManager {
       }
       return buttons;
     }
-    // 4+ options: first 2 options + MORE in 3rd slot (STOP preserved in slot 6)
+    // 5+ options: first 3 options + MORE in 4th slot
     return [
       this.optionToConfig(options[0], State.AWAITING_OPTION),
       this.optionToConfig(options[1], State.AWAITING_OPTION),
+      this.optionToConfig(options[2], State.AWAITING_OPTION),
       {
         title: 'MORE \u25BC',
         color: '#334155',
@@ -219,18 +226,21 @@ export class LayoutManager {
 
   private diffButtons(options: PromptOption[]): ButtonConfig[] {
     if (options.length === 0) {
-      // Fallback: hardcoded APPLY/DENY/VIEW
+      // Fallback: hardcoded APPLY/DENY/VIEW + DIM
       return [
         { title: 'APPLY', color: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:a' },
         { title: 'DENY', color: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:d' },
         { title: 'VIEW', color: '#1e3a5f', textColor: '#93c5fd', enabled: true, action: 'respond:v' },
+        DIM,
       ];
     }
-    return options.slice(0, 3).map(opt => ({
+    const buttons: ButtonConfig[] = options.slice(0, 4).map(opt => ({
       title: truncateLabel(opt.label),
       ...colorForOption(opt),
       enabled: true,
       action: `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
     }));
+    while (buttons.length < 4) buttons.push(DIM);
+    return buttons;
   }
 }
