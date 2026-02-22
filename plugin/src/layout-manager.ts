@@ -46,18 +46,10 @@ export function processLabel(raw: string): ProcessedLabel {
   return { main: raw };
 }
 
-/** Shorten permission/diff option label for button display (max ~9 chars) */
-function truncateLabel(label: string): string {
-  const lower = label.toLowerCase();
-  if (/^yes\b/.test(lower)) return 'YES';
-  if (/^no\b/.test(lower) || /^deny\b/.test(lower)) return 'DENY';
-  if (/^always\b/.test(lower)) return 'ALWAYS';
-  if (/^allow\b/.test(lower)) return 'ALLOW';
-  if (/^view\b/.test(lower)) return 'VIEW';
-  if (/^apply\b/.test(lower)) return 'APPLY';
-  // Unknown: first word, uppercase, max 9 chars
-  const first = label.split(/[\s,]+/)[0] || label;
-  return first.toUpperCase().slice(0, 9);
+/** Capitalize short permission/diff labels (e.g. "Yes" → "YES", "No, deny" → "NO, DENY") */
+function uppercaseShort(label: string): string {
+  // Short labels (≤12 chars) look better in uppercase for permission/diff buttons
+  return label.length <= 12 ? label.toUpperCase() : label;
 }
 
 /** Determine button colors based on shortcut or label semantics */
@@ -65,8 +57,14 @@ export function colorForOption(opt: PromptOption): { color: string; textColor: s
   const s = opt.shortcut?.toLowerCase() ?? '';
   const lower = opt.label.toLowerCase();
 
-  // Blue: always (check before shortcut — "always" has shortcut 'a' but should be blue)
+  // Blue: always / "don't ask again" / "allow all sessions"
   if (/^always\b/.test(lower)) {
+    return { color: '#1e40af', textColor: '#ffffff' };
+  }
+  if (/don['\u2019]t\s+ask\s+again/.test(lower)) {
+    return { color: '#1e40af', textColor: '#ffffff' };
+  }
+  if (/allow\s+all\s+sessions/.test(lower)) {
     return { color: '#1e40af', textColor: '#ffffff' };
   }
   // Red: no, deny
@@ -187,7 +185,7 @@ export class LayoutManager {
       ];
     }
     const buttons: ButtonConfig[] = options.slice(0, 4).map(opt => ({
-      title: truncateLabel(opt.label),
+      title: uppercaseShort(opt.label),
       ...colorForOption(opt),
       enabled: true,
       action: `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
@@ -235,7 +233,7 @@ export class LayoutManager {
       ];
     }
     const buttons: ButtonConfig[] = options.slice(0, 4).map(opt => ({
-      title: truncateLabel(opt.label),
+      title: uppercaseShort(opt.label),
       ...colorForOption(opt),
       enabled: true,
       action: `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,

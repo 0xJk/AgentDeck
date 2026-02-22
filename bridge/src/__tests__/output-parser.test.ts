@@ -354,6 +354,46 @@ describe('OutputParser', () => {
       p.feed('Allow? (Y)es/(N)o\n');
       expect(events[0].promptType).toBe('yes_no');
     });
+
+    it('suppresses false idle from user prompt echo after permission (interactive cooldown)', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const permEvents = collectEvents(p, 'permission_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Permission prompt arrives in diff output
+      p.feed('  \u276F Yes, allow once\n    No, deny\n    Always allow\n');
+      expect(permEvents).toHaveLength(1);
+
+      // 4ms later: user prompt echo in same PTY batch (❯ Review the code...)
+      p.feed('❯ Review the commit log\n');
+      vi.advanceTimersByTime(500);
+
+      // Idle should NOT have fired — cooldown active
+      expect(idleEvents).toHaveLength(0);
+    });
+
+    it('allows real idle after interactive cooldown expires', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const permEvents = collectEvents(p, 'permission_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Permission prompt
+      p.feed('  \u276F Yes, allow once\n    No, deny\n    Always allow\n');
+      expect(permEvents).toHaveLength(1);
+
+      // Wait for cooldown to expire (200ms)
+      vi.advanceTimersByTime(250);
+
+      // Real idle prompt after user responds
+      p.feed('❯ \n');
+      vi.advanceTimersByTime(400);
+
+      expect(idleEvents).toHaveLength(1);
+    });
   });
 
   // === Diff Prompts ===
@@ -389,6 +429,23 @@ describe('OutputParser', () => {
       p.feed('(V)iew diff  (A)pply  (D)eny\n');
       // No timer advance needed
       expect(events).toHaveLength(1);
+    });
+
+    it('suppresses false idle from user prompt echo after diff (interactive cooldown)', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const diffEvents = collectEvents(p, 'diff_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      p.feed('(V)iew diff  (A)pply  (D)eny\n');
+      expect(diffEvents).toHaveLength(1);
+
+      // User prompt echo in same PTY batch
+      p.feed('❯ fix the bug\n');
+      vi.advanceTimersByTime(500);
+
+      expect(idleEvents).toHaveLength(0);
     });
   });
 
@@ -483,21 +540,38 @@ describe('OutputParser', () => {
 
   // === Idle Cancels Option Timer ===
 
-  describe('idle cancels option timer', () => {
-    it('idle prompt cancels pending option debounce', () => {
+  describe('idle vs option debounce', () => {
+    it('idle prompt is ignored when option debounce is pending', () => {
       const p = armParser();
       const optEvents = collectEvents(p, 'option_prompt');
+      const idleEvents = collectEvents(p, 'idle');
 
       // Feed options — debounce starts
       p.feed('1.First\n2.Second\n');
       expect(optEvents).toHaveLength(0);
 
-      // Idle prompt arrives before debounce fires
+      // Idle prompt arrives before debounce fires — should be ignored
       p.feed('❯ \n');
       vi.advanceTimersByTime(500);
 
-      // Option prompt should NOT have fired
-      expect(optEvents).toHaveLength(0);
+      // Option prompt SHOULD have fired (debounce completes normally)
+      expect(optEvents).toHaveLength(1);
+      expect(optEvents[0].options).toHaveLength(2);
+      // Idle should NOT have fired
+      expect(idleEvents).toHaveLength(0);
+    });
+
+    it('idle prompt fires normally when no option debounce is pending', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500); // clear boot idle timer
+
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Just idle prompt, no option debounce pending
+      p.feed('❯ \n');
+      vi.advanceTimersByTime(400);
+
+      expect(idleEvents).toHaveLength(1);
     });
   });
 
@@ -1483,6 +1557,20 @@ describe('OutputParser', () => {
       expect(permEvents).toHaveLength(0);
     });
 
+    it('includes navigable and cursorIndex in reclassified permission_prompt', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const permEvents = collectEvents(p, 'permission_prompt');
+
+      p.feed('❯1. Yes\n2. No\n3. Always\n');
+      vi.advanceTimersByTime(200);
+
+      expect(permEvents).toHaveLength(1);
+      expect(permEvents[0].navigable).toBe(true);
+      expect(permEvents[0].cursorIndex).toBe(0);
+    });
+
     it('infers shortcuts for reclassified permission options', () => {
       const p = armParser();
       vi.advanceTimersByTime(500);
@@ -1500,6 +1588,41 @@ describe('OutputParser', () => {
       expect(yesOpt?.shortcut).toBe('y');
       expect(noOpt?.shortcut).toBe('n');
       expect(alwaysOpt?.shortcut).toBe('a');
+    });
+
+    it('infers shortcut "a" for "don\'t ask again" labels', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const permEvents = collectEvents(p, 'permission_prompt');
+
+      p.feed('❯1. Yes\n2. Yes, and don\'t ask again for: tail:*\n3. No\n');
+      vi.advanceTimersByTime(200);
+
+      expect(permEvents).toHaveLength(1);
+      const opts = permEvents[0].options as PromptOption[];
+      // Plain "Yes" → 'y'
+      expect(opts[0].shortcut).toBe('y');
+      // "Yes, and don't ask again for: tail:*" → 'a' (not 'y')
+      expect(opts[1].shortcut).toBe('a');
+      // "No" → 'n'
+      expect(opts[2].shortcut).toBe('n');
+    });
+
+    it('infers shortcut "a" for "allow all sessions" labels', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const permEvents = collectEvents(p, 'permission_prompt');
+
+      p.feed('❯1. Yes\n2. Yes, allow all sessions in project\n3. No\n');
+      vi.advanceTimersByTime(200);
+
+      expect(permEvents).toHaveLength(1);
+      const opts = permEvents[0].options as PromptOption[];
+      expect(opts[0].shortcut).toBe('y');
+      expect(opts[1].shortcut).toBe('a');
+      expect(opts[2].shortcut).toBe('n');
     });
   });
 
@@ -1701,6 +1824,204 @@ describe('OutputParser', () => {
 
       expect(events).toHaveLength(0);
     });
+
+    it('detects 24-bit RGB gray ghost text', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // \x1b[38;2;153;153;153m — Claude Code's actual ghost text color
+      p.feed('❯ \x1b[38;2;153;153;153mrefactor the code\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('refactor the code');
+    });
+
+    it('ignores 24-bit RGB non-gray colors (e.g. blue prompt char)', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // \x1b[38;2;177;185;249m — blue-ish, not gray
+      p.feed('❯ \x1b[38;2;177;185;249msome colored text\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('filters out short gray text like prompt char itself', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // The ❯ character in gray (80,80,80) — filtered by scheduleSuggestion length/content check
+      p.feed('\x1b[38;2;80;80;80m❯ \x1b[38;2;255;255;255muser text\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      // No ❯-line match (no "❯ " in clean text from a line that also has gray segments)
+      // or gray segment is just "❯ " which is too short / no meaningful content
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  // === UI Chrome False Positive Filtering ===
+
+  describe('ghost text UI chrome filtering', () => {
+    it('filters out "Tip:" segments on prompt line', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // ❯-line with ghost text + Tip in separate gray segments
+      p.feed('❯ \x1b[38;2;153;153;153mshow me the diff\x1b[0m\x1b[70G\x1b[90mTip: Did you know you can...\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('show me the diff');
+    });
+
+    it('filters out "(ctrl+...)" shortcut hints on prompt line', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      p.feed('❯ \x1b[90m(ctrl+o to expand)(1m 23s · ↓ 5k tokens)\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      // Both segments are UI chrome — nothing should be emitted
+      expect(events).toHaveLength(0);
+    });
+
+    it('filters concatenated UI chrome even in scheduleSuggestion', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // Single gray segment that is UI chrome
+      p.feed('❯ \x1b[90mTip: Use /commit to save\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('keeps ghost text when UI chrome is also present on the line', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // Ghost text + "to expand" hint on the same ❯-line
+      p.feed('❯ \x1b[90mrefactor the code\x1b[0m  \x1b[90m(ctrl+o to expand)\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('refactor the code');
+    });
+  });
+
+  // === Extended Thinking Indicator Filtering ===
+
+  describe('filters out extended thinking indicators', () => {
+    it('rejects "(thought for 1s)" as ghost text via isUiChrome', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // Gray "(thought for 1s)" on the prompt line — should be filtered
+      p.feed('❯ \x1b[90m(thought for 1s)\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('rejects "(thought for 1s)>" via scheduleSuggestion', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // Strategy 1 won't match (no "Try"), so if gray detection somehow
+      // passes a concatenated "(thought for 1s)>" string, scheduleSuggestion catches it
+      p.feed('❯ \x1b[90m(thought for 1s)>\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('rejects longer thinking durations like "(thought for 15s)"', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      p.feed('❯ \x1b[90m(thought for 15s)\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('rejects "(thought for 1m 30s)" multipart duration', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      p.feed('❯ \x1b[90m(thought for 1m 30s)\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  // === Combined SGR + Cross-chunk Detection ===
+
+  describe('stacked ANSI + cross-chunk ghost text', () => {
+    it('detects ghost text with stacked ANSI escapes (gray + italic)', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // \x1b[38;2;153;153;153m (gray) + \x1b[3m (italic) stacked
+      p.feed('❯ \x1b[38;2;153;153;153m\x1b[3mrefactor the code\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('refactor the code');
+    });
+
+    it('detects ghost text with combined SGR params (2;90 = dim+bright-black)', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // Combined SGR: dim + bright black in a single escape
+      p.feed('❯ \x1b[2;90mrefactor the code\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('refactor the code');
+    });
+
+    it('detects cross-chunk ghost text (❯ and gray text in separate feeds)', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // Chunk 1: just the prompt
+      p.feed('❯ ');
+      vi.advanceTimersByTime(50);
+
+      // Chunk 2: gray ghost text (same terminal line, no \n)
+      p.feed('\x1b[38;2;153;153;153mshow me the diff\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('show me the diff');
+    });
+
+    it('does NOT cross-chunk detect when new chunk has \\n (different line)', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+
+      // Chunk 1: prompt
+      p.feed('❯ ');
+      vi.advanceTimersByTime(50);
+
+      // Chunk 2: gray text on a NEW line (not continuation of prompt line)
+      p.feed('\n\x1b[90msome status text\x1b[0m');
+      vi.advanceTimersByTime(600);
+
+      expect(events).toHaveLength(0);
+    });
   });
 
   // === Ghost Option from Stale Buffer Content ===
@@ -1720,12 +2041,12 @@ describe('OutputParser', () => {
         '\n' +
         'Would you like to proceed?\n' +
         '\n' +
-        '❯ 1. Yes, clear context\n' +
-        '  2. Yes, auto-accept\n' +
-        '  3. Yes, manually approve\n' +
-        '  4. Type here\n' +
+        '❯ 1. Yes, clear context (33% used) and auto-accept edits (shift+tab)\n' +
+        '  2. Yes, auto-accept edits\n' +
+        '  3. Yes, manually approve edits\n' +
+        '  4. Type here to tell Claude what to change\n' +
         '\n' +
-        'ctrl-g to edit in VS Code\n',
+        'ctrl-g to edit in VS Code · ~/.claude/plans/crystalline-moseying-raccoon.md\n',
       );
       vi.advanceTimersByTime(200);
 
@@ -1736,6 +2057,42 @@ describe('OutputParser', () => {
       expect(opts[0]).toMatchObject({ index: 0 });
       expect(opts[3]).toMatchObject({ index: 3 });
       expect(opts.every((o: PromptOption) => o.index < 4)).toBe(true);
+    });
+
+    it('bypasses chunk size guard when ❯ cursor is present in large chunk', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      // Build a chunk whose non-ws chars exceed 200 — without ❯ cursor this
+      // would be filtered out by the size guard as a "Claude response" false positive.
+      const longPreamble =
+        'This is a detailed plan description that includes many steps and explanations. ' +
+        'Step one involves setting up the environment. Step two covers implementation. ' +
+        'Step three is about testing. Step four handles deployment and monitoring.\n\n';
+      p.feed(
+        longPreamble +
+        '❯ 1. Yes, clear context (33% used) and auto-accept edits (shift+tab)\n' +
+        '  2. Yes, auto-accept edits\n' +
+        '  3. Yes, manually approve edits\n' +
+        '  4. Type here to tell Claude what to change\n' +
+        '\n' +
+        'ctrl-g to edit in VS Code · ~/.claude/plans/crystalline-moseying-raccoon.md\n',
+      );
+      vi.advanceTimersByTime(200);
+
+      // Verify the chunk actually exceeds 200 non-ws chars (precondition)
+      const fullChunk =
+        longPreamble +
+        '❯ 1. Yes, clear context (33% used) and auto-accept edits (shift+tab)\n' +
+        '  2. Yes, auto-accept edits\n' +
+        '  3. Yes, manually approve edits\n' +
+        '  4. Type here to tell Claude what to change\n' +
+        '\n' +
+        'ctrl-g to edit in VS Code · ~/.claude/plans/crystalline-moseying-raccoon.md\n';
+      expect(fullChunk.replace(/\s/g, '').length).toBeGreaterThan(200);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].options).toHaveLength(4);
     });
 
     it('still works with scrambled TUI order after backward scan', () => {

@@ -57,11 +57,56 @@ const IDLE_DEBOUNCE_MS = 300;
 const OPTION_DEBOUNCE_MS = 150;
 const SUGGESTION_DEBOUNCE_MS = 500;
 
-// Ghost text: bright black(90), 256-color grays(232-255)
-// NOTE: dim(2) excluded — used broadly in Claude Code UI (status bars, hints, quoted text)
-// Ghost text is always single-line, so \n/\r excluded from capture group
-// Global flag: ghost text may span multiple ANSI segments (e.g. "다\x1b[90m시 시도해봐")
-const GHOST_TEXT_RE = /\x1b\[(?:90|38;5;2(?:[3-5]\d))m([^\x1b\n\r]+)/g;
+// Ghost text: ANSI segment extractor — captures one or more consecutive SGR sequences
+// followed by visible text. Handles stacked escapes like \x1b[38;2;r;g;bm\x1b[3mtext
+const ANSI_TEXT_RE = /((?:\x1b\[[\d;]+m)+)([^\x1b\n\r]+)/g;
+
+/**
+ * Check if any SGR parameter string in a list indicates gray foreground.
+ * Each element is from a separate \x1b[params;m escape in a stacked sequence.
+ * Also handles combined SGR codes (e.g. "2;90" = dim + bright black).
+ */
+function hasGrayForeground(paramsList: string[]): boolean {
+  for (const params of paramsList) {
+    const nums = params.split(';').map(Number);
+    for (let i = 0; i < nums.length; i++) {
+      // SGR 90 (bright black)
+      if (nums[i] === 90) return true;
+      // 256-color foreground: 38;5;N (grays 230-255)
+      if (nums[i] === 38 && nums[i + 1] === 5) {
+        const n = nums[i + 2];
+        if (n >= 230 && n <= 255) return true;
+        i += 2;
+        continue;
+      }
+      // 24-bit foreground: 38;2;R;G;B (near-gray, mid-brightness)
+      if (nums[i] === 38 && nums[i + 1] === 2) {
+        const r = nums[i + 2], g = nums[i + 3], b = nums[i + 4];
+        if (r != null && g != null && b != null) {
+          const max = Math.max(r, g, b), min = Math.min(r, g, b);
+          if ((max - min) <= 30 && max >= 60 && max <= 210) return true;
+        }
+        i += 4;
+        continue;
+      }
+    }
+  }
+  return false;
+}
+
+/** Check if a gray ANSI text segment is Claude Code UI chrome (not a ghost text suggestion) */
+function isUiChrome(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  return (
+    /^Tip:|Did you know/i.test(t) ||
+    /ctrl[\+\-]|shift[\+\-]|⌘|⌥|⌃/i.test(t) ||
+    /^\(\d+[mhs]/i.test(t) ||
+    /\(thought\s+for\s/i.test(t) ||
+    /^[?]\s|for\s+shortcuts|esc\s+to|enter\s+to/i.test(t) ||
+    /to\s+(expand|cycle|confirm|exit|edit\s+in)/i.test(t)
+  );
+}
 
 export class OutputParser extends EventEmitter {
   private buffer = '';
@@ -84,6 +129,9 @@ export class OutputParser extends EventEmitter {
   private lastNavigableEmit = false;
   private lastCursorIndex = 0;
   private pendingAnsi = '';
+  // Cooldown after emitting permission/diff prompt — suppresses false idle
+  // from user prompt echo (❯ text) in the same PTY batch
+  private interactiveCooldown: ReturnType<typeof setTimeout> | null = null;
 
   feed(rawData: string): void {
     const data = this.pendingAnsi + rawData;
@@ -143,12 +191,23 @@ export class OutputParser extends EventEmitter {
       return;
     }
 
-    // Strategy 2 (ANSI fallback): gray segments, but ONLY on the line containing ❯.
-    // This prevents false positives from diff line numbers, status bars, etc.
+    // Strategy 2 (ANSI gray): gray segments on the line containing ❯.
     // Split by newlines; PTY may use \r to rewrite current line — split on \n only.
-    const promptLineRaw = rawData.split('\n').find(line => /[❯>][ \t\u00A0]/.test(stripAnsi(line)));
+    let promptLineRaw = rawData.split('\n').find(line => /[❯>][ \t\u00A0]/.test(stripAnsi(line)));
+
+    // Strategy 3 (cross-chunk): ghost text may arrive in a separate PTY chunk from ❯.
+    // If no ❯-line in current chunk and no \n (same terminal line continuation),
+    // check if the buffer's last visible line starts with ❯.
+    if (!promptLineRaw && !rawData.includes('\n')) {
+      const rawLastLine = this.buffer.split('\n').pop() ?? '';
+      const visibleLastLine = rawLastLine.split('\r').pop() ?? '';
+      if (/^[❯>][ \t\u00A0]/.test(visibleLastLine)) {
+        promptLineRaw = rawData;
+        debug('Parser', 'ghostText strategy3: cross-chunk ❯-line continuation');
+      }
+    }
+
     if (!promptLineRaw) {
-      // Debug: log lines that contain prompt chars for diagnosis
       const hasPromptChar = clean.includes('❯') || clean.includes('>');
       if (hasPromptChar && clean.length < 200) {
         const escaped = rawData.replace(/\x1b/g, '\\e').replace(/[\n\r]/g, '\\n').slice(0, 300);
@@ -157,14 +216,24 @@ export class OutputParser extends EventEmitter {
       return;
     }
 
-    GHOST_TEXT_RE.lastIndex = 0;
+    // Extract gray text segments, filtering out UI chrome (tips, shortcut hints, status)
+    ANSI_TEXT_RE.lastIndex = 0;
     const segments: string[] = [];
-    for (const m of promptLineRaw.matchAll(GHOST_TEXT_RE)) {
-      segments.push(m[1]);
+    for (const m of promptLineRaw.matchAll(ANSI_TEXT_RE)) {
+      const ansiBlock = m[1];
+      const text = m[2];
+      // Extract all SGR param strings from stacked ANSI escapes
+      const sgrParams = [...ansiBlock.matchAll(/\x1b\[([\d;]+)m/g)].map(pm => pm[1]);
+      if (hasGrayForeground(sgrParams)) {
+        const trimmed = text.trim();
+        if (trimmed && !isUiChrome(trimmed)) {
+          segments.push(text); // preserve original spacing for join
+        }
+      }
     }
     if (segments.length === 0) {
       const escaped = promptLineRaw.replace(/\x1b/g, '\\e').replace(/[\n\r]/g, '\\n').slice(0, 300);
-      debug('Parser', `ghostText: ❯-line found but no gray segments. raw=${escaped}`);
+      debug('Parser', `ghostText: ❯-line found but no usable gray segments. raw=${escaped}`);
       return;
     }
 
@@ -183,8 +252,13 @@ export class OutputParser extends EventEmitter {
     // \p{L} matches Unicode letters including CJK (Korean, Japanese, Chinese)
     if (!/\w{2,}/u.test(text) && !/\p{L}{2,}/u.test(text)) return;
 
-    // Filter out UI chrome fragments
+    // Filter out UI chrome fragments (defense-in-depth, also filtered at segment level)
     if (/^[?]$|^esc\b|^shift\b|^ctrl\b|^enter\b|for\s+shortcuts/i.test(text)) return;
+    if (/^Tip:|Did you know/i.test(text)) return;
+    if (/ctrl[\+\-]|shift[\+\-]/i.test(text)) return;
+    if (/^\(\d+[mhs]/i.test(text)) return;
+    if (/\(thought\s+for\s/i.test(text)) return;
+    if (/to\s+(expand|cycle|confirm|exit|edit\s+in)/i.test(text)) return;
 
     // Filter out file paths (e.g. "/Users/foo/project" from PTY screen redraws)
     if (/^[~/]/.test(text) && /\//.test(text)) return;
@@ -312,6 +386,7 @@ export class OutputParser extends EventEmitter {
         { index: 2, label: 'Deny', shortcut: 'd' },
       ];
       this.emit('diff_prompt', { options });
+      this.startInteractiveCooldown();
       return;
     }
 
@@ -328,6 +403,7 @@ export class OutputParser extends EventEmitter {
         { index: 2, label: 'Always allow', shortcut: 'a' },
       ];
       this.emit('permission_prompt', { options, promptType: 'yes_no_always' });
+      this.startInteractiveCooldown();
       return;
     }
 
@@ -344,6 +420,7 @@ export class OutputParser extends EventEmitter {
         ],
         promptType: 'yes_no',
       });
+      this.startInteractiveCooldown();
       return;
     }
 
@@ -351,8 +428,11 @@ export class OutputParser extends EventEmitter {
     // Guard: real interactive option prompts arrive in small TUI redraws (<200 non-ws chars).
     // Large chunks (≥200) are Claude's response text which may contain numbered lists
     // (e.g. "1. First approach\n2. Second approach") — these are NOT interactive options.
+    // Exception: ❯ cursor before a numbered option is a definitive TUI indicator —
+    // Claude response text never contains "❯ 1." so this bypasses the size guard safely.
     const chunkNonWs = chunk.replace(/\s/g, '').length;
-    if ((OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk)) && chunkNonWs < 200) {
+    const hasNavigableCursor = /^\s*❯\s*\d{1,2}[.)]/m.test(chunk);
+    if ((OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk)) && (hasNavigableCursor || chunkNonWs < 200)) {
       debug('Parser', 'option pattern detected — starting/resetting debounce');
       this.resetIdleTimer();
       this.resetOptionTimer();
@@ -366,9 +446,10 @@ export class OutputParser extends EventEmitter {
               ...opt,
               shortcut: opt.shortcut || this.inferShortcut(opt.label),
             }));
-            debug('Parser', `EMIT permission_prompt (${options.length} options, reclassified from numbered, debounced)`);
-            this.lastNavigableEmit = false;
-            this.emit('permission_prompt', { options, promptType: 'yes_no_always' });
+            debug('Parser', `EMIT permission_prompt (${options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, reclassified from numbered, debounced)`);
+            this.lastNavigableEmit = parsed.navigable;
+            this.lastCursorIndex = parsed.cursorIndex;
+            this.emit('permission_prompt', { options, promptType: 'yes_no_always', navigable: parsed.navigable, cursorIndex: parsed.cursorIndex });
           } else {
             this.lastNavigableEmit = parsed.navigable;
             this.lastCursorIndex = parsed.cursorIndex;
@@ -409,6 +490,12 @@ export class OutputParser extends EventEmitter {
       // Screen redraws can contain both option prompts and ❯ in rapid succession.
       if (this.optionTimer) {
         debug('Parser', 'idle prompt ignored — option debounce pending');
+        return;
+      }
+      // After permission/diff emit, suppress false idle from user prompt echo
+      // (❯ text) in the same PTY batch (arrives within ~10ms).
+      if (this.interactiveCooldown) {
+        debug('Parser', 'idle prompt ignored — interactive cooldown active');
         return;
       }
       if (!this.seenFirstIdle) {
@@ -632,9 +719,11 @@ export class OutputParser extends EventEmitter {
   /** Infer keyboard shortcut from option label text */
   private inferShortcut(label: string): string {
     const lower = label.toLowerCase();
+    if (/^always\b/.test(lower)) return 'a';
+    if (/don['\u2019]t\s+ask\s+again/.test(lower)) return 'a';
+    if (/allow\s+all\s+sessions/.test(lower)) return 'a';
     if (/^yes\b/.test(lower)) return 'y';
     if (/^no\b/.test(lower) || /^deny\b/.test(lower)) return 'n';
-    if (/^always\b/.test(lower)) return 'a';
     if (/^view\b/.test(lower)) return 'v';
     if (/^apply\b/.test(lower)) return 'a';
     return lower.charAt(0);
@@ -805,6 +894,18 @@ export class OutputParser extends EventEmitter {
     if (this.optionTimer) { clearTimeout(this.optionTimer); this.optionTimer = null; }
   }
 
+  /** Brief cooldown after permission/diff emit — prevents false idle from PTY batch echo */
+  private startInteractiveCooldown(): void {
+    if (this.interactiveCooldown) clearTimeout(this.interactiveCooldown);
+    this.interactiveCooldown = setTimeout(() => {
+      this.interactiveCooldown = null;
+    }, 200);
+  }
+
+  private resetInteractiveCooldown(): void {
+    if (this.interactiveCooldown) { clearTimeout(this.interactiveCooldown); this.interactiveCooldown = null; }
+  }
+
   getProjectName(): string | null { return this.projectName; }
   getModelName(): string | null { return this.modelName; }
 
@@ -822,6 +923,7 @@ export class OutputParser extends EventEmitter {
     this.resetSpinnerTimer();
     this.resetIdleTimer();
     this.resetOptionTimer();
+    this.resetInteractiveCooldown();
     if (this.modeSwitchTimer) {
       clearTimeout(this.modeSwitchTimer);
       this.modeSwitchTimer = null;

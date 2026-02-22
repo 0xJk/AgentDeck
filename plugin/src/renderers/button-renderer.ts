@@ -8,12 +8,15 @@ const MAX_LINES = 3;
 
 /** Abbreviation patterns: applied only when text overflows */
 const ABBREVIATIONS: [RegExp, string][] = [
-  [/^Yes,?\s+allow\s+and\s+don['']t\s+ask\s+again$/i, 'Allow always'],
+  [/^Yes,?\s+allow\s+and\s+don['\u2019]t\s+ask\s+again$/i, 'Allow always'],
+  [/^Yes,?\s+and\s+don['\u2019]t\s+ask\s+again\s+for:\s*/i, 'ALWAYS: '],
+  [/^Yes,?\s+and\s+don['\u2019]t\s+ask\s+again$/i, 'ALWAYS'],
+  [/^Yes,?\s+allow\s+all\s+sessions\s+in\s+/i, 'Trust: '],
   [/^Yes,?\s+I\s+trust\s+this\s+folder$/i, 'Trust folder'],
   [/^Yes,?\s+allow\s+this\s+/i, 'Allow '],
   [/^Yes,?\s+/i, 'Yes, '],
-  [/^No,?\s+don['']t\s+allow$/i, 'Deny'],
-  [/^No,?\s+and\s+don['']t\s+ask\s+again$/i, 'Deny always'],
+  [/^No,?\s+don['\u2019]t\s+allow$/i, 'Deny'],
+  [/^No,?\s+and\s+don['\u2019]t\s+ask\s+again$/i, 'Deny always'],
 ];
 
 /** Try to shorten label using known patterns. Returns null if no match. */

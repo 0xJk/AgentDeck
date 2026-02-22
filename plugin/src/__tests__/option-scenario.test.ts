@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { State, PermissionMode, type PromptOption } from '@agentdeck/shared';
-import { LayoutManager } from '../layout-manager.js';
+import { LayoutManager, colorForOption } from '../layout-manager.js';
 import {
   renderFocusPanel,
   renderListPanel,
@@ -113,5 +113,46 @@ describe('6-option SELECT scenario', () => {
     expect(buttons[0].action).toBe('respond:y');
     // Empty shortcut falls back to label first char ('n' for 'No')
     expect(buttons[1].action).toBe('respond:n');
+  });
+});
+
+describe('colorForOption — "don\'t ask again" / "allow all sessions"', () => {
+  const blue = '#1e40af';
+  const green = '#166534';
+
+  it('returns blue for "Yes, and don\'t ask again for: tail:*"', () => {
+    const opt: PromptOption = { index: 1, label: "Yes, and don't ask again for: tail:*", shortcut: 'a' };
+    const { color } = colorForOption(opt);
+    expect(color).toBe(blue);
+  });
+
+  it('returns blue for "Yes, and don\u2019t ask again" (smart quote)', () => {
+    const opt: PromptOption = { index: 1, label: "Yes, and don\u2019t ask again", shortcut: 'a' };
+    const { color } = colorForOption(opt);
+    expect(color).toBe(blue);
+  });
+
+  it('returns blue for "Yes, allow all sessions in project"', () => {
+    const opt: PromptOption = { index: 1, label: 'Yes, allow all sessions in project', shortcut: 'a' };
+    const { color } = colorForOption(opt);
+    expect(color).toBe(blue);
+  });
+
+  it('returns green for plain "Yes" (shortcut y)', () => {
+    const opt: PromptOption = { index: 0, label: 'Yes', shortcut: 'y' };
+    const { color } = colorForOption(opt);
+    expect(color).toBe(green);
+  });
+
+  it('returns green for "Apply" (shortcut a, but no "don\'t ask" pattern)', () => {
+    const opt: PromptOption = { index: 1, label: 'Apply', shortcut: 'a' };
+    const { color } = colorForOption(opt);
+    expect(color).toBe(green);
+  });
+
+  it('returns blue for "Always allow"', () => {
+    const opt: PromptOption = { index: 2, label: 'Always allow', shortcut: 'a' };
+    const { color } = colorForOption(opt);
+    expect(color).toBe(blue);
   });
 });
