@@ -36,7 +36,8 @@ const userSettingsMap = new Map<string, ResponseButtonSettings>();
 
 /** Compute effective settings for a button: slot defaults + user overrides (disconnected* always from defaults) */
 function effectiveSettings(actionId: string): ResponseButtonSettings {
-  const slot = actionIds.indexOf(actionId);
+  const sortedIds = getSortedIds();
+  const slot = sortedIds.indexOf(actionId);
   const defaults = (slot >= 0 && slot < DEFAULT_IDLE_SETTINGS.length) ? DEFAULT_IDLE_SETTINGS[slot] : {};
   const user = userSettingsMap.get(actionId);
   if (!user) return defaults;
@@ -51,8 +52,15 @@ let currentState = State.DISCONNECTED;
 let currentMode = 'default';
 let currentOptions: PromptOption[] = [];
 
-// Action IDs in insertion order (slot = order added by user)
-const actionIds: string[] = [];
+// Action ID → column coordinate for physical position sorting
+const actionCoords = new Map<string, number>();
+
+/** Return action IDs sorted by physical column position (left → right) */
+function getSortedIds(): string[] {
+  return [...actionCoords.keys()].sort((a, b) =>
+    (actionCoords.get(a) ?? 99) - (actionCoords.get(b) ?? 99)
+  );
+}
 
 export function initResponseButtons(
   b: BridgeClient,
@@ -127,24 +135,26 @@ function disconnectedButtonConfig(s: ResponseButtonSettings): ButtonConfig {
 }
 
 function refreshAllButtons(): void {
+  const sorted = getSortedIds();
+
   if (currentState === State.IDLE && !overrideConfigs) {
     // IDLE: use per-instance PI settings
-    dlog('RspBut', `refresh IDLE: ids=${actionIds.length}`);
-    for (let i = 0; i < actionIds.length; i++) {
-      const s = effectiveSettings(actionIds[i]);
-      applyButtonConfig(actionIds[i], idleButtonConfig(s), i);
+    dlog('RspBut', `refresh IDLE: ids=${sorted.length}`);
+    for (let i = 0; i < sorted.length; i++) {
+      const s = effectiveSettings(sorted[i]);
+      applyButtonConfig(sorted[i], idleButtonConfig(s), i);
     }
     return;
   }
 
   if (overrideConfigs) {
     // Expanded mode: use externally provided configs for slots 3-5
-    dlog('RspBut', `refresh expanded: ids=${actionIds.length} configs=${overrideConfigs.length}`);
-    for (let i = 0; i < actionIds.length; i++) {
+    dlog('RspBut', `refresh expanded: ids=${sorted.length} configs=${overrideConfigs.length}`);
+    for (let i = 0; i < sorted.length; i++) {
       if (i < overrideConfigs.length) {
-        applyButtonConfig(actionIds[i], overrideConfigs[i], i);
+        applyButtonConfig(sorted[i], overrideConfigs[i], i);
       } else {
-        applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false }, i);
+        applyButtonConfig(sorted[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false }, i);
       }
     }
     return;
@@ -152,20 +162,20 @@ function refreshAllButtons(): void {
 
   // DISCONNECTED: show shell-command buttons active, others dimmed
   if (currentState === State.DISCONNECTED) {
-    dlog('RspBut', `refresh DISCONNECTED: ids=${actionIds.length}`);
-    for (let i = 0; i < actionIds.length; i++) {
-      const s = effectiveSettings(actionIds[i]);
-      applyButtonConfig(actionIds[i], disconnectedButtonConfig(s), i);
+    dlog('RspBut', `refresh DISCONNECTED: ids=${sorted.length}`);
+    for (let i = 0; i < sorted.length; i++) {
+      const s = effectiveSettings(sorted[i]);
+      applyButtonConfig(sorted[i], disconnectedButtonConfig(s), i);
     }
     return;
   }
 
   // PROCESSING: show idle labels dimmed
   if (currentState === State.PROCESSING) {
-    dlog('RspBut', `refresh PROCESSING: ids=${actionIds.length} (dimmed idle labels)`);
-    for (let i = 0; i < actionIds.length; i++) {
-      const s = effectiveSettings(actionIds[i]);
-      applyButtonConfig(actionIds[i], dimButtonConfig(s), i);
+    dlog('RspBut', `refresh PROCESSING: ids=${sorted.length} (dimmed idle labels)`);
+    for (let i = 0; i < sorted.length; i++) {
+      const s = effectiveSettings(sorted[i]);
+      applyButtonConfig(sorted[i], dimButtonConfig(s), i);
     }
     return;
   }
@@ -177,12 +187,12 @@ function refreshAllButtons(): void {
     currentOptions,
   );
 
-  dlog('RspBut', `refresh: state=${currentState} ids=${actionIds.length} buttons=[${buttons.map(b => b.title ? `"${b.badge ? b.badge + ' ' : ''}${b.title}${b.subtitle ? ' | ' + b.subtitle : ''}"` : 'DIM').join(', ')}]`);
-  for (let i = 0; i < actionIds.length; i++) {
+  dlog('RspBut', `refresh: state=${currentState} ids=${sorted.length} buttons=[${buttons.map(b => b.title ? `"${b.badge ? b.badge + ' ' : ''}${b.title}${b.subtitle ? ' | ' + b.subtitle : ''}"` : 'DIM').join(', ')}]`);
+  for (let i = 0; i < sorted.length; i++) {
     if (i < buttons.length) {
-      applyButtonConfig(actionIds[i], buttons[i], i);
+      applyButtonConfig(sorted[i], buttons[i], i);
     } else {
-      applyButtonConfig(actionIds[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false }, i);
+      applyButtonConfig(sorted[i], { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false }, i);
     }
   }
 }
@@ -202,11 +212,10 @@ function applyButtonConfig(actionId: string, config: ButtonConfig, slotIndex?: n
 @action({ UUID: 'bound.serendipity.agentdeck.response-button' })
 export class ResponseButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
-    if (!actionIds.includes(ev.action.id)) {
-      actionIds.push(ev.action.id);
-    }
-    const slot = actionIds.indexOf(ev.action.id);
-    dlog('RspBut', `onWillAppear: id=${ev.action.id} slot=${slot} total=${actionIds.length}`);
+    actionCoords.set(ev.action.id, ev.action.coordinates?.column ?? 99);
+    const sorted = getSortedIds();
+    const slot = sorted.indexOf(ev.action.id);
+    dlog('RspBut', `onWillAppear: id=${ev.action.id} col=${ev.action.coordinates?.column} slot=${slot} total=${sorted.length}`);
 
     // Only cache user-customised PI settings; defaults are computed dynamically from slot position
     const settings = (ev.payload?.settings ?? {}) as ResponseButtonSettings;
@@ -221,8 +230,9 @@ export class ResponseButtonAction extends SingletonAction {
 
   /** Persist slot defaults to PI for buttons without user-customised settings */
   private syncAllPIDefaults(): void {
-    for (let i = 0; i < actionIds.length; i++) {
-      const id = actionIds[i];
+    const sorted = getSortedIds();
+    for (let i = 0; i < sorted.length; i++) {
+      const id = sorted[i];
       if (userSettingsMap.has(id)) continue;  // User has custom settings
       if (i >= DEFAULT_IDLE_SETTINGS.length) continue;
       const defaults = DEFAULT_IDLE_SETTINGS[i];
@@ -248,7 +258,8 @@ export class ResponseButtonAction extends SingletonAction {
   }
 
   override async onKeyDown(ev: KeyDownEvent): Promise<void> {
-    const slot = actionIds.indexOf(ev.action.id);
+    const sorted = getSortedIds();
+    const slot = sorted.indexOf(ev.action.id);
     if (slot < 0) return;
 
     let actionStr: string | undefined;
@@ -317,10 +328,7 @@ export class ResponseButtonAction extends SingletonAction {
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {
-    const idx = actionIds.indexOf(ev.action.id);
-    if (idx !== -1) {
-      actionIds.splice(idx, 1);
-    }
+    actionCoords.delete(ev.action.id);
     userSettingsMap.delete(ev.action.id);
   }
 }

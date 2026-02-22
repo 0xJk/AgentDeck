@@ -186,7 +186,7 @@ export class LayoutManager {
       title: truncateLabel(opt.label),
       ...colorForOption(opt),
       enabled: true,
-      action: `respond:${opt.shortcut || 'y'}`,
+      action: `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
     }));
   }
 

@@ -92,9 +92,9 @@ describe('6-option SELECT scenario', () => {
       { index: 2, label: 'Always', shortcut: '', recommended: false, selected: false },
     ];
     const buttons = lm.getButtonLayout(State.AWAITING_PERMISSION, PermissionMode.DEFAULT, permOpts);
-    // permissionButtons: shortcut || 'y' fallback
+    // permissionButtons: shortcut || label first char fallback
     expect(buttons[0].action).toBe('respond:y');
-    // Empty shortcut falls back to 'y' in permissionButtons (encoder push has separate label-char fallback)
-    expect(buttons[1].action).toBe('respond:y');
+    // Empty shortcut falls back to label first char ('n' for 'No')
+    expect(buttons[1].action).toBe('respond:n');
   });
 });
