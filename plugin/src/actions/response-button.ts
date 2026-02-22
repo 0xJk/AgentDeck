@@ -6,6 +6,7 @@ import streamDeck, {
   WillDisappearEvent,
   DidReceiveSettingsEvent,
 } from '@elgato/streamdeck';
+import { exec } from 'child_process';
 import { State, PromptOption } from '@agentdeck/shared';
 import { BridgeClient } from '../bridge-client.js';
 import { LayoutManager, ButtonConfig } from '../layout-manager.js';
@@ -19,10 +20,12 @@ interface ResponseButtonSettings {
   [key: string]: JsonValue;
   label?: string;
   action?: string;
+  disconnectedLabel?: string;
+  disconnectedAction?: string;
 }
 
 const DEFAULT_IDLE_SETTINGS: ResponseButtonSettings[] = [
-  { label: 'GO ON', action: 'continue' },
+  { label: 'GO ON', action: 'continue', disconnectedLabel: 'START', disconnectedAction: 'sdc' },
   { label: 'REVIEW', action: '/review' },
   { label: 'COMMIT', action: '/commit' },
   { label: 'CLEAR', action: '/clear' },
@@ -37,8 +40,9 @@ let currentState = State.DISCONNECTED;
 let currentMode = 'default';
 let currentOptions: PromptOption[] = [];
 
-// Action IDs in arrival order (stable across refreshes — slot numbers shown on buttons)
+// Action IDs sorted by physical column position (deterministic slot numbering)
 const actionIds: string[] = [];
+const actionColumns = new Map<string, number>();
 
 export function initResponseButtons(
   b: BridgeClient,
@@ -88,6 +92,20 @@ function dimButtonConfig(s: ResponseButtonSettings): ButtonConfig {
   };
 }
 
+/** Config for DISCONNECTED state — active if shell command configured, dimmed otherwise */
+function disconnectedButtonConfig(s: ResponseButtonSettings): ButtonConfig {
+  const cmd = s.disconnectedAction?.trim() ?? '';
+  if (!cmd) return dimButtonConfig(s);
+  const label = s.disconnectedLabel ?? cmd;
+  return {
+    title: label,
+    color: '#1e293b',
+    textColor: '#64748b',
+    enabled: true,
+    action: `shell:${cmd}`,
+  };
+}
+
 function refreshAllButtons(): void {
   if (currentState === State.IDLE && !overrideConfigs) {
     // IDLE: use per-instance PI settings
@@ -112,9 +130,19 @@ function refreshAllButtons(): void {
     return;
   }
 
-  // DISCONNECTED / PROCESSING: show idle labels dimmed
-  if (currentState === State.DISCONNECTED || currentState === State.PROCESSING) {
-    dlog('RspBut', `refresh ${currentState}: ids=${actionIds.length} (dimmed idle labels)`);
+  // DISCONNECTED: show shell-command buttons active, others dimmed
+  if (currentState === State.DISCONNECTED) {
+    dlog('RspBut', `refresh DISCONNECTED: ids=${actionIds.length}`);
+    for (let i = 0; i < actionIds.length; i++) {
+      const s = idleSettingsMap.get(actionIds[i]) ?? DEFAULT_IDLE_SETTINGS[i] ?? {};
+      applyButtonConfig(actionIds[i], disconnectedButtonConfig(s), i);
+    }
+    return;
+  }
+
+  // PROCESSING: show idle labels dimmed
+  if (currentState === State.PROCESSING) {
+    dlog('RspBut', `refresh PROCESSING: ids=${actionIds.length} (dimmed idle labels)`);
     for (let i = 0; i < actionIds.length; i++) {
       const s = idleSettingsMap.get(actionIds[i]) ?? DEFAULT_IDLE_SETTINGS[i] ?? {};
       applyButtonConfig(actionIds[i], dimButtonConfig(s), i);
@@ -154,8 +182,11 @@ function applyButtonConfig(actionId: string, config: ButtonConfig, slotIndex?: n
 @action({ UUID: 'bound.serendipity.agentdeck.response-button' })
 export class ResponseButtonAction extends SingletonAction {
   override async onWillAppear(ev: WillAppearEvent): Promise<void> {
+    const col = 'coordinates' in ev.payload ? (ev.payload as { coordinates: { column: number } }).coordinates.column : actionIds.length;
+    actionColumns.set(ev.action.id, col);
     if (!actionIds.includes(ev.action.id)) {
       actionIds.push(ev.action.id);
+      actionIds.sort((a, b) => (actionColumns.get(a) ?? 0) - (actionColumns.get(b) ?? 0));
     }
     const slot = actionIds.indexOf(ev.action.id);
     dlog('RspBut', `onWillAppear: id=${ev.action.id} slot=${slot} total=${actionIds.length}`);
@@ -175,7 +206,9 @@ export class ResponseButtonAction extends SingletonAction {
 
     if (currentState === State.IDLE) {
       config = idleButtonConfig(s);
-    } else if (currentState === State.DISCONNECTED || currentState === State.PROCESSING) {
+    } else if (currentState === State.DISCONNECTED) {
+      config = disconnectedButtonConfig(s);
+    } else if (currentState === State.PROCESSING) {
       config = dimButtonConfig(s);
     } else {
       const buttons = layoutManager.getButtonLayout(
@@ -206,6 +239,17 @@ export class ResponseButtonAction extends SingletonAction {
     if (slot < 0) return;
 
     let actionStr: string | undefined;
+
+    if (currentState === State.DISCONNECTED) {
+      const s = idleSettingsMap.get(ev.action.id) ?? DEFAULT_IDLE_SETTINGS[slot] ?? {};
+      const cmd = s.disconnectedAction?.trim();
+      if (!cmd) return;
+      dlog('RspBut', `keyDown slot=${slot} shell="${cmd}"`);
+      exec(cmd, { cwd: process.env.HOME }, (err) => {
+        if (err) dlog('RspBut', `shell exec error: ${err.message}`);
+      });
+      return;
+    }
 
     if (overrideConfigs) {
       // Expanded mode: use override configs
