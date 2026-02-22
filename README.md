@@ -59,13 +59,15 @@ It's a **control surface** — like an audio mixing console or a video color pan
 
 | What it does | How |
 |---|---|
-| **Respond instantly** to permission prompts | YES / NO / ALWAYS buttons appear when needed |
+| **Respond instantly** to permission prompts | YES / NO / ALWAYS buttons appear with semantic colors (green/red/blue) |
 | **Interrupt** a runaway agent | STOP button sends Ctrl+C |
 | **Switch modes** on the fly | Mode button cycles Plan / Accept Edits / Default |
-| **Navigate options** physically | Encoder scrolls and selects multi-choice prompts |
-| **Speak to your agent** | Push-to-talk voice → whisper.cpp transcription → auto-send |
-| **Monitor usage** | Usage dashboard with 5h / 7d / extra / session pages |
+| **Navigate options** physically | Encoder scrolls and selects multi-choice prompts; wide-canvas LCD shows all options |
+| **Speak to your agent** | Push-to-talk voice → whisper.cpp transcription → auto-send. Works offline |
+| **See suggestions** | Claude Code ghost text (autocomplete) appears on the Action encoder LCD |
+| **Monitor usage** | Animated water-gauge dashboard with 5h / 7d / extra / session pages |
 | **Run quick actions** | GO ON / REVIEW / COMMIT / CLEAR buttons; encoder cycles custom prompts |
+| **Control system utilities** | Volume, mic, media playback, timer — all from the Utility encoder |
 | **Manage terminal sessions** | iTerm dial switches sessions, auto-attaches detached tmux, auto-switches on tab focus |
 | **Stay in flow** | Hardware augments your keyboard — never interrupts it |
 | **Control from anywhere** | Commands work even when the terminal is in the background — no need to switch windows |
@@ -297,12 +299,34 @@ sdc --command 'claude --model opus'  # custom Claude command
 
 ### Encoders — 4 Slots
 
-| Encoder | Action | Rotate | Push |
-|---------|--------|--------|------|
-| E1 | **Utility** | Adjust value | Toggle/Action |
-| E2 | **Action** | Scroll options / cycle prompts | Send prompt / Confirm |
-| E3 | **Terminal** | Switch session | Activate session / Attach tmux |
-| E4 | **Voice** | Scroll text | Hold = record, tap (<500ms) = cancel |
+| Encoder | Action | Rotate | Push | Touch |
+|---------|--------|--------|------|-------|
+| E1 | **Utility** | Adjust value (volume, mic, timer) | Toggle / Action | Switch mode |
+| E2 | **Action** | Scroll options / cycle prompts | Send prompt / Confirm | Same as push |
+| E3 | **Terminal** | Switch iTerm session | Activate / Attach tmux | — |
+| E4 | **Voice** | Scroll transcription text | Hold = record, tap (<500ms) = cancel | — |
+
+#### Utility Dial Modes (E1)
+
+The Utility encoder supports multiple modes, switchable via touch (long press ≥500ms):
+
+| Mode | Rotate | Push | Display |
+|------|--------|------|---------|
+| **Volume** | Adjust output volume (±5%) | Toggle mute | Volume % + bar |
+| **Mic** | Adjust input volume (±5%) | Toggle mute | Input level + bar |
+| **Media** | Adjust volume | Play / Pause | Track + artist (Spotify / Music.app) |
+| **Timer** | Adjust time (±5 min) | Start / Pause / Reset | Countdown + bar |
+
+#### Action Dial Features (E2)
+
+- **IDLE**: Cycles through prompt templates (rotate) and sends on push. If Claude Code shows a ghost text suggestion (autocomplete), it appears as the first prompt option
+- **Interactive**: Scrolls options (rotate) and confirms selection (push). For navigable prompts with `❯` cursor, arrow keys move the cursor in the PTY
+
+#### Voice Dial Features (E4)
+
+- **Recording**: Hold push to record, release to transcribe. Pulsing red indicator with waveform animation
+- **Voice Text Takeover**: After transcription, the text spans all 4 encoder LCDs (wide canvas, adaptive font 48→16px). Short push (<500ms) = send to Claude, long push (≥500ms) = cancel
+- **Offline-first**: Recording works even when bridge is disconnected — text is pasted via clipboard
 
 ### Dynamic Button States
 
@@ -320,7 +344,7 @@ The keypad reconfigures automatically based on agent state:
 [  dim  ] [  dim  ] [  dim  ] [ STOP  ]     ← STOP active, START spawns new session
 ```
 
-**AWAITING PERMISSION** — Yes/No/Always:
+**AWAITING PERMISSION** — Yes/No/Always (semantic colors: green=yes, red=deny, blue=always/"don't ask again"):
 ```
 [ MODE  ] [ SESS  ] [ USAGE ] [  YES  ]
 [  NO   ] [ALWAYS ] [  dim  ] [ STOP  ]
@@ -336,6 +360,12 @@ The keypad reconfigures automatically based on agent state:
 ```
 [ MODE  ] [ SESS  ] [ USAGE ] [ OPT 1 ]
 [ OPT 2 ] [ OPT 3 ] [MORE ▼] [ STOP  ]
+```
+
+**AWAITING DIFF** — file edit review:
+```
+[ MODE  ] [ SESS  ] [ USAGE ] [ APPLY ]
+[ DENY  ] [ VIEW  ] [  dim  ] [ STOP  ]
 ```
 
 **DISCONNECTED** — no session:
@@ -358,6 +388,17 @@ Detached tmux sessions from AgentDeck appear in the list with a 🔌 prefix (e.g
 
 The **Session button** long press also focuses the terminal — if the tmux session is detached, it auto-attaches in a new iTerm window.
 
+### Encoder Takeover (Wide Canvas)
+
+When Claude presents options, permissions, or diff prompts, the encoder LCDs switch to a **wide canvas** mode:
+
+| Encoder | Panel | Content |
+|---------|-------|---------|
+| E1 | **Context** | State indicator (color-coded), question text, cursor position |
+| E2–E4 | **Option List** | 600px-wide scrollable list with highlight, badges (★ recommended, ✓ selected), semantic colors |
+
+Rotate E2 to scroll, push to confirm. The wide canvas auto-scrolls to keep the selected option visible. When the prompt is answered, all encoders restore to their normal displays.
+
 ---
 
 ## State Machine
@@ -377,14 +418,20 @@ The bridge combines hook events and PTY output parsing to maintain 6 states:
          ▼                                        │
     ┌──────────────┐  permission prompt detected  │
     │  PROCESSING  │──────────────────────┐       │
-    └──────┬───────┘                      │       │
-           │                              ▼       │
-           │                    ┌─────────────┐   │
-           │                    │  AWAITING   │   │
-           │                    │  PERMISSION │───┘ user responds (y/n/a)
-           │                    └─────────────┘
-           │ option UI detected
-           ▼
+    └──┬───────┬───┘                      │       │
+       │       │                          ▼       │
+       │       │                ┌─────────────┐   │
+       │       │                │  AWAITING   │   │
+       │       │                │  PERMISSION │───┘ user responds (y/n/a)
+       │       │                └─────────────┘
+       │       │ diff prompt detected
+       │       ▼
+       │  ┌──────────────┐
+       │  │  AWAITING    │
+       │  │  DIFF        │────────────────────────┘ user responds (v/a/d)
+       │  └──────────────┘
+       │ option UI detected
+       ▼
     ┌──────────────┐
     │  AWAITING    │
     │  OPTION      │──────────────────────────────┘ user selects option
@@ -394,10 +441,10 @@ The bridge combines hook events and PTY output parsing to maintain 6 states:
 | State | Description | Detection |
 |-------|-------------|-----------|
 | `DISCONNECTED` | No session | `SessionEnd` hook, PTY exit |
-| `IDLE` | Waiting for prompt | `Stop` hook, idle pattern |
-| `PROCESSING` | Agent working | `UserPromptSubmit` hook, spinner |
-| `AWAITING_PERMISSION` | Yes/No response needed | Notification hook, `(y/n)` pattern |
-| `AWAITING_OPTION` | Selection needed | Numbered list pattern |
+| `IDLE` | Waiting for prompt | `Stop` hook, `❯` idle pattern |
+| `PROCESSING` | Agent working | `UserPromptSubmit` hook, spinner (✢✳✶✻✽) |
+| `AWAITING_PERMISSION` | Yes/No response needed | `Yes, allow once` / `(y/n)` pattern |
+| `AWAITING_OPTION` | Selection needed | Numbered list / `❯` navigable cursor |
 | `AWAITING_DIFF` | Diff review | `(V)iew/(A)pply/(D)eny` pattern |
 
 ---
@@ -409,28 +456,39 @@ Communication between the bridge (port 9120) and the Stream Deck plugin.
 ### Bridge → Plugin
 
 ```typescript
-// State change
-{ type: 'state_update', state: 'processing', permissionMode: 'default', currentTool: 'Read' }
+// State change (includes tool context, options, cursor, suggested prompt)
+{ type: 'state_update', state: 'processing', permissionMode: 'default', currentTool: 'Read',
+  toolInput: 'src/index.ts', navigable: false, suggestedPrompt: 'fix the bug' }
 
-// Prompt options
+// Prompt options (backward-compat, options-only)
 { type: 'prompt_options', promptType: 'yes_no_always', options: [{ index: 0, label: 'Yes' }, ...] }
 
-// Usage stats
-{ type: 'usage_update', sessionDurationSec: 120, inputTokens: 5000, outputTokens: 3000, toolCalls: 7 }
+// Usage stats (session + API-sourced plan usage)
+{ type: 'usage_update', sessionDurationSec: 120, inputTokens: 5000, outputTokens: 3000, toolCalls: 7,
+  fiveHourPercent: 42, sevenDayPercent: 15, extraUsageEnabled: true }
 
 // Connection status
 { type: 'connection', status: 'connected' }
+
+// Voice recording state
+{ type: 'voice_state', state: 'recording' }  // idle | recording | transcribing | error
+
+// User prompt echo (text user typed in terminal)
+{ type: 'user_prompt', text: 'fix the login bug' }
 ```
 
 ### Plugin → Bridge
 
 ```typescript
-{ type: 'respond', value: 'y' }              // Yes/No/Always response
-{ type: 'select_option', index: 2 }          // Option selection (0-based)
-{ type: 'send_prompt', text: 'fix the bug' } // Send prompt
+{ type: 'respond', value: 'y' }              // Yes/No/Always response (shortcut char)
+{ type: 'select_option', index: 2 }          // Option selection (0-based, sends Enter)
+{ type: 'navigate_option', direction: 'down' } // Cursor movement for navigable lists
+{ type: 'send_prompt', text: 'fix the bug' } // Send prompt text
 { type: 'switch_mode', mode: 'plan' }        // Mode switch (Shift+Tab)
 { type: 'interrupt' }                        // Ctrl+C
-{ type: 'voice', action: 'start' }           // Voice record start/stop
+{ type: 'escape' }                           // Esc key (cancel prompt/selection)
+{ type: 'voice', action: 'start' }           // Voice record start/stop/cancel
+{ type: 'query_usage' }                      // Refresh API usage data
 ```
 
 ---
@@ -486,18 +544,28 @@ AgentDeck/
 │   │   │   ├── utility-dial.ts       # Utility encoder: volume/mic/media/timer
 │   │   │   ├── iterm-dial.ts         # Terminal encoder: iTerm session manager
 │   │   │   └── voice-dial.ts         # Voice encoder: push-to-talk + transcription
-│   │   └── renderers/
-│   │       ├── button-renderer.ts    # SVG button image (pixel-aware text + abbreviation)
-│   │       ├── option-renderer.ts    # Encoder LCD option list (wide canvas)
-│   │       ├── response-renderer.ts  # Quick Action button state rendering
-│   │       ├── utility-renderer.ts   # Utility mode LCD panels
-│   │       ├── iterm-renderer.ts     # Terminal session LCD panel
-│   │       ├── voice-renderer.ts     # Voice status / transcription LCD
-│   │       └── text-utils.ts         # CJK-aware text measurement + wrapping
+│   │   ├── renderers/
+│   │   │   ├── button-renderer.ts    # SVG button image (pixel-aware text + abbreviation)
+│   │   │   ├── option-renderer.ts    # Encoder LCD option list (wide canvas)
+│   │   │   ├── response-renderer.ts  # Action encoder LCD state rendering
+│   │   │   ├── utility-renderer.ts   # Utility mode LCD panels
+│   │   │   ├── iterm-renderer.ts     # Terminal session LCD panel
+│   │   │   ├── voice-renderer.ts     # Voice status / transcription LCD
+│   │   │   └── text-utils.ts         # CJK-aware text measurement + wrapping
+│   │   └── utility-modes/
+│   │       ├── index.ts              # Mode registry and lifecycle
+│   │       ├── types.ts              # UtilityMode interface
+│   │       ├── macos.ts              # macOS system APIs (osascript, iTerm, paste)
+│   │       ├── volume.ts             # Output volume control
+│   │       ├── mic.ts                # Input volume / microphone control
+│   │       ├── media.ts              # Media playback (Spotify / Music.app)
+│   │       ├── timer.ts              # Countdown timer
+│   │       ├── brightness.ts         # Display brightness
+│   │       └── darkmode.ts           # Dark mode toggle
 │   ├── .sdPlugin/
 │   │   ├── manifest.json         # Stream Deck plugin manifest
 │   │   ├── bin/                  # Build output (plugin.js)
-│   │   ├── layouts/              # Encoder LCD layout (voice-layout.json)
+│   │   ├── layouts/              # Encoder LCD layouts (voice-layout.json, option-pixmap-layout.json)
 │   │   └── static/imgs/         # Icon assets
 │   └── rollup.config.mjs        # Bundle config
 │
@@ -654,14 +722,8 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 - Agent-agnostic bridge protocol for future agent backends
 
 ### Advanced Control Surface
-- Dynamic Canvas-rendered button images
-- LCD strip: current tool, progress indicators, token counters
 - Project-specific layout presets
-
-### Intelligence
-- Smart prompt suggestions based on context
-- Multi-session management
-- Usage analytics and cost tracking
+- Custom button icon support
 
 ---
 
