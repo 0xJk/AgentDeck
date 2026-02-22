@@ -22,9 +22,10 @@ interface ResponseButtonSettings {
 }
 
 const DEFAULT_IDLE_SETTINGS: ResponseButtonSettings[] = [
-  { label: 'FIX', action: 'Please fix the bug described above' },
-  { label: 'TEST', action: 'Write tests for the changes made' },
-  { label: 'COMPACT', action: '/compact' },
+  { label: 'GO ON', action: 'continue' },
+  { label: 'REVIEW', action: '/review' },
+  { label: 'COMMIT', action: '/commit' },
+  { label: 'CLEAR', action: '/clear' },
 ];
 
 /** Per-instance IDLE settings cache */
@@ -64,13 +65,15 @@ export function updateResponseState(
 
 function idleButtonConfig(s: ResponseButtonSettings): ButtonConfig {
   const label = s.label ?? '';
-  const isCommand = (s.action ?? '').startsWith('/');
+  const actionText = s.action?.trim() ?? '';
+  const enabled = actionText.length > 0;
+  const isCommand = actionText.startsWith('/');
   return {
     title: label,
     color: isCommand ? '#1e293b' : '#1e3a2f',
-    textColor: isCommand ? '#94a3b8' : '#6ee7b7',
-    enabled: true,
-    action: `command:${s.action ?? ''}`,
+    textColor: isCommand ? '#94a3b8' : (enabled ? '#6ee7b7' : '#555555'),
+    enabled,
+    action: `command:${actionText}`,
   };
 }
 

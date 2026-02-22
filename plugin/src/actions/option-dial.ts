@@ -35,10 +35,9 @@ const PIXMAP_LAYOUT = 'layouts/voice-layout.json';
 
 // ---- Prompt list (IDLE mode) ----
 const DEFAULT_PROMPTS = [
-  'Review this code for issues',
-  'Write tests for this',
-  'Refactor for clarity',
-  '/compact',
+  'continue',
+  '/review',
+  '/commit',
   '/clear',
 ];
 let prompts = [...DEFAULT_PROMPTS];
@@ -192,6 +191,16 @@ function refreshOptionDials(): void {
   }
 
   setCanvasFeedback(svg);
+}
+
+/**
+ * Request a takeover refresh (e.g. when a new encoder appears mid-takeover).
+ * Called by other dials' onWillAppear when they detect takeover is active.
+ */
+export function requestTakeoverRefresh(): void {
+  if (isEncoderTakeoverActive()) {
+    refreshOptionDials();
+  }
 }
 
 /**
