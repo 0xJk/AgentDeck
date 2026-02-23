@@ -11,11 +11,72 @@ AgentDeck turns your Elgato Stream Deck+ into a physical control surface for AI 
   <img src="docs/media/hero.jpg" width="720" alt="AgentDeck — Stream Deck+ controlling Claude Code with ACCEPT mode and voice recording">
 </p>
 
+<p align="center">
+  <video src="docs/media/demo-clip.mp4" width="720" controls muted autoplay loop playsinline>
+    <a href="docs/media/demo-clip.mp4">Watch demo clip</a>
+  </video>
+</p>
+
 | | Requirement |
 |---|---|
 | **Platform** | macOS 14+ (Sonoma) — Windows/Linux not supported |
 | **Hardware** | Elgato Stream Deck+ (8 keys, 4 encoders, LCD touch strip) |
 | **Terminal** | iTerm2 (required for session management and voice paste) |
+
+---
+
+## Table of Contents
+
+- [What is AgentDeck?](#what-is-agentdeck)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Manual Build & Install](#manual-build--install)
+- [Usage](#usage)
+- [Stream Deck+ Layout (v3)](#stream-deck-layout-v3)
+- [State Machine](#state-machine)
+- [WebSocket Protocol](#websocket-protocol)
+- [Project Structure](#project-structure)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Packaging & Distribution](#packaging--distribution)
+- [Uninstall](#uninstall)
+- [Development](#development)
+- [Roadmap](#roadmap)
+- [Button Label Intelligence](#button-label-intelligence)
+
+---
+
+## What is AgentDeck?
+
+AgentDeck is not a chat app, a plugin, or a shortcut collection.
+
+It's a **control surface** — like an audio mixing console or a video color panel, but for AI coding agents. It reads your agent's state in real-time and dynamically reconfigures buttons and encoders to match what's happening right now.
+
+| What it does | How |
+|---|---|
+| **Respond instantly** to permission prompts | YES / NO / ALWAYS buttons appear with semantic colors (green/red/blue) |
+| **Interrupt** a runaway agent | STOP button sends Ctrl+C |
+| **Switch modes** on the fly | Mode button cycles Plan / Accept Edits / Default |
+| **Navigate options** physically | Encoder scrolls and selects multi-choice prompts; wide-canvas LCD shows all options |
+| **Speak to your agent** | Push-to-talk voice → whisper.cpp transcription → auto-send. Works offline |
+| **See suggestions** | Claude Code ghost text (autocomplete) appears on the Action encoder LCD |
+| **Monitor usage** | Animated water-gauge dashboard with 5h / 7d / extra / session pages |
+| **Run quick actions** | GO ON / REVIEW / COMMIT / CLEAR buttons; encoder cycles custom prompts |
+| **Control system utilities** | Volume, mic, media playback, timer — all from the Utility encoder |
+| **Manage terminal sessions** | iTerm dial switches sessions, auto-attaches detached tmux, auto-switches on tab focus |
+| **Stay in flow** | Hardware augments your keyboard — never interrupts it |
+| **Control from anywhere** | Commands work even when the terminal is in the background — no need to switch windows |
+
+The bridge stays transparent: if it's off, Claude Code works exactly as before.
+
+### Supported Agents
+
+| Agent | Status |
+|-------|--------|
+| **Claude Code** | Supported |
+| **OpenClaw** | Planned |
+
+### Architecture
 
 ```
 ┌──────────────────────┐   WebSocket (ws://localhost:9120)   ┌────────────────────┐
@@ -52,44 +113,6 @@ AgentDeck turns your Elgato Stream Deck+ into a physical control surface for AI 
                                                              │  └──────────────┘  │
                                                              └────────────────────┘
 ```
-
----
-
-## What is AgentDeck?
-
-AgentDeck is not a chat app, a plugin, or a shortcut collection.
-
-It's a **control surface** — like an audio mixing console or a video color panel, but for AI coding agents. It reads your agent's state in real-time and dynamically reconfigures buttons and encoders to match what's happening right now.
-
-| What it does | How |
-|---|---|
-| **Respond instantly** to permission prompts | YES / NO / ALWAYS buttons appear with semantic colors (green/red/blue) |
-| **Interrupt** a runaway agent | STOP button sends Ctrl+C |
-| **Switch modes** on the fly | Mode button cycles Plan / Accept Edits / Default |
-| **Navigate options** physically | Encoder scrolls and selects multi-choice prompts; wide-canvas LCD shows all options |
-| **Speak to your agent** | Push-to-talk voice → whisper.cpp transcription → auto-send. Works offline |
-| **See suggestions** | Claude Code ghost text (autocomplete) appears on the Action encoder LCD |
-| **Monitor usage** | Animated water-gauge dashboard with 5h / 7d / extra / session pages |
-| **Run quick actions** | GO ON / REVIEW / COMMIT / CLEAR buttons; encoder cycles custom prompts |
-| **Control system utilities** | Volume, mic, media playback, timer — all from the Utility encoder |
-| **Manage terminal sessions** | iTerm dial switches sessions, auto-attaches detached tmux, auto-switches on tab focus |
-| **Stay in flow** | Hardware augments your keyboard — never interrupts it |
-| **Control from anywhere** | Commands work even when the terminal is in the background — no need to switch windows |
-
-The bridge stays transparent: if it's off, Claude Code works exactly as before.
-
-<p align="center">
-  <video src="docs/media/demo-clip.mp4" width="720" controls muted autoplay loop playsinline>
-    <a href="docs/media/demo-clip.mp4">Watch demo clip</a>
-  </video>
-</p>
-
-### Supported Agents
-
-| Agent | Status |
-|-------|--------|
-| **Claude Code** | Supported |
-| **OpenClaw** | Planned |
 
 ---
 
