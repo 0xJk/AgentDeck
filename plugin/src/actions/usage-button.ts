@@ -6,8 +6,9 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { execSync } from 'child_process';
-import { State, type BillingType } from '@agentdeck/shared';
-import { BridgeClient } from '../bridge-client.js';
+import { existsSync } from 'fs';
+import { State, augmentedPath, OPENCLAW_CANDIDATES, type BillingType, type AgentCapabilities, type ModelCatalogEntry } from '@agentdeck/shared';
+import type { AgentLink } from '../agent-link.js';
 import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
 import { ButtonConfig } from '../layout-manager.js';
 import { handleExpandedAction } from '../expanded-actions.js';
@@ -15,7 +16,7 @@ import { dlog } from '../log.js';
 
 const SIZE = 144;
 
-let bridge: BridgeClient;
+let bridge: AgentLink;
 let currentState = State.DISCONNECTED;
 
 // API usage data
@@ -39,8 +40,11 @@ let estimatedCostUsd: number | undefined;
 let prevTotalTokens = 0;
 let tokenDelta = 0; // tokens added since last update
 
-// Display pages: 5h → 7d → extra (if enabled) → session
-type Page = '5h' | '7d' | 'extra' | 'session';
+// Model catalog (OpenClaw)
+let modelCatalog: ModelCatalogEntry[] | null = null;
+
+// Display pages: 5h → 7d → extra (if enabled) → session → models
+type Page = '5h' | '7d' | 'extra' | 'session' | 'models';
 let pageIndex = 0;
 let billingType: BillingType = 'unknown';
 let bridgeConnected = false;
@@ -86,6 +90,10 @@ function stopAnimLoop(): void {
 // Standalone usage poll interval (when bridge is not connected)
 let standaloneInterval: ReturnType<typeof setInterval> | null = null;
 
+// Independent model catalog poll (runs for OpenClaw regardless of bridge state)
+let catalogInterval: ReturnType<typeof setInterval> | null = null;
+
+let currentCapabilities: AgentCapabilities | null = null;
 let overrideConfig: ButtonConfig | null = null;
 
 const actionIds: string[] = [];
@@ -139,17 +147,81 @@ async function fetchStandaloneUsage(): Promise<void> {
   }
 }
 
+/** Resolve `openclaw` binary: try known candidate paths, fallback to bare name on PATH. */
+function resolveOpenClawBin(): string {
+  for (const candidate of OPENCLAW_CANDIDATES) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return 'openclaw';
+}
+
+/** Fetch OpenClaw model catalog via CLI (standalone — no bridge needed) */
+function fetchStandaloneModelCatalog(): void {
+  const bin = resolveOpenClawBin();
+  try {
+    const output = execSync(`${bin} models list --json`, {
+      timeout: 5000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, PATH: augmentedPath() },
+    }).trim();
+
+    const result = JSON.parse(output) as { count: number; models: Array<{
+      key: string; name: string; tags?: string[]; available?: boolean;
+    }> };
+
+    if (!result.models || !Array.isArray(result.models)) return;
+
+    modelCatalog = result.models.map((m) => {
+      let role: ModelCatalogEntry['role'] = 'configured';
+      const tags = m.tags ?? [];
+      if (tags.includes('default')) {
+        role = 'default';
+      } else {
+        for (const tag of tags) {
+          const match = tag.match(/^fallback#(\d+)$/);
+          if (match) {
+            role = `fallback-${match[1]}` as `fallback-${number}`;
+            break;
+          }
+        }
+      }
+      return { name: m.name, role, available: m.available !== false };
+    });
+
+    dlog('UsaBut', `standalone model catalog: ${modelCatalog.length} models`);
+    refreshAll();
+  } catch {
+    // openclaw not installed — ignore
+  }
+}
+
 function startStandalonePoll(): void {
   if (standaloneInterval) return;
-  // Fetch immediately, then every 60 seconds
+  // Fetch immediately, then every 60 seconds (OAuth usage only)
   void fetchStandaloneUsage();
-  standaloneInterval = setInterval(() => void fetchStandaloneUsage(), 60_000);
+  standaloneInterval = setInterval(() => {
+    void fetchStandaloneUsage();
+  }, 60_000);
 }
 
 function stopStandalonePoll(): void {
   if (standaloneInterval) {
     clearInterval(standaloneInterval);
     standaloneInterval = null;
+  }
+}
+
+function startCatalogPoll(): void {
+  if (catalogInterval) return;
+  fetchStandaloneModelCatalog();
+  catalogInterval = setInterval(fetchStandaloneModelCatalog, 60_000);
+}
+
+function stopCatalogPoll(): void {
+  if (catalogInterval) {
+    clearInterval(catalogInterval);
+    catalogInterval = null;
   }
 }
 
@@ -164,6 +236,10 @@ export function setUsageBridgeConnected(connected: boolean): void {
 }
 
 function getPages(): Page[] {
+  // OpenClaw: show model roster
+  if (currentCapabilities?.hasModelCatalog) {
+    return ['models'];
+  }
   // API users have no subscription rate limits — only show session page
   if (billingType === 'api') {
     return ['session'];
@@ -176,8 +252,19 @@ function getPages(): Page[] {
   return pages;
 }
 
-export function initUsageButton(b: BridgeClient): void {
+export function initUsageButton(b: AgentLink): void {
   bridge = b;
+}
+
+export function setUsageCapabilities(capabilities: AgentCapabilities | null): void {
+  currentCapabilities = capabilities;
+  // OpenClaw with model catalog: keep catalog poll as fallback (GatewayClient may fail)
+  if (capabilities?.hasModelCatalog) {
+    startCatalogPoll();
+  } else {
+    stopCatalogPoll();
+  }
+  refreshAll();
 }
 
 export function overrideUsageButton(config: ButtonConfig | null): void {
@@ -222,6 +309,11 @@ export function updateUsageButton(
   refreshAll();
 }
 
+export function updateUsageModelCatalog(catalog: ModelCatalogEntry[] | null): void {
+  modelCatalog = catalog;
+  refreshAll();
+}
+
 function refreshAll(): void {
   const dataUrl = overrideConfig
     ? svgToDataUrl(renderButton(overrideConfig))
@@ -234,7 +326,22 @@ function refreshAll(): void {
   }
 }
 
+function dimUsageSvg(): string {
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+    `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#1a1a1a"/>`,
+    `<text x="72" y="56" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="600" fill="#444444">USAGE</text>`,
+    `<text x="72" y="90" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" fill="#444444">--</text>`,
+    `</svg>`,
+  ].join('');
+}
+
 function renderUsageSvg(): string {
+  // Capability gating: neither API usage nor model catalog → DIM
+  if (currentCapabilities && !currentCapabilities.hasApiUsage && !currentCapabilities.hasModelCatalog) {
+    return dimUsageSvg();
+  }
+
   const pages = getPages();
   // Clamp pageIndex if extra page was removed
   if (pageIndex >= pages.length) pageIndex = 0;
@@ -288,6 +395,13 @@ function renderUsageSvg(): string {
         ? `$${estimatedCostUsd.toFixed(4)} · ${inK}K/${outK}K`
         : `${inK}K in / ${outK}K out`;
       return infoSvg('SESSION', `${totalK}K`, sub, '#4ade80', '#071a0f', pages);
+    }
+
+    case 'models': {
+      if (!modelCatalog || modelCatalog.length === 0) {
+        return infoSvg('MODELS', '--', 'No models configured', '#666666', '#111111', pages);
+      }
+      return renderModelsSvg(modelCatalog, pages);
     }
 
     default:
@@ -443,6 +557,67 @@ function infoSvg(title: string, value: string, sub: string, color: string, bg: s
   ].join('');
 }
 
+/** Provider color from model key prefix */
+function providerColor(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes('glm')) return '#22d3ee';     // cyan — ZhipuAI
+  if (lower.includes('gpt') || lower.includes('codex')) return '#4ade80'; // green — OpenAI
+  if (lower.includes('deepseek')) return '#a78bfa'; // purple
+  if (lower.includes('claude')) return '#f59e0b';   // amber
+  if (lower.includes('gemini')) return '#60a5fa';    // blue
+  return '#94a3b8'; // slate default
+}
+
+/** Render models roster SVG for the usage button. */
+function renderModelsSvg(models: ModelCatalogEntry[], pages: Page[]): string {
+  const dots = pages.map((_, i) => {
+    const cx = 72 - ((pages.length - 1) * 8) / 2 + i * 8;
+    const fill = i === pageIndex ? '#22d3ee' : '#22d3ee40';
+    return `<circle cx="${cx}" cy="132" r="3" fill="${fill}"/>`;
+  }).join('');
+
+  // Sort: default first, then fallback in order, then configured
+  const sorted = [...models].sort((a, b) => {
+    const order = (r: string) => {
+      if (r === 'default') return 0;
+      const m = r.match(/^fallback-(\d+)$/);
+      if (m) return parseInt(m[1], 10);
+      return 100;
+    };
+    return order(a.role) - order(b.role);
+  });
+
+  // Show up to 4 models
+  const visible = sorted.slice(0, 4);
+  const startY = 30;
+  const lineHeight = 24;
+
+  const lines = visible.map((m, i) => {
+    const y = startY + i * lineHeight;
+    const color = m.available ? providerColor(m.name) : '#444444';
+    const roleIcon = m.role === 'default' ? '\u2605 '
+      : m.role.startsWith('fallback-') ? `#${m.role.slice(9)} `
+      : '';
+    const displayName = `${roleIcon}${m.name}`;
+    const truncated = displayName.length > 14 ? displayName.slice(0, 13) + '\u2026' : displayName;
+    return `<text x="72" y="${y}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="${color}" opacity="${m.available ? '1' : '0.4'}">${escXml(truncated)}</text>`;
+  }).join('');
+
+  const moreText = sorted.length > 4
+    ? `<text x="72" y="${startY + 4 * lineHeight}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#666">+${sorted.length - 4} more</text>`
+    : '';
+
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+    `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a1020"/>`,
+    `<text x="72" y="16" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#22d3ee" opacity="0.6">MODELS</text>`,
+    lines,
+    moreText,
+    dots,
+    `</svg>`,
+  ].join('');
+}
+
 function formatReset(iso: string): string {
   try {
     const d = new Date(iso);
@@ -484,10 +659,13 @@ export class UsageButtonAction extends SingletonAction {
       handleExpandedAction(overrideConfig.action, bridge);
       return;
     }
+    if (currentCapabilities && !currentCapabilities.hasApiUsage && !currentCapabilities.hasModelCatalog) return;
     const pages = getPages();
     pageIndex = (pageIndex + 1) % pages.length;
     dlog('UsaBut', `keyDown: page=${pages[pageIndex]} (${pageIndex + 1}/${pages.length})`);
-    bridge.send({ type: 'query_usage' });
+    if (currentCapabilities?.hasApiUsage) {
+      bridge.send({ type: 'query_usage' });
+    }
     refreshAll();
   }
 
@@ -496,6 +674,7 @@ export class UsageButtonAction extends SingletonAction {
     if (idx !== -1) actionIds.splice(idx, 1);
     if (actionIds.length === 0) {
       stopStandalonePoll();
+      stopCatalogPoll();
       stopAnimLoop();
     }
   }

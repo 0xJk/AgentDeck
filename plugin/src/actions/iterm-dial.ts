@@ -8,15 +8,18 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
+import type { AgentType } from '@agentdeck/shared';
 import { isEncoderTakeoverActive } from '../encoder-takeover.js';
 import { handleTakeoverPush, handleTakeoverRotate, requestTakeoverRefresh } from './option-dial.js';
 import { isPickerActive, scrollPicker, selectProject } from '../project-picker.js';
 import { encoderRegistry, isVoiceTextTakeoverActive, handleVtRotate, handleVtDown, handleVtUp } from '../encoder-registry.js';
 import { getItermSessions, activateItermSession, attachTmuxInIterm, getActiveItermTty, getTmuxSessionMap, getLiveTmuxSessionNames, isItermFrontmost, cycleItermWindowNext, cycleItermWindowPrev, enterItermExpose, exposeNavigate, exposeConfirm, exposeCancel, type ItermSession } from '../utility-modes/macos.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
-import { renderItermPanel, renderItermReady } from '../renderers/iterm-renderer.js';
+import { renderItermPanel, renderItermReady, renderItermDisabled } from '../renderers/iterm-renderer.js';
+import { timelineStore } from '../timeline-store.js';
+import { renderTimeline } from '../renderers/timeline-renderer.js';
 import { switchToPort } from './session-button.js';
-import { BridgeClient } from '../bridge-client.js';
+import { ConnectionManager } from '../connection-manager.js';
 import { dlog, dinfo } from '../log.js';
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
@@ -36,7 +39,8 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let lastActionAt = 0;
 let polling = false;
 let currentLayout = PIXMAP_LAYOUT;
-let bridgeRef: BridgeClient | null = null;
+let bridgeRef: ConnectionManager | null = null;
+let currentAgentType: AgentType | null = null;
 let exposeActive = false;
 let exposeTimeout: ReturnType<typeof setTimeout> | null = null;
 const EXPOSE_TIMEOUT_MS = 8000;
@@ -155,8 +159,9 @@ async function syncFromSystem(): Promise<void> {
     // Auto-switch bridge if focused iTerm tty matches an AgentDeck session
     // Only when iTerm is frontmost — prevents overriding explicit session switches
     // while user is in a non-terminal app (e.g. VS Code)
-    if (activeTty && bridgeRef && itermFront) {
-      const currentPort = bridgeRef.getPort();
+    // Skip auto-switch when user explicitly selected OpenClaw
+    if (activeTty && bridgeRef && itermFront && bridgeRef.getActiveAgentType() !== 'openclaw') {
+      const currentPort = bridgeRef.getBridgePort();
 
       // 1. parentTty match (non-tmux: sdc's stdin tty === iTerm tty)
       let match = adSessions.find((s) => s.parentTty && s.parentTty === activeTty);
@@ -204,15 +209,43 @@ function stopPolling(): void {
   }
 }
 
-export function initItermDial(bridge: BridgeClient): void {
+export function initItermDial(bridge: ConnectionManager): void {
   bridgeRef = bridge;
   dinfo('ItermDial', 'initItermDial called');
+  // Timeline store change → re-render right panel when in OC mode
+  timelineStore.onChange(() => {
+    if (currentAgentType === 'openclaw' && !isEncoderTakeoverActive() && !isVoiceTextTakeoverActive()) {
+      renderTimelineRightPanel();
+    }
+  });
 }
 
-export function updateItermDialState(state: State): void {
+function renderTimelineRightPanel(): void {
+  if (encoderRegistry.itermIds.length === 0) return;
+  ensurePixmapLayout();
+  const { panels } = renderTimeline(
+    timelineStore.getGroupedDisplay(),
+    timelineStore.getScrollIndex(),
+    timelineStore.isDetailMode(),
+  );
+  const feedback = { canvas: svgToDataUrl(panels[1]) };
+  for (const id of encoderRegistry.itermIds) {
+    const dial = streamDeck.actions.getActionById(id) as any;
+    if (dial) void dial.setFeedback(feedback).catch(() => {});
+  }
+}
+
+export function updateItermDialState(state: State, agentType?: AgentType | null): void {
   currentState = state;
+  if (agentType !== undefined) currentAgentType = agentType;
   // Do NOT reset currentLayout here — causes setFeedbackLayout on every state update → SD flicker.
   // Layout is reset only on encoder takeover exit (via resetEncoderLayouts hook below).
+
+  if (currentAgentType === 'openclaw') {
+    stopPolling();
+    renderTimelineRightPanel();
+    return;
+  }
 
   if (encoderRegistry.itermIds.length > 0 && !pollTimer) {
     void syncFromSystem();
@@ -232,6 +265,20 @@ function ensurePixmapLayout(): void {
   for (const id of encoderRegistry.itermIds) {
     const dial = streamDeck.actions.getActionById(id) as any;
     if (dial) void dial.setFeedbackLayout(PIXMAP_LAYOUT).catch(() => {});
+  }
+}
+
+function renderItermDisabledForOc(): void {
+  if (isEncoderTakeoverActive()) return;
+  if (isVoiceTextTakeoverActive()) return;
+  if (encoderRegistry.itermIds.length === 0) return;
+
+  ensurePixmapLayout();
+  const svg = renderItermDisabled();
+  const feedback = { canvas: svgToDataUrl(svg) };
+  for (const id of encoderRegistry.itermIds) {
+    const dial = streamDeck.actions.getActionById(id) as any;
+    if (dial) void dial.setFeedback(feedback).catch(() => {});
   }
 }
 
@@ -286,6 +333,10 @@ export class ItermDialAction extends SingletonAction {
     if (isPickerActive()) { scrollPicker(ev.payload.ticks); return; }
     if (isEncoderTakeoverActive()) { handleTakeoverRotate(ev.payload.ticks); return; }
     if (isVoiceTextTakeoverActive()) { handleVtRotate(ev.payload.ticks); return; }
+    if (currentAgentType === 'openclaw') {
+      timelineStore.scroll(ev.payload.ticks);
+      return;
+    }
     lastActionAt = Date.now();
 
     if (exposeActive) {
@@ -324,6 +375,10 @@ export class ItermDialAction extends SingletonAction {
     if (isPickerActive()) { void selectProject(); return; }
     if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
     if (isVoiceTextTakeoverActive()) { handleVtDown(); return; }
+    if (currentAgentType === 'openclaw') {
+      timelineStore.toggleDetail();
+      return;
+    }
 
     if (!exposeActive) {
       exposeActive = true;
@@ -335,6 +390,7 @@ export class ItermDialAction extends SingletonAction {
   override async onDialUp(_ev: DialUpEvent): Promise<void> {
     if (isEncoderTakeoverActive()) return;
     if (isVoiceTextTakeoverActive()) { handleVtUp(); return; }
+    if (currentAgentType === 'openclaw') return;
 
     if (exposeActive) {
       exposeActive = false;

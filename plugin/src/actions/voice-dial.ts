@@ -8,7 +8,7 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
-import { BridgeClient } from '../bridge-client.js';
+import type { AgentLink } from '../agent-link.js';
 import { isEncoderTakeoverActive } from '../encoder-takeover.js';
 import { handleTakeoverPush, handleTakeoverRotate, requestTakeoverRefresh } from './option-dial.js';
 import { isPickerActive, scrollPicker, selectProject } from '../project-picker.js';
@@ -28,7 +28,7 @@ import {
   renderWideVoiceText,
 } from '../renderers/voice-renderer.js';
 
-let bridge: BridgeClient;
+let bridge: AgentLink;
 let currentState = State.DISCONNECTED;
 
 type VoiceState = 'idle' | 'recording' | 'transcribing' | 'error';
@@ -51,7 +51,7 @@ let vtLineHeight = 20;   // line height from last render
 let vtDownTime = 0;
 const VT_PRESS_THRESHOLD = 500; // ms: short press = send, long press = cancel
 
-export function initVoiceDial(b: BridgeClient): void {
+export function initVoiceDial(b: AgentLink): void {
   bridge = b;
 }
 
@@ -234,9 +234,20 @@ function onVtUp(): void {
   dlog('VoiceDial', `onVtUp: elapsed=${elapsed}, hasText=${!!lastTranscription}, state=${currentState}, connected=${bridge.isConnected()}`);
   // Short press: confirm transcription
   if (lastTranscription) {
-    if (currentState === State.IDLE && bridge.isConnected()) {
-      dlog('VoiceDial', `vtSend: "${lastTranscription.slice(0, 60)}"`);
-      bridge.send({ type: 'send_prompt', text: lastTranscription });
+    if (bridge.isConnected()) {
+      const caps = bridge.getCapabilities();
+      if (caps && !caps.hasTerminal) {
+        // OpenClaw: no terminal → always send via Gateway (state-independent)
+        dlog('VoiceDial', `vtSendOC: "${lastTranscription.slice(0, 60)}"`);
+        bridge.send({ type: 'send_prompt', text: lastTranscription });
+      } else if (currentState === State.IDLE) {
+        // Claude Code: IDLE → send via PTY
+        dlog('VoiceDial', `vtSend: "${lastTranscription.slice(0, 60)}"`);
+        bridge.send({ type: 'send_prompt', text: lastTranscription });
+      } else {
+        dlog('VoiceDial', `vtPaste: "${lastTranscription.slice(0, 60)}"`);
+        smartPaste(lastTranscription);
+      }
     } else {
       dlog('VoiceDial', `vtPaste: "${lastTranscription.slice(0, 60)}"`);
       smartPaste(lastTranscription);

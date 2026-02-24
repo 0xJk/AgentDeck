@@ -97,6 +97,7 @@ export class LayoutManager {
     state: State,
     mode: PermissionMode,
     options: PromptOption[],
+    navigable?: boolean,
   ): ButtonConfig[] {
     switch (state) {
       case State.DISCONNECTED:
@@ -107,11 +108,11 @@ export class LayoutManager {
       case State.PROCESSING:
         return this.processingButtons();
       case State.AWAITING_PERMISSION:
-        return this.permissionButtons(options);
+        return this.permissionButtons(options, navigable);
       case State.AWAITING_OPTION:
         return this.optionButtons(options);
       case State.AWAITING_DIFF:
-        return this.diffButtons(options);
+        return this.diffButtons(options, navigable);
       default:
         return this.disconnectedButtons();
     }
@@ -174,9 +175,9 @@ export class LayoutManager {
     return [DIM, DIM, DIM, DIM];
   }
 
-  private permissionButtons(options: PromptOption[]): ButtonConfig[] {
+  private permissionButtons(options: PromptOption[], navigable?: boolean): ButtonConfig[] {
     if (options.length === 0) {
-      // Fallback: hardcoded YES/NO/ALWAYS + DIM
+      // Fallback: hardcoded YES/NO/ALWAYS + DIM (no index available)
       return [
         { title: 'YES', color: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:y' },
         { title: 'NO', color: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:n' },
@@ -188,7 +189,9 @@ export class LayoutManager {
       title: uppercaseShort(opt.label),
       ...colorForOption(opt),
       enabled: true,
-      action: `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
+      action: navigable
+        ? `select_option:${opt.index}`
+        : `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
     }));
     while (buttons.length < 4) buttons.push(DIM);
     return buttons;
@@ -222,9 +225,9 @@ export class LayoutManager {
     ];
   }
 
-  private diffButtons(options: PromptOption[]): ButtonConfig[] {
+  private diffButtons(options: PromptOption[], navigable?: boolean): ButtonConfig[] {
     if (options.length === 0) {
-      // Fallback: hardcoded APPLY/DENY/VIEW + DIM
+      // Fallback: hardcoded APPLY/DENY/VIEW + DIM (no index available)
       return [
         { title: 'APPLY', color: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:a' },
         { title: 'DENY', color: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:d' },
@@ -236,7 +239,9 @@ export class LayoutManager {
       title: uppercaseShort(opt.label),
       ...colorForOption(opt),
       enabled: true,
-      action: `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
+      action: navigable
+        ? `select_option:${opt.index}`
+        : `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`,
     }));
     while (buttons.length < 4) buttons.push(DIM);
     return buttons;

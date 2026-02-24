@@ -1,0 +1,290 @@
+/**
+ * ConnectionManager — manages Bridge vs Gateway priority.
+ *
+ * Both clients connect simultaneously. Bridge takes priority:
+ * - Bridge connected → activeLink = bridge, gateway paused
+ * - Bridge absent + Gateway connected → activeLink = gateway
+ * - Bridge arrives later → switch from gateway to bridge
+ * - Bridge disconnects → resume gateway
+ *
+ * Implements AgentLink so plugin.ts can treat it as a drop-in replacement
+ * for BridgeClient. All events from the active link are forwarded.
+ */
+import { EventEmitter } from 'events';
+import {
+  PluginCommand,
+  AgentCapabilities,
+  State,
+} from '@agentdeck/shared';
+import type { BridgeEvent, StateUpdateEvent } from '@agentdeck/shared';
+import type { AgentLink } from './agent-link.js';
+import { BridgeClient } from './bridge-client.js';
+import { GatewayClient } from './gateway-client.js';
+import { dlog, dinfo, dwarn } from './log.js';
+
+const TAG = 'ConnMgr';
+
+/** Events forwarded from the active link */
+const FORWARDED_EVENTS = [
+  'state_update',
+  'prompt_options',
+  'usage_update',
+  'connection',
+  'user_prompt',
+  'voice_state',
+] as const;
+
+export class ConnectionManager extends EventEmitter implements AgentLink {
+  readonly bridge: BridgeClient;
+  private readonly gateway: GatewayClient;
+  private activeLink: AgentLink | null = null;
+  private started = false;
+  private userSelection: 'auto' | 'bridge' | 'gateway' = 'auto';
+  private gatewayEverConnected = false;
+
+  constructor() {
+    super();
+    this.bridge = new BridgeClient();
+    this.gateway = new GatewayClient();
+    this.setupBridgeListeners();
+    this.setupGatewayListeners();
+  }
+
+  // ===== AgentLink interface =====
+
+  send(command: PluginCommand): void {
+    dlog(TAG, `send(${command.type}): activeLink=${this.activeLink ? (this.activeLink === this.bridge ? 'bridge' : 'gateway') : 'NULL'} ` +
+      `bridge=${this.bridge.isConnected()} gateway=${this.gateway.isConnected()} userSel=${this.userSelection}`);
+    if (this.activeLink) {
+      this.activeLink.send(command);
+    } else {
+      dwarn(TAG, `send(${command.type}) dropped — no active link`);
+    }
+  }
+
+  isConnected(): boolean {
+    return this.activeLink?.isConnected() ?? false;
+  }
+
+  getCapabilities(): AgentCapabilities | null {
+    return this.activeLink?.getCapabilities() ?? null;
+  }
+
+  disconnect(): void {
+    this.bridge.disconnect();
+    this.gateway.disconnect();
+    this.activeLink = null;
+  }
+
+  // ===== Public API =====
+
+  /**
+   * Start both clients. Bridge connects to the given port (or scans for one);
+   * Gateway connects to the default OpenClaw port.
+   */
+  start(port?: number): void {
+    if (this.started) return;
+    this.started = true;
+
+    dinfo(TAG, `start(port=${port ?? 'auto'})`);
+
+    // Start both simultaneously
+    this.bridge.connect(port);
+    this.gateway.connect();
+  }
+
+  /** Expose bridge's scanLatestPort setter for plugin.ts */
+  set scanLatestPort(fn: (() => number | undefined) | null) {
+    this.bridge.scanLatestPort = fn;
+  }
+
+  /** Reconnect bridge to a different session port (for session switching). */
+  reconnectBridgeTo(port: number): void {
+    dlog(TAG, `reconnectBridgeTo(${port})`);
+    this.bridge.reconnectTo(port);
+  }
+
+  /** Get current bridge port (for session/iterm dial). */
+  getBridgePort(): number {
+    return this.bridge.getPort();
+  }
+
+  // ===== Agent Selection API =====
+
+  /** Explicitly switch to OpenClaw (Gateway) as active agent. */
+  activateGateway(): void {
+    dinfo(TAG, 'activateGateway()');
+    this.userSelection = 'gateway';
+    this.gateway.resume();
+    this.activeLink = this.gateway;
+    this.emit('active_agent_changed', 'openclaw');
+  }
+
+  /** Explicitly switch to Claude Code (Bridge) as active agent. */
+  activateBridge(): void {
+    dinfo(TAG, 'activateBridge()');
+    this.userSelection = 'bridge';
+    this.activeLink = this.bridge;
+    if (this.gateway.isConnected()) this.gateway.pause();
+    this.emit('active_agent_changed', 'claude-code');
+  }
+
+  /** Reset to automatic priority (bridge > gateway). */
+  resetToAuto(): void {
+    dinfo(TAG, 'resetToAuto()');
+    this.userSelection = 'auto';
+    if (this.bridge.isConnected()) {
+      this.activeLink = this.bridge;
+      if (this.gateway.isConnected()) this.gateway.pause();
+    } else if (this.gateway.isConnected()) {
+      this.gateway.resume();
+      this.activeLink = this.gateway;
+    }
+  }
+
+  /** Get the active agent type, or null if disconnected. */
+  getActiveAgentType(): 'claude-code' | 'openclaw' | null {
+    if (this.activeLink === this.bridge) return 'claude-code';
+    if (this.activeLink === this.gateway) return 'openclaw';
+    return null;
+  }
+
+  /** Whether we're in standby mode: auto + no bridge + gateway connected. */
+  isStandby(): boolean {
+    return this.userSelection === 'auto' && !this.bridge.isConnected() && this.gateway.isConnected();
+  }
+
+  /**
+   * Whether gateway is available (connected, or was previously connected and can be resumed).
+   * Used to determine if OC should appear in the session cycle list.
+   */
+  isGatewayAvailable(): boolean {
+    return this.gateway.isConnected() || this.gatewayEverConnected;
+  }
+
+  /** Get the user's current agent selection preference. */
+  getUserSelection(): 'auto' | 'bridge' | 'gateway' {
+    return this.userSelection;
+  }
+
+  // ===== Private: Event Wiring =====
+
+  private setupBridgeListeners(): void {
+    // Forward all bridge events when bridge is the active link
+    for (const eventName of FORWARDED_EVENTS) {
+      this.bridge.on(eventName, (ev: BridgeEvent) => {
+        if (this.activeLink === this.bridge) {
+          this.emit(eventName, ev);
+        }
+      });
+    }
+
+    this.bridge.on('connected', () => {
+      dinfo(TAG, 'Bridge connected');
+
+      // If user explicitly selected gateway, don't auto-switch
+      if (this.userSelection === 'gateway') {
+        dlog(TAG, 'User selected gateway — bridge connected but not switching');
+        return;
+      }
+
+      dinfo(TAG, 'Bridge connected — activating');
+      const wasGateway = this.activeLink === this.gateway;
+      this.activeLink = this.bridge;
+
+      // Pause gateway when bridge is active (saves resources, avoids confusion)
+      if (wasGateway) {
+        dlog(TAG, 'Pausing gateway (bridge takes priority)');
+        this.gateway.pause();
+      }
+
+      this.emit('connected');
+    });
+
+    this.bridge.on('disconnected', () => {
+      dinfo(TAG, 'Bridge disconnected');
+
+      if (this.activeLink === this.bridge) {
+        this.activeLink = null;
+
+        // Reset user selection if it was explicitly set to bridge
+        if (this.userSelection === 'bridge') {
+          dlog(TAG, 'Resetting userSelection from bridge to auto');
+          this.userSelection = 'auto';
+        }
+
+        // Try to resume gateway as fallback
+        dlog(TAG, 'Resuming gateway as fallback');
+        this.gateway.resume();
+
+        // If gateway is already connected, activate it immediately
+        if (this.gateway.isConnected()) {
+          dinfo(TAG, 'Gateway already connected — activating');
+          this.activeLink = this.gateway;
+          this.emit('connected');
+        } else {
+          // Neither connected — emit disconnected
+          this.emit('disconnected');
+        }
+      }
+    });
+  }
+
+  private setupGatewayListeners(): void {
+    // Forward all gateway events when gateway is the active link
+    for (const eventName of FORWARDED_EVENTS) {
+      this.gateway.on(eventName, (ev: BridgeEvent) => {
+        if (this.activeLink === this.gateway) {
+          this.emit(eventName, ev);
+        }
+      });
+    }
+
+    this.gateway.on('connected', () => {
+      dinfo(TAG, 'Gateway connected');
+      this.gatewayEverConnected = true;
+
+      // If user explicitly selected bridge, keep gateway on standby
+      if (this.userSelection === 'bridge') {
+        dlog(TAG, 'User selected bridge — gateway on standby');
+        return;
+      }
+
+      // User explicitly selected gateway — activate even if bridge is connected
+      if (this.userSelection === 'gateway') {
+        dinfo(TAG, 'User selected gateway — activating');
+        this.activeLink = this.gateway;
+        this.emit('connected');
+        return;
+      }
+
+      // Auto mode: only activate if bridge isn't connected
+      if (!this.bridge.isConnected()) {
+        dinfo(TAG, 'No bridge — activating gateway');
+        this.activeLink = this.gateway;
+        this.emit('connected');
+      } else {
+        dlog(TAG, 'Bridge is active — gateway on standby');
+      }
+    });
+
+    this.gateway.on('disconnected', () => {
+      dlog(TAG, 'Gateway disconnected');
+
+      if (this.activeLink === this.gateway) {
+        this.activeLink = null;
+
+        // Reset user selection if it was explicitly set to gateway
+        if (this.userSelection === 'gateway') {
+          dlog(TAG, 'Resetting userSelection from gateway to auto');
+          this.userSelection = 'auto';
+        }
+
+        // Bridge should still be trying to reconnect on its own
+        if (!this.bridge.isConnected()) {
+          this.emit('disconnected');
+        }
+      }
+    });
+  }
+}

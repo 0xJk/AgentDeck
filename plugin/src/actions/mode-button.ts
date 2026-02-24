@@ -6,7 +6,8 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State, PermissionMode } from '@agentdeck/shared';
-import { BridgeClient } from '../bridge-client.js';
+import type { AgentCapabilities } from '@agentdeck/shared';
+import type { AgentLink } from '../agent-link.js';
 import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
 import { ButtonConfig } from '../layout-manager.js';
 import { handleExpandedAction } from '../expanded-actions.js';
@@ -14,20 +15,22 @@ import { dlog } from '../log.js';
 
 const SIZE = 144;
 
-let bridge: BridgeClient;
+let bridge: AgentLink;
 let currentState = State.DISCONNECTED;
 let currentMode = PermissionMode.DEFAULT;
+let currentCapabilities: AgentCapabilities | null = null;
 let overrideConfig: ButtonConfig | null = null;
 
 const actionIds: string[] = [];
 
-export function initModeButton(b: BridgeClient): void {
+export function initModeButton(b: AgentLink): void {
   bridge = b;
 }
 
-export function updateModeButton(state: State, mode: PermissionMode): void {
+export function updateModeButton(state: State, mode: PermissionMode, capabilities?: AgentCapabilities | null): void {
   currentState = state;
   currentMode = mode;
+  if (capabilities !== undefined) currentCapabilities = capabilities;
   refreshAll();
 }
 
@@ -67,6 +70,11 @@ function getModeVisual(): {
   textColor: string;
   dimmed: boolean;
 } {
+  // Capability gating: no mode switching → always DIM
+  if (currentCapabilities && !currentCapabilities.hasModeSwitching) {
+    return { label: 'MODE', bgColor: '#1a1a1a', textColor: '#444444', dimmed: true };
+  }
+
   const dimmed = currentState !== State.IDLE;
 
   switch (currentMode) {
@@ -119,6 +127,7 @@ export class ModeButtonAction extends SingletonAction {
       return;
     }
     if (currentState !== State.IDLE) return;
+    if (currentCapabilities && !currentCapabilities.hasModeSwitching) return;
     dlog('ModeBut', `keyDown: switch_mode (current=${currentMode})`);
     bridge.send({ type: 'switch_mode' });
   }

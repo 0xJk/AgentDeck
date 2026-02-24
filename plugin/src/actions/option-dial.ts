@@ -10,7 +10,8 @@ import streamDeck, {
   DidReceiveSettingsEvent,
 } from '@elgato/streamdeck';
 import { State, PromptOption } from '@agentdeck/shared';
-import { BridgeClient } from '../bridge-client.js';
+import type { AgentType } from '@agentdeck/shared';
+import type { AgentLink } from '../agent-link.js';
 import { isEncoderTakeoverActive, refreshEncoderTakeover } from '../encoder-takeover.js';
 import { encoderRegistry, encoderLayout, isVoiceTextTakeoverActive, handleVtRotate, handleVtDown, handleVtUp } from '../encoder-registry.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
@@ -23,6 +24,8 @@ import {
   renderResponseSuggestion,
 } from '../renderers/response-renderer.js';
 import { isPickerActive, scrollPicker, selectProject, closePicker } from '../project-picker.js';
+import { timelineStore } from '../timeline-store.js';
+import { renderTimeline } from '../renderers/timeline-renderer.js';
 import { dlog } from '../log.js';
 
 import type { JsonValue } from '@elgato/utils';
@@ -45,7 +48,7 @@ let prompts = [...DEFAULT_PROMPTS];
 let promptIndex = 0;
 
 // ---- Option state (interactive mode) ----
-let bridge: BridgeClient;
+let bridge: AgentLink;
 let currentState = State.DISCONNECTED;
 let currentOptions: PromptOption[] = [];
 let selectedIndex = 0;
@@ -55,9 +58,30 @@ let currentTool: string | undefined;
 let currentToolInput: string | undefined;
 let rotateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let currentSuggestedPrompt: string | null = null;
+let currentAgentType: AgentType | null = null;
 
-export function initOptionDial(b: BridgeClient): void {
+export function initOptionDial(b: AgentLink): void {
   bridge = b;
+  // Timeline store change → re-render left panel when in OC non-interactive mode
+  timelineStore.onChange(() => {
+    if (currentAgentType === 'openclaw' && !isInteractive() && !isVoiceTextTakeoverActive() && !isEncoderTakeoverActive()) {
+      renderTimelineLeftPanel();
+    }
+  });
+}
+
+function renderTimelineLeftPanel(): void {
+  ensurePixmapLayout();
+  const { panels } = renderTimeline(
+    timelineStore.getGroupedDisplay(),
+    timelineStore.getScrollIndex(),
+    timelineStore.isDetailMode(),
+  );
+  const feedback = { canvas: svgToDataUrl(panels[0]) };
+  for (const id of encoderRegistry.optionIds) {
+    const dial = streamDeck.actions.getActionById(id) as any;
+    if (dial) void dial.setFeedback(feedback).catch(() => {});
+  }
 }
 
 export function updateOptionDialState(
@@ -69,7 +93,9 @@ export function updateOptionDialState(
   cursorIdx?: number,
   toolInput?: string,
   suggestedPrompt?: string,
+  agentType?: AgentType | null,
 ): void {
+  if (agentType !== undefined) currentAgentType = agentType;
   const prevSuggestion = currentSuggestedPrompt;
   const prevState = currentState;
   const prevOptions = currentOptions;
@@ -116,10 +142,11 @@ function isInteractive(): boolean {
 }
 
 function getEffectivePrompts(): { list: string[]; hasSuggestion: boolean } {
+  const basePrompts = currentAgentType === 'openclaw' ? ['continue'] : prompts;
   if (currentSuggestedPrompt && currentState === State.IDLE) {
-    return { list: [currentSuggestedPrompt, ...prompts], hasSuggestion: true };
+    return { list: [currentSuggestedPrompt, ...basePrompts], hasSuggestion: true };
   }
-  return { list: prompts, hasSuggestion: false };
+  return { list: basePrompts, hasSuggestion: false };
 }
 
 function ensurePixmapLayout(): void {
@@ -152,6 +179,12 @@ function refreshOptionDials(): void {
       currentTool,
       currentToolInput,
     );
+    return;
+  }
+
+  // OC mode: show timeline when not in interactive mode
+  if (currentAgentType === 'openclaw' && !isInteractive()) {
+    renderTimelineLeftPanel();
     return;
   }
 
@@ -310,6 +343,12 @@ export class ResponseDialAction extends SingletonAction {
     if (isPickerActive()) { scrollPicker(ev.payload.ticks); return; }
     if (isVoiceTextTakeoverActive()) { handleVtRotate(ev.payload.ticks); return; }
 
+    // OC non-interactive: scroll timeline
+    if (currentAgentType === 'openclaw' && !isInteractive()) {
+      timelineStore.scroll(ev.payload.ticks);
+      return;
+    }
+
     // Interactive mode: scroll options
     if (isInteractive() && currentOptions.length > 0) {
       const prevIndex = selectedIndex;
@@ -356,6 +395,11 @@ export class ResponseDialAction extends SingletonAction {
   override async onDialDown(_ev: DialDownEvent): Promise<void> {
     if (isPickerActive()) { void selectProject(); return; }
     if (isVoiceTextTakeoverActive()) { handleVtDown(); return; }
+    // OC non-interactive: toggle detail view
+    if (currentAgentType === 'openclaw' && !isInteractive()) {
+      timelineStore.toggleDetail();
+      return;
+    }
     if (currentState === State.AWAITING_OPTION && currentOptions.length > 0) {
       dlog('ResDial', `push: select_option idx=${selectedIndex} "${currentOptions[selectedIndex]?.label}"`);
       bridge.send({ type: 'select_option', index: selectedIndex });

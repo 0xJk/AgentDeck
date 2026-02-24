@@ -11,7 +11,7 @@ import {
   type BillingType,
 } from '@agentdeck/shared';
 
-import { BridgeClient } from './bridge-client.js';
+import { ConnectionManager } from './connection-manager.js';
 import { LayoutManager } from './layout-manager.js';
 import { setExpandCallback } from './expanded-actions.js';
 import {
@@ -54,8 +54,10 @@ import {
   UsageButtonAction,
   initUsageButton,
   updateUsageButton,
+  updateUsageModelCatalog,
   overrideUsageButton,
   setUsageBridgeConnected,
+  setUsageCapabilities,
 } from './actions/usage-button.js';
 
 // Encoder actions
@@ -115,30 +117,31 @@ export function exitExpandedMode(): void {
 setExpandCallback(enterExpandedMode);
 
 // ---- Instances ----
-const bridge = new BridgeClient();
+const connMgr = new ConnectionManager();
 const layoutManager = new LayoutManager();
 
 // ---- Initialize action modules ----
-initResponseButtons(bridge, layoutManager);
-initStopButton(bridge);
-initModeButton(bridge);
-initSessionButton(bridge);
-initUsageButton(bridge);
-initOptionDial(bridge);
-initVoiceDial(bridge);
+initResponseButtons(connMgr, layoutManager);
+initStopButton(connMgr);
+initModeButton(connMgr);
+initSessionButton(connMgr);
+initUsageButton(connMgr);
+initOptionDial(connMgr);
+initVoiceDial(connMgr);
 initUtilityDial();
-initItermDial(bridge);
+initItermDial(connMgr);
 
 // Refresh other dials when voice text takeover exits
 setVoiceTextExitCallback(() => {
-  updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt);
+  const agentType = connMgr.getActiveAgentType();
+  updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType);
   updateUtilityDialState(currentState);
-  updateItermDialState(currentState);
+  updateItermDialState(currentState, agentType);
 });
 
 // ---- Bridge event handlers ----
 
-bridge.on('state_update', (ev: StateUpdateEvent) => {
+connMgr.on('state_update', (ev: StateUpdateEvent) => {
   dlog('Plugin', `state_update: ${ev.state} mode=${ev.permissionMode} tool=${ev.currentTool || '-'} project=${ev.projectName || '-'} opts=${ev.options?.length ?? '-'} nav=${ev.navigable ?? '-'}`);
   currentState = ev.state;
   currentMode = ev.permissionMode;
@@ -147,6 +150,16 @@ bridge.on('state_update', (ev: StateUpdateEvent) => {
   if (ev.projectName) currentProjectName = ev.projectName;
   if (ev.modelName) currentModelName = ev.modelName;
   if (ev.billingType) currentBillingType = ev.billingType;
+
+  // Update capabilities from state_update (Bridge sends agentCapabilities on client connect)
+  if (ev.agentCapabilities) {
+    setUsageCapabilities(ev.agentCapabilities);
+  }
+
+  // Update model catalog if present
+  if (ev.modelCatalog) {
+    updateUsageModelCatalog(ev.modelCatalog);
+  }
 
   // Capture question from state_update
   if (ev.question !== undefined) {
@@ -188,14 +201,14 @@ bridge.on('state_update', (ev: StateUpdateEvent) => {
   broadcastStateUpdate();
 });
 
-bridge.on('prompt_options', (ev: PromptOptionsEvent) => {
+connMgr.on('prompt_options', (ev: PromptOptionsEvent) => {
   dlog('Plugin', `prompt_options: type=${ev.promptType} count=${ev.options.length} q=${ev.question ? `"${ev.question.slice(0, 40)}"` : '-'}`);
   currentOptions = ev.options;
   if (ev.question) currentQuestion = ev.question;
   broadcastStateUpdate();
 });
 
-bridge.on('usage_update', (ev: UsageEvent) => {
+connMgr.on('usage_update', (ev: UsageEvent) => {
   dlog('Plugin', `usage_update: 5h=${ev.fiveHourPercent ?? '-'}% 7d=${ev.sevenDayPercent ?? '-'}% extra=${ev.extraUsageEnabled ? 'on' : 'off'} tokens=${ev.inputTokens + ev.outputTokens}`);
   updateUsageButton(currentState, {
     sessionDurationSec: ev.sessionDurationSec,
@@ -213,7 +226,7 @@ bridge.on('usage_update', (ev: UsageEvent) => {
   }, currentBillingType);
 });
 
-bridge.on('connection', (ev: ConnectionEvent) => {
+connMgr.on('connection', (ev: ConnectionEvent) => {
   dinfo('Plugin', `connection: ${ev.status}`);
   if (ev.status === 'disconnected') {
     currentState = State.DISCONNECTED;
@@ -229,11 +242,11 @@ bridge.on('connection', (ev: ConnectionEvent) => {
   // set the correct state — don't clobber it to IDLE here.
 });
 
-bridge.on('user_prompt', (ev: UserPromptEvent) => {
+connMgr.on('user_prompt', (ev: UserPromptEvent) => {
   dlog('Plugin', `user_prompt: "${ev.text.slice(0, 60)}"`);
 });
 
-bridge.on('voice_state', (ev: VoiceStateEvent) => {
+connMgr.on('voice_state', (ev: VoiceStateEvent) => {
   dlog('Plugin', `voice_state: ${ev.state} text=${ev.text ? `"${ev.text.slice(0, 40)}"` : '-'} err=${ev.error || '-'}`);
   if (ev.state === 'error') {
     setVoiceError(ev.error);
@@ -249,16 +262,25 @@ bridge.on('voice_state', (ev: VoiceStateEvent) => {
   }
 });
 
-bridge.on('connected', () => {
-  dinfo('Plugin', 'bridge connected');
-  setUsageBridgeConnected(true);
-  // Request fresh usage data immediately on connect (covers sleep/wake recovery)
-  bridge.send({ type: 'query_usage' });
+connMgr.on('active_agent_changed', (agentType: string) => {
+  dinfo('Plugin', `active_agent_changed: ${agentType}`);
+  const caps = connMgr.getCapabilities();
+  setUsageCapabilities(caps);
+  broadcastStateUpdate();
 });
 
-bridge.on('disconnected', () => {
-  dinfo('Plugin', 'bridge disconnected');
+connMgr.on('connected', () => {
+  dinfo('Plugin', `connected (activeAgent=${connMgr.getActiveAgentType()} prevState=${currentState})`);
+  setUsageBridgeConnected(true);
+  setUsageCapabilities(connMgr.getCapabilities());
+  // Request fresh usage data immediately on connect (covers sleep/wake recovery)
+  connMgr.send({ type: 'query_usage' });
+});
+
+connMgr.on('disconnected', () => {
+  dinfo('Plugin', `disconnected (activeAgent=${connMgr.getActiveAgentType()} prevState=${currentState})`);
   setUsageBridgeConnected(false);
+  setUsageCapabilities(null);
   currentState = State.DISCONNECTED;
   currentOptions = [];
   currentQuestion = undefined;
@@ -285,22 +307,28 @@ function broadcastStateUpdate(): void {
 
   dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length} expanded=${expandedMode} takeover=${isEncoderTakeoverActive()}`);
 
+  const agentType = connMgr.getActiveAgentType();
+  const caps = connMgr.getCapabilities();
+  const standby = connMgr.isStandby();
+
   if (expandedMode && currentOptions.length > 4) {
     // Expanded mode: all 7 keypad slots show options
     const configs = layoutManager.getExpandedLayout(currentState, currentOptions);
     overrideModeButton(configs[0]);
     overrideSessionButton(configs[1]);
     overrideUsageButton(configs[2]);
-    updateResponseState(currentState, currentMode as any, currentOptions, configs.slice(3, 6));
-    overrideStopButton(configs[6]);
+    updateResponseState(currentState, currentMode as any, currentOptions, configs.slice(3, 7), agentType, standby, currentNavigable);
+    // With 7 options filling slots 0-6, stop button (slot 7) shows normal ESC/STOP
+    overrideStopButton(null);
+    updateStopState(currentState, undefined, standby);
   } else {
     // Normal mode: clear overrides, render normally
     overrideModeButton(null);
     overrideSessionButton(null);
     overrideUsageButton(null);
-    updateModeButton(currentState, currentMode);
-    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName);
-    updateResponseState(currentState, currentMode as any, currentOptions);
+    updateModeButton(currentState, currentMode, caps);
+    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, standby);
+    updateResponseState(currentState, currentMode as any, currentOptions, undefined, agentType, standby, currentNavigable);
 
     // Stop slot: may show 4th option or MORE button
     const stopOverride = layoutManager.getStopSlotOverride(currentState, currentOptions);
@@ -308,7 +336,7 @@ function broadcastStateUpdate(): void {
       overrideStopButton(stopOverride);
     } else {
       overrideStopButton(null);
-      updateStopState(currentState);
+      updateStopState(currentState, undefined, standby);
     }
   }
 
@@ -325,7 +353,7 @@ function broadcastStateUpdate(): void {
       updateOptionDialState(
         currentState, currentOptions, currentQuestion, currentTool,
         currentNavigable, currentCursorIndex, currentToolInput,
-        currentSuggestedPrompt,
+        currentSuggestedPrompt, agentType,
       );
     });
   } else if (!shouldTakeover && isEncoderTakeoverActive()) {
@@ -335,22 +363,22 @@ function broadcastStateUpdate(): void {
       if (exitGen !== takeoverGeneration) return; // superseded by newer transition
       updateVoiceDialState(currentState);
       updateUtilityDialState(currentState);
-      updateItermDialState(currentState);
+      updateItermDialState(currentState, agentType);
     });
-    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt);
+    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType);
   } else if (shouldTakeover) {
     // Already in takeover — just refresh
     updateOptionDialState(
       currentState, currentOptions, currentQuestion, currentTool,
       currentNavigable, currentCursorIndex, currentToolInput,
-      currentSuggestedPrompt,
+      currentSuggestedPrompt, agentType,
     );
   } else {
     // Not in takeover, not entering — normal updates
-    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt);
+    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType);
     updateVoiceDialState(currentState);
     updateUtilityDialState(currentState);
-    updateItermDialState(currentState);
+    updateItermDialState(currentState, agentType);
   }
 }
 
@@ -386,8 +414,8 @@ function findLatestSessionPort(): number | undefined {
 }
 
 streamDeck.connect().then(() => {
-  dinfo('Plugin', 'Stream Deck connected, starting bridge client');
-  bridge.scanLatestPort = () => findLatestSessionPort();
+  dinfo('Plugin', 'Stream Deck connected, starting connection manager');
+  connMgr.scanLatestPort = () => findLatestSessionPort();
   const port = findLatestSessionPort();
-  bridge.connect(port);
+  connMgr.start(port);
 });

@@ -7,8 +7,10 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State, PermissionMode } from '@agentdeck/shared';
-import { BridgeClient } from '../bridge-client.js';
+import type { AgentType } from '@agentdeck/shared';
+import { ConnectionManager } from '../connection-manager.js';
 import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { agentLogoWatermark, CLAUDE_LOGO_PATH } from '../renderers/agent-logos.js';
 import { ButtonConfig } from '../layout-manager.js';
 import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
@@ -31,12 +33,14 @@ interface SessionEntry {
   startedAt: string;
 }
 
-let bridge: BridgeClient;
+let bridge: ConnectionManager;
 let currentState = State.DISCONNECTED;
 let currentMode = PermissionMode.DEFAULT;
 let currentProjectName: string | undefined;
 let currentTool: string | undefined;
 let currentModel: string | undefined;
+let currentAgentType: AgentType | null = null;
+let currentStandby = false;
 let currentSessionIndex = 0;
 let sessions: SessionEntry[] = [];
 let keyDownTime = 0;
@@ -51,7 +55,7 @@ let overrideConfig: ButtonConfig | null = null;
 
 const actionIds: string[] = [];
 
-export function initSessionButton(b: BridgeClient): void {
+export function initSessionButton(b: ConnectionManager): void {
   bridge = b;
   startFileWatch();
 }
@@ -61,7 +65,7 @@ function startFileWatch(): void {
   fileWatchActive = true;
   watchFile(SESSIONS_FILE, { interval: 1000 }, () => {
     const prevCount = sessions.length;
-    const prevPort = bridge.getPort();
+    const prevPort = bridge.getBridgePort();
     sessions = loadSessions();
 
     if (sessions.length > prevCount) {
@@ -73,7 +77,7 @@ function startFileWatch(): void {
           currentSessionIndex = sessions.indexOf(newest);
           currentProjectName = newest.projectName;
           dlog('SesBut', `New session detected (disconnected) — auto-switching to ${getDisplayName(newest, sessions)}:${newest.port}`);
-          bridge.reconnectTo(newest.port);
+          bridge.reconnectBridgeTo(newest.port);
         }
       } else {
         dlog('SesBut', `New session detected — staying on current (state=${currentState}), count ${prevCount}→${sessions.length}`);
@@ -110,6 +114,8 @@ export function updateSessionButton(
   project?: string,
   tool?: string,
   model?: string,
+  agentType?: AgentType | null,
+  standby?: boolean,
 ): void {
   const wasConnected = currentState !== State.DISCONNECTED;
   const wasIdle = currentState === State.IDLE;
@@ -121,6 +127,8 @@ export function updateSessionButton(
     currentTool = tool;
   }
   if (model) currentModel = model;
+  if (agentType !== undefined) currentAgentType = agentType;
+  if (standby !== undefined) currentStandby = standby;
 
   // Reload session list only on transition to IDLE (not on every render)
   if (state === State.IDLE && !wasIdle) {
@@ -159,12 +167,12 @@ function autoReconnect(): void {
   const activeSessions = loadSessions();
   if (activeSessions.length === 0) return;
 
-  const currentPort = bridge.getPort();
+  const currentPort = bridge.getBridgePort();
   const other = activeSessions.find((s) => s.port !== currentPort);
   if (other) {
     currentSessionIndex = activeSessions.indexOf(other);
     currentProjectName = other.projectName;
-    bridge.reconnectTo(other.port);
+    bridge.reconnectBridgeTo(other.port);
   }
 }
 
@@ -173,11 +181,11 @@ export function switchToPort(port: number): void {
   sessions = loadSessions();
   const idx = sessions.findIndex((s) => s.port === port);
   if (idx === -1) return;
-  if (bridge.getPort() === port) return;
+  if (bridge.getBridgePort() === port) return;
   currentSessionIndex = idx;
   currentProjectName = sessions[idx].projectName;
   dlog('SesBut', `switchToPort: → ${getDisplayName(sessions[idx], sessions)}:${port}`);
-  bridge.reconnectTo(port);
+  bridge.reconnectBridgeTo(port);
   refreshAll();
 }
 
@@ -327,6 +335,16 @@ function getStatusInfo(): { label: string; detail: string; color: string; bg: st
 }
 
 function renderSessionSvg(): string {
+  // Standby mode: gateway connected in auto mode, no bridge
+  if (currentStandby) {
+    return renderStandbySvg();
+  }
+
+  // OpenClaw active (explicit selection)
+  if (currentAgentType === 'openclaw' && !currentStandby) {
+    return renderOpenClawSvg();
+  }
+
   const isActive =
     currentState === State.PROCESSING ||
     currentState === State.AWAITING_PERMISSION ||
@@ -385,6 +403,7 @@ function renderSessionSvg(): string {
       const lines: string[] = [
         `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
         `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a2e14"/>`,
+        agentLogoWatermark('claude-code', '#4ade80', 0.08),
         `<circle cx="18" cy="18" r="5" fill="#4ade80"/>`,
       ];
 
@@ -448,6 +467,7 @@ function renderSessionSvg(): string {
       const lines: string[] = [
         `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
         `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="${info.bg}"/>`,
+        agentLogoWatermark(currentAgentType || 'claude-code', info.color, 0.15),
       ];
 
       // Render project name lines
@@ -467,9 +487,11 @@ function renderSessionSvg(): string {
       cy += labelFs / 2 + gap2 + detailFs / 2;
       const detailBaseline = Math.round(cy + detailFs * 0.35);
 
+      // Claude sparkle: 16x16 path centered at (-8,-8), scaled to ~24px
+      const sparkleScale = 1.5;
       lines.push(
-        `<g transform="translate(72, ${starY}) rotate(${angle})">`,
-        `<path d="M0,-10 L2,-3 L10,0 L2,3 L0,10 L-2,3 L-10,0 L-2,-3Z" fill="${info.color}" opacity="${opacity}"/>`,
+        `<g transform="translate(72, ${starY}) rotate(${angle}) scale(${sparkleScale}) translate(-8,-8)">`,
+        `<path d="${CLAUDE_LOGO_PATH}" fill="${info.color}" opacity="${opacity}"/>`,
         `</g>`,
         `<text x="72" y="${labelBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="${info.color}">${info.label}</text>`,
         `<text x="72" y="${detailBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="${info.color}" opacity="0.7">${escXml(detail)}</text>`,
@@ -481,6 +503,96 @@ function renderSessionSvg(): string {
     default:
       return simpleSvg('???', '', '#666666', '#1a1a1a');
   }
+}
+
+function renderOpenClawSvg(): string {
+  const isActive =
+    currentState === State.PROCESSING ||
+    currentState === State.AWAITING_PERMISSION ||
+    currentState === State.AWAITING_OPTION;
+
+  if (isActive) {
+    // OC active states use the same spinner as CC but with OC colors
+    const info = getStatusInfo();
+    const detail = truncate(info.detail, 14);
+    const angle = Math.round((animFrame / ANIM_TOTAL_FRAMES) * 360);
+    const opacity = (0.75 + 0.25 * Math.sin((animFrame / ANIM_TOTAL_FRAMES) * Math.PI * 2)).toFixed(2);
+    const projName = 'OpenClaw';
+    const projLines = projName ? splitProjectName(projName, 12) : [];
+    const projFs = 13;
+    const projLineH = 11;
+    const starH = 20;
+    const labelFs = 24;
+    const detailFs = 16;
+    const gapProj = 4;
+    const gap1 = 4;
+    const gap2 = 6;
+    const projSpan = projLines.length > 0 ? (projLines.length - 1) * projLineH + projFs : 0;
+    const projGap = projLines.length > 0 ? gapProj : 0;
+    const totalSpan = projSpan + projGap + starH + gap1 + labelFs + gap2 + detailFs;
+    const BUTTON_CENTER = 72;
+    let cy = BUTTON_CENTER - totalSpan / 2;
+
+    // Use OC purple tint for background
+    const bg = info.bg === '#2a1f00' ? '#1a0f2e' : info.bg === '#2a0f0f' ? '#2a0f1a' : '#0f1a2e';
+    const lines: string[] = [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+      `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="${bg}"/>`,
+      agentLogoWatermark('openclaw', info.color, 0.20),
+    ];
+
+    for (let i = 0; i < projLines.length; i++) {
+      const baseline = Math.round(cy + projFs * 0.35);
+      lines.push(
+        `<text x="72" y="${baseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${projFs}" fill="${info.color}" opacity="0.6">${escXml(truncate(projLines[i], 14))}</text>`,
+      );
+      cy += i < projLines.length - 1 ? projLineH : projFs / 2;
+    }
+    if (projLines.length > 0) cy += gapProj + starH / 2;
+    else cy += starH / 2;
+
+    const starY = Math.round(cy);
+    cy += starH / 2 + gap1 + labelFs / 2;
+    const labelBaseline = Math.round(cy + labelFs * 0.35);
+    cy += labelFs / 2 + gap2 + detailFs / 2;
+    const detailBaseline = Math.round(cy + detailFs * 0.35);
+
+    lines.push(
+      `<g transform="translate(72, ${starY}) rotate(${angle})">`,
+      `<path d="M0,-10 L2,-3 L10,0 L2,3 L0,10 L-2,3 L-10,0 L-2,-3Z" fill="${info.color}" opacity="${opacity}"/>`,
+      `</g>`,
+      `<text x="72" y="${labelBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="${info.color}">${info.label}</text>`,
+      `<text x="72" y="${detailBaseline}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="${info.color}" opacity="0.7">${escXml(detail)}</text>`,
+      `</svg>`,
+    );
+    return lines.join('');
+  }
+
+  // OC IDLE — lobster watermark + project name, no [OC] badge
+  const name = 'OpenClaw';
+  const color = '#c084fc'; // purple for OC
+  const lines: string[] = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+    `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#1a0a2e"/>`,
+    agentLogoWatermark('openclaw', color, 0.30),
+    `<circle cx="18" cy="18" r="5" fill="#4ade80"/>`,
+    `<text x="72" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="${color}">${escXml(name)}</text>`,
+    `</svg>`,
+  ];
+  return lines.join('');
+}
+
+function renderStandbySvg(): string {
+  const color = '#a78bfa'; // muted purple
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+    `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#1a1a1a"/>`,
+    agentLogoWatermark('openclaw', '#666666', 0.05),
+    `<circle cx="18" cy="18" r="5" fill="#4ade80"/>`,
+    `<text x="72" y="68" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="bold" fill="${color}" opacity="0.8">\u25B8 OC</text>`,
+    `<text x="72" y="96" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#666666">standby</text>`,
+    `</svg>`,
+  ].join('');
 }
 
 function simpleSvg(line1: string, line2: string, color: string, bg: string): string {
@@ -541,18 +653,62 @@ export class SessionButtonAction extends SingletonAction {
   }
 }
 
+type CycleEntry =
+  | { type: 'cc'; session: SessionEntry }
+  | { type: 'oc' };
+
+function buildCycleList(): CycleEntry[] {
+  const ccEntries: CycleEntry[] = sessions.map(s => ({ type: 'cc' as const, session: s }));
+  if (bridge.isGatewayAvailable()) {
+    ccEntries.push({ type: 'oc' as const });
+  }
+  return ccEntries;
+}
+
 function cycleSession(): void {
   sessions = loadSessions();
-  if (sessions.length <= 1) return;
 
-  currentSessionIndex = (currentSessionIndex + 1) % sessions.length;
-  const next = sessions[currentSessionIndex];
-  if (next) {
-    dlog('SesBut', `cycle: ${currentSessionIndex + 1}/${sessions.length} → ${getDisplayName(next, sessions)}:${next.port}`);
-    currentProjectName = next.projectName;
-    bridge.reconnectTo(next.port);
+  // Standby mode: pressing activates OC explicitly
+  if (currentStandby) {
+    dlog('SesBut', 'cycle: standby → activate OpenClaw');
+    bridge.activateGateway();
     refreshAll();
+    return;
   }
+
+  const cycleList = buildCycleList();
+
+  // Nothing to cycle
+  if (cycleList.length === 0) return;
+  if (cycleList.length === 1 && !bridge.isGatewayAvailable()) return;
+
+  // Find current position in cycle list
+  let currentPos: number;
+  if (currentAgentType === 'openclaw') {
+    currentPos = cycleList.findIndex(e => e.type === 'oc');
+    if (currentPos === -1) currentPos = cycleList.length - 1;
+  } else {
+    currentPos = currentSessionIndex < sessions.length ? currentSessionIndex : 0;
+  }
+
+  // If only one entry (current), nothing to cycle to
+  if (cycleList.length <= 1) return;
+
+  const nextPos = (currentPos + 1) % cycleList.length;
+  const next = cycleList[nextPos];
+
+  if (next.type === 'oc') {
+    dlog('SesBut', `cycle: → OpenClaw`);
+    bridge.activateGateway();
+  } else {
+    const session = next.session;
+    currentSessionIndex = sessions.indexOf(session);
+    currentProjectName = session.projectName;
+    dlog('SesBut', `cycle: ${currentSessionIndex + 1}/${sessions.length} → ${getDisplayName(session, sessions)}:${session.port}`);
+    bridge.activateBridge();
+    bridge.reconnectBridgeTo(session.port);
+  }
+  refreshAll();
 }
 
 async function focusTerminal(): Promise<void> {

@@ -3,6 +3,8 @@
  * Follows Voice Dial design pattern: #0f172a bg, header, centered icon/text, accent bar.
  */
 
+import { measureTextWidth, sliceByPx, wrapTextByWidth } from './text-utils.js';
+
 const W = 200;
 const H = 100;
 
@@ -76,21 +78,42 @@ export function renderResponseDisabled(): string {
 
 /** IDLE with suggestion: violet-accented autocompletion prompt */
 export function renderResponseSuggestion(text: string, index: number, total: number): string {
-  const display = escapeXml(truncate(text, 22));
   const counter = `${index + 1}/${total}`;
   const accent = '#a78bfa';
   const headerColor = '#c4b5fd';
   const barW = Math.round((180 * (index + 1)) / total);
+  const fontSize = 12;
+  const maxPx = 160; // 200 - 20px padding each side
+
+  // Wrap text into lines, take up to 2
+  const wrapped = wrapTextByWidth(text, maxPx, fontSize);
+  const lines = wrapped.slice(0, 2);
+  // Truncate last line with ellipsis if there were more lines
+  if (wrapped.length > 2 && lines[1]) {
+    lines[1] = truncateByPx(lines[1], maxPx, fontSize);
+  }
+
+  const linesSvg = lines.map((line, i) => {
+    const y = lines.length === 1 ? 62 : 54 + i * 16;
+    return `<text x="100" y="${y}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" fill="${accent}" opacity="0.6">${escapeXml(line)}</text>`;
+  }).join('\n    ');
 
   return svgWrap(`
     <rect width="${W}" height="${H}" fill="#0f172a"/>
     <text x="100" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="${headerColor}">SUGGEST</text>
     <text x="190" y="18" text-anchor="end" font-family="Arial,sans-serif" font-size="11" fill="#475569">${counter}</text>
-    <text x="100" y="55" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" fill="${accent}" opacity="0.8">\u2726</text>
-    <text x="100" y="78" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="${accent}" opacity="0.6">${display}</text>
+    <text x="100" y="36" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" fill="${accent}" opacity="0.8">\u2726</text>
+    ${linesSvg}
     <rect x="10" y="90" width="180" height="2" rx="1" fill="#1e293b"/>
     <rect x="10" y="90" width="${Math.max(2, barW)}" height="2" rx="1" fill="${accent}" opacity="0.3"/>
   `);
+}
+
+function truncateByPx(str: string, maxPx: number, fontSize: number): string {
+  if (measureTextWidth(str, fontSize) <= maxPx) return str;
+  const ellipsisPx = measureTextWidth('\u2026', fontSize);
+  const [fit] = sliceByPx(str, maxPx - ellipsisPx, fontSize);
+  return fit + '\u2026';
 }
 
 /** Interactive option/permission/diff (non-takeover fallback) */

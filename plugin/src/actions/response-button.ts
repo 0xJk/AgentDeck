@@ -6,14 +6,15 @@ import streamDeck, {
   WillDisappearEvent,
   DidReceiveSettingsEvent,
 } from '@elgato/streamdeck';
-import { State, PromptOption } from '@agentdeck/shared';
-import { BridgeClient } from '../bridge-client.js';
+import { State, PromptOption, type AgentCapabilities, type AgentType, OPENCLAW_GATEWAY_PORT } from '@agentdeck/shared';
+import { execSync } from 'child_process';
+import type { AgentLink } from '../agent-link.js';
 import { LayoutManager, ButtonConfig } from '../layout-manager.js';
 import { renderButton, svgToDataUrl, labelNeedsHaiku, BUTTON_MAX_CHARS } from '../renderers/button-renderer.js';
 import { requestAbbreviation } from '../label-summarizer.js';
 import { handleExpandedAction } from '../expanded-actions.js';
 import { isPickerActive, selectByButtonSlot, openPicker, setPickerButtonCallback, setPickerBaseDir } from '../project-picker.js';
-import { dlog, derr } from '../log.js';
+import { dlog, dwarn, derr } from '../log.js';
 
 import type { JsonValue } from '@elgato/utils';
 
@@ -57,11 +58,14 @@ function hasUserCustomizations(settings: ResponseButtonSettings, slotIndex: numb
          (!!settings.baseDir && settings.baseDir !== (defaults as ResponseButtonSettings).baseDir);
 }
 
-let bridge: BridgeClient;
+let bridge: AgentLink;
 let layoutManager: LayoutManager;
 let currentState = State.DISCONNECTED;
 let currentMode = 'default';
 let currentOptions: PromptOption[] = [];
+let currentAgentType: AgentType | null = null;
+let currentStandby = false;
+let currentNavigable = false;
 
 // Action ID → fixed slot index (0-based, from PI settings)
 const actionSlots = new Map<string, number>();
@@ -74,7 +78,7 @@ function getSortedIds(): string[] {
 }
 
 export function initResponseButtons(
-  b: BridgeClient,
+  b: AgentLink,
   lm: LayoutManager,
 ): void {
   bridge = b;
@@ -98,11 +102,17 @@ export function updateResponseState(
   mode: string,
   options: PromptOption[],
   expandedConfigs?: ButtonConfig[],
+  agentType?: AgentType | null,
+  standby?: boolean,
+  navigable?: boolean,
 ): void {
   currentState = state;
   currentMode = mode;
   currentOptions = options;
   overrideConfigs = expandedConfigs ?? null;
+  if (agentType !== undefined) currentAgentType = agentType;
+  if (standby !== undefined) currentStandby = standby;
+  if (navigable !== undefined) currentNavigable = navigable;
   refreshAllButtons();
 }
 
@@ -145,8 +155,63 @@ function disconnectedButtonConfig(s: ResponseButtonSettings): ButtonConfig {
   };
 }
 
+const DIM_BUTTON: ButtonConfig = { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false };
+
+const OPENCLAW_IDLE_PRESETS: ButtonConfig[] = [
+  { title: 'GATEWAY', color: '#1a0f2e', textColor: '#c084fc', enabled: true, action: 'open:gateway_web' },
+  { title: 'GO ON', color: '#1e3a2f', textColor: '#6ee7b7', enabled: true, action: 'command:continue' },
+  DIM_BUTTON,
+  DIM_BUTTON,
+];
+
 function refreshAllButtons(): void {
   const sorted = getSortedIds();
+
+  // Standby mode: all DIM (unless AWAITING_PERMISSION for alert)
+  if (currentStandby && currentState !== State.AWAITING_PERMISSION) {
+    for (let i = 0; i < sorted.length; i++) {
+      // Keep slot 0 START button if it has a disconnectedAction
+      if (i === 0) {
+        const s = effectiveSettings(sorted[i]);
+        applyButtonConfig(sorted[i], disconnectedButtonConfig(s), actionSlots.get(sorted[i]));
+      } else {
+        applyButtonConfig(sorted[i], DIM_BUTTON, actionSlots.get(sorted[i]));
+      }
+    }
+    return;
+  }
+
+  // OpenClaw agent-specific layouts
+  if (currentAgentType === 'openclaw' && !overrideConfigs) {
+    dlog('RspBut', `refresh OC: state=${currentState} ids=${sorted.length}`);
+    if (currentState === State.IDLE) {
+      // OC IDLE: utility presets (GATEWAY, GO ON, etc.)
+      for (let i = 0; i < sorted.length; i++) {
+        const preset = i < OPENCLAW_IDLE_PRESETS.length ? OPENCLAW_IDLE_PRESETS[i] : DIM_BUTTON;
+        applyButtonConfig(sorted[i], preset, actionSlots.get(sorted[i]));
+      }
+      return;
+    }
+    if (currentState === State.PROCESSING) {
+      for (let i = 0; i < sorted.length; i++) {
+        applyButtonConfig(sorted[i], DIM_BUTTON, actionSlots.get(sorted[i]));
+      }
+      return;
+    }
+    if (currentState === State.AWAITING_PERMISSION) {
+      // OC Permission: Allow / Deny + DIM
+      const ocButtons: ButtonConfig[] = [
+        { title: 'ALLOW', color: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:y' },
+        { title: 'DENY', color: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:n' },
+        DIM_BUTTON,
+        DIM_BUTTON,
+      ];
+      for (let i = 0; i < sorted.length; i++) {
+        applyButtonConfig(sorted[i], i < ocButtons.length ? ocButtons[i] : DIM_BUTTON, actionSlots.get(sorted[i]));
+      }
+      return;
+    }
+  }
 
   if (currentState === State.IDLE && !overrideConfigs) {
     // IDLE: use per-instance PI settings
@@ -197,9 +262,10 @@ function refreshAllButtons(): void {
     currentState,
     currentMode as any,
     currentOptions,
+    currentNavigable,
   );
 
-  dlog('RspBut', `refresh: state=${currentState} ids=${sorted.length} buttons=[${buttons.map(b => b.title ? `"${b.badge ? b.badge + ' ' : ''}${b.title}${b.subtitle ? ' | ' + b.subtitle : ''}"` : 'DIM').join(', ')}]`);
+  dlog('RspBut', `refresh: state=${currentState} nav=${currentNavigable} ids=${sorted.length} buttons=[${buttons.map(b => b.title ? `"${b.badge ? b.badge + ' ' : ''}${b.title}${b.subtitle ? ' | ' + b.subtitle : ''}"` : 'DIM').join(', ')}]`);
   for (let i = 0; i < sorted.length; i++) {
     if (i < buttons.length) {
       applyButtonConfig(sorted[i], buttons[i], actionSlots.get(sorted[i]));
@@ -284,22 +350,28 @@ export class ResponseButtonAction extends SingletonAction {
   override async onKeyDown(ev: KeyDownEvent): Promise<void> {
     const sorted = getSortedIds();
     const slot = sorted.indexOf(ev.action.id);
-    if (slot < 0) return;
+    // === Guard A: action ID not in actionSlots ===
+    dlog('RspBut', `keyDown ENTRY: id=${ev.action.id} slot=${slot} state=${currentState} ` +
+      `override=${!!overrideConfigs} standby=${currentStandby} sorted=${sorted.length}`);
+    if (slot < 0) {
+      dwarn('RspBut', `keyDown GUARD-A: action ID not in actionSlots! id=${ev.action.id} slots=[${sorted.join(',')}]`);
+      return;
+    }
 
     let actionStr: string | undefined;
 
+    // === Guard B: DISCONNECTED or PROCESSING ===
     if (currentState === State.DISCONNECTED || currentState === State.PROCESSING) {
       if (isPickerActive()) {
         // Picker active: button selects project
+        dlog('RspBut', `keyDown slot=${slot} → picker select (state=${currentState})`);
         selectByButtonSlot(slot);
         return;
       }
       const s = effectiveSettings(ev.action.id);
       const cmd = s.disconnectedAction?.trim();
       if (!cmd) {
-        if (currentState === State.DISCONNECTED) {
-          dlog('RspBut', `keyDown slot=${slot} DISCONNECTED no cmd`);
-        }
+        dlog('RspBut', `keyDown GUARD-B: slot=${slot} state=${currentState} — no disconnectedAction, returning`);
         return;
       }
       dlog('RspBut', `keyDown slot=${slot} → openPicker (state=${currentState})`);
@@ -311,7 +383,31 @@ export class ResponseButtonAction extends SingletonAction {
     if (overrideConfigs) {
       // Expanded mode: use override configs
       const config = slot < overrideConfigs.length ? overrideConfigs[slot] : undefined;
-      if (!config?.enabled || !config.action) return;
+      // === Guard C: override config disabled or no action ===
+      if (!config?.enabled || !config.action) {
+        dlog('RspBut', `keyDown GUARD-C: slot=${slot} override config disabled/missing (enabled=${config?.enabled} action=${config?.action})`);
+        return;
+      }
+      actionStr = config.action;
+    } else if (currentAgentType === 'openclaw' && currentState === State.IDLE) {
+      // OpenClaw IDLE: use preset configs (GATEWAY, GO ON, etc.)
+      const preset = slot < OPENCLAW_IDLE_PRESETS.length ? OPENCLAW_IDLE_PRESETS[slot] : DIM_BUTTON;
+      if (!preset.enabled || !preset.action) {
+        dlog('RspBut', `keyDown GUARD-OC-IDLE: slot=${slot} preset disabled`);
+        return;
+      }
+      actionStr = preset.action;
+    } else if (currentAgentType === 'openclaw' && currentState === State.AWAITING_PERMISSION) {
+      // OpenClaw Permission: ALLOW / DENY
+      const ocButtons: ButtonConfig[] = [
+        { title: 'ALLOW', color: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:y' },
+        { title: 'DENY', color: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:n' },
+      ];
+      const config = slot < ocButtons.length ? ocButtons[slot] : undefined;
+      if (!config?.enabled || !config.action) {
+        dlog('RspBut', `keyDown GUARD-OC-PERM: slot=${slot} no action`);
+        return;
+      }
       actionStr = config.action;
     } else if (currentState === State.IDLE) {
       // Use per-instance PI settings for IDLE
@@ -322,14 +418,26 @@ export class ResponseButtonAction extends SingletonAction {
         currentState,
         currentMode as any,
         currentOptions,
+        currentNavigable,
       );
-      if (slot >= buttons.length) return;
+      // === Guard D: slot out of range or disabled ===
+      if (slot >= buttons.length) {
+        dlog('RspBut', `keyDown GUARD-D: slot=${slot} >= buttons.length=${buttons.length}`);
+        return;
+      }
       const config = buttons[slot];
-      if (!config.enabled || !config.action) return;
+      if (!config.enabled || !config.action) {
+        dlog('RspBut', `keyDown GUARD-D: slot=${slot} disabled (enabled=${config.enabled} action=${config.action})`);
+        return;
+      }
       actionStr = config.action;
     }
 
-    if (!actionStr) return;
+    // === Guard E: empty actionStr ===
+    if (!actionStr) {
+      dlog('RspBut', `keyDown GUARD-E: slot=${slot} actionStr is empty/undefined`);
+      return;
+    }
     dlog('RspBut', `keyDown slot=${slot} action="${actionStr}"`);
 
     if (actionStr === 'expand_options') {
@@ -349,6 +457,15 @@ export class ResponseButtonAction extends SingletonAction {
         type: 'switch_mode',
         mode: actionStr.split(':')[1] as 'plan' | 'acceptEdits' | 'default',
       });
+    } else if (actionStr.startsWith('open:')) {
+      const target = actionStr.substring('open:'.length);
+      if (target === 'gateway_web') {
+        try {
+          execSync(`open "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}"`, { timeout: 3000 });
+        } catch (e) {
+          derr('RspBut', `open gateway_web failed: ${e}`);
+        }
+      }
     } else if (actionStr.startsWith('command:')) {
       bridge.send({ type: 'send_prompt', text: actionStr.substring('command:'.length) });
     }

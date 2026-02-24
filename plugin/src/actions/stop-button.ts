@@ -5,25 +5,27 @@ import streamDeck, {
   WillAppearEvent,
   WillDisappearEvent,
 } from '@elgato/streamdeck';
-import { State, PromptOption } from '@agentdeck/shared';
-import { BridgeClient } from '../bridge-client.js';
+import { State, PromptOption, type AgentCapabilities } from '@agentdeck/shared';
+import type { AgentLink } from '../agent-link.js';
 import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
 import { ButtonConfig } from '../layout-manager.js';
 import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
 
-let bridge: BridgeClient;
+let bridge: AgentLink;
 let currentState = State.DISCONNECTED;
+let currentStandby = false;
 let overrideConfig: ButtonConfig | null = null;
 
 const actionIds: string[] = [];
 
-export function initStopButton(b: BridgeClient): void {
+export function initStopButton(b: AgentLink): void {
   bridge = b;
 }
 
-export function updateStopState(state: State, options?: PromptOption[]): void {
+export function updateStopState(state: State, options?: PromptOption[], standby?: boolean): void {
   currentState = state;
+  if (standby !== undefined) currentStandby = standby;
   // overrideConfig is set externally by overrideStopButton
   refreshStopButtons();
 }
@@ -42,6 +44,10 @@ function isAwaiting(state: State): boolean {
 }
 
 function getButtonConfig(state: State): ButtonConfig {
+  // Standby → DIM
+  if (currentStandby && state !== State.AWAITING_PERMISSION) {
+    return { title: 'STOP', color: '#1a1a1a', textColor: '#444444', enabled: false };
+  }
   if (state === State.PROCESSING) {
     return { title: 'STOP', color: '#cc0000', textColor: '#ffffff', enabled: true };
   }

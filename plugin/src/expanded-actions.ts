@@ -1,4 +1,4 @@
-import { BridgeClient } from './bridge-client.js';
+import type { AgentLink } from './agent-link.js';
 
 let expandCallback: (() => void) | null = null;
 
@@ -13,7 +13,7 @@ export function setExpandCallback(cb: () => void): void {
  * Common handler for actions from expanded mode and override buttons.
  * Called by buttons that are temporarily overridden to show option actions.
  */
-export function handleExpandedAction(actionStr: string, bridge: BridgeClient): void {
+export function handleExpandedAction(actionStr: string, bridge: AgentLink): void {
   if (actionStr === 'expand_options') {
     expandCallback?.();
     return;

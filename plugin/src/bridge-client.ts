@@ -3,17 +3,20 @@ import { EventEmitter } from 'events';
 import {
   BridgeEvent,
   PluginCommand,
+  AgentCapabilities,
   BRIDGE_WS_PORT,
   RECONNECT_INTERVAL_MS,
 } from '@agentdeck/shared';
+import type { AgentLink } from './agent-link.js';
 import { dlog, dwarn, derr } from './log.js';
 
-export class BridgeClient extends EventEmitter {
+export class BridgeClient extends EventEmitter implements AgentLink {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setInterval> | null = null;
   private _connected = false;
   private _port = BRIDGE_WS_PORT;
   private _connectGeneration = 0;
+  private _capabilities: AgentCapabilities | null = null;
 
   /** Optional callback to rescan sessions.json for the latest port */
   scanLatestPort: (() => number | undefined) | null = null;
@@ -79,6 +82,10 @@ export class BridgeClient extends EventEmitter {
     return this._connected;
   }
 
+  getCapabilities(): AgentCapabilities | null {
+    return this._capabilities;
+  }
+
   getPort(): number {
     return this._port;
   }
@@ -108,6 +115,10 @@ export class BridgeClient extends EventEmitter {
         try {
           const event = JSON.parse(data.toString()) as BridgeEvent;
           dlog('Bridge', `recv(${event.type})`);
+          // Track agent capabilities from state updates
+          if (event.type === 'state_update' && event.agentCapabilities) {
+            this._capabilities = event.agentCapabilities;
+          }
           this.emit(event.type, event);
         } catch (err) {
           derr('Bridge', `message parse error: ${err}`);
