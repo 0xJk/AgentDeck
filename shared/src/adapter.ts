@@ -23,6 +23,8 @@ export interface AgentCapabilities {
   hasSuggestedPrompts: boolean;
   /** OAuth-based API usage tracking */
   hasApiUsage: boolean;
+  /** CLI-based model catalog (openclaw models list) */
+  hasModelCatalog: boolean;
 }
 
 // ===== Adapter Options =====
@@ -32,6 +34,8 @@ export interface AdapterStartOptions {
   port: number;
   /** Command to spawn (e.g. 'claude') — only relevant for PTY-based agents */
   command?: string;
+  /** Gateway WebSocket URL — only relevant for gateway-based agents (OpenClaw) */
+  gatewayUrl?: string;
 }
 
 // ===== Adapter Events =====
@@ -50,10 +54,10 @@ export interface AdapterParserEvent {
   data?: Record<string, unknown>;
 }
 
-/** Metadata update (cursor, usage, user prompt — no state transition) */
+/** Metadata update (cursor, usage, user prompt, model catalog — no state transition) */
 export interface AdapterMetadataEvent {
   source: 'metadata';
-  event: 'cursor_update' | 'usage_info' | 'user_prompt';
+  event: 'cursor_update' | 'usage_info' | 'user_prompt' | 'model_catalog';
   data: Record<string, unknown>;
 }
 
@@ -152,7 +156,7 @@ export interface AgentAdapterEvents {
   exit: (code: number, signal: number) => void;
 }
 
-// ===== Claude Code Capabilities (constant) =====
+// ===== Agent Capabilities (constants) =====
 
 export const CLAUDE_CODE_CAPABILITIES: AgentCapabilities = {
   type: 'claude-code',
@@ -164,4 +168,21 @@ export const CLAUDE_CODE_CAPABILITIES: AgentCapabilities = {
   hasNavigablePrompts: true,
   hasSuggestedPrompts: true,
   hasApiUsage: true,
+  hasModelCatalog: false,
 };
+
+export const OPENCLAW_CAPABILITIES: AgentCapabilities = {
+  type: 'openclaw',
+  displayName: 'OpenClaw',
+  hasTerminal: false,
+  hasModeSwitching: false,
+  hasDiffReview: false,
+  hasOptionLists: true,
+  hasNavigablePrompts: false,
+  hasSuggestedPrompts: false,
+  hasApiUsage: false,
+  hasModelCatalog: true,
+};
+
+/** Default OpenClaw Gateway port */
+export const OPENCLAW_GATEWAY_PORT = 18789;

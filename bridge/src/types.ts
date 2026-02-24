@@ -20,9 +20,12 @@ export {
   type AdapterActivityEvent,
   type AdapterConnectionEvent,
   CLAUDE_CODE_CAPABILITIES,
+  OPENCLAW_CAPABILITIES,
+  OPENCLAW_GATEWAY_PORT,
 } from '@agentdeck/shared';
 
 export {
+  type ModelCatalogEntry,
   type StateUpdateEvent,
   type PromptOptionsEvent,
   type UsageEvent,

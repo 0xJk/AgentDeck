@@ -42,3 +42,33 @@ export const WHISPER_SERVER_CANDIDATES = [
 
 /** Whisper-server discovery info file path */
 export const WHISPER_SERVER_INFO_FILE = join(homedir(), '.agentdeck', 'whisper-server.json');
+
+/** OpenClaw binary candidates */
+export const OPENCLAW_CANDIDATES = [
+  '/opt/homebrew/bin/openclaw',
+  '/usr/local/bin/openclaw',
+  join(homedir(), '.local/bin/openclaw'),
+  join(homedir(), '.cargo/bin/openclaw'),
+  join(homedir(), 'go/bin/openclaw'),
+  join(homedir(), '.openclaw/bin/openclaw'),
+  join(homedir(), '.bun/bin/openclaw'),
+];
+
+/**
+ * Augmented PATH for CLI child processes — ensures binaries installed via
+ * Homebrew, pip --user, etc. are discoverable even when the parent process
+ * (e.g. Stream Deck SDK) has a minimal PATH.
+ */
+export function augmentedPath(): string {
+  const extra = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    join(homedir(), '.local/bin'),
+    join(homedir(), '.cargo/bin'),
+    join(homedir(), 'go/bin'),
+    join(homedir(), '.openclaw/bin'),
+    join(homedir(), '.bun/bin'),
+  ];
+  const existing = process.env.PATH ?? '/usr/bin:/bin';
+  return [...extra, existing].join(':');
+}

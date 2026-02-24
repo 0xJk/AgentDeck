@@ -19,6 +19,7 @@ import {
   type StateSnapshot,
   type AdapterEvent,
   type AgentType,
+  type ModelCatalogEntry,
 } from './types.js';
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -85,7 +86,8 @@ program
   .description('Start bridge server and spawn agent CLI')
   .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
   .option('-c, --command <cmd>', 'Command to spawn', 'claude')
-  .option('-a, --agent <type>', 'Agent type (claude-code)', 'claude-code')
+  .option('-a, --agent <type>', 'Agent type (claude-code|openclaw)', 'claude-code')
+  .option('-g, --gateway <url>', 'OpenClaw gateway WebSocket URL')
   .option('-d, --debug', 'Enable debug logging to /tmp/sdc-debug.log')
   .action(async (opts) => {
     if (opts.debug) {
@@ -94,7 +96,7 @@ program
     }
     const port = parseInt(opts.port, 10);
     const agentType = opts.agent as AgentType;
-    await startBridge(port, opts.command, agentType);
+    await startBridge(port, opts.command, agentType, opts.gateway);
   });
 
 program
@@ -178,7 +180,7 @@ program
 
 program.parse();
 
-async function startBridge(port: number, command: string, agentType: AgentType): Promise<void> {
+async function startBridge(port: number, command: string, agentType: AgentType, gatewayUrl?: string): Promise<void> {
   const deps = checkDependencies();
   if (!deps.ok) {
     process.exit(1);
@@ -219,8 +221,11 @@ async function startBridge(port: number, command: string, agentType: AgentType):
   let cachedApiUsage: ApiUsageData | null = null;
   let lastApiFetchTime = 0;
 
+  // Model catalog (OpenClaw: from CLI)
+  let cachedModelCatalog: ModelCatalogEntry[] | null = null;
+
   // 1. Initialize components
-  const adapter = createAdapter(agentType);
+  const adapter = createAdapter(agentType, gatewayUrl);
   const usageTracker = new UsageTracker();
   const stateMachine = new StateMachine(usageTracker);
   const voiceManager = new VoiceManager();
@@ -234,7 +239,7 @@ async function startBridge(port: number, command: string, agentType: AgentType):
 
   // 2. Start adapter (creates HTTP server, spawns agent process)
   try {
-    await adapter.start({ port, command });
+    await adapter.start({ port, command, gatewayUrl });
     log(`[sdc] Adapter started: ${adapter.capabilities.displayName}`);
   } catch (err) {
     log(`[sdc] Failed to start adapter: ${err}`);
@@ -297,6 +302,24 @@ async function startBridge(port: number, command: string, agentType: AgentType):
             }
             break;
           }
+          case 'model_catalog': {
+            const models = evt.data?.models as ModelCatalogEntry[] | undefined;
+            if (models) {
+              cachedModelCatalog = models;
+              debug('sdc', `Model catalog updated: ${models.length} models`);
+              // Broadcast updated state with model catalog
+              const snap = stateMachine.getSnapshot();
+              const stateEvt: BridgeEvent = {
+                type: 'state_update',
+                state: snap.state,
+                permissionMode: snap.permissionMode,
+                agentType: adapter.capabilities.type,
+                modelCatalog: cachedModelCatalog ?? undefined,
+              };
+              wsServer.broadcast(stateEvt);
+            }
+            break;
+          }
         }
         break;
 
@@ -348,6 +371,7 @@ async function startBridge(port: number, command: string, agentType: AgentType):
       navigable: snapshot.navigable || undefined,
       cursorIndex: snapshot.navigable ? snapshot.cursorIndex : undefined,
       suggestedPrompt: snapshot.suggestedPrompt ?? undefined,
+      modelCatalog: cachedModelCatalog ?? undefined,
     };
     wsServer.broadcast(stateEvent);
 
@@ -369,7 +393,9 @@ async function startBridge(port: number, command: string, agentType: AgentType):
   wsServer.onCommand((cmd: PluginCommand) => {
     debug('sdc', `pluginCmd: ${cmd.type}`);
 
-    // Let adapter handle commands it owns (switch_mode, interrupt, escape, respond)
+    // Let adapter handle commands it owns.
+    // ClaudeCode: switch_mode, interrupt, escape, respond
+    // OpenClaw: also select_option, navigate_option, send_prompt (via RPC)
     if (adapter.handleCommand(cmd)) {
       // Adapter handled the transport side; update StateMachine as needed
       switch (cmd.type) {
@@ -381,6 +407,12 @@ async function startBridge(port: number, command: string, agentType: AgentType):
           break;
         case 'escape':
           stateMachine.handleUserAction('interrupt');
+          break;
+        case 'select_option':
+          stateMachine.handleUserAction('select_option');
+          break;
+        case 'send_prompt':
+          stateMachine.handleUserAction('send_prompt');
           break;
       }
       return;
@@ -477,6 +509,12 @@ async function startBridge(port: number, command: string, agentType: AgentType):
     journal.write('ws_event', 'ws', { action: 'disconnect', clients: wsServer.getClientCount() });
   });
 
+  // Kick initial state: synthetic SessionStart in adapter.start() was emitted before
+  // the event listener was wired, so fire it explicitly now.
+  if (adapter.isAlive()) {
+    stateMachine.handleHookEvent('SessionStart', {});
+  }
+
   // Register with session registry for multi-session support
   registerSession({
     id: sessionId,
@@ -532,6 +570,7 @@ async function startBridge(port: number, command: string, agentType: AgentType):
       navigable: snapshot.navigable || undefined,
       cursorIndex: snapshot.navigable ? snapshot.cursorIndex : undefined,
       suggestedPrompt: reconnectSuggestion ?? undefined,
+      modelCatalog: cachedModelCatalog ?? undefined,
     };
     wsServer.sendTo(ws, stateEvent);
 

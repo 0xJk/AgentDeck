@@ -1,19 +1,19 @@
 import type { AgentType, AgentAdapter } from '../types.js';
 import { ClaudeCodeAdapter } from './claude-code.js';
+import { OpenClawAdapter } from './openclaw.js';
 
 export { ClaudeCodeAdapter } from './claude-code.js';
+export { OpenClawAdapter } from './openclaw.js';
 
 /**
  * Factory: create an adapter for the given agent type.
- * Phase 1: only 'claude-code' is supported.
- * Phase 2 will add 'openclaw'.
  */
-export function createAdapter(type: AgentType): AgentAdapter {
+export function createAdapter(type: AgentType, gatewayUrl?: string): AgentAdapter {
   switch (type) {
     case 'claude-code':
       return new ClaudeCodeAdapter();
     case 'openclaw':
-      throw new Error('OpenClaw adapter not yet implemented (Phase 2)');
+      return new OpenClawAdapter(gatewayUrl);
     default:
       throw new Error(`Unknown agent type: ${type}`);
   }

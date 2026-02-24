@@ -5,6 +5,14 @@ import type { AgentType, AgentCapabilities } from './adapter.js';
 
 export type BillingType = 'subscription' | 'api' | 'unknown';
 
+// ===== Model Catalog (OpenClaw) =====
+
+export interface ModelCatalogEntry {
+  name: string;
+  role: 'default' | `fallback-${number}` | 'configured';
+  available: boolean;
+}
+
 // ===== Bridge → Plugin (State Updates) =====
 
 export interface StateUpdateEvent {
@@ -25,6 +33,7 @@ export interface StateUpdateEvent {
   navigable?: boolean;
   cursorIndex?: number;
   suggestedPrompt?: string;
+  modelCatalog?: ModelCatalogEntry[];
 }
 
 export interface PromptOptionsEvent {
