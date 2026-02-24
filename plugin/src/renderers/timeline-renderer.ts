@@ -50,9 +50,37 @@ function typeIcon(type: string, status?: string): string {
     case 'tool_resolved': return '\u2713';
     case 'chat_start': return '\u25B6';
     case 'chat_end': return '\u25A0';
+    case 'chat_response': return '\u25C1';  // ◁
     case 'error': return '\u2717';
     case 'scheduled': return '\u23F0';
+    case 'user_action': return '\u261E';
+    case 'model_call': return '\u25C6';      // ◆
+    case 'model_response': return '\u25C7';  // ◇
+    case 'memory_recall': return '\u29BB';   // ⦻
+    case 'tool_exec': return '\u25B8';       // ▸
     default: return '\u2022';
+  }
+}
+
+/** Event type → color mapping for visual differentiation */
+function typeColor(type: string, status?: string): string {
+  switch (type) {
+    case 'chat_start': return '#4ade80';
+    case 'chat_end': return '#60a5fa';
+    case 'chat_response': return '#a78bfa';
+    case 'tool_request':
+      if (status === 'approved') return '#4ade80';
+      if (status === 'denied') return '#f87171';
+      return '#fbbf24';
+    case 'tool_resolved': return '#4ade80';
+    case 'error': return '#f87171';
+    case 'user_action': return '#c084fc';
+    case 'scheduled': return '#94a3b8';
+    case 'model_call':
+    case 'model_response': return '#22d3ee';
+    case 'memory_recall': return '#a78bfa';
+    case 'tool_exec': return '#4ade80';
+    default: return '#e2e8f0';
   }
 }
 
@@ -80,40 +108,55 @@ export function renderTimeline(
   groups: readonly GroupedEntry[],
   scrollIndex: number,
   detailMode: boolean,
+  sessionStatus?: Record<string, unknown> | null,
 ): TimelinePanels {
-  let inner: string;
+  const { defs, content } = groups.length === 0
+    ? renderEmpty()
+    : detailMode
+      ? renderDetailView(groups, scrollIndex, sessionStatus)
+      : renderFisheyeView(groups, scrollIndex);
 
-  if (groups.length === 0) {
-    inner = renderEmpty();
-  } else if (detailMode) {
-    inner = renderDetailView(groups, scrollIndex);
-  } else {
-    inner = renderFisheyeView(groups, scrollIndex);
+  // Slice into per-panel SVGs via translate (viewBox offset unreliable on SD renderer)
+  const panels: [string, string] = ['', ''];
+  for (let i = 0; i < 2; i++) {
+    panels[i] = `<svg xmlns="http://www.w3.org/2000/svg" width="${PANEL_W}" height="${H}" viewBox="0 0 ${PANEL_W} ${H}">`
+      + defs
+      + `<g transform="translate(${-i * PANEL_W},0)">${content}</g>`
+      + `</svg>`;
   }
 
-  const panel0 = `<svg xmlns="http://www.w3.org/2000/svg" width="${PANEL_W}" height="${H}" viewBox="0 0 ${PANEL_W} ${H}"><g>${inner}</g></svg>`;
-  const panel1 = `<svg xmlns="http://www.w3.org/2000/svg" width="${PANEL_W}" height="${H}" viewBox="0 0 ${PANEL_W} ${H}"><g transform="translate(-${PANEL_W}, 0)">${inner}</g></svg>`;
+  return { panels };
+}
 
-  return { panels: [panel0, panel1] };
+interface RenderResult {
+  defs: string;
+  content: string;
 }
 
 /** Empty state */
-function renderEmpty(): string {
-  return `
-    <rect width="${CANVAS_W}" height="${H}" fill="#000000"/>
-    <text x="200" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#94a3b8">TIMELINE</text>
-    <text x="200" y="${CENTER_Y}" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#475569">No events</text>
-  `;
+function renderEmpty(): RenderResult {
+  return {
+    defs: '',
+    content: `<rect width="${CANVAS_W}" height="${H}" fill="#000000"/>`
+      + `<text x="200" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#94a3b8">TIMELINE</text>`
+      + `<text x="200" y="${CENTER_Y}" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#475569">No events</text>`,
+  };
 }
 
 /** Detail mode: full raw text of focused group, word-wrapped across 400px */
 function renderDetailView(
   groups: readonly GroupedEntry[],
   scrollIndex: number,
-): string {
+  sessionStatus?: Record<string, unknown> | null,
+): RenderResult {
   const idx = clamp(Math.round(scrollIndex), 0, groups.length - 1);
   const group = groups[idx];
   if (!group) return renderEmpty();
+
+  // NOW marker detail → status dashboard (if status data available)
+  if (group.entry.type === 'now_marker' && sessionStatus) {
+    return renderStatusDetail(sessionStatus, group.entry.raw);
+  }
 
   const { entry, count, firstTs, lastTs } = group;
   const icon = typeIcon(entry.type, entry.status);
@@ -128,30 +171,57 @@ function renderDetailView(
   const lines = wrapTextByWidth(entry.raw, 370, 11).slice(0, 6);
   const linesXml = lines.map((line, i) =>
     `<text x="15" y="${32 + i * 12}" font-family="Arial,sans-serif" font-size="11" fill="#e2e8f0">${escapeXml(line)}</text>`,
-  ).join('\n    ');
+  ).join('');
 
-  return `
-    <rect width="${CANVAS_W}" height="${H}" fill="#000000"/>
-    <text x="15" y="18" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="${ACCENT}">${escapeXml(icon)} ${escapeXml(typeBadge)}${escapeXml(countSuffix)}</text>
-    <text x="${CANVAS_W - 15}" y="18" text-anchor="end" font-family="Arial,sans-serif" font-size="11" fill="#94a3b8">${timeStr}</text>
-    ${linesXml}
-  `;
+  return {
+    defs: '',
+    content: `<rect width="${CANVAS_W}" height="${H}" fill="#000000"/>`
+      + `<text x="15" y="18" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="${ACCENT}">${escapeXml(icon)} ${escapeXml(typeBadge)}${escapeXml(countSuffix)}</text>`
+      + `<text x="${CANVAS_W - 15}" y="18" text-anchor="end" font-family="Arial,sans-serif" font-size="11" fill="#94a3b8">${timeStr}</text>`
+      + linesXml,
+  };
+}
+
+/** Status dashboard: show session status when NOW marker is selected in detail mode */
+function renderStatusDetail(status: Record<string, unknown>, currentAction: string): RenderResult {
+  const lines: string[] = [];
+  if (currentAction) lines.push(`\u25B6 ${currentAction}`);
+  for (const [key, val] of Object.entries(status)) {
+    if (key.startsWith('_')) continue;
+    if (val != null && typeof val !== 'object') {
+      lines.push(`${key}: ${String(val)}`);
+    }
+    if (lines.length >= 6) break;
+  }
+  if (lines.length === 0) lines.push('No status data');
+
+  const linesXml = lines.map((line, i) => {
+    const fill = i === 0 && currentAction ? ACCENT : '#e2e8f0';
+    const weight = i === 0 && currentAction ? ' font-weight="bold"' : '';
+    const truncated = truncateByPx(line, CANVAS_W - 30, 11);
+    return `<text x="15" y="${20 + i * 13}" font-family="Arial,sans-serif" font-size="11"${weight} fill="${fill}">${escapeXml(truncated)}</text>`;
+  }).join('');
+
+  return {
+    defs: '',
+    content: `<rect width="${CANVAS_W}" height="${H}" fill="#000000"/>`
+      + `<text x="${CANVAS_W - 15}" y="14" text-anchor="end" font-family="Arial,sans-serif" font-size="10" fill="#94a3b8">STATUS</text>`
+      + linesXml,
+  };
 }
 
 /** Fisheye view: font size / opacity / spacing interpolated from center */
 function renderFisheyeView(
   groups: readonly GroupedEntry[],
   scrollIndex: number,
-): string {
+): RenderResult {
   const baseLine = 17;
   const elements: string[] = [];
 
-  // Background (black — blends with LCD for transparent look) + header
-  elements.push(`<rect width="${CANVAS_W}" height="${H}" fill="#000000"/>`);
+  // Header
   elements.push(`<text x="200" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#94a3b8">TIMELINE</text>`);
 
-  // Clip event area (header to bottom, no bar)
-  elements.push(`<clipPath id="evtClip"><rect x="0" y="${EVENT_TOP}" width="${CANVAS_W}" height="${EVENT_BOTTOM - EVENT_TOP}"/></clipPath>`);
+  // Clipped event area
   elements.push(`<g clip-path="url(#evtClip)">`);
 
   const centerIdx = clamp(Math.round(scrollIndex), 0, groups.length - 1);
@@ -194,7 +264,20 @@ function renderFisheyeView(
   }
 
   elements.push(`</g>`);
-  return elements.join('\n    ');
+
+  // Activity density bar — 2px at bottom, opacity based on recent 30s event count
+  const now = Date.now();
+  const recentCount = groups.filter(
+    (g) => now - g.lastTs < 30_000 && g.entry.type !== 'now_marker' && g.entry.type !== 'scheduled',
+  ).length;
+  const densityOpacity = Math.min(0.5, 0.05 + (recentCount / 5) * 0.45).toFixed(2);
+  elements.push(`<rect x="0" y="${H - 2}" width="${CANVAS_W}" height="2" fill="${ACCENT}" opacity="${densityOpacity}"/>`);
+
+  return {
+    defs: `<defs><clipPath id="evtClip"><rect x="0" y="${EVENT_TOP}" width="${CANVAS_W}" height="${EVENT_BOTTOM - EVENT_TOP}"/></clipPath></defs>`,
+    content: `<rect width="${CANVAS_W}" height="${H}" fill="#000000"/>`
+      + elements.join(''),
+  };
 }
 
 /** Render one grouped entry line in the fisheye view */
@@ -207,14 +290,28 @@ function renderGroupLine(
   opacity: number,
 ): void {
   const { entry, count } = group;
-  const isScheduled = entry.type === 'scheduled';
+
+  // NOW marker: show current action if active, skip if idle
+  if (entry.type === 'now_marker') {
+    if (!entry.raw) return; // IDLE: skip rendering entirely
+    // Active state: show current action in slightly larger, accented text
+    const activeFontSize = Math.min(17, fontSize * 1.15);
+    const icon = entry.status === 'pending' ? '\u26A0' : '\u25B6';
+    const fullText = `${icon} ${entry.raw}`;
+    const truncated = truncateByPx(fullText, CANVAS_W - 10, activeFontSize);
+    elements.push(
+      `<text x="${x}" y="${y.toFixed(1)}" font-family="Arial,sans-serif" font-size="${activeFontSize.toFixed(1)}" font-weight="bold" fill="${ACCENT}" opacity="${opacity.toFixed(2)}">${escapeXml(truncated)}</text>`,
+    );
+    return;
+  }
+
   const time = formatTime(entry.ts);
   const icon = typeIcon(entry.type, entry.status);
   const countSuffix = count > 1 ? ` (\u00d7${count})` : '';
   const fullText = `${time} ${icon} ${entry.raw}${countSuffix}`;
   const truncated = truncateByPx(fullText, CANVAS_W - 10, fontSize);
-  const fillColor = isScheduled ? '#94a3b8' : '#e2e8f0';
-  const finalOpacity = isScheduled ? opacity * 0.6 : opacity;
+  const fillColor = typeColor(entry.type, entry.status);
+  const finalOpacity = entry.type === 'scheduled' ? opacity * 0.6 : opacity;
 
   elements.push(
     `<text x="${x}" y="${y.toFixed(1)}" font-family="Arial,sans-serif" font-size="${fontSize.toFixed(1)}" fill="${fillColor}" opacity="${finalOpacity.toFixed(2)}">${escapeXml(truncated)}</text>`,

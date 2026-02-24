@@ -6,10 +6,10 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { execSync } from 'child_process';
-import { existsSync } from 'fs';
-import { State, augmentedPath, OPENCLAW_CANDIDATES, type BillingType, type AgentCapabilities, type ModelCatalogEntry } from '@agentdeck/shared';
+import { State, augmentedPath, resolveOpenClawBin, type BillingType, type AgentCapabilities, type ModelCatalogEntry } from '@agentdeck/shared';
 import type { AgentLink } from '../agent-link.js';
 import { renderButton, svgToDataUrl } from '../renderers/button-renderer.js';
+import { measureTextWidth } from '../renderers/text-utils.js';
 import { ButtonConfig } from '../layout-manager.js';
 import { handleExpandedAction } from '../expanded-actions.js';
 import { dlog } from '../log.js';
@@ -43,8 +43,16 @@ let tokenDelta = 0; // tokens added since last update
 // Model catalog (OpenClaw)
 let modelCatalog: ModelCatalogEntry[] | null = null;
 
+// OC usage data (from `openclaw status --usage --json`)
+interface OcUsageData {
+  providers: Array<{ name: string; used: number; limit: number }>;
+  sessionTokens?: number;
+}
+let ocUsageData: OcUsageData | null = null;
+let ocUsageInterval: ReturnType<typeof setInterval> | null = null;
+
 // Display pages: 5h → 7d → extra (if enabled) → session → models
-type Page = '5h' | '7d' | 'extra' | 'session' | 'models';
+type Page = '5h' | '7d' | 'extra' | 'session' | 'models' | 'oc-usage';
 let pageIndex = 0;
 let billingType: BillingType = 'unknown';
 let bridgeConnected = false;
@@ -147,16 +155,13 @@ async function fetchStandaloneUsage(): Promise<void> {
   }
 }
 
-/** Resolve `openclaw` binary: try known candidate paths, fallback to bare name on PATH. */
-function resolveOpenClawBin(): string {
-  for (const candidate of OPENCLAW_CANDIDATES) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return 'openclaw';
+/** Get current model catalog (for external consumers like response-button) */
+export function getModelCatalog(): ModelCatalogEntry[] | null {
+  return modelCatalog;
 }
 
 /** Fetch OpenClaw model catalog via CLI (standalone — no bridge needed) */
-function fetchStandaloneModelCatalog(): void {
+export function fetchStandaloneModelCatalog(): void {
   const bin = resolveOpenClawBin();
   try {
     const output = execSync(`${bin} models list --json`, {
@@ -193,6 +198,57 @@ function fetchStandaloneModelCatalog(): void {
     refreshAll();
   } catch {
     // openclaw not installed — ignore
+  }
+}
+
+/** Fetch OpenClaw usage via `openclaw status --usage --json` (60s poll). */
+function fetchOcUsage(): void {
+  const bin = resolveOpenClawBin();
+  try {
+    const output = execSync(`${bin} status --usage --json`, {
+      timeout: 5000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, PATH: augmentedPath() },
+    }).trim();
+
+    const result = JSON.parse(output) as Record<string, unknown>;
+
+    // Extract provider usage bars
+    const providers: OcUsageData['providers'] = [];
+    const providersRaw = result.providers as Array<Record<string, unknown>> | undefined;
+    if (Array.isArray(providersRaw)) {
+      for (const p of providersRaw) {
+        if (p.name && typeof p.used === 'number') {
+          providers.push({
+            name: p.name as string,
+            used: p.used as number,
+            limit: (p.limit as number) || 0,
+          });
+        }
+      }
+    }
+
+    const sessionTokens = result.sessionTokens as number | undefined;
+    ocUsageData = { providers, sessionTokens };
+
+    dlog('UsaBut', `OC usage: ${providers.length} providers, tokens=${sessionTokens ?? '-'}`);
+    refreshAll();
+  } catch (err) {
+    dlog('UsaBut', `fetchOcUsage failed: ${err}`);
+  }
+}
+
+function startOcUsagePoll(): void {
+  if (ocUsageInterval) return;
+  fetchOcUsage();
+  ocUsageInterval = setInterval(fetchOcUsage, 60_000);
+}
+
+function stopOcUsagePoll(): void {
+  if (ocUsageInterval) {
+    clearInterval(ocUsageInterval);
+    ocUsageInterval = null;
   }
 }
 
@@ -236,9 +292,9 @@ export function setUsageBridgeConnected(connected: boolean): void {
 }
 
 function getPages(): Page[] {
-  // OpenClaw: show model roster
+  // OpenClaw: show model roster + optional usage
   if (currentCapabilities?.hasModelCatalog) {
-    return ['models'];
+    return ocUsageData ? ['models', 'oc-usage'] : ['models'];
   }
   // API users have no subscription rate limits — only show session page
   if (billingType === 'api') {
@@ -261,9 +317,17 @@ export function setUsageCapabilities(capabilities: AgentCapabilities | null): vo
   // OpenClaw with model catalog: keep catalog poll as fallback (GatewayClient may fail)
   if (capabilities?.hasModelCatalog) {
     startCatalogPoll();
+    startOcUsagePoll();
   } else {
     stopCatalogPoll();
+    stopOcUsagePoll();
+    ocUsageData = null;
   }
+  refreshAll();
+}
+
+export function setUsageState(state: State): void {
+  currentState = state;
   refreshAll();
 }
 
@@ -402,6 +466,13 @@ function renderUsageSvg(): string {
         return infoSvg('MODELS', '--', 'No models configured', '#666666', '#111111', pages);
       }
       return renderModelsSvg(modelCatalog, pages);
+    }
+
+    case 'oc-usage': {
+      if (!ocUsageData) {
+        return infoSvg('USAGE', '--', 'Fetching...', '#666666', '#111111', pages);
+      }
+      return renderOcUsageSvg(ocUsageData, pages);
     }
 
     default:
@@ -557,8 +628,29 @@ function infoSvg(title: string, value: string, sub: string, color: string, bg: s
   ].join('');
 }
 
+/** Strip provider prefix for display: "anthropic/GPT-5.2" → "GPT-5.2" */
+export function stripProviderPrefix(name: string): string {
+  const slashIdx = name.indexOf('/');
+  return slashIdx > 0 ? name.slice(slashIdx + 1) : name;
+}
+
+/** Extract provider prefix from "provider/model" format */
+function extractProvider(name: string): string {
+  const slashIdx = name.indexOf('/');
+  if (slashIdx > 0) return name.slice(0, slashIdx).toLowerCase();
+  return '';
+}
+
 /** Provider color from model key prefix */
 function providerColor(name: string): string {
+  const prefix = extractProvider(name);
+  if (prefix) {
+    if (prefix.includes('anthropic')) return '#f59e0b';
+    if (prefix.includes('openai')) return '#4ade80';
+    if (prefix.includes('deepseek')) return '#a78bfa';
+    if (prefix.includes('google')) return '#60a5fa';
+    if (prefix.includes('zhipu')) return '#22d3ee';
+  }
   const lower = name.toLowerCase();
   if (lower.includes('glm')) return '#22d3ee';     // cyan — ZhipuAI
   if (lower.includes('gpt') || lower.includes('codex')) return '#4ade80'; // green — OpenAI
@@ -568,7 +660,27 @@ function providerColor(name: string): string {
   return '#94a3b8'; // slate default
 }
 
-/** Render models roster SVG for the usage button. */
+/** Provider name from model key prefix */
+function providerName(name: string): string {
+  const prefix = extractProvider(name);
+  if (prefix) {
+    if (prefix.includes('anthropic')) return 'Anthropic';
+    if (prefix.includes('openai')) return 'OpenAI';
+    if (prefix.includes('deepseek')) return 'DeepSeek';
+    if (prefix.includes('google')) return 'Google';
+    if (prefix.includes('zhipu')) return 'ZhipuAI';
+  }
+  const lower = name.toLowerCase();
+  if (lower.includes('glm')) return 'ZhipuAI';
+  if (lower.includes('gpt') || lower.includes('codex')) return 'OpenAI';
+  if (lower.includes('deepseek')) return 'DeepSeek';
+  if (lower.includes('claude')) return 'Anthropic';
+  if (lower.includes('gemini')) return 'Google';
+  return '';
+}
+
+/** Render models roster SVG for the usage button.
+ * Shows default model + first fallback only, with adaptive font sizing. */
 function renderModelsSvg(models: ModelCatalogEntry[], pages: Page[]): string {
   const dots = pages.map((_, i) => {
     const cx = 72 - ((pages.length - 1) * 8) / 2 + i * 8;
@@ -587,32 +699,136 @@ function renderModelsSvg(models: ModelCatalogEntry[], pages: Page[]): string {
     return order(a.role) - order(b.role);
   });
 
-  // Show up to 4 models
-  const visible = sorted.slice(0, 4);
-  const startY = 30;
-  const lineHeight = 24;
+  // Show default + first fallback only
+  const visible = sorted.filter(m => m.role === 'default' || m.role === 'fallback-1');
 
-  const lines = visible.map((m, i) => {
-    const y = startY + i * lineHeight;
+  const maxWidth = SIZE - 16; // 128px usable
+  function fitFontSize(text: string, startSize: number): number {
+    let fs = startSize;
+    while (measureTextWidth(text, fs) > maxWidth && fs > 8) fs -= 2;
+    return fs;
+  }
+
+  const lines: string[] = [];
+  for (const m of visible) {
+    const isDefault = m.role === 'default';
+    const nameY = isDefault ? 45 : 82;
+    const providerY = isDefault ? 62 : 95;
+    const baseSize = isDefault ? 20 : 14;
+    const providerSize = isDefault ? 12 : 10;
+    const opacity = isDefault ? '1' : '0.7';
+    const providerOpacity = isDefault ? '0.4' : '0.3';
+    const roleIcon = isDefault ? '\u2605' : '#1';
+    const statusDot = m.available ? '\u25CF' : '\u25CB';
     const color = m.available ? providerColor(m.name) : '#444444';
-    const roleIcon = m.role === 'default' ? '\u2605 '
-      : m.role.startsWith('fallback-') ? `#${m.role.slice(9)} `
-      : '';
-    const displayName = `${roleIcon}${m.name}`;
-    const truncated = displayName.length > 14 ? displayName.slice(0, 13) + '\u2026' : displayName;
-    return `<text x="72" y="${y}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="${color}" opacity="${m.available ? '1' : '0.4'}">${escXml(truncated)}</text>`;
+    const statusColor = m.available ? color : '#444444';
+    const displayName = stripProviderPrefix(m.name);
+    const fontSize = fitFontSize(`${roleIcon} ${displayName} ${statusDot}`, baseSize);
+    const provider = providerName(m.name);
+
+    lines.push(
+      `<text x="72" y="${nameY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" fill="${color}" opacity="${opacity}">` +
+      `<tspan fill="${color}" opacity="0.5">${roleIcon}</tspan>` +
+      ` ${escXml(displayName)} ` +
+      `<tspan fill="${statusColor}">${statusDot}</tspan>` +
+      `</text>`,
+    );
+    if (provider) {
+      lines.push(
+        `<text x="72" y="${providerY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${providerSize}" fill="${color}" opacity="${providerOpacity}">${escXml(provider)}</text>`,
+      );
+    }
+  }
+
+  // Spinning border for PROCESSING state (reuse water-fill border logic)
+  const isActive = currentState === State.PROCESSING;
+  const perim = 544;
+  const dashLen = 160;
+  const borderOffset = -((borderFrame * 25) % perim);
+  const accentColor = visible.length > 0 ? providerColor(visible[0].name) : '#22d3ee';
+
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+    `<defs>`,
+    `<filter id="border-glow" x="-10%" y="-10%" width="120%" height="120%">`,
+    `<feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>`,
+    `<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>`,
+    `</filter>`,
+    `</defs>`,
+    `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a1020"/>`,
+    // Dim static border
+    `<rect x="1.5" y="1.5" width="141" height="141" rx="11.5" fill="none" stroke="${accentColor}" stroke-width="1.5" opacity="0.12"/>`,
+    // Spinning border when PROCESSING
+    ...(isActive ? [
+      `<rect x="1.5" y="1.5" width="141" height="141" rx="11.5" fill="none"`,
+      ` stroke="${accentColor}" stroke-width="3"`,
+      ` stroke-dasharray="${dashLen} ${perim - dashLen}"`,
+      ` stroke-dashoffset="${borderOffset}"`,
+      ` opacity="0.92"`,
+      ` filter="url(#border-glow)"/>`,
+    ] : []),
+    `<text x="72" y="20" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#22d3ee" opacity="0.6">MODELS</text>`,
+    ...lines,
+    dots,
+    `</svg>`,
+  ].join('');
+}
+
+/** Render OC usage page — horizontal bars per provider + session token count */
+function renderOcUsageSvg(data: OcUsageData, pages: Page[]): string {
+  const dots = pages.map((_, i) => {
+    const cx = 72 - ((pages.length - 1) * 8) / 2 + i * 8;
+    const fill = i === pageIndex ? '#22d3ee' : '#22d3ee40';
+    return `<circle cx="${cx}" cy="132" r="3" fill="${fill}"/>`;
   }).join('');
 
-  const moreText = sorted.length > 4
-    ? `<text x="72" y="${startY + 4 * lineHeight}" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#666">+${sorted.length - 4} more</text>`
-    : '';
+  const lines: string[] = [];
+  const barX = 10;
+  const barW = 124;
+  const barH = 8;
+  const maxProviders = 4;
+
+  const providers = data.providers.slice(0, maxProviders);
+  let y = 36;
+
+  for (const p of providers) {
+    const pct = p.limit > 0 ? Math.min(100, (p.used / p.limit) * 100) : 0;
+    const fillW = Math.round(barW * pct / 100);
+    const color = providerColor(p.name);
+    const shortName = p.name.length > 12 ? p.name.slice(0, 10) + '\u2026' : p.name;
+    const pctStr = p.limit > 0 ? `${Math.round(pct)}%` : `${p.used}`;
+
+    // Provider name + percentage
+    lines.push(
+      `<text x="${barX}" y="${y}" font-family="Arial,sans-serif" font-size="10" fill="${color}" opacity="0.8">${escXml(shortName)}</text>`,
+      `<text x="${SIZE - 10}" y="${y}" text-anchor="end" font-family="Arial,sans-serif" font-size="10" fill="${color}" opacity="0.6">${escXml(pctStr)}</text>`,
+    );
+
+    // Bar background + fill
+    const barY = y + 3;
+    lines.push(
+      `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" rx="2" fill="${color}" opacity="0.1"/>`,
+      fillW > 0 ? `<rect x="${barX}" y="${barY}" width="${fillW}" height="${barH}" rx="2" fill="${color}" opacity="0.5"/>` : '',
+    );
+
+    y += 24;
+  }
+
+  // Session tokens at the bottom (if available)
+  if (data.sessionTokens != null && data.sessionTokens > 0) {
+    const tokStr = data.sessionTokens >= 1000
+      ? `${(data.sessionTokens / 1000).toFixed(1)}K tok`
+      : `${data.sessionTokens} tok`;
+    lines.push(
+      `<text x="72" y="118" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#94a3b8" opacity="0.6">${escXml(tokStr)}</text>`,
+    );
+  }
 
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
     `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a1020"/>`,
-    `<text x="72" y="16" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#22d3ee" opacity="0.6">MODELS</text>`,
-    lines,
-    moreText,
+    `<text x="72" y="20" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#22d3ee" opacity="0.6">USAGE</text>`,
+    ...lines,
     dots,
     `</svg>`,
   ].join('');
@@ -675,6 +891,7 @@ export class UsageButtonAction extends SingletonAction {
     if (actionIds.length === 0) {
       stopStandalonePoll();
       stopCatalogPoll();
+      stopOcUsagePoll();
       stopAnimLoop();
     }
   }

@@ -26,7 +26,13 @@ function tryAbbreviate(text: string): string | null {
       // For patterns that capture a suffix (ending with space), append remaining
       const match = text.match(pattern);
       if (match && replacement.endsWith(' ')) {
-        return replacement + text.slice(match[0].length);
+        let suffix = text.slice(match[0].length);
+        // Shorten long paths to basename
+        if (suffix.length > 20 && /^[~\/]/.test(suffix)) {
+          const base = suffix.split('/').filter(Boolean).pop() || suffix;
+          suffix = base;
+        }
+        return replacement + suffix;
       }
       return replacement;
     }
@@ -76,6 +82,31 @@ function chooseFontTier(text: string): { fontSize: number; maxLines: number } {
 
 export function renderButton(config: ButtonConfig): string {
   const textOpacity = config.enabled ? '1' : '0.4';
+
+  // Loading state: spinning border animation
+  if (config.loading) {
+    const loadingElements = `<text x="72" y="84" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="${config.textColor}" opacity="0.6">${escapeXml(config.title)}</text>`;
+    return svgFrame(config.color, loadingElements, config.slotNumber, true, config.textColor);
+  }
+
+  // Icon + subtitle + title layout: icon top, subtitle center, title bottom
+  if (config.iconSvg && config.subtitle) {
+    const iconArea = `<g transform="translate(0,0)">${config.iconSvg}</g>`;
+    const subFontSize = config.subtitle.length > 16 ? 12 : 14;
+    const subEl = `<text x="72" y="96" text-anchor="middle" font-family="Arial,sans-serif" font-size="${subFontSize}" fill="${config.textColor}" opacity="0.7">${escapeXml(config.subtitle)}</text>`;
+    const titleFontSize = config.title.length > 8 ? 12 : 14;
+    const titleEl = `<text x="72" y="128" text-anchor="middle" font-family="Arial,sans-serif" font-size="${titleFontSize}" fill="${config.textColor}" opacity="0.4">${escapeXml(config.title)}</text>`;
+    return svgFrame(config.color, iconArea + subEl + titleEl, config.slotNumber);
+  }
+
+  // Icon + text layout: icon in upper 60%, text in lower 40%
+  if (config.iconSvg) {
+    const iconArea = `<g transform="translate(0,0)">${config.iconSvg}</g>`;
+    const fontSize = config.title.length > 8 ? 16 : 20;
+    const textY = 124;
+    const textEl = `<text x="72" y="${textY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" font-weight="bold" fill="${config.textColor}" opacity="${textOpacity}">${escapeXml(config.title)}</text>`;
+    return svgFrame(config.color, iconArea + textEl, config.slotNumber);
+  }
 
   // Badge + title
   const displayTitle = config.badge ? `${config.badge} ${config.title}` : config.title;
@@ -129,13 +160,26 @@ export function renderButton(config: ButtonConfig): string {
   return svgFrame(config.color, textElements, config.slotNumber);
 }
 
-function svgFrame(bgColor: string, innerElements: string, slotNumber?: number): string {
+function svgFrame(bgColor: string, innerElements: string, slotNumber?: number, loading?: boolean, accentColor?: string): string {
   const slotLabel = slotNumber != null
     ? `<text x="${SIZE - 10}" y="18" text-anchor="end" font-family="Arial,sans-serif" font-size="13" fill="#ffffff" opacity="0.3">${slotNumber}</text>`
+    : '';
+  // Use static dashoffset based on Date.now() — SD SVG renderer may not support <animate>
+  const loadingBorder = loading && accentColor
+    ? (() => {
+        const perim = 544;
+        const offset = -((Math.floor(Date.now() / 40) * 25) % perim);
+        return [
+          `<defs><filter id="ld-glow" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`,
+          `<rect x="1.5" y="1.5" width="141" height="141" rx="11.5" fill="none" stroke="${accentColor}" stroke-width="1.5" opacity="0.12"/>`,
+          `<rect x="1.5" y="1.5" width="141" height="141" rx="11.5" fill="none" stroke="${accentColor}" stroke-width="3" stroke-dasharray="160 384" stroke-dashoffset="${offset}" opacity="0.9" filter="url(#ld-glow)"/>`,
+        ].join('');
+      })()
     : '';
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
     `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="${bgColor}"/>`,
+    loadingBorder,
     innerElements,
     slotLabel,
     `</svg>`,

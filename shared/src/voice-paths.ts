@@ -3,6 +3,7 @@
  */
 import { join } from 'path';
 import { homedir } from 'os';
+import { existsSync } from 'fs';
 
 export const MODEL_SEARCH_DIRS = [
   join(homedir(), '.local/share/whisper-cpp'),
@@ -47,12 +48,22 @@ export const WHISPER_SERVER_INFO_FILE = join(homedir(), '.agentdeck', 'whisper-s
 export const OPENCLAW_CANDIDATES = [
   '/opt/homebrew/bin/openclaw',
   '/usr/local/bin/openclaw',
+  join(homedir(), 'Library', 'pnpm', 'openclaw'),                        // macOS pnpm global bin
+  join(homedir(), 'Library', 'pnpm', 'nodejs_current', 'bin', 'openclaw'), // pnpm node bin
   join(homedir(), '.local/bin/openclaw'),
   join(homedir(), '.cargo/bin/openclaw'),
   join(homedir(), 'go/bin/openclaw'),
   join(homedir(), '.openclaw/bin/openclaw'),
   join(homedir(), '.bun/bin/openclaw'),
 ];
+
+/** Resolve `openclaw` binary: try known candidate paths, fallback to bare name on PATH. */
+export function resolveOpenClawBin(): string {
+  for (const candidate of OPENCLAW_CANDIDATES) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return 'openclaw';
+}
 
 /**
  * Augmented PATH for CLI child processes — ensures binaries installed via
@@ -63,6 +74,7 @@ export function augmentedPath(): string {
   const extra = [
     '/opt/homebrew/bin',
     '/usr/local/bin',
+    join(homedir(), 'Library', 'pnpm'),  // macOS pnpm global bin
     join(homedir(), '.local/bin'),
     join(homedir(), '.cargo/bin'),
     join(homedir(), 'go/bin'),

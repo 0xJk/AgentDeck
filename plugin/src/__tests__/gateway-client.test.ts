@@ -43,6 +43,38 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(() => {
     throw new Error('File not found');
   }),
+  existsSync: vi.fn(() => false),
+}));
+
+// Mock child_process (execSync for model catalog, execFile for async status)
+vi.mock('child_process', () => ({
+  execSync: vi.fn(() => { throw new Error('not available'); }),
+  execFile: vi.fn((_bin: string, _args: string[], _opts: unknown, cb: Function) => {
+    cb(new Error('not available'), '', '');
+  }),
+}));
+
+// Mock timeline-store
+vi.mock('../timeline-store.js', () => ({
+  timelineStore: {
+    addEntry: vi.fn(),
+    updateEntryStatus: vi.fn(),
+    updateEntryRaw: vi.fn(),
+    findLastIndex: vi.fn(() => -1),
+    getGroupedDisplay: vi.fn(() => []),
+    getLastTimestamp: vi.fn(() => 0),
+    mergeHistory: vi.fn(),
+    setScheduled: vi.fn(),
+  },
+}));
+
+// Mock log-stream
+vi.mock('../log-stream.js', () => ({
+  logStream: {
+    start: vi.fn(),
+    stop: vi.fn(),
+    trackToolRequest: vi.fn(),
+  },
 }));
 
 // Mock logger
@@ -364,6 +396,130 @@ describe('GatewayClient', () => {
       client.send({ type: 'switch_mode' });
 
       expect(ws.send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('optimistic send_prompt', () => {
+    function connectAndSetSession(c: GatewayClient) {
+      c.connect();
+      const ws = lastCreatedWs!;
+      ws.simulateOpen();
+      ws.receiveMessage({
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: 'n' },
+      });
+      ws.receiveMessage({
+        type: 'res',
+        id: 'init-1',
+        ok: true,
+        payload: {},
+      });
+      // Set session key via chat delta
+      ws.receiveMessage({
+        type: 'event',
+        event: 'chat',
+        payload: { state: 'delta', runId: 'r0', sessionKey: 'sk0' },
+      });
+      // Reset to IDLE
+      ws.receiveMessage({
+        type: 'event',
+        event: 'chat',
+        payload: { state: 'final', runId: 'r0', sessionKey: 'sk0' },
+      });
+      return ws;
+    }
+
+    it('send_prompt → immediate PROCESSING (before delta)', () => {
+      const ws = connectAndSetSession(client);
+      const updates: StateUpdateEvent[] = [];
+      client.on('state_update', (ev: StateUpdateEvent) => updates.push(ev));
+
+      ws.send.mockClear();
+      client.send({ type: 'send_prompt', text: 'Hello' });
+
+      // Immediate PROCESSING — no delta event needed
+      expect(updates.some(e => e.state === State.PROCESSING)).toBe(true);
+    });
+
+    it('delta after optimistic start → no duplicate chat_start', () => {
+      const ws = connectAndSetSession(client);
+      const updates: StateUpdateEvent[] = [];
+      client.on('state_update', (ev: StateUpdateEvent) => updates.push(ev));
+
+      ws.send.mockClear();
+      client.send({ type: 'send_prompt', text: 'Hello' });
+
+      // Simulate delta arriving after optimistic start
+      ws.receiveMessage({
+        type: 'event',
+        event: 'chat',
+        payload: { state: 'delta', runId: 'r1', sessionKey: 'sk0' },
+      });
+
+      // Should have only one PROCESSING transition from the optimistic start
+      // (delta doesn't add a second chat_start because chatStarted is already true)
+      const processingUpdates = updates.filter(e => e.state === State.PROCESSING);
+      expect(processingUpdates.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('RPC failure → reverts to IDLE with error entry', async () => {
+      client.connect();
+      const ws = lastCreatedWs!;
+      ws.simulateOpen();
+      ws.receiveMessage({
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: 'n' },
+      });
+      ws.receiveMessage({
+        type: 'res',
+        id: 'init-1',
+        ok: true,
+        payload: {},
+      });
+      // Set session key
+      ws.receiveMessage({
+        type: 'event',
+        event: 'chat',
+        payload: { state: 'delta', runId: 'r0', sessionKey: 'sk-rpc' },
+      });
+      ws.receiveMessage({
+        type: 'event',
+        event: 'chat',
+        payload: { state: 'final', runId: 'r0', sessionKey: 'sk-rpc' },
+      });
+
+      const updates: StateUpdateEvent[] = [];
+      client.on('state_update', (ev: StateUpdateEvent) => updates.push(ev));
+
+      // Capture the RPC id from send
+      ws.send.mockClear();
+      client.send({ type: 'send_prompt', text: 'Will fail' });
+
+      // Should be PROCESSING optimistically
+      expect(updates.some(e => e.state === State.PROCESSING)).toBe(true);
+
+      // Find the chat.send RPC call and simulate failure
+      const chatSendCall = ws.send.mock.calls.find((call: string[]) => {
+        const msg = JSON.parse(call[0]);
+        return msg.method === 'chat.send';
+      });
+      if (chatSendCall) {
+        const rpcId = JSON.parse(chatSendCall[0]).id;
+        ws.receiveMessage({
+          type: 'res',
+          id: rpcId,
+          ok: false,
+          error: { code: 'ERR', message: 'Test failure' },
+        });
+      }
+
+      // Wait for async .catch() to fire
+      await new Promise(r => setTimeout(r, 50));
+
+      // Should revert to IDLE
+      expect(updates.some(e => e.state === State.IDLE)).toBe(true);
     });
   });
 

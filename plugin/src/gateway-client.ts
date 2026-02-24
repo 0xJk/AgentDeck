@@ -10,11 +10,11 @@
  */
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { createPublicKey, createPrivateKey, sign as cryptoSign, randomUUID } from 'crypto';
-import { execSync } from 'child_process';
+import { execSync, execFile } from 'child_process';
 import {
   State,
   PermissionMode,
@@ -23,10 +23,11 @@ import {
   OPENCLAW_CAPABILITIES,
   OPENCLAW_GATEWAY_PORT,
 } from '@agentdeck/shared';
-import type { StateUpdateEvent, ModelCatalogEntry } from '@agentdeck/shared';
-import { augmentedPath, OPENCLAW_CANDIDATES } from '@agentdeck/shared';
+import type { StateUpdateEvent, ModelCatalogEntry, OcSessionStatus } from '@agentdeck/shared';
+import { augmentedPath, resolveOpenClawBin } from '@agentdeck/shared';
 import type { AgentLink } from './agent-link.js';
 import { timelineStore, type TimelineEntry } from './timeline-store.js';
+import { logStream } from './log-stream.js';
 import { dlog, dinfo, dwarn, derr } from './log.js';
 
 const TAG = 'Gateway';
@@ -122,6 +123,10 @@ export class GatewayClient extends EventEmitter implements AgentLink {
   private modelCatalogTime = 0;
   private static readonly MODEL_CATALOG_TTL = 60_000;
 
+  // Session status (openclaw status --json)
+  private sessionStatus: OcSessionStatus | null = null;
+  private statusPollTimer: ReturnType<typeof setInterval> | null = null;
+
   // Device identity
   private deviceIdentity: DeviceIdentity | null = null;
   private deviceAuthToken: DeviceAuthToken | null = null;
@@ -148,12 +153,30 @@ export class GatewayClient extends EventEmitter implements AgentLink {
       case 'send_prompt': {
         dlog(TAG, `send_prompt: "${command.text.slice(0, 60)}"`);
         this.lastPrompt = command.text;
+
+        // Optimistic: immediate timeline + state transition (no waiting for delta)
+        if (!this.chatStarted) {
+          this.chatStarted = true;
+          this.chatStartTime = Date.now();
+          this.chatToolCount = 0;
+          this.chatToolNames = [];
+          const prompt = command.text.length > 150
+            ? command.text.slice(0, 147) + '...' : command.text;
+          this.addTimelineEntry({ ts: Date.now(), type: 'chat_start', raw: prompt });
+          this.state = State.PROCESSING;
+          this.emitStateUpdate();
+          this.startStatusPoll();
+        }
+
         if (this.currentSessionKey) {
           this.rpcCall('chat.send', {
             sessionKey: this.currentSessionKey,
             message: command.text,
             idempotencyKey: randomUUID(),
-          }).catch((err) => dwarn(TAG, `chat.send failed: ${err}`));
+          }).catch((err) => {
+            dwarn(TAG, `chat.send failed: ${err}`);
+            this.revertOptimisticStart('Send failed');
+          });
         } else {
           // Session not yet loaded — wait and retry
           this.waitForSession(command.text);
@@ -429,6 +452,19 @@ export class GatewayClient extends EventEmitter implements AgentLink {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.stopStatusPoll();
+    logStream.stop();
+  }
+
+  /** Revert optimistic chat_start if RPC fails or session times out */
+  private revertOptimisticStart(reason: string): void {
+    if (this.chatStarted && this.state === State.PROCESSING) {
+      this.chatStarted = false;
+      this.addTimelineEntry({ ts: Date.now(), type: 'error', raw: reason });
+      this.state = State.IDLE;
+      this.stopStatusPoll();
+      this.emitStateUpdate();
+    }
   }
 
   // ===== Private: RPC =====
@@ -513,6 +549,10 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
         switch (chatState) {
           case 'delta': {
+            // Capture prompt from Gateway-initiated tasks
+            const deltaPrompt = payload.prompt as string | undefined;
+            if (deltaPrompt && !this.lastPrompt) this.lastPrompt = deltaPrompt;
+
             if (!this.chatStarted) {
               this.chatStarted = true;
               this.chatStartTime = Date.now();
@@ -522,6 +562,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
                 ? this.lastPrompt.length > 150 ? this.lastPrompt.slice(0, 147) + '...' : this.lastPrompt
                 : 'Task started';
               this.addTimelineEntry({ ts: Date.now(), type: 'chat_start', raw: prompt });
+              this.startStatusPoll();
             }
             this.state = State.PROCESSING;
             this.emitStateUpdate();
@@ -554,6 +595,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             this.currentRunId = null;
             this.lastPrompt = null;
             this.chatToolNames = [];
+            this.stopStatusPoll();
             this.state = State.IDLE;
             this.emitStateUpdate();
             break;
@@ -575,6 +617,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             this.currentRunId = null;
             this.lastPrompt = null;
             this.chatToolNames = [];
+            this.stopStatusPoll();
             this.state = State.IDLE;
             this.emitStateUpdate();
             break;
@@ -587,6 +630,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             this.lastPrompt = null;
             this.chatToolNames = [];
             dlog(TAG, `Chat error: ${payload.errorMessage || 'unknown'}`);
+            this.stopStatusPoll();
             this.state = State.IDLE;
             this.emitStateUpdate();
             break;
@@ -625,6 +669,9 @@ export class GatewayClient extends EventEmitter implements AgentLink {
           approvalId,
           status: 'pending',
         });
+
+        // Track for log-stream dedup
+        logStream.trackToolRequest(toolRaw);
 
         this.pendingApprovalId = approvalId;
         this.pendingApprovalQuestion = ask || command || 'Approve tool execution?';
@@ -733,6 +780,9 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
         // Fetch scheduled tasks (if Gateway supports it)
         this.fetchScheduled();
+
+        // Start log stream for enriched timeline events
+        logStream.start();
       },
       reject: (err) => {
         derr(TAG, `Handshake failed: ${err.message}`);
@@ -801,23 +851,19 @@ export class GatewayClient extends EventEmitter implements AgentLink {
         sessionKey: this.currentSessionKey,
         message: text,
         idempotencyKey: randomUUID(),
-      }).catch((err) => dwarn(TAG, `chat.send failed: ${err}`));
+      }).catch((err) => {
+        dwarn(TAG, `chat.send failed: ${err}`);
+        this.revertOptimisticStart('Send failed');
+      });
       return;
     }
     if (retries <= 0 || !this._connected) {
       dwarn(TAG, 'send_prompt: session timeout after waiting');
+      this.revertOptimisticStart('Session timeout');
       return;
     }
     dlog(TAG, `waitForSession: no session yet, retrying (${retries} left)`);
     setTimeout(() => this.waitForSession(text, retries - 1), 500);
-  }
-
-  /** Resolve `openclaw` binary: try known candidate paths, fallback to bare name on PATH. */
-  private static resolveOpenClawBin(): string {
-    for (const candidate of OPENCLAW_CANDIDATES) {
-      if (existsSync(candidate)) return candidate;
-    }
-    return 'openclaw'; // fallback to PATH lookup
   }
 
   /** Fetch model catalog via `openclaw models list --json`. */
@@ -827,7 +873,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
       return;
     }
 
-    const bin = GatewayClient.resolveOpenClawBin();
+    const bin = resolveOpenClawBin();
     try {
       const output = execSync(`${bin} models list --json`, {
         timeout: 5000,
@@ -925,6 +971,53 @@ export class GatewayClient extends EventEmitter implements AgentLink {
     return this.modelCatalog;
   }
 
+  /** Get cached session status (for timeline detail view). */
+  getSessionStatus(): OcSessionStatus | null {
+    return this.sessionStatus;
+  }
+
+  // ===== Private: Session Status =====
+
+  /** Fetch session status via `openclaw status --json` (non-blocking). */
+  private fetchFullStatus(): void {
+    const bin = resolveOpenClawBin();
+    execFile(bin, ['status', '--json'], {
+      timeout: 5000,
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: augmentedPath() },
+    }, (err, stdout) => {
+      if (err) {
+        dlog(TAG, `openclaw status --json unavailable: ${err}`);
+        return;
+      }
+      try {
+        const data = JSON.parse(stdout.trim()) as OcSessionStatus;
+        dlog(TAG, `openclaw status --json: keys=${Object.keys(data).join(',')}`);
+        this.sessionStatus = data;
+      } catch (parseErr) {
+        dlog(TAG, `openclaw status --json parse error: ${parseErr}`);
+      }
+    });
+  }
+
+  /** Start polling session status every 10s while PROCESSING. */
+  private startStatusPoll(): void {
+    if (this.statusPollTimer) return;
+    this.fetchFullStatus();
+    this.statusPollTimer = setInterval(() => {
+      this.fetchFullStatus();
+      this.emitStateUpdate();
+    }, 10_000);
+  }
+
+  /** Stop session status polling. */
+  private stopStatusPoll(): void {
+    if (this.statusPollTimer) {
+      clearInterval(this.statusPollTimer);
+      this.statusPollTimer = null;
+    }
+  }
+
   // ===== Private: Timeline =====
 
   /**
@@ -938,8 +1031,20 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
       const resp = result as { events?: Array<{
         ts: number; type: string; raw?: string; command?: string; tool?: string;
+        content?: string; text?: string; response?: string; message?: string; summary?: string;
       }> };
       if (!resp.events || resp.events.length === 0) return;
+
+      // Diagnostic: log event structure for response text discovery
+      const sample = resp.events[0] as Record<string, unknown>;
+      dlog(TAG, `enrichTimeline: ${resp.events.length} events, keys=${Object.keys(sample).join(',')}, types=${resp.events.map(e => e.type).join(',')}`);
+      const withContent = resp.events.find(e => {
+        const a = e as Record<string, unknown>;
+        return a.content || a.text || a.response || a.message || a.summary;
+      });
+      if (withContent) {
+        dlog(TAG, `enrichTimeline: content sample=${JSON.stringify(withContent).slice(0, 300)}`);
+      }
 
       // Extract tool names from history events
       const toolNames: string[] = [];
@@ -1004,6 +1109,30 @@ export class GatewayClient extends EventEmitter implements AgentLink {
         timelineStore.updateEntryRaw(idx, newRaw);
         dlog(TAG, `Timeline enriched: ${newRaw}`);
       }
+
+      // Extract response text snippet from history events
+      let responseSnippet: string | null = null;
+      for (const ev of resp.events) {
+        const a = ev as Record<string, unknown>;
+        const text = (a.content ?? a.text ?? a.response ?? a.message ?? a.summary) as string | undefined;
+        if (text && typeof text === 'string' && text.length > 5 && ev.type !== 'tool_request') {
+          responseSnippet = text.length > 200 ? text.slice(0, 197) + '...' : text;
+          break;
+        }
+      }
+      if (responseSnippet) {
+        // Dedup: skip if a recent chat_response already exists (e.g. from log-stream or prior enrichment)
+        const lastResponseIdx = timelineStore.findLastIndex('chat_response');
+        const lastResponseTs = lastResponseIdx >= 0 ? timelineStore.getGroupedDisplay()
+          .find(g => g.entry.type === 'chat_response')?.lastTs ?? 0 : 0;
+        if (lastResponseTs === 0 || Date.now() - lastResponseTs > 5_000) {
+          this.addTimelineEntry({
+            ts: Date.now() - 1,  // just before chat_end
+            type: 'chat_response',
+            raw: responseSnippet,
+          });
+        }
+      }
     } catch {
       // Gateway doesn't support events.history — silently ignore
     }
@@ -1029,6 +1158,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
       projectName: this.projectName,
       navigable: false,
       modelCatalog: this.modelCatalog ?? undefined,
+      sessionStatus: this.sessionStatus ?? undefined,
     };
 
     if (this.pendingApprovalId) {

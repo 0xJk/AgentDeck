@@ -6,14 +6,17 @@ import streamDeck, {
   WillDisappearEvent,
   DidReceiveSettingsEvent,
 } from '@elgato/streamdeck';
-import { State, PromptOption, type AgentCapabilities, type AgentType, OPENCLAW_GATEWAY_PORT } from '@agentdeck/shared';
-import { execSync } from 'child_process';
+import { State, PromptOption, type AgentCapabilities, type AgentType, OPENCLAW_GATEWAY_PORT, augmentedPath, resolveOpenClawBin } from '@agentdeck/shared';
+import { execFileSync } from 'child_process';
 import type { AgentLink } from '../agent-link.js';
 import { LayoutManager, ButtonConfig } from '../layout-manager.js';
 import { renderButton, svgToDataUrl, labelNeedsHaiku, BUTTON_MAX_CHARS } from '../renderers/button-renderer.js';
 import { requestAbbreviation } from '../label-summarizer.js';
 import { handleExpandedAction } from '../expanded-actions.js';
 import { isPickerActive, selectByButtonSlot, openPicker, setPickerButtonCallback, setPickerBaseDir } from '../project-picker.js';
+import { getModelCatalog, fetchStandaloneModelCatalog, stripProviderPrefix } from './usage-button.js';
+import { timelineStore } from '../timeline-store.js';
+import { OC_BODY, OC_CLAW_L, OC_CLAW_R } from '../renderers/agent-logos.js';
 import { dlog, dwarn, derr } from '../log.js';
 
 import type { JsonValue } from '@elgato/utils';
@@ -157,12 +160,78 @@ function disconnectedButtonConfig(s: ResponseButtonSettings): ButtonConfig {
 
 const DIM_BUTTON: ButtonConfig = { title: '', color: '#1a1a1a', textColor: '#444444', enabled: false };
 
-const OPENCLAW_IDLE_PRESETS: ButtonConfig[] = [
-  { title: 'GATEWAY', color: '#1a0f2e', textColor: '#c084fc', enabled: true, action: 'open:gateway_web' },
-  { title: 'GO ON', color: '#1e3a2f', textColor: '#6ee7b7', enabled: true, action: 'command:continue' },
-  DIM_BUTTON,
-  DIM_BUTTON,
-];
+let modelSwitching = false;
+
+/** Play arrow icon for GO ON button */
+const GO_ON_ICON_SVG = [
+  `<circle cx="72" cy="44" r="28" fill="none" stroke="#6ee7b7" stroke-width="2.5" opacity="0.5"/>`,
+  `<polygon points="62,30 62,58 88,44" fill="#6ee7b7" opacity="0.9"/>`,
+].join('');
+
+/** Document summary icon for SUMMARIZE button */
+const SUMMARIZE_ICON_SVG = [
+  `<rect x="40" y="14" width="64" height="56" rx="5" fill="none" stroke="#93c5fd" stroke-width="2"/>`,
+  `<line x1="50" y1="28" x2="94" y2="28" stroke="#93c5fd" stroke-width="2" opacity="0.6"/>`,
+  `<line x1="50" y1="40" x2="88" y2="40" stroke="#93c5fd" stroke-width="2" opacity="0.6"/>`,
+  `<line x1="50" y1="52" x2="78" y2="52" stroke="#93c5fd" stroke-width="2" opacity="0.6"/>`,
+  `<polyline points="82,50 87,56 96,44" fill="none" stroke="#93c5fd" stroke-width="2.5" stroke-linecap="round"/>`,
+].join('');
+
+/** Cycling arrows icon for MODEL button */
+const MODEL_ICON_SVG = [
+  `<path d="M50,22 A28,28 0 1,1 36,55" fill="none" stroke="#e9d5ff" stroke-width="2.5" stroke-linecap="round"/>`,
+  `<polygon points="33,48 36,58 44,52" fill="#e9d5ff"/>`,
+  `<path d="M94,66 A28,28 0 1,1 108,33" fill="none" stroke="#e9d5ff" stroke-width="2.5" stroke-linecap="round"/>`,
+  `<polygon points="111,40 108,30 100,36" fill="#e9d5ff"/>`,
+].join('');
+
+/** Browser window + OC lobster icon for GATEWAY button */
+const GATEWAY_ICON_SVG = [
+  // Browser window frame
+  `<rect x="30" y="16" width="84" height="64" rx="6" fill="none" stroke="#94a3b8" stroke-width="2"/>`,
+  `<line x1="30" y1="30" x2="114" y2="30" stroke="#94a3b8" stroke-width="1.5"/>`,
+  // 3 dots (traffic lights)
+  `<circle cx="40" cy="23" r="2.5" fill="#ef4444"/>`,
+  `<circle cx="48" cy="23" r="2.5" fill="#fbbf24"/>`,
+  `<circle cx="56" cy="23" r="2.5" fill="#4ade80"/>`,
+  // OC lobster inside browser (scaled 0.35, centered at ~72,55)
+  `<g transform="translate(51,32) scale(0.35)">`,
+  `<defs><linearGradient id="oc-btn-g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#ff4d4d"/><stop offset="100%" stop-color="#991b1b"/></linearGradient></defs>`,
+  `<path d="${OC_BODY}" fill="url(#oc-btn-g)"/>`,
+  `<path d="${OC_CLAW_L}" fill="url(#oc-btn-g)"/>`,
+  `<path d="${OC_CLAW_R}" fill="url(#oc-btn-g)"/>`,
+  `<circle cx="45" cy="35" r="6" fill="#050810"/>`,
+  `<circle cx="75" cy="35" r="6" fill="#050810"/>`,
+  `<circle cx="46" cy="34" r="2.5" fill="#00e5cc"/>`,
+  `<circle cx="76" cy="34" r="2.5" fill="#00e5cc"/>`,
+  `</g>`,
+].join('');
+
+function getDefaultModelName(): string {
+  const catalog = getModelCatalog();
+  if (!catalog) return '';
+  const def = catalog.find(m => m.role === 'default');
+  return def?.name ?? '';
+}
+
+function getOpenClawIdlePresets(): ButtonConfig[] {
+  const modelName = stripProviderPrefix(getDefaultModelName());
+  return [
+    { title: 'GO ON', color: '#1e3a2f', textColor: '#6ee7b7', enabled: true, action: 'command:continue', iconSvg: GO_ON_ICON_SVG },
+    { title: 'SUMMARIZE', color: '#1a1a3e', textColor: '#93c5fd', enabled: true, action: 'command:summarize', iconSvg: SUMMARIZE_ICON_SVG },
+    {
+      title: 'MODEL',
+      subtitle: modelName || undefined,
+      color: '#2d1f3d',
+      textColor: '#e9d5ff',
+      enabled: true,
+      action: 'action:model_switch',
+      loading: modelSwitching,
+      iconSvg: MODEL_ICON_SVG,
+    },
+    { title: 'GATEWAY', color: '#1a0f2e', textColor: '#c084fc', enabled: true, action: 'open:gateway_web', iconSvg: GATEWAY_ICON_SVG },
+  ];
+}
 
 function refreshAllButtons(): void {
   const sorted = getSortedIds();
@@ -185,9 +254,10 @@ function refreshAllButtons(): void {
   if (currentAgentType === 'openclaw' && !overrideConfigs) {
     dlog('RspBut', `refresh OC: state=${currentState} ids=${sorted.length}`);
     if (currentState === State.IDLE) {
-      // OC IDLE: utility presets (GATEWAY, GO ON, etc.)
+      // OC IDLE: utility presets (GO ON, SUMMARIZE, MODEL, GATEWAY)
+      const presets = getOpenClawIdlePresets();
       for (let i = 0; i < sorted.length; i++) {
-        const preset = i < OPENCLAW_IDLE_PRESETS.length ? OPENCLAW_IDLE_PRESETS[i] : DIM_BUTTON;
+        const preset = i < presets.length ? presets[i] : DIM_BUTTON;
         applyButtonConfig(sorted[i], preset, actionSlots.get(sorted[i]));
       }
       return;
@@ -390,8 +460,9 @@ export class ResponseButtonAction extends SingletonAction {
       }
       actionStr = config.action;
     } else if (currentAgentType === 'openclaw' && currentState === State.IDLE) {
-      // OpenClaw IDLE: use preset configs (GATEWAY, GO ON, etc.)
-      const preset = slot < OPENCLAW_IDLE_PRESETS.length ? OPENCLAW_IDLE_PRESETS[slot] : DIM_BUTTON;
+      // OpenClaw IDLE: use dynamic preset configs (GO ON, SUMMARIZE, MODEL, GATEWAY)
+      const presets = getOpenClawIdlePresets();
+      const preset = slot < presets.length ? presets[slot] : DIM_BUTTON;
       if (!preset.enabled || !preset.action) {
         dlog('RspBut', `keyDown GUARD-OC-IDLE: slot=${slot} preset disabled`);
         return;
@@ -440,6 +511,14 @@ export class ResponseButtonAction extends SingletonAction {
     }
     dlog('RspBut', `keyDown slot=${slot} action="${actionStr}"`);
 
+    // Record user action to timeline (OpenClaw mode only)
+    if (currentAgentType === 'openclaw') {
+      const actionLabel = resolveActionLabel(actionStr);
+      if (actionLabel) {
+        timelineStore.addEntry({ ts: Date.now(), type: 'user_action', raw: actionLabel });
+      }
+    }
+
     if (actionStr === 'expand_options') {
       // Handled by plugin.ts enterExpandedMode — delegate via handleExpandedAction
       handleExpandedAction(actionStr, bridge);
@@ -457,17 +536,24 @@ export class ResponseButtonAction extends SingletonAction {
         type: 'switch_mode',
         mode: actionStr.split(':')[1] as 'plan' | 'acceptEdits' | 'default',
       });
+    } else if (actionStr === 'action:model_switch') {
+      void handleModelSwitch();
     } else if (actionStr.startsWith('open:')) {
       const target = actionStr.substring('open:'.length);
       if (target === 'gateway_web') {
         try {
-          execSync(`open "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}"`, { timeout: 3000 });
+          execFileSync('open', [`http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`], { timeout: 3000 });
         } catch (e) {
           derr('RspBut', `open gateway_web failed: ${e}`);
         }
       }
     } else if (actionStr.startsWith('command:')) {
-      bridge.send({ type: 'send_prompt', text: actionStr.substring('command:'.length) });
+      const text = actionStr.substring('command:'.length);
+      if (text === 'summarize') {
+        bridge.send({ type: 'send_prompt', text: 'Summarize current progress concisely' });
+      } else {
+        bridge.send({ type: 'send_prompt', text });
+      }
     }
   }
 
@@ -484,4 +570,71 @@ export class ResponseButtonAction extends SingletonAction {
     actionSlots.delete(ev.action.id);
     userSettingsMap.delete(ev.action.id);
   }
+}
+
+/** Map action string to a human-readable label for timeline recording */
+function resolveActionLabel(actionStr: string): string | null {
+  if (actionStr === 'command:continue') return '\u25B7 GO ON \u2014 Send continue prompt';
+  if (actionStr === 'command:summarize') return '\u25B7 SUMMARIZE \u2014 Request progress summary';
+  if (actionStr === 'open:gateway_web') return '\u25B7 GATEWAY \u2014 Open web UI';
+  if (actionStr === 'action:model_switch') {
+    const cur = getDefaultModelName() || '?';
+    const catalog = getModelCatalog();
+    const next = catalog ? getNextModelName(catalog, cur) : '?';
+    return `\u25B7 MODEL \u2014 Switch model: ${cur} \u2192 ${next}`;
+  }
+  if (actionStr.startsWith('respond:')) {
+    const val = actionStr.split(':')[1];
+    if (val === 'y') return '\u25B7 ALLOW \u2014 Approve tool execution';
+    if (val === 'n') return '\u25B7 DENY \u2014 Deny tool execution';
+  }
+  return null;
+}
+
+/** Get next model name in circular order */
+function getNextModelName(catalog: import('@agentdeck/shared').ModelCatalogEntry[], current: string): string {
+  if (catalog.length === 0) return '';
+  const idx = catalog.findIndex(m => m.name === current);
+  return catalog[(idx + 1) % catalog.length].name;
+}
+
+/** Handle model switch: CLI first, prompt fallback */
+async function handleModelSwitch(): Promise<void> {
+  const catalog = getModelCatalog();
+  if (!catalog || catalog.length < 2) {
+    dlog('RspBut', 'model_switch: no catalog or <2 models');
+    return;
+  }
+  const current = getDefaultModelName();
+  const next = getNextModelName(catalog, current);
+  if (!next || next === current) return;
+
+  modelSwitching = true;
+  refreshAllButtons();
+
+  try {
+    const bin = resolveOpenClawBin();
+    execFileSync(bin, ['models', 'set', next], {
+      timeout: 5000,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, PATH: augmentedPath() },
+    });
+    dlog('RspBut', `model_switch CLI success: ${current} -> ${next}`);
+  } catch (e) {
+    dlog('RspBut', `model_switch CLI failed, using prompt fallback: ${e}`);
+    bridge.send({ type: 'send_prompt', text: `use model ${next}` });
+  }
+
+  // Refresh catalog immediately to pick up the change
+  fetchStandaloneModelCatalog();
+
+  // Update timeline entry with result
+  const lastIdx = timelineStore.findLastIndex('user_action');
+  if (lastIdx >= 0) {
+    timelineStore.updateEntryRaw(lastIdx, `\u25B7 MODEL \u2014 Switched: ${current} \u2192 ${next}`);
+  }
+
+  modelSwitching = false;
+  refreshAllButtons();
 }
