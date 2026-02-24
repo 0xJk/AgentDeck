@@ -2,6 +2,53 @@
 
 ---
 
+## 2026-02-24 — 타임라인 텍스트 정보 부족 수정
+
+### 문제
+OC 타임라인에 "Completed"만 표시되고, 사용자 프롬프트/도구 이름/작업 내용이 안 나옴.
+**근본 원인**: Gateway `chat` 이벤트의 `state: 'delta'`는 상태 신호만 보내고 실제 텍스트(`payload.delta`)를 포함하지 않음. `chatDeltaBuffer`는 항상 빈 문자열, `extractDeltaSnippet()`은 항상 null. 또한 `exec.approval.requested`는 수동 승인 도구만 발생 — 자동 승인 도구는 이벤트 없음.
+
+### 해결
+1. **죽은 코드 제거**: `chatDeltaBuffer`, `DELTA_BUF_MAX`, `extractDeltaSnippet()` — Gateway가 delta 텍스트를 보내지 않으므로 전부 무의미
+2. **프롬프트 스니펫**: `chat_end`/`aborted` 엔트리에 `lastPrompt`(80자 truncate) 포함 → "Completed · 42s · fix the login bug"
+3. **events.history 사후 보강**: `final` 후 `events.history` RPC로 해당 run의 도구 사용 내역 조회, `chat_end` raw를 `"Read(3), Bash(2), Edit(1)"` 형식으로 업데이트. Gateway 미지원 시 무시
+4. **timeline-store 헬퍼**: `updateEntryRaw(index, newRaw)` + `findLastIndex(type)` 추가
+5. **디버그 로깅**: chat 이벤트에 `state`/`keys` 로깅 추가 — 실제 payload 구조 검증용
+
+### 교훈 / 핵심 설계 결정
+- **Gateway chat delta는 상태 신호만**: `payload.delta`는 정의되지 않음. 텍스트 콘텐츠는 `events.history` 사후 조회로만 가능
+- **사후 보강 패턴**: 즉시 표시 가능한 정보(프롬프트, 시간)로 먼저 엔트리 생성, 이후 비동기로 디테일(도구 목록) 보강 — UI 즉시 반영 + 점진적 개선
+
+---
+
+## 2026-02-24 — OpenClaw 모드 종합 점검: 음성/모델/타임라인
+
+### 문제
+OpenClaw 모드에서 3가지 문제:
+1. **음성 커맨드 지연**: 전사 결과가 `smartPaste()`로 빠져 클립보드에 붙여넣기됨 (OC에는 터미널 없음). `currentSessionKey` null일 때 커맨드 사일런트 드롭
+2. **모델 카탈로그 미표시**: `openclaw` CLI가 Stream Deck 프로세스의 최소 PATH에서 발견 안 됨. standalone poll도 bridge 연결 시 중단
+3. **타임라인 패널 배경**: `#0f172a` 배경이 LCD에서 검은 직사각형으로 보여 시각적으로 어색
+
+### 해결
+**음성 (voice-dial.ts)**: `hasTerminal` 체크 분기 추가 — OC(`hasTerminal=false`)이면 상태 무관하게 `send_prompt` 직접 전송, Claude Code는 기존 IDLE-only 로직 유지
+
+**세션 대기 큐 (gateway-client.ts)**: `waitForSession()` — `currentSessionKey` null이면 500ms 폴링(최대 10회=5초) 후 전송. 기존 사일런트 드롭 대신 큐잉
+
+**모델 카탈로그 PATH (voice-paths.ts + gateway-client.ts + usage-button.ts)**:
+- `augmentedPath()`에 `~/.cargo/bin`, `~/go/bin`, `~/.openclaw/bin`, `~/.bun/bin` 추가
+- `resolveOpenClawBin()`: `OPENCLAW_CANDIDATES`에서 `existsSync`로 바이너리 직접 탐색 후 풀패스 사용 (PATH 의존 탈피)
+- `fetchModelCatalog(retries=2)`: 실패 시 10초 후 재시도
+- `setUsageCapabilities()`: OC `hasModelCatalog=true`면 독립 catalog poll 유지 (OAuth poll과 분리)
+
+**타임라인 배경 (timeline-renderer.ts)**: 3곳 `fill="#0f172a"` → `fill="#000000"` — LCD 네이티브 블랙과 동일하여 투명 배경 효과
+
+### 교훈 / 핵심 설계 결정
+- **GUI 앱 자식 프로세스 PATH**: Stream Deck SDK가 스폰하는 플러그인은 최소 PATH만 상속. `augmentedPath()` 확장 + `OPENCLAW_CANDIDATES` 직접 탐색 이중 전략 필요
+- **hasTerminal capability gate**: 에이전트별 I/O 차이는 capability 체크로 분기 — 하드코딩 에이전트 타입 비교 대신 `caps.hasTerminal` 사용
+- **LCD 투명 효과**: encoder LCD 네이티브 배경 = `#000000`. 동일 색상 사용 시 pixmap 경계 비가시 → 텍스트 플로팅 효과
+
+---
+
 ## 2026-02-23 — Ghost Text 오탐: UI 크롬(Tip/단축키)이 추천으로 표시
 
 ### 문제
@@ -1111,3 +1158,24 @@ Usage 정보 체계가 subscription(Claude Max)과 API(pay-per-use) 사용자를
 - `detectGhostText`의 `clean = stripAnsi(rawData)`는 `processFeed`의 `clean = stripAnsi(spaced)`와 다르게 cursor-forward 처리 없이 쓰고 있었음 — 일관성 주의
 - Claude Code TUI의 ANSI 렌더링은 버전마다 바뀔 수 있음 (SGR 90 → SGR 2). 감지 로직은 여러 SGR 변형을 허용해야
 - cross-chunk 감지(Strategy 3)는 편의성 vs 오탐 트레이드오프 — `⎿` 같은 구조적 마커로 경계를 정확히 해야
+
+## 2026-02-24 — OpenClaw 타임라인 패널 + 유틸리티 버튼
+
+### 문제
+OC 모드에서 E2(Option) = `['continue']`만, E3(iTerm) = Disabled, Response 버튼 4개 = DIM — 화면 자원 낭비.
+
+### 해결
+**Part A — 타임라인 패널 (E2+E3 합체)**:
+1. `timeline-store.ts`: 싱글톤 이벤트 스토어. GroupedEntry(연속 중복 60s 내 병합), scheduled entries 지원, `~/.agentdeck/timeline.json` 디스크 영속 (lazy load + debounced save 500ms), `mergeHistory()` 오프라인 이벤트 복구
+2. `timeline-renderer.ts`: 400px 와이드 SVG fisheye 렌더. font size lerp(15→10px), opacity lerp(1.0→0.3), `smartSummary()`로 경로 축약, detail mode word-wrap
+3. `gateway-client.ts`: 이벤트 수집 (chat/exec.approval → timeline), `summarize()` RPC, `fetchHistory()` 재연결 시 오프라인 이벤트 복구, `fetchScheduled()` 미래 작업
+4. `option-dial.ts` + `iterm-dial.ts`: OC 모드 분기 — timeline left/right 패널, scroll/push/detail 매핑
+
+**Part B — Response 버튼 유틸리티 프리셋**: GATEWAY(`open:gateway_web` → 브라우저), GO ON(`command:continue`) + DIM×2
+
+### 교훈 / 핵심 설계 결정
+- **싱글톤 패턴**: timeline-store를 gateway-client(producer)와 dial actions(consumer)가 공유 — 순환 의존 방지
+- **Grouped scroll**: 스크롤 인덱스를 raw entries가 아닌 GroupedEntry[] 위에서 운용 — 중복 이벤트 N개가 한 칸으로 보임
+- **디스크 영속 + 히스토리 머지**: lazy load(`ensureLoaded`) + `mergeHistory`(ts:type:raw 복합키 dedup) — 플러그인 재시작/오프라인 복구
+- **헤더 일관성**: 모든 encoder LCD 헤더는 `x=100, y=18, text-anchor=middle, 14px bold, #94a3b8` 준수 — 400px 와이드 캔버스에서도 E2 패널 내 가운데 정렬
+- **Interactive 우선**: OC AWAITING_PERMISSION 등 interactive 상태에서는 타임라인이 아닌 기존 option/permission UI 표시
