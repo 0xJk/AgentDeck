@@ -58,6 +58,7 @@ import {
   overrideUsageButton,
   setUsageBridgeConnected,
   setUsageCapabilities,
+  setUsageState,
 } from './actions/usage-button.js';
 
 // Encoder actions
@@ -98,6 +99,7 @@ let currentQuestion: string | undefined;
 let currentNavigable = false;
 let currentCursorIndex = 0;
 let currentSuggestedPrompt: string | undefined;
+let currentSessionStatus: Record<string, unknown> | null = null;
 let takeoverGeneration = 0;
 
 // ---- Expanded mode state ----
@@ -134,9 +136,9 @@ initItermDial(connMgr);
 // Refresh other dials when voice text takeover exits
 setVoiceTextExitCallback(() => {
   const agentType = connMgr.getActiveAgentType();
-  updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType);
+  updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType, currentSessionStatus);
   updateUtilityDialState(currentState);
-  updateItermDialState(currentState, agentType);
+  updateItermDialState(currentState, agentType, currentSessionStatus);
 });
 
 // ---- Bridge event handlers ----
@@ -177,6 +179,10 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   // Capture suggested prompt
   if (ev.suggestedPrompt !== undefined) {
     currentSuggestedPrompt = ev.suggestedPrompt;
+  }
+  // Capture session status (OpenClaw)
+  if (ev.sessionStatus !== undefined) {
+    currentSessionStatus = ev.sessionStatus;
   }
   // Clear suggestion on non-IDLE states
   if (ev.state !== State.IDLE) {
@@ -326,6 +332,7 @@ function broadcastStateUpdate(): void {
     overrideModeButton(null);
     overrideSessionButton(null);
     overrideUsageButton(null);
+    setUsageState(currentState);
     updateModeButton(currentState, currentMode, caps);
     updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, standby);
     updateResponseState(currentState, currentMode as any, currentOptions, undefined, agentType, standby, currentNavigable);
@@ -353,7 +360,7 @@ function broadcastStateUpdate(): void {
       updateOptionDialState(
         currentState, currentOptions, currentQuestion, currentTool,
         currentNavigable, currentCursorIndex, currentToolInput,
-        currentSuggestedPrompt, agentType,
+        currentSuggestedPrompt, agentType, currentSessionStatus,
       );
     });
   } else if (!shouldTakeover && isEncoderTakeoverActive()) {
@@ -363,22 +370,22 @@ function broadcastStateUpdate(): void {
       if (exitGen !== takeoverGeneration) return; // superseded by newer transition
       updateVoiceDialState(currentState);
       updateUtilityDialState(currentState);
-      updateItermDialState(currentState, agentType);
+      updateItermDialState(currentState, agentType, currentSessionStatus);
     });
-    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType);
+    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType, currentSessionStatus);
   } else if (shouldTakeover) {
     // Already in takeover — just refresh
     updateOptionDialState(
       currentState, currentOptions, currentQuestion, currentTool,
       currentNavigable, currentCursorIndex, currentToolInput,
-      currentSuggestedPrompt, agentType,
+      currentSuggestedPrompt, agentType, currentSessionStatus,
     );
   } else {
     // Not in takeover, not entering — normal updates
-    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType);
+    updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType, currentSessionStatus);
     updateVoiceDialState(currentState);
     updateUtilityDialState(currentState);
-    updateItermDialState(currentState, agentType);
+    updateItermDialState(currentState, agentType, currentSessionStatus);
   }
 }
 

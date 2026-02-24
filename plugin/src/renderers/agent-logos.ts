@@ -19,11 +19,11 @@ export const CLAUDE_LOGO_PATH =
  * Original viewBox 0 0 120 120, rendered at 1:1 inside 144x144 button.
  * Source: Dashboard Icons (CC-BY-4.0)
  */
-const OC_BODY =
+export const OC_BODY =
   'M60 10 C30 10 15 35 15 55 C15 75 30 95 45 100 L45 110 L55 110 L55 100 C55 100 60 102 65 100 L65 110 L75 110 L75 100 C90 95 105 75 105 55 C105 35 90 10 60 10Z';
-const OC_CLAW_L =
+export const OC_CLAW_L =
   'M20 45 C5 40 0 50 5 60 C10 70 20 65 25 55 C28 48 25 45 20 45Z';
-const OC_CLAW_R =
+export const OC_CLAW_R =
   'M100 45 C115 40 120 50 115 60 C110 70 100 65 95 55 C92 48 95 45 100 45Z';
 const OC_ANTENNA_L = 'M45 15 Q35 5 30 8';
 const OC_ANTENNA_R = 'M75 15 Q85 5 90 8';

@@ -9,6 +9,8 @@ export interface ButtonConfig {
   textColor: string;
   enabled: boolean;
   action?: string;
+  iconSvg?: string;
+  loading?: boolean;
 }
 
 export interface EncoderConfig {

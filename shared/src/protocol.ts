@@ -13,6 +13,17 @@ export interface ModelCatalogEntry {
   available: boolean;
 }
 
+// ===== OpenClaw Session Status =====
+
+export interface OcSessionStatus {
+  model?: string;
+  contextTokens?: number;
+  messageCount?: number;
+  uptime?: string;
+  sessionId?: string;
+  [key: string]: unknown;
+}
+
 // ===== Bridge → Plugin (State Updates) =====
 
 export interface StateUpdateEvent {
@@ -34,6 +45,7 @@ export interface StateUpdateEvent {
   cursorIndex?: number;
   suggestedPrompt?: string;
   modelCatalog?: ModelCatalogEntry[];
+  sessionStatus?: OcSessionStatus;
 }
 
 export interface PromptOptionsEvent {

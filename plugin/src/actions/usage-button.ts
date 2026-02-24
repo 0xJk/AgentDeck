@@ -641,8 +641,16 @@ function extractProvider(name: string): string {
   return '';
 }
 
-/** Provider color from model key prefix */
+/** Provider color — check model name keywords first, then prefix */
 function providerColor(name: string): string {
+  const modelPart = stripProviderPrefix(name).toLowerCase();
+  // Model name keywords — authoritative for manufacturer detection
+  if (modelPart.includes('gpt') || modelPart.includes('codex') || modelPart.startsWith('o1') || modelPart.startsWith('o3') || modelPart.startsWith('o4')) return '#4ade80';
+  if (modelPart.includes('claude')) return '#f59e0b';
+  if (modelPart.includes('deepseek')) return '#a78bfa';
+  if (modelPart.includes('gemini')) return '#60a5fa';
+  if (modelPart.includes('glm')) return '#22d3ee';
+  // Fall back to provider prefix
   const prefix = extractProvider(name);
   if (prefix) {
     if (prefix.includes('anthropic')) return '#f59e0b';
@@ -651,17 +659,17 @@ function providerColor(name: string): string {
     if (prefix.includes('google')) return '#60a5fa';
     if (prefix.includes('zhipu')) return '#22d3ee';
   }
-  const lower = name.toLowerCase();
-  if (lower.includes('glm')) return '#22d3ee';     // cyan — ZhipuAI
-  if (lower.includes('gpt') || lower.includes('codex')) return '#4ade80'; // green — OpenAI
-  if (lower.includes('deepseek')) return '#a78bfa'; // purple
-  if (lower.includes('claude')) return '#f59e0b';   // amber
-  if (lower.includes('gemini')) return '#60a5fa';    // blue
-  return '#94a3b8'; // slate default
+  return '#94a3b8';
 }
 
-/** Provider name from model key prefix */
+/** Provider name — check model name keywords first, then prefix */
 function providerName(name: string): string {
+  const modelPart = stripProviderPrefix(name).toLowerCase();
+  if (modelPart.includes('gpt') || modelPart.includes('codex') || modelPart.startsWith('o1') || modelPart.startsWith('o3') || modelPart.startsWith('o4')) return 'OpenAI';
+  if (modelPart.includes('claude')) return 'Anthropic';
+  if (modelPart.includes('deepseek')) return 'DeepSeek';
+  if (modelPart.includes('gemini')) return 'Google';
+  if (modelPart.includes('glm')) return 'ZhipuAI';
   const prefix = extractProvider(name);
   if (prefix) {
     if (prefix.includes('anthropic')) return 'Anthropic';
@@ -670,12 +678,6 @@ function providerName(name: string): string {
     if (prefix.includes('google')) return 'Google';
     if (prefix.includes('zhipu')) return 'ZhipuAI';
   }
-  const lower = name.toLowerCase();
-  if (lower.includes('glm')) return 'ZhipuAI';
-  if (lower.includes('gpt') || lower.includes('codex')) return 'OpenAI';
-  if (lower.includes('deepseek')) return 'DeepSeek';
-  if (lower.includes('claude')) return 'Anthropic';
-  if (lower.includes('gemini')) return 'Google';
   return '';
 }
 

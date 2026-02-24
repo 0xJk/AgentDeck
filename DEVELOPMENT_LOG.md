@@ -2,6 +2,44 @@
 
 ---
 
+## 2026-02-25 — Permission 스크롤 시 UI 소멸 + 옵션 라벨 오염 수정
+
+### 문제
+`sdc -d` 디버그 세션에서 2가지 반복 버그 발견 (4회 재현):
+1. **PERMISSION 스크롤 시 UI 소멸**: 3개 옵션 표시 상태에서 다이얼 스크롤(navigate_option)하면 permission 메뉴가 갑자기 사라짐 (`awaiting_permission → idle` 오전이)
+2. **옵션 라벨 오염**: Bash permission의 "don't ask again for: file:*" 가 "file "/Users/..."/* 2>/dev/null" 로 표시
+
+### 해결
+**Bug 1**: `output-parser.ts` cursor-only redraw 분기의 `!hasIdlePrompt` 조건이 원인. `IDLE_PROMPT` (`/^[❯>][ \t\u00A0]/m`)이 스크롤 chunk의 `❯ Yes, allow...` 옵션 텍스트를 idle prompt로 오감지 → idle handler로 fall through. **수정**: `!hasIdlePrompt` 제거, 대신 chunk 크기 기반 판별 (`nonWs < 10` = genuine idle, 그 외 = scroll redraw). 진짜 idle(`❯ \n`)은 작은 chunk, 스크롤은 큰 chunk라는 특성 활용.
+
+**Bug 2**: Claude Code ink TUI의 2-pass 렌더링이 원인. 첫 draw에서 full command 텍스트가 option 행에 렌더링되고, 16ms 후 CUP로 커서 되돌려 `:*`로 덮어씀. 터미널에선 정상이지만 linear buffer는 양쪽 모두 append → 오염. **수정**: `parseOptions()` 내 byIndex 완성 후, correction line 패턴 (`/^(:\S+)\s{5,}/`) 감지 → "don't ask again" 라벨의 오염된 command+args를 `command + correctionScope`로 교정.
+
+### 교훈 / 핵심 설계 결정
+- **IDLE_PROMPT 오매칭**: `❯ ` 패턴은 idle 전용이 아님 — navigable cursor 옵션 텍스트도 `❯ label`로 시작. Chunk 크기가 더 신뢰할 수 있는 판별자
+- **TUI CUP 덮어쓰기**: ink 프레임워크는 성능상 incremental redraw를 사용하여 CUP로 부분 수정. Linear buffer에서는 이를 감지·보정해야 함
+- **Linear buffer 한계**: CUP/HVP를 `\n`으로 치환하는 현재 방식의 근본적 한계. 향후 복잡한 TUI 렌더링 케이스가 더 발생할 수 있음
+
+---
+
+## 2026-02-24 — OpenClaw 시각화 3계층 구현
+
+### 문제
+타임라인이 Gateway WS 이벤트(chat state + exec.approval)만 사용하여 텍스트 모노톤(`#e2e8f0` 단색)으로 표시. 내부 동작(모델 호출, 메모리 검색, 도구 실행 상세)이 보이지 않고, 이벤트 활동 수준 파악 불가.
+
+### 해결
+**Layer 2 — 시각 개선**: `typeColor()` 함수로 이벤트 타입별 고유 색상 매핑 (chat_start=green, chat_end=blue, tool_request=amber/green/red by status, error=red, model_call/response=cyan, memory_recall=purple). `renderGroupLine()`의 하드코딩 2색 분기 제거. Fisheye 하단에 활동 밀도 바(최근 30초 이벤트 수 → opacity 0.05~0.5 보간).
+
+**Layer 1 — 로그 스트림**: `log-stream.ts` 신규 파일 — `openclaw logs --follow --json` 스폰하여 구조화 로그를 TimelineEntry로 변환. 4개 신규 타입(model_call, model_response, memory_recall, tool_exec) + 전용 아이콘(◆◇⦻▸). WS tool_request와 5초 윈도우 dedup. Gateway connect/disconnect 시 자동 start/stop.
+
+**Layer 3 — OC Usage**: Usage 버튼에 `oc-usage` 페이지 추가. `openclaw status --usage --json` 60초 폴링, 프로바이더별 수평 바 + 세션 토큰 표시. `hasModelCatalog` 캡빌리티 조건부 활성화.
+
+### 교훈 / 핵심 설계 결정
+- **방어적 파싱**: `openclaw logs --json` 실제 포맷 미확인 상태에서 플러그어블 `parseLogLine()` 설계 — 인식 불가 라인은 `null` 반환, 절대 크래시 안 함
+- **Dedup 전략**: WS 이벤트와 로그 이벤트가 같은 도구를 보고할 수 있으므로 `trackToolRequest()` + 5초 윈도우로 중복 제거
+- **조건부 UI**: oc-usage 페이지는 데이터 존재 시에만 표시 — CLI 미설치나 실패 시 graceful 스킵
+
+---
+
 ## 2026-02-24 — 타임라인 텍스트 정보 부족 수정
 
 ### 문제

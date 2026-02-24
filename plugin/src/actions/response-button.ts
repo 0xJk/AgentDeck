@@ -9,6 +9,7 @@ import streamDeck, {
 import { State, PromptOption, type AgentCapabilities, type AgentType, OPENCLAW_GATEWAY_PORT, augmentedPath, resolveOpenClawBin } from '@agentdeck/shared';
 import { execFileSync } from 'child_process';
 import type { AgentLink } from '../agent-link.js';
+import { openOrFocusBrowserTab } from '../utility-modes/macos.js';
 import { LayoutManager, ButtonConfig } from '../layout-manager.js';
 import { renderButton, svgToDataUrl, labelNeedsHaiku, BUTTON_MAX_CHARS } from '../renderers/button-renderer.js';
 import { requestAbbreviation } from '../label-summarizer.js';
@@ -541,11 +542,9 @@ export class ResponseButtonAction extends SingletonAction {
     } else if (actionStr.startsWith('open:')) {
       const target = actionStr.substring('open:'.length);
       if (target === 'gateway_web') {
-        try {
-          execFileSync('open', [`http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`], { timeout: 3000 });
-        } catch (e) {
+        void openOrFocusBrowserTab(`http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`).catch((e) => {
           derr('RspBut', `open gateway_web failed: ${e}`);
-        }
+        });
       }
     } else if (actionStr.startsWith('command:')) {
       const text = actionStr.substring('command:'.length);
@@ -591,18 +590,23 @@ function resolveActionLabel(actionStr: string): string | null {
   return null;
 }
 
-/** Get next model name in circular order */
+/** Get next available model name in circular order (skips unavailable) */
 function getNextModelName(catalog: import('@agentdeck/shared').ModelCatalogEntry[], current: string): string {
   if (catalog.length === 0) return '';
   const idx = catalog.findIndex(m => m.name === current);
-  return catalog[(idx + 1) % catalog.length].name;
+  const start = idx >= 0 ? idx : 0;
+  for (let i = 1; i <= catalog.length; i++) {
+    const candidate = catalog[(start + i) % catalog.length];
+    if (candidate.available && candidate.name !== current) return candidate.name;
+  }
+  return '';
 }
 
 /** Handle model switch: CLI first, prompt fallback */
 async function handleModelSwitch(): Promise<void> {
   const catalog = getModelCatalog();
-  if (!catalog || catalog.length < 2) {
-    dlog('RspBut', 'model_switch: no catalog or <2 models');
+  if (!catalog || catalog.filter(m => m.available).length < 2) {
+    dlog('RspBut', 'model_switch: no catalog or <2 available models');
     return;
   }
   const current = getDefaultModelName();

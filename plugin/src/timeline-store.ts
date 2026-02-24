@@ -14,7 +14,7 @@ import { homedir } from 'os';
 
 export interface TimelineEntry {
   ts: number;
-  type: 'tool_request' | 'tool_resolved' | 'chat_start' | 'chat_end' | 'error' | 'scheduled';
+  type: 'tool_request' | 'tool_resolved' | 'chat_start' | 'chat_end' | 'chat_response' | 'error' | 'scheduled' | 'user_action' | 'now_marker' | 'model_call' | 'model_response' | 'memory_recall' | 'tool_exec';
   raw: string;
   approvalId?: string;
   status?: 'pending' | 'approved' | 'denied';
@@ -35,19 +35,21 @@ const DISPLAY_PAST = 20;
 const DISPLAY_SCHEDULED = 10;
 const AUTO_TRACK_DELAY = 3000;
 const GROUP_WINDOW_MS = 60_000;
+const TOOL_GROUP_WINDOW_MS = 10_000;
 const SAVE_DEBOUNCE_MS = 500;
 const TIMELINE_FILE = join(homedir(), '.agentdeck', 'timeline.json');
 
-/** Group consecutive entries with same type + raw text within 60s */
+/** Group consecutive entries with same type + raw text within window (60s default, 10s for tool_request) */
 function groupConsecutive(entries: readonly TimelineEntry[]): GroupedEntry[] {
   const groups: GroupedEntry[] = [];
   for (const entry of entries) {
     const last = groups[groups.length - 1];
+    const window = entry.type === 'tool_request' ? TOOL_GROUP_WINDOW_MS : GROUP_WINDOW_MS;
     if (
       last &&
       last.entry.type === entry.type &&
       last.entry.raw === entry.raw &&
-      Math.abs(entry.ts - last.lastTs) < GROUP_WINDOW_MS
+      Math.abs(entry.ts - last.lastTs) < window
     ) {
       last.count++;
       last.lastTs = entry.ts;
@@ -187,11 +189,30 @@ class TimelineStore {
     this.notify();
   }
 
-  /** Combined + grouped: past (max 20) + scheduled (max 10) */
+  /** Combined + grouped: past (max 20) + NOW marker + scheduled (max 10) */
   getGroupedDisplay(): GroupedEntry[] {
     this.ensureLoaded();
     const past = this.entries.slice(-DISPLAY_PAST);
-    const combined = this._scheduled.length > 0 ? [...past, ...this._scheduled] : past;
+
+    // Determine current active action for NOW marker
+    let nowRaw = '';
+    let nowStatus: 'pending' | undefined;
+    const lastStart = [...past].reverse().find(e => e.type === 'chat_start');
+    const lastEnd = [...past].reverse().find(e => e.type === 'chat_end');
+    const isActive = lastStart && (!lastEnd || lastStart.ts > lastEnd.ts);
+    const pendingTool = [...past].reverse().find(e => e.type === 'tool_request' && e.status === 'pending');
+
+    if (pendingTool) {
+      nowRaw = pendingTool.raw;
+      nowStatus = 'pending';
+    } else if (isActive && lastStart) {
+      nowRaw = lastStart.raw;
+    }
+
+    const nowMarker: TimelineEntry = { ts: Date.now(), type: 'now_marker', raw: nowRaw, status: nowStatus };
+    const combined = this._scheduled.length > 0
+      ? [...past, nowMarker, ...this._scheduled]
+      : [...past, nowMarker];
     return groupConsecutive(combined);
   }
 
@@ -249,7 +270,18 @@ class TimelineStore {
   private autoTrackToLatestPast(): void {
     const groups = this.getGroupedDisplay();
     let idx = groups.length - 1;
+    // Track to the NOW marker if it has active content, otherwise to last past event
     for (let i = groups.length - 1; i >= 0; i--) {
+      if (groups[i].entry.type === 'now_marker') {
+        if (groups[i].entry.raw) {
+          // Active state: track to now_marker
+          idx = i;
+        } else {
+          // IDLE: skip now_marker, track to last past event
+          idx = Math.max(0, i - 1);
+        }
+        break;
+      }
       if (groups[i].entry.type !== 'scheduled') { idx = i; break; }
     }
     this._scrollIndex = Math.max(0, idx);

@@ -396,6 +396,93 @@ export function pasteText(text: string): void {
   ).catch(() => {});
 }
 
+// ---- Browser Tab Focus ----
+
+const CHROMIUM_BROWSERS = ['Google Chrome', 'Brave Browser', 'Microsoft Edge', 'Arc'] as const;
+const SEARCHABLE_BROWSERS = [...CHROMIUM_BROWSERS, 'Safari'] as const;
+
+/** Get list of searchable browsers currently running. */
+async function getRunningBrowsers(): Promise<string[]> {
+  const names = SEARCHABLE_BROWSERS.map(b => `"${b}"`).join(', ');
+  try {
+    const result = await osascript(
+      `tell application "System Events" to get name of every process whose name is in {${names}}`,
+    );
+    if (!result) return [];
+    return result.split(', ').filter(n => (SEARCHABLE_BROWSERS as readonly string[]).includes(n));
+  } catch {
+    return [];
+  }
+}
+
+/** Try to focus an existing tab matching urlPrefix in the given browser. */
+async function focusBrowserTab(browser: string, urlPrefix: string): Promise<boolean> {
+  const escaped = urlPrefix.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const isChromium = (CHROMIUM_BROWSERS as readonly string[]).includes(browser);
+
+  const script = isChromium
+    ? `tell application "${browser}"
+  set wIndex to 0
+  repeat with w in windows
+    set wIndex to wIndex + 1
+    set tIndex to 0
+    repeat with t in tabs of w
+      set tIndex to tIndex + 1
+      if URL of t starts with "${escaped}" then
+        set active tab index of w to tIndex
+        set index of w to 1
+        activate
+        return "found"
+      end if
+    end repeat
+  end repeat
+end tell
+return "notfound"`
+    : `tell application "Safari"
+  set wIndex to 0
+  repeat with w in windows
+    set wIndex to wIndex + 1
+    set tIndex to 0
+    repeat with t in tabs of w
+      set tIndex to tIndex + 1
+      if URL of t starts with "${escaped}" then
+        set current tab of w to t
+        set index of w to 1
+        activate
+        return "found"
+      end if
+    end repeat
+  end repeat
+end tell
+return "notfound"`;
+
+  try {
+    const result = await osascript(script);
+    return result === 'found';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Focus an existing browser tab matching urlPrefix, or open a new one.
+ * Searches running Chromium browsers and Safari. Falls back to `open` command.
+ */
+export async function openOrFocusBrowserTab(urlPrefix: string): Promise<void> {
+  const browsers = await getRunningBrowsers();
+  for (const browser of browsers) {
+    const found = await focusBrowserTab(browser, urlPrefix);
+    if (found) return;
+  }
+  // No existing tab found — open normally
+  await new Promise<void>((resolve, reject) => {
+    execFile('open', [urlPrefix], { timeout: 3000 }, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 // ---- Notification ----
 
 export async function showNotification(title: string, message: string): Promise<void> {

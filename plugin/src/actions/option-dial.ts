@@ -10,7 +10,7 @@ import streamDeck, {
   DidReceiveSettingsEvent,
 } from '@elgato/streamdeck';
 import { State, PromptOption } from '@agentdeck/shared';
-import type { AgentType } from '@agentdeck/shared';
+import type { AgentType, OcSessionStatus } from '@agentdeck/shared';
 import type { AgentLink } from '../agent-link.js';
 import { isEncoderTakeoverActive, refreshEncoderTakeover } from '../encoder-takeover.js';
 import { encoderRegistry, encoderLayout, isVoiceTextTakeoverActive, handleVtRotate, handleVtDown, handleVtUp } from '../encoder-registry.js';
@@ -59,6 +59,7 @@ let currentToolInput: string | undefined;
 let rotateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let currentSuggestedPrompt: string | null = null;
 let currentAgentType: AgentType | null = null;
+let currentSessionStatus: OcSessionStatus | null = null;
 
 export function initOptionDial(b: AgentLink): void {
   bridge = b;
@@ -76,6 +77,7 @@ function renderTimelineLeftPanel(): void {
     timelineStore.getGroupedDisplay(),
     timelineStore.getScrollIndex(),
     timelineStore.isDetailMode(),
+    currentSessionStatus,
   );
   const feedback = { canvas: svgToDataUrl(panels[0]) };
   for (const id of encoderRegistry.optionIds) {
@@ -94,8 +96,10 @@ export function updateOptionDialState(
   toolInput?: string,
   suggestedPrompt?: string,
   agentType?: AgentType | null,
+  sessionStatus?: OcSessionStatus | null,
 ): void {
   if (agentType !== undefined) currentAgentType = agentType;
+  if (sessionStatus !== undefined) currentSessionStatus = sessionStatus ?? null;
   const prevSuggestion = currentSuggestedPrompt;
   const prevState = currentState;
   const prevOptions = currentOptions;

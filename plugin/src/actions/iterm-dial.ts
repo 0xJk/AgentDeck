@@ -8,7 +8,7 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
-import type { AgentType } from '@agentdeck/shared';
+import type { AgentType, OcSessionStatus } from '@agentdeck/shared';
 import { isEncoderTakeoverActive } from '../encoder-takeover.js';
 import { handleTakeoverPush, handleTakeoverRotate, requestTakeoverRefresh } from './option-dial.js';
 import { isPickerActive, scrollPicker, selectProject } from '../project-picker.js';
@@ -41,6 +41,7 @@ let polling = false;
 let currentLayout = PIXMAP_LAYOUT;
 let bridgeRef: ConnectionManager | null = null;
 let currentAgentType: AgentType | null = null;
+let currentSessionStatus: OcSessionStatus | null = null;
 let exposeActive = false;
 let exposeTimeout: ReturnType<typeof setTimeout> | null = null;
 const EXPOSE_TIMEOUT_MS = 8000;
@@ -227,6 +228,7 @@ function renderTimelineRightPanel(): void {
     timelineStore.getGroupedDisplay(),
     timelineStore.getScrollIndex(),
     timelineStore.isDetailMode(),
+    currentSessionStatus,
   );
   const feedback = { canvas: svgToDataUrl(panels[1]) };
   for (const id of encoderRegistry.itermIds) {
@@ -235,9 +237,10 @@ function renderTimelineRightPanel(): void {
   }
 }
 
-export function updateItermDialState(state: State, agentType?: AgentType | null): void {
+export function updateItermDialState(state: State, agentType?: AgentType | null, sessionStatus?: OcSessionStatus | null): void {
   currentState = state;
   if (agentType !== undefined) currentAgentType = agentType;
+  if (sessionStatus !== undefined) currentSessionStatus = sessionStatus ?? null;
   // Do NOT reset currentLayout here — causes setFeedbackLayout on every state update → SD flicker.
   // Layout is reset only on encoder takeover exit (via resetEncoderLayouts hook below).
 

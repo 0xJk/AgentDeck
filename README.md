@@ -12,6 +12,10 @@ AgentDeck turns your Elgato Stream Deck+ into a physical control surface for AI 
 </p>
 
 <p align="center">
+  <a href="https://youtu.be/zVzrcaahdEs"><strong>Watch Demo on YouTube</strong></a>
+</p>
+
+<p align="center">
   <video src="docs/media/demo-clip.mp4" width="720" controls muted autoplay loop playsinline>
     <a href="docs/media/demo-clip.mp4">Watch demo clip</a>
   </video>
@@ -73,8 +77,8 @@ The bridge stays transparent: if it's off, Claude Code works exactly as before.
 
 | Agent | Status |
 |-------|--------|
-| **Claude Code** | Supported |
-| **OpenClaw** | Planned |
+| **Claude Code** | Supported (primary) |
+| **OpenClaw** | Experimental — Gateway WebSocket, timeline panel, log stream |
 
 ### Architecture
 
@@ -330,7 +334,7 @@ sdc --command 'claude --model opus'  # custom Claude command
 |------|--------|-------------|
 | 0 | **Mode** | Toggle Default / Plan / Accept Edits |
 | 1 | **Session** | Project name + state + session switch |
-| 2 | **Usage** | Usage dashboard (5h / 7d / extra / session pages) |
+| 2 | **Usage** | Usage dashboard (5h / 7d / extra / session / models / oc-usage pages) |
 | 3–6 | **Quick Action ×4** | GO ON / REVIEW / COMMIT / CLEAR when idle — up to 4 options on permission/select prompt. 5+ options → 3 + MORE ▼ |
 | 7 | **Stop** | Interrupt (Ctrl+C when processing) / Escape (when idle) |
 
@@ -645,6 +649,10 @@ AgentDeck/
 │       ├── usage-api.ts          # Anthropic API usage fetch (OAuth + Keychain)
 │       ├── voice.ts              # sox capture + whisper.cpp transcription
 │       ├── whisper-server-manager.ts  # Singleton whisper-server lifecycle (port 9100)
+│       ├── adapters/
+│       │   ├── index.ts              # createAdapter() factory
+│       │   ├── claude-code.ts        # ClaudeCodeAdapter (PTY + Parser + HookServer)
+│       │   └── openclaw.ts           # OpenClawAdapter (Gateway WebSocket)
 │       ├── check-deps.ts         # Runtime dependency check
 │       ├── logger.ts             # Structured logging
 │       └── types.ts              # Bridge-local types + shared re-exports
@@ -653,6 +661,11 @@ AgentDeck/
 │   ├── src/
 │   │   ├── plugin.ts             # SDK entry, action registration, takeover guard
 │   │   ├── bridge-client.ts      # WebSocket client (auto-reconnect)
+│   │   ├── connection-manager.ts # Bridge > Gateway priority, event forwarding
+│   │   ├── gateway-client.ts     # Direct Gateway connection, Ed25519 auth
+│   │   ├── agent-link.ts         # AgentLink interface (send/isConnected/getCapabilities)
+│   │   ├── timeline-store.ts     # OC event store, grouping, disk persist, NOW marker
+│   │   ├── log-stream.ts         # openclaw logs --follow --json → timeline events
 │   │   ├── layout-manager.ts     # State-driven button/encoder layout
 │   │   ├── encoder-takeover.ts   # Encoder wide-canvas takeover (option/permission)
 │   │   ├── encoder-registry.ts   # String ID → action lookup (no stale references)
@@ -676,9 +689,11 @@ AgentDeck/
 │   │   │   ├── button-renderer.ts    # SVG button image (pixel-aware text + abbreviation)
 │   │   │   ├── option-renderer.ts    # Encoder LCD option list (wide canvas)
 │   │   │   ├── response-renderer.ts  # Action encoder LCD state rendering
+│   │   │   ├── timeline-renderer.ts  # OC timeline fisheye SVG (400px wide canvas)
 │   │   │   ├── utility-renderer.ts   # Utility mode LCD panels
 │   │   │   ├── iterm-renderer.ts     # Terminal session LCD panel
 │   │   │   ├── voice-renderer.ts     # Voice status / transcription LCD
+│   │   │   ├── agent-logos.ts        # Claude + OpenClaw SVG logo paths
 │   │   │   └── text-utils.ts         # CJK-aware text measurement + wrapping
 │   │   └── utility-modes/
 │   │       ├── index.ts              # Mode registry and lifecycle
@@ -846,12 +861,14 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 ## Roadmap
 
 ### Multi-Agent Support
-- **OpenClaw** integration — state monitoring + controller
+- ~~**OpenClaw** integration~~ — Experimental (adapter, Gateway client, timeline, log stream)
+- Plugin capability gating per agent (UI adaptation)
 - Agent-agnostic bridge protocol for future agent backends
 
 ### Advanced Control Surface
 - Project-specific layout presets
 - Custom button icon support
+- Windows/Linux platform support
 
 ---
 
