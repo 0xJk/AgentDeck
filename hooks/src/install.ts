@@ -14,16 +14,16 @@ const HOOK_EVENTS = [
 
 // Build hook config for each event — uses $AGENTDECK_PORT env var so each
 // bridge session's Claude process POSTs to the correct port.
+// Claude Code v2.1+ requires 3-level nesting: event → matcher group → hook handler.
 function buildHookEntry(eventName: string) {
-  const entry: any = {
+  const handler: any = {
     type: 'command',
     command: `curl -sf -X POST http://localhost:\${AGENTDECK_PORT:-9120}/hooks/${eventName} -H 'Content-Type: application/json' -d @- 2>/dev/null || true`,
   };
-  // SessionEnd should be async
-  if (eventName === 'SessionEnd') {
-    entry.async = true;
-  }
-  return entry;
+  return {
+    matcher: '',
+    hooks: [handler],
+  };
 }
 
 export function installHooks(): void {
@@ -53,14 +53,22 @@ export function installHooks(): void {
       settings.hooks[event] = [];
     }
 
-    // Remove any existing AgentDeck hooks (old hardcoded port or new env-var pattern)
-    settings.hooks[event] = settings.hooks[event].filter(
-      (h: any) =>
-        !h.command?.includes('localhost:9120') &&
-        !h.command?.includes('AGENTDECK_PORT')
-    );
+    // Remove any existing AgentDeck hooks — both old flat format and new matcher format
+    settings.hooks[event] = settings.hooks[event].filter((h: any) => {
+      // Old flat format: { type: "command", command: "curl ... AGENTDECK_PORT ..." }
+      if (h.command?.includes('AGENTDECK_PORT') || h.command?.includes('localhost:9120')) {
+        return false;
+      }
+      // New matcher format: { matcher: ..., hooks: [{ command: "curl ..." }] }
+      if (Array.isArray(h.hooks) && h.hooks.some((hh: any) =>
+        hh.command?.includes('AGENTDECK_PORT') || hh.command?.includes('localhost:9120')
+      )) {
+        return false;
+      }
+      return true;
+    });
 
-    // Add our hook
+    // Add our hook (new matcher-group format for Claude Code v2.1+)
     settings.hooks[event].push(buildHookEntry(event));
   }
 
@@ -78,11 +86,19 @@ export function uninstallHooks(): void {
 
   for (const event of HOOK_EVENTS) {
     if (settings.hooks[event]) {
-      settings.hooks[event] = settings.hooks[event].filter(
-        (h: any) =>
-          !h.command?.includes('localhost:9120') &&
-          !h.command?.includes('AGENTDECK_PORT')
-      );
+      settings.hooks[event] = settings.hooks[event].filter((h: any) => {
+        // Old flat format
+        if (h.command?.includes('AGENTDECK_PORT') || h.command?.includes('localhost:9120')) {
+          return false;
+        }
+        // New matcher format
+        if (Array.isArray(h.hooks) && h.hooks.some((hh: any) =>
+          hh.command?.includes('AGENTDECK_PORT') || hh.command?.includes('localhost:9120')
+        )) {
+          return false;
+        }
+        return true;
+      });
       if (settings.hooks[event].length === 0) {
         delete settings.hooks[event];
       }
