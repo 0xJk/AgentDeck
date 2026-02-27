@@ -529,7 +529,10 @@ export class OutputParser extends EventEmitter {
     // Threshold < 2 separates the two cases (lowered from < 10 which failed
     // for short option lists like Yes/No where the entire chunk was tiny).
     if (this.lastNavigableEmit && chunk.includes('❯')) {
-      const isGenuineIdle = hasIdlePrompt && chunk.replace(/\s/g, '').length < 2;
+      // Semantic idle check: genuine idle is exactly the prompt character with nothing else.
+      // "❯ \n" → nonWs "❯" (idle), "❯ No" → nonWs "❯No" (cursor move over option)
+      const nonWsContent = chunk.replace(/\s/g, '');
+      const isGenuineIdle = hasIdlePrompt && (nonWsContent === '❯' || nonWsContent === '>');
       if (!isGenuineIdle) {
         debug('Parser', 'cursor-only redraw detected — debouncing buffer re-parse');
         this.resetIdleTimer();
@@ -557,6 +560,25 @@ export class OutputParser extends EventEmitter {
       // Genuine idle prompt (only ❯ char, no label text) — clear navigable state, fall through
       this.lastNavigableEmit = false;
       this.lastCursorIndex = 0;
+    }
+
+    // --- Cursor-only ANSI repositioning (no ❯ in chunk) ---
+    // ink may reposition cursor via ANSI sequences without rewriting ❯ character.
+    // Detect this during navigable state: small non-empty chunks that aren't response text.
+    if (this.lastNavigableEmit && !chunk.includes('❯') && chunkNonWs > 0 && chunkNonWs < 100) {
+      debug('Parser', 'ANSI cursor reposition detected (no ❯) — debouncing buffer re-parse');
+      this.resetIdleTimer();
+      this.resetOptionTimer();
+      this.optionTimer = setTimeout(() => {
+        this.optionTimer = null;
+        const parsed = this.parseOptions(this.buffer.slice(-2000));
+        if (parsed.navigable && parsed.cursorIndex !== this.lastCursorIndex) {
+          this.lastCursorIndex = parsed.cursorIndex;
+          debug('Parser', `EMIT cursor_update (ANSI reposition): cursorIndex=${parsed.cursorIndex}`);
+          this.emit('cursor_update', { cursorIndex: parsed.cursorIndex });
+        }
+      }, OPTION_DEBOUNCE_MS);
+      return;
     }
 
     // --- Idle prompt ---

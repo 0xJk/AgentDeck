@@ -475,4 +475,82 @@ describe('StateMachine', () => {
       expect(sm.getCursorIndex()).toBe(1);
     });
   });
+
+  // === Cursor Authority ===
+
+  describe('cursor authority (optimistic vs pty)', () => {
+    it('optimistic source updates cursor immediately', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }],
+        navigable: true,
+        cursorIndex: 0,
+      });
+
+      sm.updateCursorIndex(1, 'optimistic');
+      expect(sm.getCursorIndex()).toBe(1);
+    });
+
+    it('suppresses stale PTY within 200ms of optimistic', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }, { index: 2, label: 'C' }],
+        navigable: true,
+        cursorIndex: 0,
+      });
+
+      sm.updateCursorIndex(2, 'optimistic');
+      vi.advanceTimersByTime(100);
+      sm.updateCursorIndex(0, 'pty'); // stale
+      expect(sm.getCursorIndex()).toBe(2);
+    });
+
+    it('accepts PTY after 200ms grace period', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }, { index: 2, label: 'C' }],
+        navigable: true,
+        cursorIndex: 0,
+      });
+
+      sm.updateCursorIndex(2, 'optimistic');
+      vi.advanceTimersByTime(250);
+      sm.updateCursorIndex(1, 'pty');
+      expect(sm.getCursorIndex()).toBe(1);
+    });
+
+    it('emits state_changed on optimistic update', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }],
+        navigable: true,
+        cursorIndex: 0,
+      });
+
+      const snapshots: any[] = [];
+      sm.on('state_changed', (s: any) => snapshots.push(s));
+
+      sm.updateCursorIndex(1, 'optimistic');
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0].cursorIndex).toBe(1);
+    });
+
+    it('does NOT emit state_changed when stale PTY is suppressed', () => {
+      const sm = bootToIdle();
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }],
+        navigable: true,
+        cursorIndex: 0,
+      });
+
+      sm.updateCursorIndex(1, 'optimistic');
+
+      const snapshots: any[] = [];
+      sm.on('state_changed', (s: any) => snapshots.push(s));
+
+      vi.advanceTimersByTime(50);
+      sm.updateCursorIndex(0, 'pty'); // stale, should be suppressed
+      expect(snapshots).toHaveLength(0);
+    });
+  });
 });

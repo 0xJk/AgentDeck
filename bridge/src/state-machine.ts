@@ -59,6 +59,8 @@ export class StateMachine extends EventEmitter {
   private question: string | null = null;
   private navigable = false;
   private cursorIndex = 0;
+  private cursorAuthority: 'pty' | 'optimistic' = 'pty';
+  private optimisticCursorTime = 0;
   private projectName: string | null = null;
   private modelName: string | null = null;
   private remoteUrl: string | null = null;
@@ -402,6 +404,15 @@ export class StateMachine extends EventEmitter {
     const prev = this.state;
     this.state = to;
 
+    // Reset cursor authority when leaving AWAITING states
+    if (
+      prev === State.AWAITING_OPTION ||
+      prev === State.AWAITING_PERMISSION ||
+      prev === State.AWAITING_DIFF
+    ) {
+      this.cursorAuthority = 'pty';
+    }
+
     // Manage stuck-state timer: only for PROCESSING (Claude seems hung).
     // AWAITING_* states wait indefinitely for user response — no timeout.
     this.resetStuckTimer();
@@ -455,10 +466,26 @@ export class StateMachine extends EventEmitter {
     this.emit('state_changed', this.getSnapshot());
   }
 
-  /** Update cursor index (called by bridge when navigate_option moves the PTY cursor) */
-  updateCursorIndex(idx: number): void {
-    this.cursorIndex = idx;
-    this.emitSnapshot();
+  /** Update cursor index with source discrimination to prevent race conditions.
+   *  'optimistic' — from StreamDeck dial navigation (immediate, may be overridden by PTY)
+   *  'pty' — from parser cursor_update (authoritative, but may be stale during rapid navigation)
+   */
+  updateCursorIndex(idx: number, source: 'pty' | 'optimistic' = 'pty'): void {
+    if (source === 'optimistic') {
+      this.cursorIndex = idx;
+      this.cursorAuthority = 'optimistic';
+      this.optimisticCursorTime = Date.now();
+      this.emitSnapshot();
+    } else {
+      // PTY confirmation: always accept unless very recent optimistic update
+      const elapsed = Date.now() - this.optimisticCursorTime;
+      if (this.cursorAuthority === 'pty' || elapsed > 200) {
+        this.cursorIndex = idx;
+        this.cursorAuthority = 'pty';
+        this.emitSnapshot();
+      }
+      // else: suppress stale PTY value (optimistic update is fresher)
+    }
   }
 
   getCursorIndex(): number {

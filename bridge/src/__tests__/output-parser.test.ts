@@ -2704,4 +2704,66 @@ describe('OutputParser', () => {
       expect(opt2!.label).toContain('file:*');
     });
   });
+
+  // === Genuine Idle Detection (Semantic) ===
+
+  describe('genuine idle detection (semantic)', () => {
+    it('"❯ \\n" is genuine idle — only prompt character, no label text', () => {
+      const p = armParser();
+      const optEvents = collectEvents(p, 'option_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Establish navigable state with non-permission labels
+      p.feed('❯ 1. Alpha\n  2. Beta\n');
+      vi.advanceTimersByTime(200);
+      expect(optEvents.length).toBeGreaterThan(0);
+
+      // Genuine idle: "❯" is the only non-whitespace character
+      p.feed('❯ \n');
+      vi.advanceTimersByTime(400);
+      expect(idleEvents).toHaveLength(1);
+    });
+
+    it('"❯ Beta" is NOT idle — has label text after prompt char', () => {
+      const p = armParser();
+      const optEvents = collectEvents(p, 'option_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Establish navigable state
+      p.feed('❯ 1. Alpha\n  2. Beta\n');
+      vi.advanceTimersByTime(200);
+      expect(optEvents.length).toBeGreaterThan(0);
+
+      // Cursor move to "Beta" option — should NOT be idle
+      p.feed('❯ Beta');
+      vi.advanceTimersByTime(400);
+      expect(idleEvents).toHaveLength(0);
+    });
+
+    it('"❯ A" is NOT idle — single-char label still counts', () => {
+      const p = armParser();
+      const optEvents = collectEvents(p, 'option_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Establish navigable state
+      p.feed('❯ 1. Alpha\n  2. Bravo\n');
+      vi.advanceTimersByTime(200);
+      expect(optEvents.length).toBeGreaterThan(0);
+
+      // Cursor move — "❯A" has nonWs content beyond just ❯
+      p.feed('❯ A');
+      vi.advanceTimersByTime(400);
+      expect(idleEvents).toHaveLength(0);
+    });
+
+    it('">" also treated as idle prompt character', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const idleEvents = collectEvents(p, 'idle');
+      p.feed('> \n');
+      vi.advanceTimersByTime(400);
+      expect(idleEvents).toHaveLength(1);
+    });
+  });
 });

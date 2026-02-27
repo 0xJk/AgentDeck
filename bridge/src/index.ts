@@ -287,7 +287,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
         switch (evt.event) {
           case 'cursor_update': {
             const idx = (evt.data?.cursorIndex as number) ?? 0;
-            stateMachine.updateCursorIndex(idx);
+            stateMachine.updateCursorIndex(idx, 'pty');
             break;
           }
           case 'usage_info':
@@ -369,7 +369,10 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       promptType,
       question: snapshot.question ?? undefined,
       navigable: snapshot.navigable || undefined,
-      cursorIndex: snapshot.navigable ? snapshot.cursorIndex : undefined,
+      cursorIndex: (snapshot.state === State.AWAITING_OPTION ||
+                   snapshot.state === State.AWAITING_PERMISSION ||
+                   snapshot.state === State.AWAITING_DIFF)
+                   ? snapshot.cursorIndex : undefined,
       suggestedPrompt: snapshot.suggestedPrompt ?? undefined,
       modelCatalog: cachedModelCatalog ?? undefined,
       remoteUrl: snapshot.remoteUrl ?? undefined,
@@ -433,10 +436,11 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
             debug('sdc', `select_option: navigating ${steps} steps ${delta > 0 ? 'down' : 'up'}`);
             adapter.writeInput(arrow.repeat(steps));
           }
-          // Brief delay for PTY to process arrow keys, then confirm with Enter
+          // Proportional delay for PTY to process arrow keys, then confirm with Enter
+          const delay = 50 + Math.abs(delta) * 20;
           setTimeout(() => {
             adapter.writeInput('\r');
-          }, 50);
+          }, delay);
         } else {
           // Number input mode: type the 1-based index
           adapter.writeInput(String(cmd.index + 1) + '\r');
@@ -453,7 +457,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
               ? Math.max(cur - 1, 0)
               : Math.min(cur + 1, total - 1))
           : cur;
-        stateMachine.updateCursorIndex(newIdx);
+        stateMachine.updateCursorIndex(newIdx, 'optimistic');
         debug('sdc', `navigate_option: ${cmd.direction} cursor=${cur}->${newIdx}`);
         adapter.prepareForNavigation?.();
         adapter.writeInput(cmd.direction === 'up' ? '\x1b[A' : '\x1b[B');
@@ -570,7 +574,10 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       promptType: initPromptType,
       question: snapshot.question ?? undefined,
       navigable: snapshot.navigable || undefined,
-      cursorIndex: snapshot.navigable ? snapshot.cursorIndex : undefined,
+      cursorIndex: (snapshot.state === State.AWAITING_OPTION ||
+                   snapshot.state === State.AWAITING_PERMISSION ||
+                   snapshot.state === State.AWAITING_DIFF)
+                   ? snapshot.cursorIndex : undefined,
       suggestedPrompt: reconnectSuggestion ?? undefined,
       modelCatalog: cachedModelCatalog ?? undefined,
     };
