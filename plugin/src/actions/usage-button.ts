@@ -54,6 +54,8 @@ let ocUsageInterval: ReturnType<typeof setInterval> | null = null;
 
 // Remote URL detected from PTY (Claude Code --remote)
 let remoteUrl: string | null = null;
+// Authenticated WS pairing URL from bridge (ws://ip:port?token=hex)
+let pairingUrl: string | null = null;
 
 // Display pages: 5h → 7d → extra (if enabled) → session → models → qr
 type Page = '5h' | '7d' | 'extra' | 'session' | 'models' | 'oc-usage' | 'qr';
@@ -295,9 +297,9 @@ export function setUsageBridgeConnected(connected: boolean): void {
   }
 }
 
-/** Check if a meaningful QR URL is available (not just bridge health) */
+/** Check if a meaningful QR URL is available */
 function hasQrUrl(): boolean {
-  return !!(remoteUrl || currentCapabilities?.hasModelCatalog);
+  return !!(remoteUrl || pairingUrl || currentCapabilities?.hasModelCatalog);
 }
 
 function getPages(): Page[] {
@@ -310,31 +312,37 @@ function getPages(): Page[] {
   // API users have no subscription rate limits — only show session page
   if (billingType === 'api') {
     const pages: Page[] = ['session'];
-    if (remoteUrl) pages.push('qr');
+    if (hasQrUrl()) pages.push('qr');
     return pages;
   }
   const pages: Page[] = ['5h', '7d'];
   if (extraUsageEnabled) {
     pages.push('extra');
   }
-  // QR only when --remote URL is detected (bridge health endpoint isn't useful)
-  if (remoteUrl) pages.push('qr');
+  if (hasQrUrl()) pages.push('qr');
   return pages;
 }
 
-/** Get the best QR URL based on priority: remote > gateway */
+/** Get the best QR URL based on priority: remote > gateway > pairing */
 function getQrUrl(): string {
   if (remoteUrl) return remoteUrl;
   const ip = getLanIp();
   if (currentCapabilities?.hasModelCatalog) {
     return `http://${ip}:${OPENCLAW_GATEWAY_PORT}`;
   }
+  // Authenticated WS URL for Android/remote pairing
+  if (pairingUrl) return pairingUrl;
   // Fallback — should not normally reach here due to hasQrUrl() gating
   return `http://${ip}:${BRIDGE_HTTP_PORT}`;
 }
 
 export function setRemoteUrl(url: string | null): void {
   remoteUrl = url;
+  refreshAll();
+}
+
+export function setPairingUrl(url: string | null): void {
+  pairingUrl = url;
   refreshAll();
 }
 

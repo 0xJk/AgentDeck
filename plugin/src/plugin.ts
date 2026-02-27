@@ -60,6 +60,7 @@ import {
   setUsageCapabilities,
   setUsageState,
   setRemoteUrl,
+  setPairingUrl,
 } from './actions/usage-button.js';
 
 // Encoder actions
@@ -188,6 +189,10 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   // Capture remote URL for QR display
   if (ev.remoteUrl !== undefined) {
     setRemoteUrl(ev.remoteUrl);
+  }
+  // Capture pairing URL for QR code (authenticated WS URL)
+  if (ev.pairingUrl !== undefined) {
+    setPairingUrl(ev.pairingUrl);
   }
   // Clear suggestion on non-IDLE states
   if (ev.state !== State.IDLE) {

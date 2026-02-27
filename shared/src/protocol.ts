@@ -47,6 +47,8 @@ export interface StateUpdateEvent {
   modelCatalog?: ModelCatalogEntry[];
   sessionStatus?: OcSessionStatus;
   remoteUrl?: string;
+  /** Authenticated WS URL for remote pairing (ws://ip:port?token=hex) */
+  pairingUrl?: string;
 }
 
 export interface PromptOptionsEvent {

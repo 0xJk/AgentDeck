@@ -145,6 +145,45 @@ program
   });
 
 program
+  .command('qr')
+  .description('Show pairing URL and QR code for remote clients')
+  .option('-p, --port <port>', 'Bridge server port (auto-detects from running sessions)')
+  .action(async (opts) => {
+    const { getOrCreateToken, getWsUrl } = await import('./auth.js');
+    const { listActive } = await import('./session-registry.js');
+
+    // Determine port: explicit flag > running session > default
+    let port: number;
+    if (opts.port) {
+      port = parseInt(opts.port, 10);
+    } else {
+      const sessions = listActive();
+      if (sessions.length > 0) {
+        port = sessions[0].port;
+        if (sessions.length > 1) {
+          log(`Multiple sessions running. Using port ${port} (${sessions[0].projectName}).`);
+          log(`Specify --port to target a different session.`);
+        }
+      } else {
+        port = BRIDGE_WS_PORT;
+      }
+    }
+
+    getOrCreateToken();
+    const url = getWsUrl(port);
+    log(`\nPairing URL:\n  ${url}\n`);
+
+    // Generate text QR in terminal using qrcode lib (if available)
+    try {
+      const { default: QRCode } = await import('qrcode');
+      const text = await (QRCode as any).toString(url, { type: 'terminal', small: true });
+      log(text);
+    } catch {
+      // qrcode not available in bridge — URL is sufficient
+    }
+  });
+
+program
   .command('diag')
   .description('Generate diagnostic dump and optionally run AI analysis')
   .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
@@ -399,6 +438,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       suggestedPrompt: snapshot.suggestedPrompt ?? undefined,
       modelCatalog: cachedModelCatalog ?? undefined,
       remoteUrl: snapshot.remoteUrl ?? undefined,
+      pairingUrl: wsUrl,
     };
     wsServer.broadcast(stateEvent);
     broadcastSse(stateEvent);
@@ -608,6 +648,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
                    ? snapshot.cursorIndex : undefined,
       suggestedPrompt: reconnectSuggestion ?? undefined,
       modelCatalog: cachedModelCatalog ?? undefined,
+      pairingUrl: wsUrl,
     };
     wsServer.sendTo(ws, stateEvent);
 
