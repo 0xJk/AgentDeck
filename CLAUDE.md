@@ -4,11 +4,13 @@ Stream Deck+ controller for Claude Code CLI — a bidirectional local control sy
 
 ## Architecture
 
-- **bridge/** — Node.js server: PTY manager, output parser, hook HTTP server, state machine, WebSocket server, voice (whisper.cpp), usage API client
+- **bridge/** — Node.js server: PTY manager, output parser, hook HTTP server, state machine, WebSocket server, voice (whisper.cpp), usage API client, mDNS discovery, auth token, SSE broadcast
 - **plugin/** — Stream Deck SDK v2 plugin: actions for buttons/encoders, bridge WebSocket client
 - **shared/** — TypeScript types shared between bridge and plugin (protocol, states)
 - **hooks/** — Claude Code hook installer for `~/.claude/settings.local.json`
 - **config/** — Default settings and prompt templates
+- **setup/** — npm setup package: `npx @agentdeck/setup` one-command installer
+- **android/** — Jetpack Compose launcher app for e-ink monitoring (CremaS, Onyx, Kobo)
 
 ## Build
 
@@ -21,7 +23,8 @@ pnpm generate-icons         # SVG → PNG icons (first build or after icon chang
 ## Setup & Distribution
 
 ```bash
-pnpm setup                  # one-click install (deps, build, icons, hooks, link)
+npx @agentdeck/setup        # npm one-command install (published packages)
+pnpm setup                  # dev install from source (deps, build, icons, hooks, link)
 pnpm package                # create dist/bound.serendipity.agentdeck.streamDeckPlugin
 bash scripts/uninstall.sh   # remove hooks, unlink CLI and plugin
 ```
@@ -56,7 +59,7 @@ sdc stop           # stop bridge and session
 - **Hook format**: Claude Code v2.1+ requires 3-level nesting: `{ matcher: "", hooks: [{ type: "command", command: "..." }] }`. Old flat format `{ type, command }` silently fails. `migrateHooksIfNeeded()` auto-upgrades on bridge start
 - **Action ID pattern**: All SD actions store string IDs and use `getActionById()` — never store action object references
 - **Plugin UUID**: `bound.serendipity.agentdeck` (확정 — 배포 후 변경 불가)
-- **Package scope**: `@agentdeck/*` (shared, bridge, plugin, hooks)
+- **Package scope**: `@agentdeck/*` (shared, bridge, plugin, hooks, setup)
 - **User data dir**: `~/.agentdeck/sessions.json`
 - **QR code display**: Usage 버튼 `qr` 페이지 — `qrcode` 라이브러리 → SVG path 렌더링 (144×144, Version 3 QR 29 modules × 4px = 116px). URL 우선순위: (1) `--remote` URL (PTY 자동감지) (2) OC Gateway `http://LAN:18789`. Bridge OutputParser가 raw ANSI에서 cursor-forward 시퀀스 제거 후 URL 추출. Push → 클립보드 복사 (`pbcopy`)
 - **BillingType detection**: PTY `model_info` parser event의 `plan` 필드로 subscription/api/unknown 판별. API 사용자는 OAuth fetch 스킵 + session 페이지만 표시
@@ -65,6 +68,10 @@ sdc stop           # stop bridge and session
 - **OC Timeline panel**: OpenClaw 모드에서 E2+E3 합체 400px 와이드 캔버스로 이벤트 타임라인 표시. 배경 `#000000` (LCD 네이티브 블랙 — 투명 효과). Fisheye 렌더링 (font size 15→10px, opacity 1.0→0.3 보간), grouped entries (연속 중복 60s 윈도우 내 병합), detail mode (push 토글). `timeline-store.ts` 싱글톤, `timeline-renderer.ts` SVG 렌더러. 이벤트 `~/.agentdeck/timeline.json` 디스크 영속, 재연결 시 `events.history` RPC로 오프라인 이벤트 복구. OC Response 버튼: GATEWAY (웹 UI) + GO ON (continue) 프리셋. **시각 3계층**: (1) `typeColor()` 이벤트 타입별 컬러 코딩 (green/blue/amber/red/cyan/purple), 하단 2px 활동 밀도 바 (2) `log-stream.ts` — `openclaw logs --follow --json` 파싱으로 model_call/model_response/memory_recall/tool_exec 이벤트 추가, WS tool_request와 dedup (3) Usage 버튼 `oc-usage` 페이지 (`openclaw status --usage --json` 60s 폴링)
 - **Encoder takeover race guard**: `takeoverGeneration` counter in `plugin.ts` — exit/enter `.then()` 콜백이 실행 시점에 이미 새 전환이 발생했으면 스킵. PROCESSING→PERMISSION 빠른 전환 시 exit 콜백이 enter 이후 layout을 덮어쓰는 레이스 방지
 - **Button label intelligence**: 3-tier 라벨 축약 시스템 — (1) CJK-aware 픽셀 기반 줄바꿈 (`text-utils.ts`) (2) 로컬 휴리스틱 약어 (`abbreviateLabel`) (3) `claude -p --model haiku` CLI 폴백 (`label-summarizer.ts`). 1-2단계 즉시(0ms), 3단계 1-3초(캐시 200개). 약어된 버튼 우하단 `~` 표시. CJK 문자 1em, Latin 0.55em 폭 계산. Wide canvas는 충분한 가로폭이라 변경 불필요
+- **npm packages**: `@agentdeck/shared`, `@agentdeck/bridge`, `@agentdeck/setup` — public npm packages (MIT license)
+- **Multi-surface monitoring**: mDNS (`_agentdeck._tcp`), auth token (`~/.agentdeck/auth-token`), SSE (`/sse`), remote WS token validation. `0.0.0.0` binding for LAN access
+- **Android launcher**: `android/` — Jetpack Compose, minSdk 29, CATEGORY_HOME, NSD mDNS discovery, QR pairing (CameraX + ML Kit), e-ink detection (Crema/Onyx/Kobo)
+- **Setup-required UI**: Plugin detects `sdc` not installed → INSTALL button → `npx @agentdeck/setup` via iTerm
 
 ## v3 Layout (0.3.0)
 

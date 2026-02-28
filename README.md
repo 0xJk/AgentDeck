@@ -140,11 +140,14 @@ The bridge stays transparent: if it's off, Claude Code works exactly as before.
 ## Quick Start
 
 ```bash
-cd AgentDeck
-pnpm setup
+# Option A: npm install (no clone needed)
+npx @agentdeck/setup
+
+# Option B: from source
+git clone https://github.com/puritysb/AgentDeck.git && cd AgentDeck && pnpm setup
 ```
 
-This single command:
+The `pnpm setup` command:
 1. Checks required dependencies (Node.js 20+, pnpm, Claude CLI, Stream Deck app)
 2. Installs `@elgato/cli` if missing
 3. Runs `pnpm install` + `pnpm build`
@@ -301,7 +304,7 @@ sdc
 
 This starts the bridge on port 9120 (HTTP + WebSocket), spawns Claude Code inside a PTY, and proxies your terminal transparently. Use Claude exactly as before — the Stream Deck adds a parallel control channel.
 
-> **Security:** The bridge HTTP/WS server binds to `127.0.0.1` (localhost only). It is not accessible from other machines on the network. No authentication token is required for local connections.
+> **Security:** The bridge binds to `0.0.0.0` for LAN access (multi-surface monitoring). Local connections bypass authentication. Remote connections require the auth token from `~/.agentdeck/auth-token`.
 
 ### CLI Commands
 
@@ -716,6 +719,14 @@ AgentDeck/
 │   └── src/
 │       └── install.ts            # Register/unregister hooks in settings.local.json
 │
+├── setup/                        # npm setup package (@agentdeck/setup)
+│   └── src/
+│       └── setup.ts              # npx @agentdeck/setup entry point
+│
+├── android/                      # E-ink monitoring app (Jetpack Compose)
+│   ├── app/src/main/java/...     # Screens, services, composables
+│   └── build.gradle.kts          # minSdk 29, CATEGORY_HOME launcher
+│
 ├── config/
 │   ├── prompt-templates.json     # Prompt templates (encoder prompt cycling)
 │   └── default-settings.json     # Defaults (port, voice, timeouts)
@@ -808,6 +819,13 @@ Recipients double-click the file to install in the Stream Deck app. The bridge (
 
 > **Note:** Native binaries (sox, whisper.cpp) cannot be bundled in the plugin and must be installed by the user.
 
+### npm Packages
+
+Published to npm (public):
+- `@agentdeck/shared` — shared types
+- `@agentdeck/bridge` — bridge server + `sdc` CLI
+- `@agentdeck/setup` — one-command installer (`npx @agentdeck/setup`)
+
 ---
 
 ## Uninstall
@@ -860,12 +878,15 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 
 ## Roadmap
 
-### Multi-Agent Support
-- ~~**OpenClaw** integration~~ — Experimental (adapter, Gateway client, timeline, log stream)
-- Plugin capability gating per agent (UI adaptation)
-- Agent-agnostic bridge protocol for future agent backends
+### Completed
+- ~~OpenClaw integration~~ — Adapter, Gateway WebSocket, timeline panel (3-layer), log stream
+- ~~Agent-agnostic bridge protocol~~ — AgentAdapter interface, multi-agent command routing
+- ~~Multi-surface monitoring~~ — mDNS discovery, auth tokens, SSE, remote WebSocket
+- ~~Android launcher app~~ — Jetpack Compose scaffold, NSD, QR pairing, e-ink themes
+- ~~npm publish~~ — `@agentdeck/shared`, `@agentdeck/bridge`, `@agentdeck/setup` on npm
 
-### Advanced Control Surface
+### Remaining
+- Plugin capability gating per agent (UI adaptation)
 - Project-specific layout presets
 - Custom button icon support
 - Windows/Linux platform support
