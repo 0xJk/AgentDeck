@@ -91,13 +91,15 @@ function startFileWatch(): void {
         const idx = sessions.findIndex((s) => s.port === prevPort);
         if (idx !== -1) currentSessionIndex = idx;
       }
-    } else if (currentSessionIndex >= sessions.length) {
-      // Sessions shrunk — fix index
-      currentSessionIndex = Math.max(0, sessions.length - 1);
     } else {
-      // Session removed — keep pointing at same port if still alive
+      // Sessions changed — keep pointing at same port if still alive
       const idx = sessions.findIndex((s) => s.port === prevPort);
-      if (idx !== -1) currentSessionIndex = idx;
+      if (idx !== -1) {
+        currentSessionIndex = idx;
+      } else {
+        // Port gone — clamp index to valid range
+        currentSessionIndex = Math.max(0, sessions.length - 1);
+      }
     }
     refreshAll();
   });
@@ -170,13 +172,13 @@ export function updateSessionButton(
 }
 
 function autoReconnect(): void {
-  const activeSessions = loadSessions();
-  if (activeSessions.length === 0) return;
+  sessions = loadSessions();
+  if (sessions.length === 0) return;
 
   const currentPort = bridge.getBridgePort();
-  const other = activeSessions.find((s) => s.port !== currentPort);
+  const other = sessions.find((s) => s.port !== currentPort);
   if (other) {
-    currentSessionIndex = activeSessions.indexOf(other);
+    currentSessionIndex = sessions.indexOf(other);
     currentProjectName = other.projectName;
     bridge.reconnectBridgeTo(other.port);
   }
@@ -223,6 +225,14 @@ function getDisplayName(session: SessionEntry, allSessions: SessionEntry[]): str
   if (same.length <= 1) return session.projectName;
   const idx = same.findIndex((s) => s.id === session.id);
   return `${session.projectName} #${idx + 1}`;
+}
+
+/** Safe accessor — returns undefined if index is out of bounds */
+function getCurrentSession(): SessionEntry | undefined {
+  if (currentSessionIndex >= 0 && currentSessionIndex < sessions.length) {
+    return sessions[currentSessionIndex];
+  }
+  return undefined;
 }
 
 function refreshAll(): void {
@@ -374,7 +384,7 @@ function renderSessionSvg(): string {
       return simpleSvg('NO', 'SESSION', '#666666', '#1a1a1a');
 
     case State.IDLE: {
-      const currentSession = sessions[currentSessionIndex];
+      const currentSession = getCurrentSession();
       const name = currentSession
         ? getDisplayName(currentSession, sessions)
         : (currentProjectName || 'Session');
@@ -453,7 +463,7 @@ function renderSessionSvg(): string {
       const detail = truncate(info.detail, 14);
 
       // Project name (up to 3 lines, 13px) — centered together with star+label+detail
-      const currentSession = sessions[currentSessionIndex];
+      const currentSession = getCurrentSession();
       const projName = currentSession
         ? getDisplayName(currentSession, sessions)
         : (currentProjectName || '');
@@ -731,7 +741,7 @@ function cycleSession(): void {
 
 async function focusTerminal(): Promise<void> {
   try {
-    const session = sessions[currentSessionIndex];
+    const session = getCurrentSession();
     execSync(
       `osascript -e 'tell application "iTerm2" to activate' 2>/dev/null || osascript -e 'tell application "Terminal" to activate'`,
       { timeout: 3000 },
