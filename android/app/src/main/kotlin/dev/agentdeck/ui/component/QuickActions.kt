@@ -2,17 +2,26 @@ package dev.agentdeck.ui.component
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.agentdeck.net.AgentState
@@ -24,12 +33,14 @@ data class QuickAction(
     val isPrimary: Boolean = false,
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun QuickActions(
     agentState: AgentState,
     onAction: (String) -> Unit,
     onInterrupt: () -> Unit,
     onEscape: () -> Unit,
+    onSendPrompt: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val actions = when (agentState) {
@@ -57,18 +68,16 @@ fun QuickActions(
                 Text("STOP", style = MaterialTheme.typography.titleMedium)
             }
         } else if (actions.isNotEmpty()) {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                itemsIndexed(actions) { _, action ->
+                actions.forEach { action ->
                     if (action.isPrimary) {
                         Button(
                             onClick = { onAction(action.value) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp),
+                            modifier = Modifier.height(48.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = AgentDeckColors.Green,
                             ),
@@ -78,24 +87,47 @@ fun QuickActions(
                     } else {
                         OutlinedButton(
                             onClick = { onAction(action.value) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp),
+                            modifier = Modifier.height(48.dp),
                         ) {
                             Text(action.label, style = MaterialTheme.typography.titleMedium)
                         }
                     }
                 }
+                // ESC button inline
+                OutlinedButton(
+                    onClick = onEscape,
+                    modifier = Modifier.height(48.dp),
+                ) {
+                    Text("ESC", style = MaterialTheme.typography.bodyMedium)
+                }
             }
         }
 
-        if (agentState == AgentState.IDLE) {
-            OutlinedButton(
-                onClick = onEscape,
+        // Custom prompt input (IDLE only)
+        if (agentState == AgentState.IDLE && onSendPrompt != null) {
+            var promptText by remember { mutableStateOf("") }
+            OutlinedTextField(
+                value = promptText,
+                onValueChange = { promptText = it },
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("ESC", style = MaterialTheme.typography.bodyMedium)
-            }
+                placeholder = { Text("Type a prompt...") },
+                singleLine = true,
+                trailingIcon = {
+                    IconButton(
+                        onClick = {
+                            if (promptText.isNotBlank()) {
+                                onSendPrompt(promptText.trim())
+                                promptText = ""
+                            }
+                        },
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                        )
+                    }
+                },
+            )
         }
     }
 }

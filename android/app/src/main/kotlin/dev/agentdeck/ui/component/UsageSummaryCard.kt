@@ -26,7 +26,7 @@ import dev.agentdeck.ui.theme.AgentDeckColors
 
 /**
  * Compact usage summary card for DashboardScreen.
- * 2-row grid: rate limits + token/cost/uptime summary.
+ * Rate limit bars with reset times + extra usage + token/cost/uptime stats.
  */
 @Composable
 fun UsageSummaryCard(
@@ -43,7 +43,7 @@ fun UsageSummaryCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Row 1: Rate limit bars
+            // Row 1: Rate limit bars with reset times
             if (usage.fiveHourPercent != null || usage.sevenDayPercent != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -53,6 +53,7 @@ fun UsageSummaryCard(
                         CompactGauge(
                             label = "5h",
                             percent = usage.fiveHourPercent,
+                            resetAt = usage.fiveHourResetsAt,
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -60,10 +61,23 @@ fun UsageSummaryCard(
                         CompactGauge(
                             label = "7d",
                             percent = usage.sevenDayPercent,
+                            resetAt = usage.sevenDayResetsAt,
                             modifier = Modifier.weight(1f),
                         )
                     }
                 }
+            }
+
+            // Extra usage bar
+            if (usage.extraUsageEnabled == true && usage.extraUsageUtilization != null) {
+                CompactGauge(
+                    label = "Extra",
+                    percent = usage.extraUsageUtilization,
+                    suffix = if (usage.extraUsageUsedCredits != null && usage.extraUsageMonthlyLimit != null) {
+                        "$${String.format("%.2f", usage.extraUsageUsedCredits)}/$${String.format("%.0f", usage.extraUsageMonthlyLimit)}"
+                    } else null,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             // Row 2: Quick stats
@@ -99,6 +113,8 @@ private fun CompactGauge(
     label: String,
     percent: Double,
     modifier: Modifier = Modifier,
+    resetAt: String? = null,
+    suffix: String? = null,
 ) {
     val fraction = (percent / 100.0).coerceIn(0.0, 1.0).toFloat()
     val color = when {
@@ -107,30 +123,48 @@ private fun CompactGauge(
         else -> AgentDeckColors.Green
     }
 
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "$label:",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        LinearProgressIndicator(
-            progress = { fraction },
-            modifier = Modifier
-                .weight(1f)
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp)),
-            color = color,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-        )
-        Text(
-            text = "${percent.toInt()}%",
-            style = MaterialTheme.typography.bodySmall,
-            color = color,
-        )
+    Column(modifier = modifier) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "$label:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = color,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
+            Text(
+                text = suffix ?: "${percent.toInt()}%",
+                style = MaterialTheme.typography.bodySmall,
+                color = color,
+            )
+        }
+        if (resetAt != null) {
+            Text(
+                text = "Resets ${formatResetTime(resetAt)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun formatResetTime(isoString: String): String {
+    return try {
+        val instant = java.time.Instant.parse(isoString)
+        val local = java.time.LocalDateTime.ofInstant(instant, java.time.ZoneId.systemDefault())
+        String.format("%02d:%02d", local.hour, local.minute)
+    } catch (_: Exception) {
+        isoString
     }
 }
 

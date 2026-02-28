@@ -8,9 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -32,12 +30,9 @@ import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.state.AgentStateHolder
-import dev.agentdeck.ui.screen.ControlScreen
 import dev.agentdeck.ui.screen.DashboardScreen
 import dev.agentdeck.ui.screen.EinkMonitorScreen
-import dev.agentdeck.ui.screen.PairingScreen
 import dev.agentdeck.ui.screen.SettingsScreen
-import dev.agentdeck.ui.screen.UsageScreen
 import dev.agentdeck.ui.theme.AgentDeckTheme
 import dev.agentdeck.util.EinkDetector
 import android.util.Log
@@ -52,13 +47,10 @@ import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
     data object Dashboard : Screen("dashboard", "Dashboard", Icons.Default.Dashboard)
-    data object Usage : Screen("usage", "Usage", Icons.Default.DataUsage)
-    data object Control : Screen("control", "Control", Icons.Default.TouchApp)
     data object Settings : Screen("settings", "Settings", Icons.Default.Settings)
-    data object Pairing : Screen("pairing", "Pairing", Icons.Default.Settings)
 }
 
-private val bottomNavScreens = listOf(Screen.Dashboard, Screen.Usage, Screen.Control, Screen.Settings)
+private val bottomNavScreens = listOf(Screen.Dashboard, Screen.Settings)
 
 class MainActivity : ComponentActivity() {
 
@@ -128,8 +120,6 @@ fun MainNavigation(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    val showBottomBar = currentDestination?.route != Screen.Pairing.route
-
     // Auto-connect to saved bridge URL on launch
     LaunchedEffect(Unit) {
         val savedUrl = displayPrefs.lastBridgeUrlFlow.first()
@@ -160,8 +150,7 @@ fun MainNavigation(
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
-            if (showBottomBar) {
-                NavigationBar {
+            NavigationBar {
                     bottomNavScreens.forEach { screen ->
                         NavigationBarItem(
                             icon = { Icon(screen.icon, contentDescription = screen.label) },
@@ -178,7 +167,6 @@ fun MainNavigation(
                             }
                         )
                     }
-                }
             }
         }
     ) { innerPadding ->
@@ -188,13 +176,7 @@ fun MainNavigation(
             modifier = Modifier.padding(innerPadding)
         ) {
             composable(Screen.Dashboard.route) {
-                DashboardScreen(stateHolder = stateHolder, isEink = isEink)
-            }
-            composable(Screen.Usage.route) {
-                UsageScreen(stateHolder = stateHolder, isEink = isEink)
-            }
-            composable(Screen.Control.route) {
-                ControlScreen(
+                DashboardScreen(
                     stateHolder = stateHolder,
                     connection = connection,
                     isEink = isEink,
@@ -203,14 +185,8 @@ fun MainNavigation(
             composable(Screen.Settings.route) {
                 SettingsScreen(
                     connection = connection,
+                    displayPrefs = displayPrefs,
                     isEink = isEink,
-                    onNavigateToPairing = { navController.navigate(Screen.Pairing.route) },
-                )
-            }
-            composable(Screen.Pairing.route) {
-                PairingScreen(
-                    connection = connection,
-                    onPaired = { navController.popBackStack() },
                 )
             }
         }

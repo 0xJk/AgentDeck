@@ -8,39 +8,64 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.BridgeConnection
+import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
+import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.ui.theme.AgentDeckColors
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
     connection: BridgeConnection,
+    displayPrefs: DisplayPreferences,
     isEink: Boolean,
-    onNavigateToPairing: () -> Unit,
 ) {
     val connectionStatus by connection.status.collectAsState()
     val currentUrl by connection.url.collectAsState()
-    var keepAlive by remember { mutableStateOf(true) }
+    val lastError by connection.lastError.collectAsState()
+    val keepAwake by displayPrefs.keepAwakeFlow.collectAsState(initial = true)
+    val coroutineScope = rememberCoroutineScope()
+
+    var manualUrl by remember { mutableStateOf("") }
+    var discoveredBridges by remember { mutableStateOf(emptyList<DiscoveredBridge>()) }
+
+    // mDNS discovery when disconnected
+    val context = LocalContext.current
+    val discovery = remember { BridgeDiscovery(context) }
+    LaunchedEffect(connectionStatus) {
+        if (connectionStatus == ConnectionStatus.DISCONNECTED) {
+            discovery.discover().collect { bridges ->
+                discoveredBridges = bridges
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -100,28 +125,93 @@ fun SettingsScreen(
                     )
                 }
 
+                // Error display
+                if (lastError != null) {
+                    Text(
+                        text = lastError!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(12.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (connectionStatus == ConnectionStatus.CONNECTED) {
-                        OutlinedButton(onClick = { connection.disconnect() }) {
-                            Text("Disconnect")
-                        }
-                    } else {
+                if (connectionStatus == ConnectionStatus.CONNECTED) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = {
                             connection.connect("ws://127.0.0.1:9120")
                         }) {
                             Text("USB Connect")
                         }
-                        OutlinedButton(onClick = onNavigateToPairing) {
-                            Text("QR Pair")
+                        OutlinedButton(onClick = { connection.disconnect() }) {
+                            Text("Disconnect")
                         }
+                    }
+                } else {
+                    // USB quick-connect
+                    Button(
+                        onClick = { connection.connect("ws://127.0.0.1:9120") },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("USB Connect")
+                    }
+
+                    // mDNS discovered bridges
+                    if (discoveredBridges.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Discovered Bridges",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        discoveredBridges.forEach { bridge ->
+                            OutlinedButton(
+                                onClick = {
+                                    connection.connect("ws://${bridge.host}:${bridge.port}")
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column {
+                                    Text(bridge.name)
+                                    Text(
+                                        "${bridge.host}:${bridge.port}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Manual URL entry
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = manualUrl,
+                        onValueChange = { manualUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("ws://192.168.1.x:9120?token=abc") },
+                        singleLine = true,
+                        label = { Text("Manual URL") },
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Button(
+                        onClick = {
+                            if (manualUrl.isNotBlank()) {
+                                connection.connect(manualUrl.trim())
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = manualUrl.isNotBlank(),
+                    ) {
+                        Text("Connect")
                     }
                 }
             }
         }
 
-        // Foreground service
+        // Background monitoring
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -143,8 +233,10 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Switch(
-                        checked = keepAlive,
-                        onCheckedChange = { keepAlive = it },
+                        checked = keepAwake,
+                        onCheckedChange = {
+                            coroutineScope.launch { displayPrefs.setKeepAwake(it) }
+                        },
                     )
                 }
                 Text(
