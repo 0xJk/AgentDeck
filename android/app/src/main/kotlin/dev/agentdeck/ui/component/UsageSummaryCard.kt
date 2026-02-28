@@ -160,8 +160,8 @@ private fun CompactGauge(
 
 private fun formatResetTime(isoString: String): String {
     return try {
-        val instant = java.time.Instant.parse(isoString)
-        val local = java.time.LocalDateTime.ofInstant(instant, java.time.ZoneId.systemDefault())
+        val odt = java.time.OffsetDateTime.parse(isoString)
+        val local = odt.atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDateTime()
         String.format("%02d:%02d", local.hour, local.minute)
     } catch (_: Exception) {
         isoString
