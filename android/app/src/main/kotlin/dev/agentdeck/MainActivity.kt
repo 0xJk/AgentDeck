@@ -38,6 +38,7 @@ import dev.agentdeck.ui.screen.SettingsScreen
 import dev.agentdeck.ui.screen.UsageScreen
 import dev.agentdeck.ui.theme.AgentDeckTheme
 import dev.agentdeck.util.EinkDetector
+import android.view.WindowManager
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
@@ -65,6 +66,19 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             displayPrefs.orientationFlow.collect { orientation ->
                 requestedOrientation = orientation
+            }
+        }
+
+        // Keep screen on for e-ink monitoring dashboard
+        if (isEink) {
+            lifecycleScope.launch {
+                displayPrefs.keepAwakeFlow.collect { keepAwake ->
+                    if (keepAwake) {
+                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
             }
         }
 

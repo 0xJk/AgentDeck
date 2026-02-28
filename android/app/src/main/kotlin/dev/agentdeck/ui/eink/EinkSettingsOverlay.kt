@@ -18,6 +18,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -44,6 +46,7 @@ fun EinkSettingsOverlay(
     val currentOrientation by displayPrefs.orientationFlow.collectAsState(
         initial = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     )
+    val keepAwake by displayPrefs.keepAwakeFlow.collectAsState(initial = true)
     val scope = rememberCoroutineScope()
 
     Dialog(onDismissRequest = onDismiss) {
@@ -88,6 +91,41 @@ fun EinkSettingsOverlay(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+
+                HorizontalDivider(thickness = 1.dp, color = Color.Black)
+
+                // Display settings
+                Text(
+                    text = "Display",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "Keep Awake",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Switch(
+                        checked = keepAwake,
+                        onCheckedChange = { scope.launch { displayPrefs.setKeepAwake(it) } },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = Color.Black,
+                            uncheckedThumbColor = Color.DarkGray,
+                            uncheckedTrackColor = Color.LightGray,
+                        ),
+                    )
+                }
+                Text(
+                    text = "Prevents sleep while dashboard is active",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
