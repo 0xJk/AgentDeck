@@ -1,6 +1,7 @@
 package dev.agentdeck.ui.screen
 
 import android.content.res.Configuration
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -54,37 +55,43 @@ fun EinkMonitorScreen(
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-    if (showSettings) {
-        EinkSettingsOverlay(
-            connection = connection,
-            displayPrefs = displayPrefs,
-            onDismiss = { showSettings = false },
-        )
-    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        if (isLandscape) {
+            EinkLandscapeLayout(
+                agentState = state.agentState,
+                projectName = state.projectName,
+                modelName = state.modelName,
+                agentType = state.agentType,
+                currentTool = state.currentTool,
+                toolProgress = state.toolProgress,
+                usage = state.usage,
+                timelineEntries = timelineEntries,
+                onSettingsClick = { showSettings = true },
+            )
+        } else {
+            EinkPortraitLayout(
+                agentState = state.agentState,
+                projectName = state.projectName,
+                modelName = state.modelName,
+                currentTool = state.currentTool,
+                toolProgress = state.toolProgress,
+                usage = state.usage,
+                timelineEntries = timelineEntries,
+                onSettingsClick = { showSettings = true },
+            )
+        }
 
-    if (isLandscape) {
-        EinkLandscapeLayout(
-            agentState = state.agentState,
-            projectName = state.projectName,
-            modelName = state.modelName,
-            agentType = state.agentType,
-            currentTool = state.currentTool,
-            toolProgress = state.toolProgress,
-            usage = state.usage,
-            timelineEntries = timelineEntries,
-            onSettingsClick = { showSettings = true },
-        )
-    } else {
-        EinkPortraitLayout(
-            agentState = state.agentState,
-            projectName = state.projectName,
-            modelName = state.modelName,
-            currentTool = state.currentTool,
-            toolProgress = state.toolProgress,
-            usage = state.usage,
-            timelineEntries = timelineEntries,
-            onSettingsClick = { showSettings = true },
-        )
+        if (showSettings) {
+            EinkSettingsOverlay(
+                connection = connection,
+                displayPrefs = displayPrefs,
+                onDismiss = { showSettings = false },
+            )
+        }
     }
 }
 

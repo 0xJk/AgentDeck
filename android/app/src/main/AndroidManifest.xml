@@ -26,13 +26,20 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Launcher mode: can be set as default home -->
+        </activity>
+
+        <!-- E-ink home launcher — enabled at runtime by EinkDetector -->
+        <activity-alias
+            android:name=".MainActivityHome"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <service
             android:name=".service.MonitorService"

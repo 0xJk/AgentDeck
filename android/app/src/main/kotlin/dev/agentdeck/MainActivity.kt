@@ -58,6 +58,16 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         val isEink = EinkDetector.isEinkDevice()
+
+        if (isEink) {
+            window.statusBarColor = android.graphics.Color.WHITE
+            window.navigationBarColor = android.graphics.Color.WHITE
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility or
+                android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
+                android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        }
+
         val stateHolder = AgentStateHolder.instance
         val connection = BridgeConnection.instance
         val displayPrefs = DisplayPreferences(this)
