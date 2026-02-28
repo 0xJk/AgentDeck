@@ -1,5 +1,6 @@
 package dev.agentdeck.ui.screen
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -7,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -17,25 +20,25 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import dev.agentdeck.net.AgentState
-import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.ModelCatalogEntry
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.state.SessionMetrics
 import dev.agentdeck.state.TimelineStore
-import dev.agentdeck.ui.component.PermissionDialog
-import dev.agentdeck.ui.component.QuickActions
 import dev.agentdeck.ui.component.StatusCard
 import dev.agentdeck.ui.component.SyncIndicator
 import dev.agentdeck.ui.component.TimelineList
 import dev.agentdeck.ui.component.UsageSummaryCard
+import dev.agentdeck.ui.component.stateColor
+import dev.agentdeck.ui.component.stateLabel
 import dev.agentdeck.ui.theme.AgentDeckColors
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun DashboardScreen(
     stateHolder: AgentStateHolder,
-    connection: BridgeConnection,
     isEink: Boolean,
 ) {
     val state by stateHolder.state.collectAsState()
@@ -48,13 +51,12 @@ fun DashboardScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        StatusCard(
+        // Session Overview card
+        SessionOverviewCard(
             agentState = state.agentState,
             projectName = state.projectName,
             modelName = state.modelName,
-            agentType = state.agentType,
             currentTool = state.currentTool,
-            toolProgress = state.toolProgress,
         )
 
         // Usage summary card
@@ -84,36 +86,6 @@ fun DashboardScreen(
                     }
                 }
             }
-        }
-
-        // Permission/option prompt OR Quick Actions
-        if (state.agentState == AgentState.AWAITING_PERMISSION ||
-            state.agentState == AgentState.AWAITING_OPTION ||
-            state.agentState == AgentState.AWAITING_DIFF
-        ) {
-            PermissionDialog(
-                question = state.question,
-                options = state.options,
-                onSelectOption = { index ->
-                    connection.sendSelectOption(index)
-                },
-            )
-        } else if (state.agentState == AgentState.IDLE || state.agentState == AgentState.PROCESSING) {
-            QuickActions(
-                agentState = state.agentState,
-                onAction = { action ->
-                    when (action) {
-                        "go_on" -> connection.sendPrompt("go on")
-                        "review" -> connection.sendPrompt("/review")
-                        "commit" -> connection.sendPrompt("/commit")
-                        "clear" -> connection.sendPrompt("/compact")
-                        "stop" -> connection.sendInterrupt()
-                    }
-                },
-                onInterrupt = { connection.sendInterrupt() },
-                onEscape = { connection.sendEscape() },
-                onSendPrompt = { prompt -> connection.sendPrompt(prompt) },
-            )
         }
 
         // Timeline header with sync indicator
@@ -147,6 +119,77 @@ fun DashboardScreen(
                     text = "Not connected to bridge",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionOverviewCard(
+    agentState: AgentState,
+    projectName: String?,
+    modelName: String?,
+    currentTool: String?,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Sessions",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Row(
+                modifier = Modifier.padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // Status dot
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(stateColor(agentState))
+                )
+
+                // Project name
+                Text(
+                    text = projectName ?: "—",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+
+                // State label
+                Text(
+                    text = stateLabel(agentState),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = stateColor(agentState),
+                )
+
+                // Model name
+                if (modelName != null) {
+                    Text(
+                        text = modelName,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            // Current tool (if processing)
+            if (currentTool != null && agentState == AgentState.PROCESSING) {
+                Text(
+                    text = "Tool: $currentTool",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AgentDeckColors.Blue,
+                    modifier = Modifier.padding(top = 4.dp, start = 20.dp),
                 )
             }
         }

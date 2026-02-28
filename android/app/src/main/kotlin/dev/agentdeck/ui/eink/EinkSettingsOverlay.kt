@@ -248,7 +248,7 @@ fun EinkSettingsOverlay(
                     )
                 }
                 Text(
-                    text = "Prevents sleep while dashboard is active",
+                    text = "Keeps CPU active and refreshes display on state changes",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

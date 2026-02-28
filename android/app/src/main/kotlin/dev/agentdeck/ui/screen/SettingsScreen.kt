@@ -218,7 +218,7 @@ fun SettingsScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Background Monitoring",
+                    text = "Display",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -229,7 +229,7 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "Keep connection alive",
+                        text = "Keep Dashboard Active",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Switch(
@@ -240,7 +240,7 @@ fun SettingsScreen(
                     )
                 }
                 Text(
-                    text = "Maintains WebSocket connection when app is backgrounded via foreground service",
+                    text = "Prevents screen sleep and maintains connection in background",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

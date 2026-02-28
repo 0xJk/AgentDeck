@@ -141,6 +141,8 @@ object PluginCommands {
     fun escape(): String = """{"type":"escape"}"""
 
     fun queryUsage(): String = """{"type":"query_usage"}"""
+
+    fun switchMode(): String = """{"type":"switch_mode"}"""
 }
 
 // --- JSON parsing ---

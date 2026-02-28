@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -31,26 +32,31 @@ import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.ui.screen.DashboardScreen
+import dev.agentdeck.ui.screen.DeckScreen
 import dev.agentdeck.ui.screen.EinkMonitorScreen
 import dev.agentdeck.ui.screen.SettingsScreen
 import dev.agentdeck.ui.theme.AgentDeckTheme
 import dev.agentdeck.util.EinkDetector
+import android.content.Intent
 import android.util.Log
 import android.view.WindowManager
 import androidx.compose.runtime.LaunchedEffect
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import dev.agentdeck.service.MonitorService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
     data object Dashboard : Screen("dashboard", "Dashboard", Icons.Default.Dashboard)
+    data object Deck : Screen("deck", "Deck", Icons.Default.GridView)
     data object Settings : Screen("settings", "Settings", Icons.Default.Settings)
 }
 
-private val bottomNavScreens = listOf(Screen.Dashboard, Screen.Settings)
+private val bottomNavScreens = listOf(Screen.Dashboard, Screen.Deck, Screen.Settings)
 
 class MainActivity : ComponentActivity() {
 
@@ -81,15 +87,25 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Keep screen on for e-ink monitoring dashboard
-        if (isEink) {
-            lifecycleScope.launch {
-                displayPrefs.keepAwakeFlow.collect { keepAwake ->
-                    if (keepAwake) {
-                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                    } else {
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                    }
+        // Keep screen on while dashboard is active
+        lifecycleScope.launch {
+            displayPrefs.keepAwakeFlow.collect { keepAwake ->
+                if (keepAwake) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
+
+        // Start/stop MonitorService based on keepAwake preference
+        lifecycleScope.launch {
+            displayPrefs.keepAwakeFlow.collect { keepAwake ->
+                val serviceIntent = Intent(this@MainActivity, MonitorService::class.java)
+                if (keepAwake) {
+                    ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
+                } else {
+                    stopService(serviceIntent)
                 }
             }
         }
@@ -178,8 +194,13 @@ fun MainNavigation(
             composable(Screen.Dashboard.route) {
                 DashboardScreen(
                     stateHolder = stateHolder,
-                    connection = connection,
                     isEink = isEink,
+                )
+            }
+            composable(Screen.Deck.route) {
+                DeckScreen(
+                    stateHolder = stateHolder,
+                    connection = connection,
                 )
             }
             composable(Screen.Settings.route) {
