@@ -7,11 +7,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.withTransform
 import dev.agentdeck.terrarium.OctopusVisualState
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.terrarium.TerrariumLayout
@@ -21,9 +19,14 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Octopus — coding agent avatar.
- * Oval body with gradient, 2 eyes, 8 bezier tentacles with independent sine wave offsets.
- * Position and scale are parameterized for multi-session rendering.
+ * Claude Code pixel mascot — 10×7 blocky character (terracotta).
+ * Wide rectangular body with animated arms and legs.
+ *
+ * Pixel cell types:
+ *   0=transparent, 1=body, 2=eye, 3=left arm, 4=right arm, 5=left leg, 6=right leg
+ *
+ * Walking gait: left arm + right leg sync, right arm + left leg sync (natural bipedal).
+ * THINKING state shows rotating Anthropic starburst behind the body.
  */
 class OctopusCreature(
     private val centerXFraction: Float = TerrariumLayout.OCTOPUS_CENTER_X_FRACTION,
@@ -60,7 +63,6 @@ class OctopusCreature(
 
         val bodyRadius = w * TerrariumLayout.OCTOPUS_BODY_RADIUS_FRACTION * scaleFactor
         val centerX = w * centerXFraction
-        val tentacleLength = w * TerrariumLayout.TENTACLE_LENGTH_FRACTION * scaleFactor
 
         // Float bob
         val bobOffset = when (visualState) {
@@ -77,41 +79,19 @@ class OctopusCreature(
 
         val bodyAlpha = if (visualState == OctopusVisualState.SLEEPING) 0.4f else 1f
 
-        // Draw tentacles first (behind body)
-        drawTentacles(scope, centerX, effectiveCenterY, bodyRadius, tentacleLength, bodyAlpha)
-
-        // Draw body (oval)
-        val bodyColor = when (visualState) {
-            OctopusVisualState.THINKING -> {
-                // Hue rotation effect via color cycling
-                val hueShift = (sin(time * TerrariumTiming.THINKING_PULSE_SPEED) * 0.5f + 0.5f)
-                lerpColor(TerrariumColors.OctopusBody, Color(0xFF818CF8), hueShift)
-            }
-            else -> TerrariumColors.OctopusBody
+        // THINKING: draw starburst behind pixel body
+        if (visualState == OctopusVisualState.THINKING) {
+            drawStarburst(scope, centerX, effectiveCenterY, bodyRadius * 2.5f, bodyAlpha)
         }
 
-        scope.drawOval(
-            color = bodyColor.copy(alpha = bodyAlpha),
-            topLeft = Offset(centerX - bodyRadius, effectiveCenterY - bodyRadius * 1.2f),
-            size = Size(bodyRadius * 2f, bodyRadius * 2.4f),
-        )
-
-        // Inner body highlight
-        scope.drawOval(
-            color = TerrariumColors.OctopusTentacle.copy(alpha = 0.3f * bodyAlpha),
-            topLeft = Offset(centerX - bodyRadius * 0.6f, effectiveCenterY - bodyRadius * 0.8f),
-            size = Size(bodyRadius * 1.2f, bodyRadius * 1.6f),
-        )
-
-        // Agent brand mark (watermark on body)
-        agentMark?.let { drawAgentMark(scope, it, centerX, effectiveCenterY, bodyRadius, bodyAlpha) }
-
-        // Draw eyes
-        drawEyes(scope, centerX, effectiveCenterY, bodyRadius, bodyAlpha)
+        // Draw pixel body with animated arms/legs
+        drawPixelBody(scope, centerX, effectiveCenterY, bodyRadius, bodyAlpha)
 
         // Holographic keyboard for TYPING state
         if (visualState == OctopusVisualState.TYPING) {
-            drawHolographicKeyboard(scope, centerX, effectiveCenterY, bodyRadius)
+            val gridH = GRID_ROWS * (bodyRadius * 2f / GRID_COLS)
+            val kbY = effectiveCenterY + gridH * 0.6f
+            drawHolographicKeyboard(scope, centerX, kbY, bodyRadius)
         }
 
         // Option cards for PRESENTING state
@@ -125,127 +105,133 @@ class OctopusCreature(
         }
     }
 
-    private fun drawAgentMark(
+    // --- Limb animation offsets ---
+
+    /**
+     * Compute Y-offset for limb animation.
+     * Natural bipedal gait: left arm ↔ right leg, right arm ↔ left leg.
+     */
+    private fun limbOffset(isLeft: Boolean, isArm: Boolean, pixelSize: Float): Float {
+        // Arm phase: 0 for left, PI for right
+        // Leg phase: PI for left, 0 for right (opposite to arm on same side)
+        val phase = when {
+            isArm && isLeft -> 0f
+            isArm && !isLeft -> PI.toFloat()
+            !isArm && isLeft -> PI.toFloat() // left leg syncs with right arm
+            else -> 0f // right leg syncs with left arm
+        }
+
+        val (speed, amplitude) = when (visualState) {
+            OctopusVisualState.TYPING -> TerrariumTiming.TYPING_SPEED to 0.35f
+            OctopusVisualState.FLOATING -> 2.0f to 0.15f
+            OctopusVisualState.THINKING -> 1.5f to 0.08f
+            OctopusVisualState.OFFERING,
+            OctopusVisualState.PRESENTING -> 1.5f to 0.10f
+            OctopusVisualState.REVIEWING -> 1.0f to 0.05f
+            OctopusVisualState.SLEEPING -> return 0f
+        }
+
+        return sin(time * speed + phase) * pixelSize * amplitude
+    }
+
+    private fun drawPixelBody(
         scope: DrawScope,
-        agentMark: AgentMark,
         cx: Float, cy: Float,
         bodyRadius: Float,
         alpha: Float,
     ) {
-        // Scale SVG path to fit ~60% of body size, centered on body
-        val markSize = bodyRadius * 1.4f // 70% of body diameter
-        val scale = markSize / agentMark.viewBoxWidth
+        val pixelSize = bodyRadius * 2f / GRID_COLS
+        val gridW = GRID_COLS * pixelSize
+        val gridH = GRID_ROWS * pixelSize
+        val startX = cx - gridW / 2f
+        val startY = cy - gridH / 2f
 
-        scope.withTransform({
-            translate(
-                left = cx - (agentMark.viewBoxWidth * scale) / 2f,
-                top = cy - (agentMark.viewBoxHeight * scale) / 2f - bodyRadius * 0.1f,
-            )
-            scale(scale, scale)
-        }) {
-            drawPath(
-                path = agentMark.path,
-                color = Color(0xFF00E5FF).copy(alpha = 0.4f * alpha),
-            )
-        }
-    }
+        val bodyColor = bodyColorForState()
 
-    private fun drawTentacles(
-        scope: DrawScope,
-        cx: Float, cy: Float,
-        bodyRadius: Float,
-        tentacleLength: Float,
-        alpha: Float,
-    ) {
-        val baseY = cy + bodyRadius * 0.8f
+        for (row in 0 until GRID_ROWS) {
+            for (col in 0 until GRID_COLS) {
+                val cell = PIXEL_GRID[row][col]
+                if (cell == EMPTY) continue
 
-        for (i in 0 until 8) {
-            val angle = -PI.toFloat() * 0.8f + (i / 7f) * PI.toFloat() * 1.6f
-            val startX = cx + cos(angle) * bodyRadius * 0.7f
-            val startY = baseY
+                val px = startX + col * pixelSize
+                var py = startY + row * pixelSize
 
-            val waveOffset = when (visualState) {
-                OctopusVisualState.SLEEPING -> 0f
-                OctopusVisualState.THINKING -> {
-                    // Curl inward
-                    sin(time * TerrariumTiming.THINKING_PULSE_SPEED + i * 0.5f) * tentacleLength * 0.1f
+                // Apply limb animation offsets
+                when (cell) {
+                    LEFT_ARM -> py += limbOffset(isLeft = true, isArm = true, pixelSize)
+                    RIGHT_ARM -> py += limbOffset(isLeft = false, isArm = true, pixelSize)
+                    LEFT_LEG -> py += limbOffset(isLeft = true, isArm = false, pixelSize)
+                    RIGHT_LEG -> py += limbOffset(isLeft = false, isArm = false, pixelSize)
                 }
-                OctopusVisualState.TYPING -> {
-                    // Rapid small motions
-                    sin(time * TerrariumTiming.TYPING_SPEED + i * 1.2f) * tentacleLength * 0.15f
+
+                when (cell) {
+                    EYE -> {
+                        if (visualState == OctopusVisualState.SLEEPING) {
+                            // Closed eyes — thin horizontal line
+                            scope.drawRect(
+                                color = TerrariumColors.ClaudeEye.copy(alpha = alpha * 0.6f),
+                                topLeft = Offset(px, py + pixelSize * 0.4f),
+                                size = Size(pixelSize, pixelSize * 0.2f),
+                            )
+                        } else {
+                            scope.drawRect(
+                                color = TerrariumColors.ClaudeEye.copy(alpha = alpha),
+                                topLeft = Offset(px, py),
+                                size = Size(pixelSize, pixelSize),
+                            )
+                        }
+                    }
+                    else -> {
+                        // Body, arm, or leg pixel — all use body color
+                        scope.drawRect(
+                            color = bodyColor.copy(alpha = alpha),
+                            topLeft = Offset(px, py),
+                            size = Size(pixelSize, pixelSize),
+                        )
+                    }
                 }
-                else -> {
-                    // Gentle wave
-                    sin(time * TerrariumTiming.TENTACLE_WAVE_SPEED + i * 0.8f) * tentacleLength * 0.2f
-                }
-            }
-
-            val endX = startX + cos(angle) * tentacleLength + waveOffset
-            val endY = startY + tentacleLength * 0.8f
-
-            // Bezier control points
-            val cp1x = startX + cos(angle) * tentacleLength * 0.3f + waveOffset * 0.5f
-            val cp1y = startY + tentacleLength * 0.3f
-            val cp2x = startX + cos(angle) * tentacleLength * 0.6f + waveOffset
-            val cp2y = startY + tentacleLength * 0.6f
-
-            val path = Path().apply {
-                moveTo(startX, startY)
-                cubicTo(cp1x, cp1y, cp2x, cp2y, endX, endY)
-            }
-
-            scope.drawPath(
-                path = path,
-                color = TerrariumColors.OctopusTentacle.copy(alpha = alpha * 0.8f),
-                style = Stroke(
-                    width = bodyRadius * 0.15f * (1f - i * 0.02f),
-                    cap = StrokeCap.Round,
-                ),
-            )
-        }
-    }
-
-    private fun drawEyes(scope: DrawScope, cx: Float, cy: Float, bodyRadius: Float, alpha: Float) {
-        val eyeSpacing = bodyRadius * 0.45f
-        val eyeY = cy - bodyRadius * 0.2f
-        val eyeRadius = bodyRadius * 0.18f
-
-        val isClosed = visualState == OctopusVisualState.SLEEPING
-
-        for (side in listOf(-1f, 1f)) {
-            val eyeX = cx + side * eyeSpacing
-
-            if (isClosed) {
-                // Closed eyes — horizontal line
-                scope.drawLine(
-                    color = TerrariumColors.OctopusEye.copy(alpha = alpha * 0.5f),
-                    start = Offset(eyeX - eyeRadius, eyeY),
-                    end = Offset(eyeX + eyeRadius, eyeY),
-                    strokeWidth = 2f,
-                )
-            } else {
-                // Eye white
-                scope.drawCircle(
-                    color = TerrariumColors.OctopusEye.copy(alpha = alpha),
-                    radius = eyeRadius,
-                    center = Offset(eyeX, eyeY),
-                )
-                // Pupil
-                scope.drawCircle(
-                    color = TerrariumColors.OctopusPupil.copy(alpha = alpha),
-                    radius = eyeRadius * 0.5f,
-                    center = Offset(eyeX + side * eyeRadius * 0.1f, eyeY),
-                )
             }
         }
     }
 
-    private fun drawHolographicKeyboard(scope: DrawScope, cx: Float, cy: Float, bodyRadius: Float) {
+    private fun bodyColorForState(): Color {
+        return when (visualState) {
+            OctopusVisualState.THINKING -> {
+                val t = sin(time * TerrariumTiming.THINKING_PULSE_SPEED) * 0.5f + 0.5f
+                lerpColor(TerrariumColors.ClaudeBody, TerrariumColors.ClaudeBodyLight, t)
+            }
+            else -> TerrariumColors.ClaudeBody
+        }
+    }
+
+    /**
+     * Anthropic sparkle/starburst — 10 radiating arms behind the pixel body.
+     * Slowly rotates and pulses during THINKING state.
+     */
+    private fun drawStarburst(scope: DrawScope, cx: Float, cy: Float, radius: Float, alpha: Float) {
+        val rotation = time * 0.5f
+        val pulse = sin(time * TerrariumTiming.THINKING_PULSE_SPEED) * 0.15f + 0.85f
+
+        for (i in 0 until STARBURST_ARM_COUNT) {
+            val baseAngle = (i.toFloat() / STARBURST_ARM_COUNT) * 2f * PI.toFloat() + rotation
+            val armLen = radius * pulse * STARBURST_ARM_LENGTHS[i % STARBURST_ARM_LENGTHS.size]
+            val endX = cx + cos(baseAngle) * armLen
+            val endY = cy + sin(baseAngle) * armLen
+
+            scope.drawLine(
+                color = TerrariumColors.ClaudeBody.copy(alpha = alpha * 0.35f),
+                start = Offset(cx, cy),
+                end = Offset(endX, endY),
+                strokeWidth = radius * 0.10f,
+                cap = StrokeCap.Round,
+            )
+        }
+    }
+
+    private fun drawHolographicKeyboard(scope: DrawScope, cx: Float, kbY: Float, bodyRadius: Float) {
         val kbWidth = bodyRadius * 4f
         val kbHeight = bodyRadius * 1.5f
-        val kbY = cy + bodyRadius * 2.5f
 
-        // Semi-transparent keyboard background
         scope.drawRoundRect(
             color = TerrariumColors.HoloBlue.copy(alpha = 0.15f),
             topLeft = Offset(cx - kbWidth / 2, kbY),
@@ -253,7 +239,6 @@ class OctopusCreature(
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f),
         )
 
-        // Key grid lines
         val rows = 3
         val cols = 10
         for (r in 0..rows) {
@@ -275,7 +260,6 @@ class OctopusCreature(
             )
         }
 
-        // Active key highlight
         val activeCol = ((time * TerrariumTiming.TYPING_SPEED * 2f) % cols).toInt()
         val activeRow = ((time * TerrariumTiming.TYPING_SPEED) % rows).toInt()
         val keyW = kbWidth / cols
@@ -301,7 +285,6 @@ class OctopusCreature(
                 size = Size(cardWidth, cardHeight),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f),
             )
-            // Card border
             scope.drawRoundRect(
                 color = TerrariumColors.HoloText.copy(alpha = 0.4f),
                 topLeft = Offset(cx + offsetX - cardWidth / 2, startY),
@@ -320,7 +303,6 @@ class OctopusCreature(
         for (side in listOf(-1f, 1f)) {
             val docX = cx + side * docWidth * 0.7f - docWidth / 2
 
-            // Document background
             scope.drawRoundRect(
                 color = TerrariumColors.HoloBlue.copy(alpha = 0.12f),
                 topLeft = Offset(docX, docY),
@@ -328,7 +310,6 @@ class OctopusCreature(
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f),
             )
 
-            // Text lines
             for (line in 0 until 8) {
                 val lineY = docY + 8f + line * (docHeight / 9f)
                 val lineWidth = docWidth * (0.5f + (line * 17 % 5) * 0.1f)
@@ -340,7 +321,6 @@ class OctopusCreature(
                 )
             }
 
-            // Side label (+/-)
             val diffColor = if (side < 0) Color(0x60EF4444) else Color(0x6022C55E)
             scope.drawRoundRect(
                 color = diffColor,
@@ -356,6 +336,39 @@ class OctopusCreature(
             green = a.green + (b.green - a.green) * t,
             blue = a.blue + (b.blue - a.blue) * t,
             alpha = a.alpha + (b.alpha - a.alpha) * t,
+        )
+    }
+
+    companion object {
+        // Pixel cell types
+        private const val EMPTY = 0
+        private const val BODY = 1
+        private const val EYE = 2
+        private const val LEFT_ARM = 3
+        private const val RIGHT_ARM = 4
+        private const val LEFT_LEG = 5
+        private const val RIGHT_LEG = 6
+
+        private const val GRID_COLS = 10
+        private const val GRID_ROWS = 7
+
+        // Claude Code pixel mascot — 10 cols × 7 rows
+        // Wide rectangular body + arms on sides + 4 thin legs
+        private val PIXEL_GRID = arrayOf(
+            intArrayOf(0, 0, 1, 1, 1, 1, 1, 1, 0, 0), // row 0: head top
+            intArrayOf(0, 1, 1, 2, 1, 1, 2, 1, 1, 0), // row 1: head + eyes
+            intArrayOf(3, 1, 1, 1, 1, 1, 1, 1, 1, 4), // row 2: upper body + arms
+            intArrayOf(3, 1, 1, 1, 1, 1, 1, 1, 1, 4), // row 3: lower body + arms
+            intArrayOf(0, 0, 1, 1, 1, 1, 1, 1, 0, 0), // row 4: waist
+            intArrayOf(0, 0, 5, 0, 5, 6, 0, 6, 0, 0), // row 5: 4 legs upper
+            intArrayOf(0, 0, 5, 0, 0, 0, 0, 6, 0, 0), // row 6: outer legs longer
+        )
+
+        // Starburst (Anthropic sparkle) — 10 arms with varying lengths
+        private const val STARBURST_ARM_COUNT = 10
+        private val STARBURST_ARM_LENGTHS = floatArrayOf(
+            1.0f, 0.75f, 0.95f, 0.70f, 1.0f,
+            0.80f, 0.90f, 0.72f, 0.98f, 0.78f,
         )
     }
 }

@@ -31,6 +31,10 @@ function getOAuthToken(): string | null {
   }
 }
 
+export function hasOAuthToken(): boolean {
+  return getOAuthToken() !== null;
+}
+
 export async function fetchUsageFromApi(): Promise<ApiUsageData | null> {
   const token = getOAuthToken();
   if (!token) {

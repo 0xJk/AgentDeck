@@ -84,16 +84,31 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         AgentState.AWAITING_DIFF -> OctopusVisualState.REVIEWING
     }
 
-    val crayfish = when (agentState) {
-        AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
-        AgentState.IDLE -> CrayfishVisualState.SITTING
-        AgentState.PROCESSING -> when {
-            isOpenClaw -> CrayfishVisualState.ROUTING
-            else -> CrayfishVisualState.OBSERVING
+    // OpenClaw sibling state determines crayfish independently
+    val ocSibling = siblingSessions.firstOrNull { it.agentType == "openclaw" }
+    val crayfish = when {
+        // Primary is OpenClaw — use primary state
+        isOpenClaw -> when (agentState) {
+            AgentState.PROCESSING -> CrayfishVisualState.ROUTING
+            AgentState.IDLE -> CrayfishVisualState.SITTING
+            AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
+            else -> CrayfishVisualState.WAITING
         }
-        AgentState.AWAITING_PERMISSION,
-        AgentState.AWAITING_OPTION,
-        AgentState.AWAITING_DIFF -> CrayfishVisualState.WAITING
+        // Sibling OpenClaw exists — use its state
+        ocSibling != null -> when (ocSibling.state) {
+            "processing" -> CrayfishVisualState.ROUTING
+            "idle" -> CrayfishVisualState.SITTING
+            "awaiting_permission", "awaiting_option", "awaiting_diff" -> CrayfishVisualState.WAITING
+            else -> if (ocSibling.alive) CrayfishVisualState.SITTING else CrayfishVisualState.DORMANT
+        }
+        // Gateway detected but no bridge
+        gatewayAvailable == true -> CrayfishVisualState.SITTING
+        // Nothing — derive from primary agent state
+        else -> when (agentState) {
+            AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
+            AgentState.PROCESSING -> CrayfishVisualState.OBSERVING
+            else -> CrayfishVisualState.SITTING
+        }
     }
 
     val tetra = when (agentState) {
@@ -134,7 +149,7 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     // Sibling sessions (coding agents only — not the current session)
     var slot = 1
     for (sibling in siblingSessions) {
-        if (sibling.id == sessionId) continue // skip self
+        if (sessionId != null && sibling.id == sessionId) continue // skip self (null guard)
         val siblingType = sibling.agentType
         if (siblingType == "openclaw") continue // crayfish, not octopus
         agents.add(
@@ -142,7 +157,7 @@ fun DashboardState.toTerrariumState(): TerrariumState {
                 sessionId = sibling.id,
                 agentType = siblingType,
                 mark = AgentMark.fromAgentType(siblingType),
-                visualState = OctopusVisualState.FLOATING, // siblings always appear floating
+                visualState = mapSessionOctopusState(sibling.state),
                 isPrimary = false,
                 layoutSlot = slot++,
             )
@@ -162,4 +177,13 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         agents = agents,
         workerCrayfishCount = workerSessionCount ?: 0,
     )
+}
+
+private fun mapSessionOctopusState(state: String?): OctopusVisualState = when (state) {
+    "processing" -> OctopusVisualState.TYPING
+    "awaiting_permission" -> OctopusVisualState.OFFERING
+    "awaiting_option" -> OctopusVisualState.PRESENTING
+    "awaiting_diff" -> OctopusVisualState.REVIEWING
+    "idle" -> OctopusVisualState.FLOATING
+    else -> OctopusVisualState.FLOATING
 }

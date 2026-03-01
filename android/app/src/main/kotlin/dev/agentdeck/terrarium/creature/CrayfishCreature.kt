@@ -7,27 +7,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import android.util.Log
 import dev.agentdeck.terrarium.CrayfishVisualState
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.terrarium.TerrariumLayout
 import dev.agentdeck.terrarium.TerrariumTiming
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Crayfish (OpenClaw) — bottom-right on rocks.
- * Segmented body (carapace + abdomen + tail fan) with articulated claws.
+ * OpenClaw — front-facing lobster pixel mascot.
+ * 12×9 pixel grid with articulated claws, antennae, and legs.
  *
- * ROUTING state: vigorous claw clapping, body rocking, shell glow pulse,
- * expanding signal waves, antenna wiggle — clearly visible orchestration activity.
+ * SITTING/DORMANT: completely still on the rocks (no floating).
+ * ROUTING: full animation — claw rotation, signal waves, eye flash, antenna wiggle.
  */
 class CrayfishCreature(
     private val centerXFraction: Float = TerrariumLayout.CRAYFISH_CENTER_X_FRACTION,
@@ -67,34 +64,28 @@ class CrayfishCreature(
             else -> 1f
         }
 
-        // Dormant: shift down behind rocks
-        // ROUTING: forward-backward rock
-        // OBSERVING: gentle sway
+        // Position: only ROUTING moves. All other states = still on the rocks.
         val effectiveCX: Float
         val effectiveCY: Float
         when (visualState) {
             CrayfishVisualState.DORMANT -> {
+                // Shift down behind rocks, dimmed
                 effectiveCX = cx
-                effectiveCY = cy + bodyWidth * 0.5f
+                effectiveCY = cy + bodyWidth * 0.3f
             }
             CrayfishVisualState.ROUTING -> {
-                // Body rocks forward/backward
-                val rock = sin(time * 2f * PI.toFloat() / (TerrariumTiming.CLAW_CLAP_PERIOD_MS / 1000f))
-                effectiveCX = cx + rock * bodyWidth * 0.08f
-                effectiveCY = cy + sin(time * 5f) * bodyWidth * 0.03f
-            }
-            CrayfishVisualState.OBSERVING -> {
-                // Gentle side-to-side sway — watching the octopus work
-                effectiveCX = cx + sin(time * 1.5f) * bodyWidth * 0.03f
-                effectiveCY = cy + sin(time * 2f) * bodyWidth * 0.015f
+                // Active: slight body movement to convey energy
+                effectiveCX = cx
+                effectiveCY = cy + sin(time * 3f) * bodyWidth * 0.03f
             }
             else -> {
+                // SITTING, OBSERVING, WAITING — completely still
                 effectiveCX = cx
                 effectiveCY = cy
             }
         }
 
-        // ROUTING: draw signal waves BEHIND creature (larger, more visible)
+        // ROUTING: draw signal waves BEHIND creature
         if (visualState == CrayfishVisualState.ROUTING) {
             drawSignalWaves(scope, effectiveCX, effectiveCY, bodyWidth, w)
         }
@@ -102,7 +93,7 @@ class CrayfishCreature(
         // ROUTING: shell glow pulse underneath
         if (visualState == CrayfishVisualState.ROUTING) {
             val glowPulse = (sin(time * 4f) * 0.5f + 0.5f)
-            val glowRadius = bodyWidth * (0.5f + glowPulse * 0.2f)
+            val glowRadius = bodyWidth * (0.4f + glowPulse * 0.15f)
             scope.drawCircle(
                 color = TerrariumColors.CrayfishEye.copy(alpha = 0.15f * glowPulse),
                 radius = glowRadius,
@@ -110,276 +101,153 @@ class CrayfishCreature(
             )
         }
 
-        // Tail fan
-        drawTailFan(scope, effectiveCX, effectiveCY, bodyWidth, alpha)
-
-        // Abdomen segments
-        drawAbdomen(scope, effectiveCX, effectiveCY, bodyWidth, alpha)
-
-        // Carapace (main body) — pulses brighter during ROUTING
-        drawCarapace(scope, effectiveCX, effectiveCY, bodyWidth, alpha)
-
-        // Antennae (animated during ROUTING)
-        drawAntennae(scope, effectiveCX, effectiveCY, bodyWidth, alpha)
-
-        // Claws — large dramatic movement during ROUTING
-        drawClaws(scope, effectiveCX, effectiveCY, bodyWidth, alpha)
-
-        // Eyes — flash during ROUTING, larger for visibility
-        drawEyes(scope, effectiveCX, effectiveCY, bodyWidth, alpha)
+        // Draw pixel body
+        drawPixelBody(scope, effectiveCX, effectiveCY, bodyWidth, alpha)
     }
 
-    private fun drawCarapace(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, alpha: Float) {
-        val carapaceW = bodyWidth * 0.6f
-        val carapaceH = bodyWidth * 0.35f
-
-        // ROUTING: shell pulses red→orange. OBSERVING: subtle warm glow
-        val shellColor = when (visualState) {
+    private fun clawAngleForState(side: Float): Float {
+        return when (visualState) {
             CrayfishVisualState.ROUTING -> {
-                val pulse = sin(time * 4f) * 0.5f + 0.5f
-                lerpColor(TerrariumColors.CrayfishShell, Color(0xFFFF8C42), pulse)
+                // ±25° rotation, vigorous
+                val clap = sin(time * 2f * PI.toFloat() / (TerrariumTiming.CLAW_CLAP_PERIOD_MS / 1000f))
+                side * clap * 25f
+            }
+            CrayfishVisualState.WAITING -> {
+                // Raised open ±15°
+                side * 15f
             }
             CrayfishVisualState.OBSERVING -> {
-                val pulse = sin(time * 2f) * 0.5f + 0.5f
-                lerpColor(TerrariumColors.CrayfishShell, Color(0xFFE84020), pulse * 0.3f)
+                // Very subtle claw twitch (no body movement, only claws hint at awareness)
+                side * (3f + sin(time * 2f) * 5f)
             }
+            else -> 0f // SITTING, DORMANT — completely still
+        }
+    }
+
+    private fun drawPixelBody(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, alpha: Float) {
+        val pixelSize = bodyWidth / GRID_COLS
+        val gridWidth = GRID_COLS * pixelSize
+        val gridHeight = GRID_ROWS * pixelSize
+        val startX = cx - gridWidth / 2f
+        val startY = cy - gridHeight / 2f
+
+        val leftClawAngle = clawAngleForState(side = -1f)
+        val rightClawAngle = clawAngleForState(side = 1f)
+        // Pivot points in pixel coordinates
+        val leftPivotX = 1.5f
+        val leftPivotY = 2.5f
+        val rightPivotX = 10.5f
+        val rightPivotY = 2.5f
+
+        for (row in 0 until GRID_ROWS) {
+            for (col in 0 until GRID_COLS) {
+                val cellType = PIXEL_GRID[row][col]
+                if (cellType == EMPTY) continue
+
+                val color = colorForCell(cellType, alpha)
+                var px = startX + col * pixelSize
+                var py = startY + row * pixelSize
+
+                when (cellType) {
+                    CLAW_L_UPPER, CLAW_L_LOWER -> {
+                        val rotated = rotatePixelAroundPivot(
+                            col.toFloat() + 0.5f, row.toFloat() + 0.5f,
+                            leftPivotX, leftPivotY, leftClawAngle
+                        )
+                        px = startX + (rotated.first - 0.5f) * pixelSize
+                        py = startY + (rotated.second - 0.5f) * pixelSize
+                    }
+                    CLAW_R_UPPER, CLAW_R_LOWER -> {
+                        val rotated = rotatePixelAroundPivot(
+                            col.toFloat() + 0.5f, row.toFloat() + 0.5f,
+                            rightPivotX, rightPivotY, rightClawAngle
+                        )
+                        px = startX + (rotated.first - 0.5f) * pixelSize
+                        py = startY + (rotated.second - 0.5f) * pixelSize
+                    }
+                    LEG -> {
+                        // Walking gait offset
+                        px += sin(time * 4f + col * 0.5f) * pixelSize * 0.15f
+                    }
+                    ANTENNA_L -> {
+                        // Antenna wiggle (only during ROUTING)
+                        if (visualState == CrayfishVisualState.ROUTING) {
+                            px += sin(time * 7f) * pixelSize * 0.3f
+                            py -= sin(time * 5f) * pixelSize * 0.2f
+                        }
+                    }
+                    ANTENNA_R -> {
+                        if (visualState == CrayfishVisualState.ROUTING) {
+                            px -= sin(time * 7f) * pixelSize * 0.3f
+                            py -= sin(time * 5f) * pixelSize * 0.2f
+                        }
+                    }
+                }
+
+                scope.drawRect(
+                    color = color,
+                    topLeft = Offset(px, py),
+                    size = Size(pixelSize, pixelSize),
+                )
+            }
+        }
+    }
+
+    private fun colorForCell(cellType: Int, alpha: Float): Color {
+        val base = when (cellType) {
+            BODY, LEG, ANTENNA_L, ANTENNA_R -> TerrariumColors.CrayfishShell
+            HEAD -> TerrariumColors.CrayfishShell
+            EYE_L, EYE_R -> eyeColorForState()
+            CLAW_L_UPPER, CLAW_L_LOWER, CLAW_R_UPPER, CLAW_R_LOWER -> TerrariumColors.CrayfishDark
             else -> TerrariumColors.CrayfishShell
         }
-
-        scope.drawOval(
-            color = shellColor.copy(alpha = alpha),
-            topLeft = Offset(cx - carapaceW / 2, cy - carapaceH / 2),
-            size = Size(carapaceW, carapaceH),
-        )
-
-        // Center stripe
-        scope.drawOval(
-            color = TerrariumColors.CrayfishDark.copy(alpha = alpha * 0.5f),
-            topLeft = Offset(cx - carapaceW * 0.3f, cy - carapaceH * 0.15f),
-            size = Size(carapaceW * 0.6f, carapaceH * 0.3f),
-        )
+        // ROUTING: shell glow pulse
+        val glowed = if (visualState == CrayfishVisualState.ROUTING &&
+            cellType != EYE_L && cellType != EYE_R) {
+            val pulse = (sin(time * 4f) * 0.5f + 0.5f) * 0.3f
+            lerpColor(base, TerrariumColors.CrayfishBodyLight, pulse)
+        } else {
+            base
+        }
+        return glowed.copy(alpha = alpha)
     }
 
-    private fun drawAbdomen(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, alpha: Float) {
-        val segmentWidth = bodyWidth * 0.12f
-        val segmentHeight = bodyWidth * 0.25f
-
-        for (i in 0 until 4) {
-            // ROUTING: segments undulate. OBSERVING: subtle movement
-            val segWiggle = when (visualState) {
-                CrayfishVisualState.ROUTING -> sin(time * 6f + i * 1.2f) * bodyWidth * 0.01f
-                CrayfishVisualState.OBSERVING -> sin(time * 3f + i * 0.8f) * bodyWidth * 0.005f
-                else -> 0f
-            }
-
-            val segX = cx + bodyWidth * 0.3f + i * segmentWidth
-            scope.drawOval(
-                color = TerrariumColors.CrayfishDark.copy(alpha = alpha * 0.9f),
-                topLeft = Offset(segX, cy - segmentHeight / 2 + i * 2f + segWiggle),
-                size = Size(segmentWidth * 1.1f, segmentHeight * (1f - i * 0.05f)),
-            )
-        }
-    }
-
-    private fun drawTailFan(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, alpha: Float) {
-        val tailX = cx + bodyWidth * 0.75f
-        val fanWidth = bodyWidth * 0.2f
-        val fanHeight = bodyWidth * 0.35f
-
-        // ROUTING: tail fan flicks. OBSERVING: gentle flick
-        val fanSpread = when (visualState) {
-            CrayfishVisualState.ROUTING -> 1f + sin(time * 8f) * 0.3f
-            CrayfishVisualState.OBSERVING -> 1f + sin(time * 3f) * 0.1f
-            else -> 1f
-        }
-
-        for (i in -1..1) {
-            val path = Path().apply {
-                moveTo(tailX, cy)
-                lineTo(tailX + fanWidth, cy + i * fanHeight * 0.4f * fanSpread - fanHeight * 0.1f)
-                lineTo(tailX + fanWidth, cy + i * fanHeight * 0.4f * fanSpread + fanHeight * 0.1f)
-                close()
-            }
-            scope.drawPath(
-                path = path,
-                color = TerrariumColors.CrayfishShell.copy(alpha = alpha * 0.7f),
-            )
-        }
-    }
-
-    private fun drawAntennae(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, alpha: Float) {
-        val antennaLength = bodyWidth * 0.4f
-
-        for (side in listOf(-1f, 1f)) {
-            val baseX = cx - bodyWidth * 0.25f
-            val baseY = cy + side * bodyWidth * 0.05f
-
-            // ROUTING: antennae sweep actively. OBSERVING: slow twitch
-            val antennaAngle = when (visualState) {
-                CrayfishVisualState.ROUTING -> sin(time * 7f + side * 1.5f) * 25f
-                CrayfishVisualState.OBSERVING -> side * 15f + sin(time * 3f + side * 2f) * 10f
-                else -> side * 15f
-            }
-
-            scope.rotate(
-                degrees = antennaAngle,
-                pivot = Offset(baseX, baseY),
-            ) {
-                drawLine(
-                    color = TerrariumColors.CrayfishDark.copy(alpha = alpha * 0.7f),
-                    start = Offset(baseX, baseY),
-                    end = Offset(baseX - antennaLength, baseY + side * antennaLength * 0.3f),
-                    strokeWidth = bodyWidth * 0.012f,
-                    cap = StrokeCap.Round,
-                )
-                // Antenna tip dot
-                drawCircle(
-                    color = TerrariumColors.CrayfishEye.copy(alpha = alpha * 0.5f),
-                    radius = bodyWidth * 0.012f,
-                    center = Offset(baseX - antennaLength, baseY + side * antennaLength * 0.3f),
-                )
-            }
-        }
-    }
-
-    private fun drawClaws(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, alpha: Float) {
-        val clawLength = bodyWidth * 0.45f // longer claws for visibility
-
-        val clawAngle = when (visualState) {
+    private fun eyeColorForState(): Color {
+        return when (visualState) {
             CrayfishVisualState.ROUTING -> {
-                // Vigorous clap — ±40° range, faster period
-                val clap = sin(time * 2f * PI.toFloat() / (TerrariumTiming.CLAW_CLAP_PERIOD_MS / 1000f))
-                clap * 40f
+                val flash = sin(time * 2f * PI.toFloat() / (TerrariumTiming.EYE_FLASH_PERIOD_MS / 1000f))
+                val intensity = flash * 0.5f + 0.5f
+                lerpColor(TerrariumColors.CrayfishEye, Color.White, intensity * 0.5f)
             }
-            CrayfishVisualState.OBSERVING -> {
-                // Gentle fidget — ±15° slow wave
-                10f + sin(time * 2f) * 15f
-            }
-            CrayfishVisualState.WAITING -> 30f // Raised high
-            else -> 10f // Resting
-        }
-
-        // ROUTING: pincer open/close. OBSERVING: gentle pincer twitch
-        val pincerSpread = when (visualState) {
-            CrayfishVisualState.ROUTING -> {
-                val openClose = abs(sin(time * 2f * PI.toFloat() / (TerrariumTiming.CLAW_CLAP_PERIOD_MS / 1000f * 0.5f)))
-                bodyWidth * (0.03f + openClose * 0.06f)
-            }
-            CrayfishVisualState.OBSERVING -> {
-                bodyWidth * (0.04f + sin(time * 2.5f) * 0.015f)
-            }
-            else -> bodyWidth * 0.04f
-        }
-
-        for (side in listOf(-1f, 1f)) {
-            val baseX = cx - bodyWidth * 0.25f
-            val baseY = cy + side * bodyWidth * 0.12f
-
-            scope.rotate(
-                degrees = side * clawAngle,
-                pivot = Offset(baseX, baseY),
-            ) {
-                // Arm segment — thicker for visibility
-                drawLine(
-                    color = TerrariumColors.CrayfishClaw.copy(alpha = alpha),
-                    start = Offset(baseX, baseY),
-                    end = Offset(baseX - clawLength * 0.6f, baseY),
-                    strokeWidth = bodyWidth * 0.06f,
-                    cap = StrokeCap.Round,
-                )
-
-                // Claw pincer — two lines forming V with animated spread
-                val pinchX = baseX - clawLength * 0.6f
-                val tipX = baseX - clawLength
-                drawLine(
-                    color = TerrariumColors.CrayfishClaw.copy(alpha = alpha),
-                    start = Offset(pinchX, baseY),
-                    end = Offset(tipX, baseY - pincerSpread),
-                    strokeWidth = bodyWidth * 0.045f,
-                    cap = StrokeCap.Round,
-                )
-                drawLine(
-                    color = TerrariumColors.CrayfishClaw.copy(alpha = alpha),
-                    start = Offset(pinchX, baseY),
-                    end = Offset(tipX, baseY + pincerSpread),
-                    strokeWidth = bodyWidth * 0.045f,
-                    cap = StrokeCap.Round,
-                )
-
-                // ROUTING: spark at claw tips when clapping shut
-                if (visualState == CrayfishVisualState.ROUTING && pincerSpread < bodyWidth * 0.04f) {
-                    drawCircle(
-                        color = TerrariumColors.CrayfishEye.copy(alpha = 0.8f),
-                        radius = bodyWidth * 0.025f,
-                        center = Offset(tipX, baseY),
-                    )
-                }
-            }
+            else -> TerrariumColors.CrayfishEye
         }
     }
 
-    private fun drawEyes(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, alpha: Float) {
-        val eyeRadius = bodyWidth * 0.04f // bigger eyes
-        val eyeX = cx - bodyWidth * 0.22f
-
-        for (side in listOf(-1f, 1f)) {
-            val eyeY = cy + side * bodyWidth * 0.08f
-
-            // Eye stalk
-            scope.drawLine(
-                color = TerrariumColors.CrayfishDark.copy(alpha = alpha),
-                start = Offset(cx - bodyWidth * 0.18f, cy + side * bodyWidth * 0.05f),
-                end = Offset(eyeX, eyeY),
-                strokeWidth = bodyWidth * 0.025f,
-            )
-
-            // ROUTING: eyes alternate bright flash. OBSERVING: slow pulse
-            val eyeColor: Color
-            val effectiveRadius: Float
-            when (visualState) {
-                CrayfishVisualState.ROUTING -> {
-                    val flash = sin(time * 2f * PI.toFloat() / (TerrariumTiming.EYE_FLASH_PERIOD_MS / 1000f) + side)
-                    val intensity = flash * 0.5f + 0.5f
-                    eyeColor = lerpColor(TerrariumColors.CrayfishEye, Color(0xFFFFFFFF), intensity * 0.5f)
-                    effectiveRadius = eyeRadius * (1f + intensity * 0.4f)
-
-                    // Glow ring around eye
-                    scope.drawCircle(
-                        color = TerrariumColors.CrayfishEye.copy(alpha = 0.3f * intensity),
-                        radius = effectiveRadius * 1.8f,
-                        center = Offset(eyeX, eyeY),
-                    )
-                }
-                CrayfishVisualState.OBSERVING -> {
-                    val pulse = sin(time * 3f + side) * 0.5f + 0.5f
-                    eyeColor = lerpColor(TerrariumColors.CrayfishEye, Color(0xFFFFFFFF), pulse * 0.3f)
-                    effectiveRadius = eyeRadius * (1f + pulse * 0.2f)
-                }
-                else -> {
-                    eyeColor = TerrariumColors.CrayfishEye
-                    effectiveRadius = eyeRadius
-                }
-            }
-
-            scope.drawCircle(
-                color = eyeColor.copy(alpha = alpha),
-                radius = effectiveRadius,
-                center = Offset(eyeX, eyeY),
-            )
-        }
+    private fun rotatePixelAroundPivot(
+        px: Float, py: Float,
+        pivotX: Float, pivotY: Float,
+        angleDegrees: Float
+    ): Pair<Float, Float> {
+        val rad = angleDegrees * PI.toFloat() / 180f
+        val dx = px - pivotX
+        val dy = py - pivotY
+        val cosA = cos(rad)
+        val sinA = sin(rad)
+        return Pair(
+            pivotX + dx * cosA - dy * sinA,
+            pivotY + dx * sinA + dy * cosA,
+        )
     }
 
     private fun drawSignalWaves(scope: DrawScope, cx: Float, cy: Float, bodyWidth: Float, canvasWidth: Float) {
-        // Much larger signal waves that radiate outward — clearly visible orchestration
         val waveSpeed = time * 2f
-        val maxRadius = canvasWidth * 0.15f // much larger radius
+        val maxRadius = canvasWidth * 0.15f
 
         for (i in 0 until 4) {
             val progress = ((waveSpeed + i * 0.25f) % 1f)
             val radius = bodyWidth * 0.3f + progress * maxRadius
             val waveAlpha = (1f - progress) * 0.35f
 
-            // Full 120° arc facing left (toward other creatures)
             scope.drawArc(
                 color = TerrariumColors.CrayfishEye.copy(alpha = waveAlpha),
                 startAngle = 120f,
@@ -391,7 +259,7 @@ class CrayfishCreature(
             )
         }
 
-        // Small data dots traveling along signal arcs
+        // Data dots traveling along signal arcs
         for (i in 0 until 6) {
             val dotProgress = ((time * 3f + i * 0.16f) % 1f)
             val dotRadius = bodyWidth * 0.3f + dotProgress * maxRadius
@@ -414,6 +282,37 @@ class CrayfishCreature(
             green = a.green + (b.green - a.green) * t,
             blue = a.blue + (b.blue - a.blue) * t,
             alpha = a.alpha + (b.alpha - a.alpha) * t,
+        )
+    }
+
+    companion object {
+        private const val EMPTY = 0
+        private const val BODY = 1
+        private const val HEAD = 2
+        private const val EYE_L = 3
+        private const val EYE_R = 4
+        private const val CLAW_L_UPPER = 5
+        private const val CLAW_L_LOWER = 6
+        private const val CLAW_R_UPPER = 7
+        private const val CLAW_R_LOWER = 8
+        private const val LEG = 9
+        private const val ANTENNA_L = 10
+        private const val ANTENNA_R = 11
+
+        private const val GRID_COLS = 12
+        private const val GRID_ROWS = 9
+
+        // 12×9 front-facing lobster pixel grid
+        private val PIXEL_GRID = arrayOf(
+            intArrayOf( 0,10, 0, 2, 2, 2, 2, 2, 2, 0,11, 0),  // row 0: antennae + head top
+            intArrayOf( 0, 5, 0, 2, 3, 2, 2, 4, 2, 0, 7, 0),  // row 1: eyes + claw roots
+            intArrayOf( 5, 5, 0, 1, 1, 1, 1, 1, 1, 0, 7, 7),  // row 2: upper body + claws
+            intArrayOf( 6, 6, 0, 1, 1, 1, 1, 1, 1, 0, 8, 8),  // row 3: mid body + claw lower
+            intArrayOf( 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0),  // row 4: lower body
+            intArrayOf( 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0),  // row 5: abdomen
+            intArrayOf( 0, 0, 9, 0, 9, 0, 0, 9, 0, 9, 0, 0),  // row 6: upper legs (4 pairs)
+            intArrayOf( 0, 0, 9, 0, 0, 0, 0, 0, 0, 9, 0, 0),  // row 7: mid legs
+            intArrayOf( 0, 0, 9, 0, 0, 0, 0, 0, 0, 9, 0, 0),  // row 8: outer legs
         )
     }
 }

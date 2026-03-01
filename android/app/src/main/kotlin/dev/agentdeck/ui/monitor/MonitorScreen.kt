@@ -241,6 +241,8 @@ private fun MonitorHUD(
         EnginePanel(
             usage = dashState.usage,
             metrics = metrics,
+            oauthConnected = dashState.oauthConnected,
+            ollamaStatus = dashState.ollamaStatus,
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 12.dp, top = 60.dp)

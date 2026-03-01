@@ -32,6 +32,58 @@ bash scripts/build-android-release.sh   # local → dist/agentdeck-v{VERSION}.ap
 
 **Release**: `git tag android-v{VERSION} && git push origin android-v{VERSION}` → GitHub Actions builds + creates Release with APK.
 
+## Android UI/UX Vision
+
+두 디바이스에서 동일한 에이전트 정보를 시각화. 정보 구성은 일관, 표현 방식만 다름.
+
+### 표시 정보 (공통)
+- **Agent Identity**: 에이전트 타입, 세션명, 현재 모델, 상태 (IDLE/PROCESSING/AWAITING 등)
+- **Event Log**: 에이전트 활동 이벤트 요약 (tool call, model call, state change)
+- **Account/Connection**: OAuth 연동 상태 (connected/disconnected), billingType, bridge connection status
+- **Usage Gauges**: 5h/7d rate limit % + 리셋까지 남은 시간, tokens, cost, uptime
+- **Ollama Status**: ollama 프로세스 상태 (running/stopped) + 실행 중 모델 목록
+- **Creature Animation**: 도트/픽셀 아트 형태의 에이전트 캐릭터 애니메이션
+
+### E-ink (Crema) 레이아웃 — 좌측 에이전트 + 우측 아쿠아리움 중심
+
+Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
+
+```
+[AgentDeck 로고]     ╭───────────────────────────────╮
+[claude-code]        │     🐙        🦞              │
+[  opus-4]           │   (octopus)  (crayfish)       │
+[  ● PROCESSING]     │  ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿  │
+[openclaw]           ╰───────────────────────────────╯
+[  gpt-4o]           OAuth✓ ●Bridge  5h ██░░ 45% 2h
+[  ● ROUTING]        > Read file...  7d ███░ 73% 3d
+[Workers: 2]         10:32 [T] Read file_path.ts
+⚙ Settings           10:33 [M] Model call opus-4
+                     10:33 [S] IDLE → PROCESSING
+```
+
+- 좌측(22%): AgentDeck 로고 + 에이전트 목록 (primary + siblings + gateway-detected)
+- 우측(78%): 아쿠아리움 수조(상단 40-50%) + context/status(중간, PROCESSING시만) + 타임라인(하단 35-38%)
+- IDLE시 context 숨김 → 수조 50% + 상태바 12% + 타임라인 38%
+- 수조: 둥근 모서리, 수면 파도, 해초, 자갈, 거품 — 수족관 느낌
+- **Multi-agent visibility**: Bridge `/health`에서 sibling state 조회, Gateway TCP probe로 OpenClaw 감지, 가상 세션 삽입
+- **Crayfish 독립 상태**: sibling OpenClaw session의 state에서 ROUTING/SITTING 결정 (primary agentType 의존 제거)
+- **Refresh zones**: 좌측 A2(200ms), 수조 FULL(500ms), context+status A2(200ms), timeline A2(300ms), IDLE status DU(2000ms)
+
+### Tablet (Lenovo) Monitor 레이아웃 — 수족관 + HUD 오버레이
+- 전체 화면: 컬러 수족관 배경 (60fps 애니메이션)
+- 반투명 HUD 패널로 동일 정보 오버레이
+- 상단: 프로젝트명, 상태, 모델
+- 좌측: Activity(현재 작업) + Multi-Agent(세션 목록)
+- 우측: Engine — rate limits + **reset times**, **OAuth**, **ollama**, tokens/cost
+- 하단: Timeline strip (이벤트 로그)
+
+### Creature Design — 도트 아트 통일
+- **OctopusCreature** (Claude Code): 10×7 픽셀 그리드, terracotta, 셀 타입 태깅
+- **CrayfishCreature** (OpenClaw): 12×9 픽셀 그리드, red/teal — drawRect 기반, **SVG Path 사용 금지**
+- 두 캐릭터 모두 동일한 drawRect 기반 픽셀 렌더링
+- 독립 애니메이션 가능한 부위별 셀 타입 분리 (눈, 팔/집게, 다리 등)
+- 상태 애니메이션: 셀 좌표 오프셋, 색상 lerp, pivot 기반 회전 (SVG transform 아님)
+
 ## Setup & Distribution
 
 ```bash

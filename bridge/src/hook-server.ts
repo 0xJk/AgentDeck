@@ -28,7 +28,7 @@ export class HookServer extends EventEmitter {
   private lastUsageEvent: BridgeEvent | null = null;
 
   // Metadata for status page / health
-  private meta: { agentType?: string; projectName?: string; clientCount?: number } = {};
+  private meta: { agentType?: string; projectName?: string; clientCount?: number; state?: string } = {};
 
   constructor() {
     super();
@@ -44,7 +44,7 @@ export class HookServer extends EventEmitter {
   }
 
   /** Update metadata shown on /health and /status */
-  setMeta(meta: { agentType?: string; projectName?: string; clientCount?: number }): void {
+  setMeta(meta: { agentType?: string; projectName?: string; clientCount?: number; state?: string }): void {
     Object.assign(this.meta, meta);
   }
 
@@ -96,6 +96,7 @@ export class HookServer extends EventEmitter {
         uptime: process.uptime(),
         agentType: this.meta.agentType,
         projectName: this.meta.projectName,
+        state: this.meta.state,
         wsClients: this.meta.clientCount ?? 0,
         sseClients: this.sseClients.length,
       });

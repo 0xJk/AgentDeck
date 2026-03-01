@@ -10,17 +10,18 @@ object TerrariumColors {
     val MidWater = Color(0xFF0F2744)
     val ShallowWater = Color(0xFF163B5C)
 
-    // Octopus
-    val OctopusBody = Color(0xFF6366F1)
-    val OctopusTentacle = Color(0xFF8B5CF6)
-    val OctopusEye = Color(0xFFE2E8F0)
-    val OctopusPupil = Color(0xFF0F172A)
+    // Claude Code mascot (pixel art — matching official terracotta)
+    val ClaudeBody = Color(0xFFC07058)       // muted terracotta/copper
+    val ClaudeBodyLight = Color(0xFFD08870)  // THINKING pulse bright
+    val ClaudeBodyDark = Color(0xFFA05840)   // shadow
+    val ClaudeEye = Color(0xFF2D1F16)        // dark brown
 
     // Crayfish (OpenClaw brand: #FF4D4D→#991B1B gradient, #00E5CC teal eyes)
     val CrayfishShell = Color(0xFFFF4D4D)
     val CrayfishDark = Color(0xFF991B1B)
     val CrayfishClaw = Color(0xFFFF4D4D)
     val CrayfishEye = Color(0xFF00E5CC)
+    val CrayfishBodyLight = Color(0xFFFF6B6B)  // ROUTING pulse bright
 
     // Neon Tetra
     val TetraNeon = Color(0xFF00E5FF)
@@ -69,10 +70,10 @@ object TerrariumLayout {
     const val OCTOPUS_BODY_RADIUS_FRACTION = 0.06f
     const val OCTOPUS_CENTER_X_FRACTION = 0.4f
     const val OCTOPUS_CENTER_Y_FRACTION = 0.45f
-    const val TENTACLE_LENGTH_FRACTION = 0.12f
+    // (TENTACLE_LENGTH_FRACTION removed — pixel mascot has no tentacles)
 
     // Crayfish sizing
-    const val CRAYFISH_WIDTH_FRACTION = 0.10f
+    const val CRAYFISH_WIDTH_FRACTION = 0.12f
     const val CRAYFISH_CENTER_X_FRACTION = 0.78f
     const val CRAYFISH_CENTER_Y_FRACTION = 0.78f
 

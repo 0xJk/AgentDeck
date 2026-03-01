@@ -44,17 +44,20 @@ import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.state.SessionMetrics
 import dev.agentdeck.state.TimelineStore
-import dev.agentdeck.ui.eink.EinkActionColumn
-import dev.agentdeck.ui.eink.EinkAgentColumn
-import dev.agentdeck.ui.eink.EinkEngineColumn
+import dev.agentdeck.ui.eink.EinkAgentPanel
+import dev.agentdeck.ui.eink.EinkContextArea
+import dev.agentdeck.ui.eink.EinkEventLog
 import dev.agentdeck.ui.eink.EinkFooterBar
+import dev.agentdeck.ui.eink.EinkAquariumFrame
+import dev.agentdeck.ui.eink.EinkPictureFrame
 import dev.agentdeck.ui.eink.EinkSettingsOverlay
+import dev.agentdeck.ui.eink.EinkStatusCompact
+import dev.agentdeck.ui.eink.EinkStatusPanel
 import dev.agentdeck.ui.eink.EinkTimelinePanel
 import dev.agentdeck.ui.eink.EinkUsageCompact
 import dev.agentdeck.ui.eink.compactStateMarker
 import dev.agentdeck.terrarium.renderer.EinkTerrariumView
 import dev.agentdeck.terrarium.toTerrariumState
-import dev.agentdeck.ui.eink.EinkEncoderMiniStrip
 import dev.agentdeck.ui.eink.EinkRefreshZone
 import dev.agentdeck.ui.eink.RefreshMode
 import android.util.Log
@@ -155,74 +158,96 @@ fun EinkMonitorScreen(
                 onSettingsClick = { showSettings = true },
             )
         } else if (isLandscape) {
-            // 3-column console layout with terrarium visualization
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Terrarium visualization band (top ~25%)
-                val terrariumState = state.toTerrariumState()
-                EinkTerrariumView(
-                    state = terrariumState,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(0.25f),
-                )
-                HorizontalDivider(thickness = 2.dp, color = Color.Black)
-                // Data columns (bottom ~75%) with per-zone refresh
-                Row(modifier = Modifier.weight(0.75f)) {
+            // Aquarium-centered layout: agent panel | aquarium + content + timeline
+            val terrariumState = state.toTerrariumState()
+            val isActive = state.agentState == AgentState.PROCESSING ||
+                state.agentState == AgentState.AWAITING_PERMISSION ||
+                state.agentState == AgentState.AWAITING_OPTION ||
+                state.agentState == AgentState.AWAITING_DIFF
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                // Left (22%): Agent panel
+                EinkRefreshZone(
+                    mode = RefreshMode.A2,
+                    debounceMs = 200,
+                    triggerKey = Triple(state.agentState, state.siblingSessions.size, state.workerSessionCount),
+                    modifier = Modifier.weight(0.22f).fillMaxHeight(),
+                ) {
+                    EinkAgentPanel(
+                        state = state,
+                        onSettingsClick = { showSettings = true },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+
+                VerticalDivider(thickness = 2.dp, color = Color.Black)
+
+                // Right (78%): Aquarium + Content + Timeline
+                Column(modifier = Modifier.weight(0.78f).fillMaxHeight()) {
+                    // Aquarium frame — large tank (bigger when IDLE)
                     EinkRefreshZone(
-                        mode = RefreshMode.A2,
-                        debounceMs = 200,
-                        triggerKey = Triple(state.agentState, state.siblingSessions.size, state.workerSessionCount),
-                        modifier = Modifier.weight(0.25f).fillMaxHeight(),
+                        mode = RefreshMode.FULL,
+                        debounceMs = 500,
+                        triggerKey = state.agentState,
+                        modifier = Modifier
+                            .weight(if (isActive) 0.40f else 0.50f)
+                            .fillMaxWidth(),
                     ) {
-                        EinkAgentColumn(
-                            state = state,
-                            onSettingsClick = { showSettings = true },
-                            modifier = Modifier.fillMaxSize(),
-                        )
+                        EinkAquariumFrame(state = terrariumState)
                     }
-                    VerticalDivider(thickness = 2.dp, color = Color.Black)
+
+                    HorizontalDivider(thickness = 1.dp, color = Color.Black)
+
+                    // Context + Status row (only when active)
+                    if (isActive) {
+                        EinkRefreshZone(
+                            mode = RefreshMode.A2,
+                            debounceMs = 200,
+                            triggerKey = Pair(state.agentState, state.currentTool),
+                            modifier = Modifier.weight(0.25f).fillMaxWidth(),
+                        ) {
+                            Row(modifier = Modifier.fillMaxSize()) {
+                                // Context area (55%)
+                                EinkContextArea(
+                                    state = state,
+                                    timelineEntries = timelineEntries,
+                                    onSelectOption = { index -> connection.sendSelectOption(index) },
+                                    modifier = Modifier.weight(0.55f).fillMaxHeight(),
+                                )
+                                VerticalDivider(thickness = 1.dp, color = Color.Black)
+                                // Compact status (45%)
+                                EinkStatusCompact(
+                                    state = state,
+                                    modifier = Modifier.weight(0.45f).fillMaxHeight(),
+                                )
+                            }
+                        }
+                    } else {
+                        // IDLE: thin status row only
+                        EinkRefreshZone(
+                            mode = RefreshMode.DU,
+                            debounceMs = 2000,
+                            triggerKey = state.usage,
+                            modifier = Modifier.weight(0.12f).fillMaxWidth(),
+                        ) {
+                            EinkStatusCompact(state = state)
+                        }
+                    }
+
+                    HorizontalDivider(thickness = 1.dp, color = Color.Black)
+
+                    // Timeline — expanded
                     EinkRefreshZone(
                         mode = RefreshMode.A2,
                         debounceMs = 300,
-                        triggerKey = Pair(state.agentState, timelineEntries.size),
-                        modifier = Modifier.weight(0.45f).fillMaxHeight(),
+                        triggerKey = timelineEntries.size,
+                        modifier = Modifier
+                            .weight(if (isActive) 0.35f else 0.38f)
+                            .fillMaxWidth(),
                     ) {
-                        EinkActionColumn(
-                            state = state,
-                            timelineEntries = timelineEntries,
-                            onSelectOption = { index ->
-                                connection.sendSelectOption(index)
-                            },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                    VerticalDivider(thickness = 2.dp, color = Color.Black)
-                    EinkRefreshZone(
-                        mode = RefreshMode.DU,
-                        debounceMs = 2000,
-                        triggerKey = state.usage,
-                        modifier = Modifier.weight(0.30f).fillMaxHeight(),
-                    ) {
-                        EinkEngineColumn(
-                            usage = state.usage,
-                            messageCount = metrics.messageCount,
-                            modifier = Modifier.fillMaxSize(),
-                        )
+                        EinkEventLog(entries = timelineEntries)
                     }
                 }
-                // Encoder mini status strip (above footer)
-                if (state.encoderStates.isNotEmpty()) {
-                    HorizontalDivider(thickness = 1.dp, color = Color.Black)
-                    EinkEncoderMiniStrip(
-                        encoderStates = state.encoderStates,
-                    )
-                }
-                HorizontalDivider(thickness = 2.dp, color = Color.Black)
-                EinkFooterBar(
-                    metrics = metrics,
-                    usage = state.usage,
-                    isEink = true,
-                )
             }
         } else {
             EinkPortraitLayout(

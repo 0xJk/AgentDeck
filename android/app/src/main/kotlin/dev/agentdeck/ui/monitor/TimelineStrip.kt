@@ -133,7 +133,7 @@ private fun typePrefix(type: String): String = when (type) {
 private fun typeColor(type: String) = when (type) {
     "tool_request", "tool_resolved", "tool_exec" -> TerrariumColors.LEDGreen
     "model_call", "model_response" -> TerrariumColors.TetraNeon
-    "memory_recall" -> TerrariumColors.OctopusBody
+    "memory_recall" -> TerrariumColors.ClaudeBody
     "chat_start", "chat_end" -> TerrariumColors.HUDText
     "error" -> TerrariumColors.LEDRed
     "state_change" -> TerrariumColors.LEDAmber

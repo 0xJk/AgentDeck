@@ -62,6 +62,19 @@ export interface DeckSlotMapEvent {
   encoders: DeckSlotConfig[];
 }
 
+// ===== Ollama Status =====
+
+export interface OllamaModel {
+  name: string;
+  size: number;
+  sizeVram: number;
+}
+
+export interface OllamaStatus {
+  available: boolean;
+  models: OllamaModel[];
+}
+
 // ===== Bridge → Plugin (State Updates) =====
 
 export interface StateUpdateEvent {
@@ -89,6 +102,10 @@ export interface StateUpdateEvent {
   pairingUrl?: string;
   /** Number of OpenClaw backend worker sessions (multi-agent) */
   workerSessionCount?: number;
+  /** Ollama process status + running models */
+  ollamaStatus?: OllamaStatus;
+  /** OpenClaw Gateway reachability (port 18789) */
+  gatewayAvailable?: boolean;
 }
 
 export interface PromptOptionsEvent {
@@ -121,6 +138,8 @@ export interface UsageEvent {
   extraUsageMonthlyLimit?: number;
   extraUsageUsedCredits?: number;
   extraUsageUtilization?: number;
+  // OAuth connection status
+  oauthConnected?: boolean;
 }
 
 export interface ConnectionEvent {
@@ -154,6 +173,7 @@ export interface SessionInfo {
   projectName: string;
   agentType?: AgentType;
   alive: boolean;
+  state?: string;  // sibling's current state from /health query
 }
 
 export interface SessionsListEvent {

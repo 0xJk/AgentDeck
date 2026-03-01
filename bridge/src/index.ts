@@ -41,7 +41,9 @@ import {
   findAvailablePort,
   detectTmuxSession,
 } from './session-registry.js';
-import { fetchUsageFromApi, type ApiUsageData } from './usage-api.js';
+import { fetchUsageFromApi, hasOAuthToken, type ApiUsageData } from './usage-api.js';
+import { OllamaProbe, type OllamaStatus } from './ollama-probe.js';
+import { probeGateway } from './gateway-probe.js';
 import { advertiseBridge } from './mdns.js';
 import { getOrCreateToken, getWsUrl } from './auth.js';
 import type { HookServer } from './hook-server.js';
@@ -269,6 +271,14 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   // API usage data (fetched from Anthropic, not from PTY)
   let cachedApiUsage: ApiUsageData | null = null;
   let lastApiFetchTime = 0;
+  let oauthConnected = hasOAuthToken();
+
+  // Ollama status probe
+  const ollamaProbe = new OllamaProbe();
+  let cachedOllamaStatus: OllamaStatus | null = null;
+
+  // Gateway availability probe
+  let cachedGatewayAvailable = false;
 
   // Model catalog (OpenClaw: from CLI)
   let cachedModelCatalog: ModelCatalogEntry[] | null = null;
@@ -374,7 +384,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
           case 'usage_info':
             usageTracker.setUsageInfo(evt.data);
             // Immediately broadcast updated usage
-            wsServer.broadcast(buildUsageEvent(stateMachine.getSnapshot(), cachedApiUsage));
+            wsServer.broadcast(buildUsageEvent(stateMachine.getSnapshot(), cachedApiUsage, oauthConnected));
             break;
           case 'user_prompt': {
             const text = evt.data?.text as string | undefined;
@@ -424,6 +434,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
 
   // 5. Wire StateMachine state changes → WsServer broadcast
   stateMachine.on('state_changed', (snapshot: StateSnapshot) => {
+    hookServer?.setMeta({ state: snapshot.state });
     journal.write('state_change', 'internal', { state: snapshot.state, permissionMode: snapshot.permissionMode, suggestedPrompt: snapshot.suggestedPrompt });
     // Compute promptType if options are present
     let promptType: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review' | undefined;
@@ -461,6 +472,8 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       modelCatalog: cachedModelCatalog ?? undefined,
       remoteUrl: snapshot.remoteUrl ?? undefined,
       pairingUrl: wsUrl,
+      ollamaStatus: cachedOllamaStatus ?? undefined,
+      gatewayAvailable: cachedGatewayAvailable || undefined,
     };
     wsServer.broadcast(stateEvent);
     broadcastSse(stateEvent);
@@ -476,7 +489,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       wsServer.broadcast(promptEvent);
     }
 
-    const usageEvt = buildUsageEvent(snapshot, cachedApiUsage);
+    const usageEvt = buildUsageEvent(snapshot, cachedApiUsage, oauthConnected);
     wsServer.broadcast(usageEvt);
     broadcastSse(usageEvt);
 
@@ -603,7 +616,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
             }
           }
           const snapshot = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage));
+          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
         });
         break;
       }
@@ -696,6 +709,8 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       suggestedPrompt: reconnectSuggestion ?? undefined,
       modelCatalog: cachedModelCatalog ?? undefined,
       pairingUrl: wsUrl,
+      ollamaStatus: cachedOllamaStatus ?? undefined,
+      gatewayAvailable: cachedGatewayAvailable || undefined,
     };
     wsServer.sendTo(ws, stateEvent);
 
@@ -709,13 +724,22 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       });
     }
 
-    wsServer.sendTo(ws, buildUsageEvent(snapshot, cachedApiUsage));
+    wsServer.sendTo(ws, buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
 
     const connectEvt: BridgeEvent = {
       type: 'connection',
       status: adapter.isAlive() ? 'connected' : 'disconnected',
+      sessionId,
     };
     wsServer.sendTo(ws, connectEvt);
+
+    // Send sibling sessions on connect (don't wait for 30s interval)
+    buildSessionsList().then((sessions) => {
+      wsServer.sendTo(ws, {
+        type: 'sessions_list',
+        sessions,
+      } as BridgeEvent);
+    });
 
     // Send current display state
     wsServer.sendTo(ws, { type: 'display_state', displayOn: displayMonitor.isDisplayOn() } as BridgeEvent);
@@ -738,11 +762,14 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
         if (apiUsage) {
           cachedApiUsage = apiUsage;
           lastApiFetchTime = Date.now();
+          oauthConnected = true;
           if (apiUsage.inferredBillingType) {
             stateMachine.inferBillingType(apiUsage.inferredBillingType);
           }
           const snap2 = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snap2, cachedApiUsage));
+          wsServer.broadcast(buildUsageEvent(snap2, cachedApiUsage, oauthConnected));
+        } else {
+          oauthConnected = hasOAuthToken();
         }
       });
     }
@@ -761,7 +788,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   const usageInterval = setInterval(() => {
     if (wsServer.getClientCount() > 0) {
       const snapshot = stateMachine.getSnapshot();
-      wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage));
+      wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
     }
   }, 5000);
 
@@ -772,31 +799,85 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
         if (apiUsage) {
           cachedApiUsage = apiUsage;
           lastApiFetchTime = Date.now();
+          oauthConnected = true;
           if (apiUsage.inferredBillingType) {
             stateMachine.inferBillingType(apiUsage.inferredBillingType);
           }
           // Broadcast updated usage so clients see fresh rate-limit data
           const snapshot = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage));
+          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
+        } else {
+          oauthConnected = hasOAuthToken();
         }
       });
     }
   }, 60_000);
 
-  // 9c. Periodic sibling sessions broadcast (for multi-session terrarium)
+  // 9b2. Periodic Ollama status probe (piggyback on state_update interval)
+  const ollamaInterval = setInterval(() => {
+    ollamaProbe.getStatus().then((status) => {
+      cachedOllamaStatus = status;
+    });
+  }, 5000);
+  // Initial probe
+  ollamaProbe.getStatus().then((status) => {
+    cachedOllamaStatus = status;
+  });
+
+  // 9b3. Periodic Gateway probe (OpenClaw availability)
+  const gatewayInterval = setInterval(() => {
+    probeGateway().then((status) => {
+      cachedGatewayAvailable = status.available;
+    });
+  }, 5000);
+  // Initial probe
+  probeGateway().then((status) => {
+    cachedGatewayAvailable = status.available;
+  });
+
+  // 9c. Enrich sibling sessions with state from /health
+  async function enrichSessionsWithState(sessions: ReturnType<typeof listActiveSessions>): Promise<Array<{
+    id: string; port: number; projectName: string; agentType?: AgentType; alive: boolean; state?: string;
+  }>> {
+    return Promise.all(sessions.map(async (s) => {
+      const base = { id: s.id, port: s.port, projectName: s.projectName, agentType: s.agentType as AgentType | undefined, alive: true };
+      if (s.id === sessionId) return { ...base, state: stateMachine.getSnapshot().state };
+      try {
+        const res = await fetch(`http://127.0.0.1:${s.port}/health`, { signal: AbortSignal.timeout(2000) });
+        const data = await res.json() as { state?: string };
+        return { ...base, state: data.state };
+      } catch {
+        return base;
+      }
+    }));
+  }
+
+  async function buildSessionsList() {
+    const siblings = listActiveSessions();
+    const enriched = await enrichSessionsWithState(siblings);
+    // Inject virtual OpenClaw session if Gateway is available but no OC bridge running
+    if (cachedGatewayAvailable && !enriched.some(s => s.agentType === 'openclaw')) {
+      enriched.push({
+        id: 'gateway-openclaw',
+        port: 18789,
+        projectName: 'OpenClaw',
+        agentType: 'openclaw',
+        alive: true,
+        state: 'idle',
+      });
+    }
+    return enriched;
+  }
+
+  // 9c2. Periodic sibling sessions broadcast (for multi-session terrarium)
   const sessionsListInterval = setInterval(() => {
     if (wsServer.getClientCount() > 0) {
-      const siblings = listActiveSessions();
-      wsServer.broadcast({
-        type: 'sessions_list',
-        sessions: siblings.map((s) => ({
-          id: s.id,
-          port: s.port,
-          projectName: s.projectName,
-          agentType: s.agentType,
-          alive: true,
-        })),
-      } as BridgeEvent);
+      buildSessionsList().then((sessions) => {
+        wsServer.broadcast({
+          type: 'sessions_list',
+          sessions,
+        } as BridgeEvent);
+      });
     }
   }, 30_000);
 
@@ -877,6 +958,8 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     log('[sdc] Shutting down...');
     clearInterval(usageInterval);
     clearInterval(apiUsageInterval);
+    clearInterval(ollamaInterval);
+    clearInterval(gatewayInterval);
     clearInterval(sessionsListInterval);
     deregisterSession(sessionId);
 
@@ -914,7 +997,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   });
 }
 
-function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null): BridgeEvent {
+function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null, oauthStatus?: boolean): BridgeEvent {
   return {
     type: 'usage_update',
     sessionDurationSec: snapshot.sessionDurationSec,
@@ -935,6 +1018,7 @@ function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null
     extraUsageMonthlyLimit: apiUsage?.extraUsageMonthlyLimit ?? undefined,
     extraUsageUsedCredits: apiUsage?.extraUsageUsedCredits ?? undefined,
     extraUsageUtilization: apiUsage?.extraUsageUtilization ?? undefined,
+    oauthConnected: oauthStatus,
   };
 }
 

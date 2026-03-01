@@ -8,6 +8,7 @@ import dev.agentdeck.net.DeckSlotConfig
 import dev.agentdeck.net.EncoderSlotState
 import dev.agentdeck.net.ModelCatalogEntry
 import dev.agentdeck.net.OcSessionStatus
+import dev.agentdeck.net.OllamaStatus
 import dev.agentdeck.net.PermissionMode
 import dev.agentdeck.net.PromptOption
 import dev.agentdeck.net.SessionInfo
@@ -54,6 +55,9 @@ data class DashboardState(
     val encoderTakeoverActive: Boolean = false,
     val buttonSlotMap: List<DeckSlotConfig>? = null,
     val encoderSlotMap: List<DeckSlotConfig>? = null,
+    val oauthConnected: Boolean? = null,
+    val ollamaStatus: OllamaStatus? = null,
+    val gatewayAvailable: Boolean? = null,
 )
 
 class AgentStateHolder private constructor() {
@@ -103,6 +107,8 @@ class AgentStateHolder private constructor() {
                         navigable = event.data.navigable,
                         cursorIndex = event.data.cursorIndex,
                         workerSessionCount = event.data.workerSessionCount ?: current.workerSessionCount,
+                        ollamaStatus = event.data.ollamaStatus ?: current.ollamaStatus,
+                        gatewayAvailable = event.data.gatewayAvailable ?: current.gatewayAvailable,
                     )
                 }
                 lastKnownState = _state.value
@@ -111,7 +117,10 @@ class AgentStateHolder private constructor() {
             }
 
             is BridgeEvent.Usage -> {
-                _state.update { it.copy(usage = event.data) }
+                _state.update { it.copy(
+                    usage = event.data,
+                    oauthConnected = event.data.oauthConnected ?: it.oauthConnected,
+                ) }
                 lastKnownState = _state.value
                 SessionMetrics.instance.onMessageReceived()
             }

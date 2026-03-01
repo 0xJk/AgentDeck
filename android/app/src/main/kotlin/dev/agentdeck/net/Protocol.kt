@@ -93,6 +93,8 @@ data class StateUpdate(
     val sessionStatus: OcSessionStatus? = null,
     val pairingUrl: String? = null,
     val workerSessionCount: Int? = null,
+    val ollamaStatus: OllamaStatus? = null,
+    val gatewayAvailable: Boolean? = null,
 )
 
 @Serializable
@@ -110,6 +112,20 @@ data class UsageUpdate(
     val extraUsageMonthlyLimit: Double? = null,
     val extraUsageUsedCredits: Double? = null,
     val extraUsageUtilization: Double? = null,
+    val oauthConnected: Boolean? = null,
+)
+
+@Serializable
+data class OllamaModel(
+    val name: String,
+    val size: Long = 0,
+    val sizeVram: Long = 0,
+)
+
+@Serializable
+data class OllamaStatus(
+    val available: Boolean = false,
+    val models: List<OllamaModel> = emptyList(),
 )
 
 @Serializable
@@ -153,6 +169,7 @@ data class SessionInfo(
     val projectName: String? = null,
     val agentType: String? = null,
     val alive: Boolean = true,
+    val state: String? = null,
 )
 
 sealed class BridgeEvent {
