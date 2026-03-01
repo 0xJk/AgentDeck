@@ -127,6 +127,10 @@ export class GatewayClient extends EventEmitter implements AgentLink {
   private sessionStatus: OcSessionStatus | null = null;
   private statusPollTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Stuck detection — revert to IDLE if no delta received for too long
+  private lastDeltaTime = 0;
+  private static readonly STUCK_TIMEOUT_MS = 120_000; // 2 minutes
+
   // Device identity
   private deviceIdentity: DeviceIdentity | null = null;
   private deviceAuthToken: DeviceAuthToken | null = null;
@@ -549,6 +553,9 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
         switch (chatState) {
           case 'delta': {
+            // Track last delta for stuck detection
+            this.lastDeltaTime = Date.now();
+
             // Capture prompt from Gateway-initiated tasks
             const deltaPrompt = payload.prompt as string | undefined;
             if (deltaPrompt && !this.lastPrompt) this.lastPrompt = deltaPrompt;
@@ -571,6 +578,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
           case 'final': {
             this.chatStarted = false;
+            this.lastDeltaTime = 0;
             const elapsed = this.chatStartTime > 0 ? Math.round((Date.now() - this.chatStartTime) / 1000) : 0;
             const parts: string[] = ['Completed'];
             if (elapsed > 0) parts.push(elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`);
@@ -603,6 +611,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
           case 'aborted': {
             this.chatStarted = false;
+            this.lastDeltaTime = 0;
             const elapsed = this.chatStartTime > 0 ? Math.round((Date.now() - this.chatStartTime) / 1000) : 0;
             const abortParts: string[] = ['Aborted'];
             if (elapsed > 0) abortParts.push(`after ${elapsed}s`);
@@ -625,6 +634,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
           case 'error':
             this.chatStarted = false;
+            this.lastDeltaTime = 0;
             this.addTimelineEntry({ ts: Date.now(), type: 'error', raw: (payload.errorMessage as string) || 'Error' });
             this.currentRunId = null;
             this.lastPrompt = null;
@@ -1006,6 +1016,25 @@ export class GatewayClient extends EventEmitter implements AgentLink {
     this.fetchFullStatus();
     this.statusPollTimer = setInterval(() => {
       this.fetchFullStatus();
+
+      // Stuck detection: if PROCESSING with no delta for STUCK_TIMEOUT_MS, revert to IDLE
+      if (this.state === State.PROCESSING && this.lastDeltaTime > 0) {
+        const elapsed = Date.now() - this.lastDeltaTime;
+        if (elapsed > GatewayClient.STUCK_TIMEOUT_MS) {
+          dwarn(TAG, `Stuck in PROCESSING for ${Math.round(elapsed / 1000)}s — reverting to IDLE`);
+          this.chatStarted = false;
+          this.lastDeltaTime = 0;
+          this.currentRunId = null;
+          this.lastPrompt = null;
+          this.chatToolNames = [];
+          this.addTimelineEntry({ ts: Date.now(), type: 'error', raw: 'Stuck timeout — auto-recovered' });
+          this.state = State.IDLE;
+          this.stopStatusPoll();
+          this.emitStateUpdate();
+          return;
+        }
+      }
+
       this.emitStateUpdate();
     }, 10_000);
   }
