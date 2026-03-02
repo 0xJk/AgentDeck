@@ -883,49 +883,55 @@ export class GatewayClient extends EventEmitter implements AgentLink {
     }
 
     const bin = resolveOpenClawBin();
-    try {
-      const output = execSync(`${bin} models list --json`, {
-        timeout: 5000,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        env: { ...process.env, PATH: augmentedPath() },
-      }).trim();
+    execFile(bin, ['models', 'list', '--json'], {
+      timeout: 5000,
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: augmentedPath() },
+    }, (err, stdout) => {
+      if (err) {
+        dlog(TAG, `Model catalog fetch failed: ${err}`);
+        if (retries > 0 && this._connected) {
+          dlog(TAG, `Retrying model catalog in 10s (${retries} left)`);
+          setTimeout(() => this.fetchModelCatalog(retries - 1), 10_000);
+        }
+        return;
+      }
 
-      const result = JSON.parse(output) as { count: number; models: Array<{
-        key: string; name: string; tags?: string[]; available?: boolean;
-      }> };
+      try {
+        const result = JSON.parse(stdout.trim()) as {
+          count: number; models: Array<{
+            key: string; name: string; tags?: string[]; available?: boolean;
+          }>
+        };
 
-      if (!result.models || !Array.isArray(result.models)) return;
+        if (!result.models || !Array.isArray(result.models)) return;
 
-      this.modelCatalog = result.models.map((m) => {
-        let role: ModelCatalogEntry['role'] = 'configured';
-        const tags = m.tags ?? [];
-        if (tags.includes('default')) {
-          role = 'default';
-        } else {
-          for (const tag of tags) {
-            const match = tag.match(/^fallback#(\d+)$/);
-            if (match) {
-              role = `fallback-${match[1]}` as `fallback-${number}`;
-              break;
+        this.modelCatalog = result.models.map((m) => {
+          let role: ModelCatalogEntry['role'] = 'configured';
+          const tags = m.tags ?? [];
+          if (tags.includes('default')) {
+            role = 'default';
+          } else {
+            for (const tag of tags) {
+              const match = tag.match(/^fallback#(\d+)$/);
+              if (match) {
+                role = `fallback-${match[1]}` as `fallback-${number}`;
+                break;
+              }
             }
           }
-        }
-        return { name: m.name, role, available: m.available !== false };
-      });
-      this.modelCatalogTime = now;
+          return { name: m.name, role, available: m.available !== false };
+        });
+        this.modelCatalogTime = Date.now();
 
-      dlog(TAG, `Model catalog: ${this.modelCatalog.length} models`);
+        dlog(TAG, `Model catalog: ${this.modelCatalog.length} models`);
 
-      // Re-emit state with catalog
-      this.emitStateUpdate();
-    } catch (err) {
-      dlog(TAG, `Model catalog fetch failed: ${err}`);
-      if (retries > 0 && this._connected) {
-        dlog(TAG, `Retrying model catalog in 10s (${retries} left)`);
-        setTimeout(() => this.fetchModelCatalog(retries - 1), 10_000);
+        // Re-emit state with catalog
+        this.emitStateUpdate();
+      } catch (parseErr) {
+        dlog(TAG, `Model catalog parse failed: ${parseErr}`);
       }
-    }
+    });
   }
 
   /** Fetch scheduled/future tasks from Gateway (silently ignored if unsupported). */
@@ -952,10 +958,12 @@ export class GatewayClient extends EventEmitter implements AgentLink {
     try {
       const result = await this.rpcCall('events.history', { since });
       if (!result || typeof result !== 'object') return;
-      const resp = result as { events?: Array<{
-        ts: number; type: string; raw: string;
-        approvalId?: string; status?: string;
-      }> };
+      const resp = result as {
+        events?: Array<{
+          ts: number; type: string; raw: string;
+          approvalId?: string; status?: string;
+        }>
+      };
       if (!resp.events || resp.events.length === 0) return;
       const entries: TimelineEntry[] = resp.events
         .filter((e) => ['tool_request', 'tool_resolved', 'chat_start', 'chat_end', 'error'].includes(e.type))
@@ -1057,10 +1065,12 @@ export class GatewayClient extends EventEmitter implements AgentLink {
       const result = await this.rpcCall('events.history', { since });
       if (!result || typeof result !== 'object') return;
 
-      const resp = result as { events?: Array<{
-        ts: number; type: string; raw?: string; command?: string; tool?: string;
-        content?: string; text?: string; response?: string; message?: string; summary?: string;
-      }> };
+      const resp = result as {
+        events?: Array<{
+          ts: number; type: string; raw?: string; command?: string; tool?: string;
+          content?: string; text?: string; response?: string; message?: string; summary?: string;
+        }>
+      };
       if (!resp.events || resp.events.length === 0) return;
 
       // Diagnostic: log event structure for response text discovery
@@ -1176,7 +1186,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
    * Emit a state_update BridgeEvent matching the current internal state.
    * This is what the plugin event handlers expect.
    */
-  private emitStateUpdate(): void {
+  public emitStateUpdate(): void {
     const ev: StateUpdateEvent = {
       type: 'state_update',
       state: this.state,

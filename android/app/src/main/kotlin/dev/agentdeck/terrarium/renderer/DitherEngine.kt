@@ -6,8 +6,31 @@ import android.graphics.Color
 /**
  * Floyd-Steinberg dithering engine — converts ARGB bitmap to quantized grayscale.
  * Error diffusion weights: 7/16, 3/16, 5/16, 1/16.
+ *
+ * All methods use bulk getPixels/setPixels to minimize JNI overhead
+ * (2 calls vs 2×W×H per-pixel calls on a 600×300 bitmap).
  */
 object DitherEngine {
+
+    /** Extract luminance from bulk pixel array into float buffer. */
+    private fun extractLuminance(pixels: IntArray, lum: FloatArray) {
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            lum[i] = 0.299f * Color.red(pixel) + 0.587f * Color.green(pixel) + 0.114f * Color.blue(pixel)
+        }
+    }
+
+    /** Write gray values from float buffer back to pixel array (opaque gray). */
+    private fun writeLuminance(pixels: IntArray, lum: FloatArray, binarize: Boolean = false) {
+        for (i in pixels.indices) {
+            val v = if (binarize) {
+                if (lum[i] > 127.5f) 255 else 0
+            } else {
+                lum[i].toInt().coerceIn(0, 255)
+            }
+            pixels[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+        }
+    }
 
     /**
      * Quantize to N gray levels with Floyd-Steinberg error diffusion.
@@ -17,18 +40,12 @@ object DitherEngine {
     fun quantizeGray(bitmap: Bitmap, levels: Int = 16) {
         val w = bitmap.width
         val h = bitmap.height
-        val step = 255f / (levels - 1)
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
 
+        val step = 255f / (levels - 1)
         val lum = FloatArray(w * h)
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val pixel = bitmap.getPixel(x, y)
-                val r = Color.red(pixel)
-                val g = Color.green(pixel)
-                val b = Color.blue(pixel)
-                lum[y * w + x] = 0.299f * r + 0.587f * g + 0.114f * b
-            }
-        }
+        extractLuminance(pixels, lum)
 
         for (y in 0 until h) {
             for (x in 0 until w) {
@@ -50,12 +67,8 @@ object DitherEngine {
             }
         }
 
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val v = lum[y * w + x].toInt().coerceIn(0, 255)
-                bitmap.setPixel(x, y, Color.rgb(v, v, v))
-            }
-        }
+        writeLuminance(pixels, lum)
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
     }
 
     /**
@@ -64,19 +77,11 @@ object DitherEngine {
     fun floydSteinberg(bitmap: Bitmap) {
         val w = bitmap.width
         val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
 
-        // Work with luminance values as floats for error accumulation
         val lum = FloatArray(w * h)
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val pixel = bitmap.getPixel(x, y)
-                val r = Color.red(pixel)
-                val g = Color.green(pixel)
-                val b = Color.blue(pixel)
-                // ITU-R BT.601 luminance
-                lum[y * w + x] = 0.299f * r + 0.587f * g + 0.114f * b
-            }
-        }
+        extractLuminance(pixels, lum)
 
         for (y in 0 until h) {
             for (x in 0 until w) {
@@ -86,8 +91,6 @@ object DitherEngine {
                 lum[idx] = newVal
 
                 val error = oldVal - newVal
-
-                // Diffuse error to neighbors
                 if (x + 1 < w)
                     lum[idx + 1] += error * 7f / 16f
                 if (y + 1 < h) {
@@ -100,13 +103,8 @@ object DitherEngine {
             }
         }
 
-        // Write back to bitmap
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val v = if (lum[y * w + x] > 127.5f) 255 else 0
-                bitmap.setPixel(x, y, Color.rgb(v, v, v))
-            }
-        }
+        writeLuminance(pixels, lum, binarize = true)
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
     }
 
     /**
@@ -117,15 +115,17 @@ object DitherEngine {
     fun snapToNearestGray(bitmap: Bitmap, levels: Int = 16) {
         val w = bitmap.width
         val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
         val step = 255f / (levels - 1)
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val pixel = bitmap.getPixel(x, y)
-                val lum = 0.299f * Color.red(pixel) + 0.587f * Color.green(pixel) + 0.114f * Color.blue(pixel)
-                val snapped = (Math.round(lum / step) * step).toInt().coerceIn(0, 255)
-                bitmap.setPixel(x, y, Color.rgb(snapped, snapped, snapped))
-            }
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            val lum = 0.299f * Color.red(pixel) + 0.587f * Color.green(pixel) + 0.114f * Color.blue(pixel)
+            val snapped = (Math.round(lum / step) * step).toInt().coerceIn(0, 255)
+            pixels[i] = (0xFF shl 24) or (snapped shl 16) or (snapped shl 8) or snapped
         }
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
     }
 
     /**
@@ -137,17 +137,11 @@ object DitherEngine {
 
         val w = bitmap.width
         val h = bitmap.height
-        val lum = FloatArray(w * h)
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
 
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val pixel = bitmap.getPixel(x, y)
-                val r = Color.red(pixel)
-                val g = Color.green(pixel)
-                val b = Color.blue(pixel)
-                lum[y * w + x] = 0.299f * r + 0.587f * g + 0.114f * b
-            }
-        }
+        val lum = FloatArray(w * h)
+        extractLuminance(pixels, lum)
 
         for (y in 0 until h) {
             for (x in 0 until w) {
@@ -157,7 +151,6 @@ object DitherEngine {
                 lum[idx] = newVal
 
                 val error = oldVal - newVal
-
                 if (x + 1 < w)
                     lum[idx + 1] += error * 7f / 16f
                 if (y + 1 < h) {
@@ -170,11 +163,7 @@ object DitherEngine {
             }
         }
 
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val v = if (lum[y * w + x] > 127.5f) 255 else 0
-                bitmap.setPixel(x, y, Color.rgb(v, v, v))
-            }
-        }
+        writeLuminance(pixels, lum, binarize = true)
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
     }
 }

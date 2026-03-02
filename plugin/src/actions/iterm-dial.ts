@@ -212,6 +212,11 @@ function stopPolling(): void {
   }
 }
 
+/** Suppress iTerm auto-switch for SKIP_AFTER_ACTION ms (called by manual session cycling) */
+export function suppressAutoSwitch(): void {
+  lastActionAt = Date.now();
+}
+
 export function initItermDial(bridge: ConnectionManager): void {
   bridgeRef = bridge;
   dinfo('ItermDial', 'initItermDial called');

@@ -26,6 +26,7 @@ AgentDeck turns your Elgato Stream Deck+ into a physical control surface for AI 
 | **Platform** | macOS 14+ (Sonoma) — Windows/Linux not supported |
 | **Hardware** | Elgato Stream Deck+ (8 keys, 4 encoders, LCD touch strip) |
 | **Terminal** | iTerm2 (required for session management and voice paste) |
+| **Android** | *(Optional)* Android 10+ tablet or e-ink reader for remote dashboard |
 
 ---
 
@@ -37,6 +38,7 @@ AgentDeck turns your Elgato Stream Deck+ into a physical control surface for AI 
 - [Manual Build & Install](#manual-build--install)
 - [Usage](#usage)
 - [Stream Deck+ Layout (v3)](#stream-deck-layout-v3)
+- [Android Dashboard](#android-dashboard)
 - [State Machine](#state-machine)
 - [WebSocket Protocol](#websocket-protocol)
 - [Project Structure](#project-structure)
@@ -80,6 +82,14 @@ The bridge stays transparent: if it's off, Claude Code works exactly as before.
 | **Claude Code** | Supported (primary) |
 | **OpenClaw** | Experimental — Gateway WebSocket, timeline panel, log stream |
 
+### Supported Surfaces
+
+| Surface | Status |
+|---------|--------|
+| **Stream Deck+** | Primary — 8 keys, 4 encoders, LCD touch strip |
+| **Android Tablet** | Color terrarium + HUD overlay (60fps) |
+| **Android E-ink** | B&W aquarium + partial refresh (A2/DU/FULL) |
+
 ### Architecture
 
 ```
@@ -115,7 +125,13 @@ The bridge stays transparent: if it's off, Claude Code works exactly as before.
                                                              │  │ Voice        │  │
                                                              │  │ whisper.cpp  │  │
                                                              │  └──────────────┘  │
-                                                             └────────────────────┘
+                                                             └────────┬───────────┘
+                                                                      │
+┌──────────────────────┐   WebSocket (ws://LAN:9120) + mDNS          │
+│  Android Dashboard   │◄────────────────────────────────────────────►│
+│  (Jetpack Compose)   │   SSE / state updates / voice transcribe
+│  E-ink / Tablet      │
+└──────────────────────┘
 ```
 
 **Multi-surface control (macOS host + Stream Deck + Android)**
@@ -542,6 +558,89 @@ Rotate E2 to scroll, push to confirm. The wide canvas auto-scrolls to keep the s
 
 ---
 
+## Android Dashboard
+
+Monitor and control your AI agents from any Android device — no Stream Deck required.
+
+<p align="center">
+  <img src="docs/media/android-tablet.png" width="360" alt="Android tablet — color terrarium with HUD overlay showing agent status">
+  &nbsp;&nbsp;
+  <img src="docs/media/android-eink.png" width="360" alt="Android e-ink — B&W aquarium dashboard on Crema S">
+</p>
+<p align="center"><em>Left: Tablet mode (color terrarium + HUD) &nbsp;|&nbsp; Right: E-ink mode (Crema S, B&W aquarium)</em></p>
+
+The Android app connects to the same bridge server over your local network, giving you a second screen for agent monitoring and a full mirror of the Stream Deck controls.
+
+### Two Display Modes
+
+**E-ink mode** (Crema S, Onyx, Kobo)
+- Aquarium-centered B&W dashboard — pixel art creatures in a 16-level grayscale terrarium
+- Partial refresh zones: A2 (200ms) for fast UI, DU for status, FULL (500ms) for the aquarium
+- Left panel (22%): agent list with state indicators
+- Right panel (78%): aquarium + rate limits/models + event timeline
+
+**Tablet mode** (Lenovo, general Android tablets)
+- Full-color terrarium background with 60fps creature animation
+- Semi-transparent HUD panels overlay agent status, rate limits, timeline
+- Identical information to e-ink, expressed through color and motion
+
+### Terrarium Creatures
+
+The aquarium is more than decoration — creatures respond to agent state in real-time:
+
+| Creature | Agent | Behavior |
+|----------|-------|----------|
+| **Octopus** (14×5 pixel grid) | Claude Code | PROCESSING → starburst animation + tentacle wave. IDLE → rests near the sand. Per-session instances with name hats |
+| **Crayfish** (SVG path art) | OpenClaw | ROUTING → claw clap + signal waves + eye flash. SITTING → heartbeat glow (4s double-pulse) |
+| **Neon Tetra** (14 fish, 2 schools) | Ambient | Boids flocking with Lissajous school paths. Attracted to active agents — swim toward data particles during PROCESSING |
+
+### Displayed Information
+
+- **Agent status**: type, session name, model, state (IDLE / PROCESSING / AWAITING)
+- **Rate limits**: 5h and 7d usage gauges with reset countdown timers
+- **Models**: OAuth-connected models + locally running Ollama models
+- **Event timeline**: tool calls, model calls, state changes — timestamped log
+- **Connection**: bridge status, billing type, uptime
+
+### Three-Tab Navigation
+
+| Tab | Content |
+|-----|---------|
+| **Dashboard** | Terrarium background + HUD overlay panels. Connection overlay when disconnected (mDNS discovery, QR pairing) |
+| **Deck** | Full Stream Deck+ mirror — 4 encoder panels (swipe/tap/long-press gestures) + 2×4 button grid with context area |
+| **Settings** | Bridge connection, display preferences |
+
+### Supported Devices
+
+| Device | Chip | EPD API |
+|--------|------|---------|
+| **Crema S** | Rockchip RK3566 | `android.os.EinkManager` — `setMode()` + `sendOneFullFrame()` |
+| **Onyx Boox** | — | `BaseDevice.setViewDefaultUpdateMode()` |
+| **Kobo** (via Android) | — | Fallback `invalidate()` |
+| **General tablets** | — | Standard Android rendering (color, 60fps) |
+
+### Build & Install
+
+```bash
+# Build APK locally (requires JDK 17+)
+bash scripts/build-android-release.sh    # → dist/agentdeck-v{VERSION}.apk
+
+# Or download from GitHub Releases
+# git tag android-v{VERSION} && git push origin android-v{VERSION}  → CI builds APK
+```
+
+### Connect to Bridge
+
+The app finds your bridge automatically:
+
+1. **mDNS** — the bridge advertises `_agentdeck._tcp` on your local network; the app discovers it within seconds
+2. **QR pairing** — run `sdc qr` on your Mac, scan with the app's camera (CameraX + ML Kit)
+3. **Manual** — enter the bridge IP and port in Settings
+
+Once connected, the app receives real-time state updates over WebSocket and can send commands (button presses, encoder gestures, voice transcription) back to the bridge.
+
+---
+
 ## State Machine
 
 The bridge combines hook events and PTY output parsing to maintain 6 states:
@@ -729,8 +828,16 @@ AgentDeck/
 │   └── src/
 │       └── setup.ts              # npx @agentdeck/setup entry point
 │
-├── android/                      # E-ink monitoring app (Jetpack Compose)
-│   ├── app/src/main/java/...     # Screens, services, composables
+├── android/                      # Android dashboard app (Jetpack Compose)
+│   ├── app/src/main/kotlin/
+│   │   └── dev/agentdeck/
+│   │       ├── net/              # WebSocket client, protocol parsing
+│   │       ├── state/            # AgentState, mDNS discovery
+│   │       ├── terrarium/        # Creature animation, renderer, e-ink engine
+│   │       ├── ui/monitor/       # Tablet HUD panels (activity, engine, timeline)
+│   │       ├── ui/eink/          # E-ink components (status, agent panel, aquarium)
+│   │       ├── ui/deck/          # SD+ mirror (buttons, encoder strip)
+│   │       └── ui/screen/        # Screen composables (Dashboard, Deck, Settings)
 │   └── build.gradle.kts          # minSdk 29, CATEGORY_HOME launcher
 │
 ├── config/
@@ -888,7 +995,7 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 - ~~OpenClaw integration~~ — Adapter, Gateway WebSocket, timeline panel (3-layer), log stream
 - ~~Agent-agnostic bridge protocol~~ — AgentAdapter interface, multi-agent command routing
 - ~~Multi-surface monitoring~~ — mDNS discovery, auth tokens, SSE, remote WebSocket
-- ~~Android launcher app~~ — Jetpack Compose scaffold, NSD, QR pairing, e-ink themes
+- ~~Android dashboard~~ — E-ink terrarium (Crema/Onyx/Kobo) + tablet HUD, SD+ Deck mirroring, voice transcription
 - ~~npm publish~~ — `@agentdeck/shared`, `@agentdeck/bridge`, `@agentdeck/setup` on npm
 
 ### Remaining

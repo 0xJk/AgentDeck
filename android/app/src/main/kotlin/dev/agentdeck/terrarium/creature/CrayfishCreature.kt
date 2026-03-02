@@ -56,11 +56,23 @@ class CrayfishCreature(
         }
     }
 
+    /** Current center position in fraction coords (for DataParticleSystem targeting). */
+    fun currentPosition(): Pair<Float, Float> = currentXFraction to currentYFraction
+
+    /** Whether the crayfish is actively routing (orchestrating). */
+    fun isRouting(): Boolean = visualState == CrayfishVisualState.ROUTING
+
+    private var currentXFraction = centerXFraction
+    private var currentYFraction = centerYFraction
+    private var heartbeatPhase = 0f
+
     override fun update(dt: Float) {
         time += dt
         if (transitionProgress < 1f) {
             transitionProgress = (transitionProgress + dt * 2f).coerceAtMost(1f)
         }
+        // Track heartbeat phase for SITTING pulse (~4 second cycle)
+        heartbeatPhase += dt
     }
 
     override fun draw(scope: DrawScope) {
@@ -97,6 +109,10 @@ class CrayfishCreature(
             }
         }
 
+        // Track current position for DataParticleSystem targeting
+        currentXFraction = effectiveCX / w
+        currentYFraction = effectiveCY / h
+
         // ROUTING: draw signal waves BEHIND creature
         if (visualState == CrayfishVisualState.ROUTING) {
             drawSignalWaves(scope, effectiveCX, effectiveCY, bodyWidth, w)
@@ -111,6 +127,23 @@ class CrayfishCreature(
                 radius = glowRadius,
                 center = Offset(effectiveCX, effectiveCY),
             )
+        }
+
+        // SITTING: subtle heartbeat glow every ~4 seconds
+        if (visualState == CrayfishVisualState.SITTING) {
+            val cycle = heartbeatPhase % 4f
+            // Double-pulse heartbeat: two quick pulses then rest
+            val pulse = if (cycle < 0.15f) sin(cycle / 0.15f * PI.toFloat())
+                else if (cycle in 0.25f..0.40f) sin((cycle - 0.25f) / 0.15f * PI.toFloat()) * 0.6f
+                else 0f
+            if (pulse > 0.01f) {
+                val glowRadius = bodyWidth * (0.25f + pulse * 0.08f)
+                scope.drawCircle(
+                    color = TerrariumColors.CrayfishEye.copy(alpha = 0.08f * pulse),
+                    radius = glowRadius,
+                    center = Offset(effectiveCX, effectiveCY),
+                )
+            }
         }
 
         // Draw SVG-based creature

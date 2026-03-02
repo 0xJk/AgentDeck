@@ -160,6 +160,8 @@ export interface UsageEvent {
   extraUsageUtilization?: number;
   // OAuth connection status
   oauthConnected?: boolean;
+  // Ollama process status + running models (piggyback on usage polling)
+  ollamaStatus?: OllamaStatus;
 }
 
 export interface ConnectionEvent {

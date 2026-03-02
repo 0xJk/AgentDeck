@@ -2,9 +2,11 @@ package dev.agentdeck.ui.deck
 
 import androidx.compose.ui.graphics.Color
 import dev.agentdeck.net.AgentState
+import dev.agentdeck.net.ButtonSlotState
 import dev.agentdeck.net.PermissionMode
 import dev.agentdeck.net.PromptOption
 import dev.agentdeck.state.DashboardState
+import dev.agentdeck.ui.deck.parseHexColor
 
 // --- Actions that a deck button can trigger ---
 
@@ -84,6 +86,47 @@ fun colorForOption(opt: PromptOption): OptionColors {
 // --- Layout computation: returns 8 buttons matching SD+ slot positions ---
 
 fun computeDeckLayout(state: DashboardState): List<DeckButtonConfig> {
+    // Prefer bridge-driven button state when available
+    if (state.buttonStates.isNotEmpty()) {
+        return state.buttonStates.map { it.toDeckButtonConfig() }
+    }
+    return computeLocalDeckLayout(state)
+}
+
+/** Convert bridge ButtonSlotState to local DeckButtonConfig */
+private fun ButtonSlotState.toDeckButtonConfig(): DeckButtonConfig {
+    val bg = parseHexColor(bgColor)
+    val text = parseHexColor(textColor)
+    val localAction = when {
+        action == null -> DeckAction.Noop
+        action == "switch_mode" -> DeckAction.SwitchMode
+        action == "interrupt" -> DeckAction.Interrupt
+        action == "escape" -> DeckAction.Escape
+        action == "expand_options" -> DeckAction.ShowMoreOptions
+        action.startsWith("command:") -> DeckAction.Command(action.removePrefix("command:"))
+        action.startsWith("respond:") -> DeckAction.Respond(action.removePrefix("respond:"))
+        action.startsWith("select_option:") -> {
+            val idx = action.removePrefix("select_option:").toIntOrNull() ?: 0
+            DeckAction.SelectOption(idx)
+        }
+        else -> DeckAction.Noop
+    }
+    return DeckButtonConfig(
+        title = title,
+        subtitle = subtitle,
+        bgColor = bg,
+        textColor = text,
+        enabled = enabled,
+        action = localAction,
+        dim = dim,
+        icon = icon,
+        badge = badge,
+        actionString = action,
+    )
+}
+
+/** Local fallback layout when bridge doesn't send button_state */
+private fun computeLocalDeckLayout(state: DashboardState): List<DeckButtonConfig> {
     val agentState = state.agentState
     val options = state.options
 

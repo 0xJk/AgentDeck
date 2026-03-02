@@ -64,7 +64,6 @@ object TerrariumLayout {
     // Scene proportions (fraction of canvas)
     const val SAND_HEIGHT_FRACTION = 0.28f
     const val ROCK_HEIGHT_FRACTION = 0.25f
-    const val WATER_SURFACE_Y_FRACTION = 0.05f
 
     // Octopus sizing (fraction of canvas width)
     const val OCTOPUS_BODY_RADIUS_FRACTION = 0.07f
@@ -131,7 +130,6 @@ object TerrariumTiming {
     const val ERROR_SPAWN_INTERVAL_MS = 100f
 
     // Environment
-    const val SURFACE_WAVE_SPEED = 0.4f
     const val CAUSTICS_SPEED = 1.5f
     const val KELP_SWAY_SPEED = 1.0f
     const val LED_PULSE_SPEED = 2.0f

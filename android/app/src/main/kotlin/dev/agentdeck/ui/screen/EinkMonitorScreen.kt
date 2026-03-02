@@ -57,6 +57,7 @@ import dev.agentdeck.ui.eink.EinkUsageCompact
 import dev.agentdeck.ui.eink.compactStateMarker
 import dev.agentdeck.terrarium.renderer.EinkTerrariumView
 import dev.agentdeck.terrarium.toTerrariumState
+import dev.agentdeck.ui.eink.EinkAnimatedRefreshZone
 import dev.agentdeck.ui.eink.EinkRefreshZone
 import dev.agentdeck.ui.eink.RefreshMode
 import android.util.Log
@@ -185,18 +186,17 @@ fun EinkMonitorScreen(
                 VerticalDivider(thickness = 2.dp, color = Color.Black)
 
                 // Right (78%): Aquarium + Content + Timeline
+                // Fixed aquarium weight prevents layout jump on state change
                 Column(modifier = Modifier.weight(0.78f).fillMaxHeight()) {
-                    // Aquarium frame — large tank (bigger when IDLE)
-                    // Trigger includes agentState + sessions (affects crayfish + multi-octopus positions)
-                    EinkRefreshZone(
-                        mode = RefreshMode.FULL,
-                        debounceMs = 500,
-                        triggerKey = Pair(state.agentState, sessionsKey),
-                        modifier = Modifier
-                            .weight(if (isActive) 0.40f else 0.47f)
-                            .fillMaxWidth(),
-                    ) {
-                        EinkAquariumFrame(state = terrariumState)
+                    // Aquarium frame — animated EPD refresh via callback
+                    EinkAnimatedRefreshZone(
+                        stateKey = Pair(state.agentState, sessionsKey),
+                        modifier = Modifier.weight(0.48f).fillMaxWidth(),
+                    ) { onFrameRendered ->
+                        EinkAquariumFrame(
+                            state = terrariumState,
+                            onFrameRendered = onFrameRendered,
+                        )
                     }
 
                     HorizontalDivider(thickness = 1.dp, color = Color.Black)
@@ -206,32 +206,33 @@ fun EinkMonitorScreen(
                         EinkRefreshZone(
                             mode = RefreshMode.A2,
                             debounceMs = 200,
-                            triggerKey = Pair(state.agentState, state.currentTool),
-                            modifier = Modifier.weight(0.25f).fillMaxWidth(),
+                            triggerKey = Triple(state.agentState, state.currentTool,
+                                listOf(state.usage, state.oauthConnected, state.ollamaStatus)),
+                            modifier = Modifier.weight(0.16f).fillMaxWidth(),
                         ) {
                             Row(modifier = Modifier.fillMaxSize()) {
-                                // Context area (55%)
+                                // Context area (50%)
                                 EinkContextArea(
                                     state = state,
                                     timelineEntries = timelineEntries,
                                     onSelectOption = { index -> connection.sendSelectOption(index) },
-                                    modifier = Modifier.weight(0.55f).fillMaxHeight(),
+                                    modifier = Modifier.weight(0.50f).fillMaxHeight(),
                                 )
                                 VerticalDivider(thickness = 1.dp, color = Color.Black)
-                                // Compact status (45%)
+                                // Compact status (50%)
                                 EinkStatusCompact(
                                     state = state,
-                                    modifier = Modifier.weight(0.45f).fillMaxHeight(),
+                                    modifier = Modifier.weight(0.50f).fillMaxHeight(),
                                 )
                             }
                         }
                     } else {
-                        // IDLE: thin status row only
+                        // IDLE: status row
                         EinkRefreshZone(
                             mode = RefreshMode.DU,
                             debounceMs = 2000,
-                            triggerKey = state.usage,
-                            modifier = Modifier.weight(0.15f).fillMaxWidth(),
+                            triggerKey = listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.modelCatalog?.size),
+                            modifier = Modifier.weight(0.16f).fillMaxWidth(),
                         ) {
                             EinkStatusCompact(state = state)
                         }
@@ -239,14 +240,12 @@ fun EinkMonitorScreen(
 
                     HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-                    // Timeline — expanded
+                    // Timeline
                     EinkRefreshZone(
                         mode = RefreshMode.A2,
                         debounceMs = 300,
                         triggerKey = timelineEntries.size,
-                        modifier = Modifier
-                            .weight(if (isActive) 0.35f else 0.38f)
-                            .fillMaxWidth(),
+                        modifier = Modifier.weight(0.36f).fillMaxWidth(),
                     ) {
                         EinkEventLog(entries = timelineEntries)
                     }
@@ -417,14 +416,20 @@ private fun EinkPortraitLayout(
 
         HorizontalDivider(thickness = 2.dp, color = Color.Black)
 
-        // Terrarium band (~15%)
+        // Terrarium band (~15%) — animated EPD refresh via callback
         val terrariumState by remember { derivedStateOf { state.toTerrariumState() } }
-        EinkTerrariumView(
-            state = terrariumState,
+        EinkAnimatedRefreshZone(
+            stateKey = terrariumState.octopus to terrariumState.crayfish,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(0.15f),
-        )
+        ) { onFrameRendered ->
+            EinkTerrariumView(
+                state = terrariumState,
+                modifier = Modifier.fillMaxSize(),
+                onFrameRendered = onFrameRendered,
+            )
+        }
         HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
         // Timeline: ~65% of screen

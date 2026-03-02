@@ -43,9 +43,15 @@ class DataParticleSystem : Creature {
     private data class NeonTetra(
         var x: Float, var y: Float,
         var vx: Float, var vy: Float,
+        var facingRight: Boolean,  // left/right orientation (horizontal mirror)
         var heading: Float,
         var targetHeading: Float,
         var turnRate: Float,       // current angular velocity — drives body bend
+        var bank: Float,           // smoothed roll for pseudo-3D parallax
+        var zDepth: Float,         // -0.5..0.5 pseudo depth offset (negative=back)
+        var wanderSeed: Float,     // per-fish phase for wander force
+        var wanderSpeed: Float,    // wander angular speed
+        var minSpeedFactor: Float, // per-fish min speed multiplier (avoids uniform drift)
         var alpha: Float,
         var alive: Boolean,
         var tailPhase: Float,
@@ -75,9 +81,15 @@ class DataParticleSystem : Creature {
             y = 0.25f + Random.nextFloat() * 0.3f,
             vx = (Random.nextFloat() - 0.5f) * 0.02f,
             vy = (Random.nextFloat() - 0.5f) * 0.02f,
+            facingRight = Random.nextBoolean(),
             heading = 0f,
             targetHeading = 0f,
             turnRate = 0f,
+            bank = 0f,
+            zDepth = (Random.nextFloat() - 0.5f) * 0.25f,
+            wanderSeed = Random.nextFloat() * 2f * PI.toFloat(),
+            wanderSpeed = 0.6f + Random.nextFloat() * 0.8f, // radians/sec
+            minSpeedFactor = 0.9f + Random.nextFloat() * 0.3f,
             alpha = 1f,
             alive = false,
             tailPhase = Random.nextFloat() * 2f * PI.toFloat(),
@@ -95,6 +107,9 @@ class DataParticleSystem : Creature {
     private var liveAgentPositions: List<Pair<Float, Float>> = emptyList()
     /** Positions of WORKING agents only (food scatter sources). */
     private var workingAgentPositions: List<Pair<Float, Float>> = emptyList()
+    /** Crayfish position (for food spawning + school attraction when routing). */
+    private var crayfishPosition: Pair<Float, Float>? = null
+    private var crayfishRouting: Boolean = false
 
     fun setState(newState: TetraVisualState) {
         val wasAbsent = visualState == TetraVisualState.ABSENT
@@ -117,6 +132,12 @@ class DataParticleSystem : Creature {
         workingAgentPositions = positions
     }
 
+    /** Update crayfish position and routing state (food source + school attractor). */
+    fun setCrayfishState(position: Pair<Float, Float>, routing: Boolean) {
+        crayfishPosition = position
+        crayfishRouting = routing
+    }
+
     // Keep setAgentPositions for backward compat (MonitorScreen state effect)
     fun setAgentPositions(
         slots: List<dev.agentdeck.terrarium.CreatureSlot>,
@@ -134,8 +155,9 @@ class DataParticleSystem : Creature {
             if (!t.alive) spawnTetra(t)
         }
 
-        // --- Food crumb spawning (from WORKING agents) ---
-        if (workingAgentPositions.isNotEmpty()) {
+        // --- Food crumb spawning (from WORKING agents or ROUTING crayfish) ---
+        val hasFoodSource = workingAgentPositions.isNotEmpty() || crayfishRouting
+        if (hasFoodSource) {
             foodSpawnTimer += dt
             val spawnRate = when (visualState) {
                 TetraVisualState.STREAMING -> 0.06f  // rapid during tool use
@@ -162,10 +184,22 @@ class DataParticleSystem : Creature {
         }
 
         // --- School center Lissajous paths (two independent wandering centers) ---
-        val schoolCenterX0 = 0.35f + 0.18f * sin(time * 0.15f)
-        val schoolCenterY0 = 0.35f + 0.12f * sin(time * 0.21f)
-        val schoolCenterX1 = 0.55f + 0.18f * cos(time * 0.13f)
-        val schoolCenterY1 = 0.40f + 0.12f * cos(time * 0.18f)
+        var schoolCenterX0 = 0.35f + 0.18f * sin(time * 0.15f)
+        var schoolCenterY0 = 0.35f + 0.12f * sin(time * 0.21f)
+        var schoolCenterX1 = 0.55f + 0.18f * cos(time * 0.13f)
+        var schoolCenterY1 = 0.40f + 0.12f * cos(time * 0.18f)
+
+        // When crayfish is routing, pull school centers toward crayfish (30% interpolation)
+        if (crayfishRouting) {
+            val cp = crayfishPosition
+            if (cp != null) {
+                val pull = 0.30f
+                schoolCenterX0 += (cp.first - schoolCenterX0) * pull
+                schoolCenterY0 += (cp.second - schoolCenterY0) * pull
+                schoolCenterX1 += (cp.first - schoolCenterX1) * pull
+                schoolCenterY1 += (cp.second - schoolCenterY1) * pull
+            }
+        }
 
         // --- Boids update ---
         for (i in school.indices) {
@@ -241,9 +275,11 @@ class DataParticleSystem : Creature {
                             nearestFood.age += dt * 4f // accelerate death
                         }
                     } else {
-                        // No food: gentle orbit around agents
+                        // No food: gentle orbit around agents (or crayfish if no octopuses)
                         val positions = liveAgentPositions.ifEmpty {
-                            listOf(TerrariumLayout.OCTOPUS_CENTER_X_FRACTION to TerrariumLayout.OCTOPUS_CENTER_Y_FRACTION)
+                            val cp = crayfishPosition
+                            if (cp != null) listOf(cp)
+                            else listOf(TerrariumLayout.OCTOPUS_CENTER_X_FRACTION to TerrariumLayout.OCTOPUS_CENTER_Y_FRACTION)
                         }
                         val cx = positions.map { it.first }.average().toFloat()
                         val cy = positions.map { it.second }.average().toFloat()
@@ -268,11 +304,22 @@ class DataParticleSystem : Creature {
             if (hasFood) { schX = 0f; schY = 0f }
 
             // Combine forces — stronger schooling, moderate food chasing, school attractor
-            val fx = sepX * 1.5f + aliX * 1.5f + cohX * 1.5f + attX * 0.6f + schX
-            val fy = sepY * 1.5f + aliY * 1.5f + cohY * 1.5f + attY * 0.6f + schY
+            // Wander: gentle sinusoidal drift per fish to avoid lockstep
+            val wander = fish.wanderSeed + time * fish.wanderSpeed
+            val wanderX = sin(wander) * 0.08f
+            val wanderY = cos(wander * 1.1f) * 0.04f
+
+            val fx = sepX * 1.5f + aliX * 1.5f + cohX * 1.5f + attX * 0.6f + schX + wanderX
+            val fy = sepY * 1.5f + aliY * 1.5f + cohY * 1.5f + attY * 0.6f + schY + wanderY
 
             fish.vx += fx * dt
             fish.vy += fy * dt
+
+            // Forward thrust during turns to prevent in-place spinning
+            val turnThrust = abs(fish.turnRate) * 0.15f
+            val forwardSign = if (fish.facingRight) 1f else -1f
+            fish.vx += forwardSign * cos(fish.heading) * turnThrust * dt
+            fish.vy += sin(fish.heading) * turnThrust * 0.4f * dt
 
             // Dampen vertical velocity — fish swim mostly horizontally
             fish.vy *= 0.92f
@@ -302,35 +349,36 @@ class DataParticleSystem : Creature {
             fish.y = fish.y.coerceIn(TerrariumLayout.TETRA_SWIM_MIN_Y, TerrariumLayout.TETRA_SWIM_MAX_Y)
 
             // Minimum forward speed — fish don't hover in place
-            val minSpeed = maxSpeed * 0.2f
+            val minSpeed = maxSpeed * 0.2f * fish.minSpeedFactor
             if (speed < minSpeed) {
                 // Nudge forward along current heading (horizontal only)
-                fish.vx += cos(fish.heading) * minSpeed * 0.8f * dt
+                fish.vx += forwardSign * cos(fish.heading) * minSpeed * 0.8f * dt
             }
 
-            // Smooth heading from velocity — clamp to mostly horizontal (±20°)
+            // Update left/right facing with hysteresis to prevent jitter near vx=0
+            if (fish.vx > 0.002f) fish.facingRight = true
+            else if (fish.vx < -0.002f) fish.facingRight = false
+
+            // Smooth pitch from velocity — keep body upright and avoid 360 spins
             if (speed > 0.002f) {
-                val rawHeading = atan2(fish.vy, fish.vx)
-                // Determine which horizontal direction: left (-π) or right (0)
-                val facingRight = abs(rawHeading) < PI.toFloat() / 2f
+                val forwardVx = if (fish.facingRight) fish.vx else -fish.vx
+                val rawPitch = atan2(fish.vy, abs(forwardVx).coerceAtLeast(0.0001f))
                 val maxPitch = 0.35f  // ~20 degrees max pitch
-                fish.targetHeading = if (facingRight) {
-                    rawHeading.coerceIn(-maxPitch, maxPitch)
-                } else {
-                    // Facing left: heading near ±π, clamp pitch around π
-                    if (rawHeading > 0f) {
-                        rawHeading.coerceIn(PI.toFloat() - maxPitch, PI.toFloat())
-                    } else {
-                        rawHeading.coerceIn(-PI.toFloat(), -PI.toFloat() + maxPitch)
-                    }
-                }
+                fish.targetHeading = rawPitch.coerceIn(-maxPitch, maxPitch)
             }
             var headingDiff = fish.targetHeading - fish.heading
-            while (headingDiff > PI.toFloat()) headingDiff -= 2f * PI.toFloat()
-            while (headingDiff < -PI.toFloat()) headingDiff += 2f * PI.toFloat()
             val turnAccel = headingDiff * 2.0f
             fish.turnRate += (turnAccel - fish.turnRate) * 3f * dt
+            // Scale turn rate down when slow to avoid in-place spinning
+            val turnScale = (0.35f + 0.65f * (speed / (maxSpeed + 1e-4f))).coerceIn(0.35f, 1f)
+            fish.turnRate *= turnScale
             fish.heading += fish.turnRate * dt
+            // Smoothed bank (roll) follows turn rate — gives pseudo-3D parallax when rendering
+            fish.bank += (fish.turnRate - fish.bank) * 6f * dt
+            // Depth sway: bank pushes fish briefly back/forward in tank
+            val targetZ = (fish.zDepth + fish.bank * 0.35f).coerceIn(-0.45f, 0.45f)
+            fish.zDepth += (targetZ - fish.zDepth) * 4f * dt
+            fish.zDepth *= 0.999f // slow relaxation to center
 
             // Tail/body — faster when moving faster
             val tailSpeed = TerrariumTiming.TETRA_TAIL_SPEED * (0.5f + speed * 8f)
@@ -426,7 +474,14 @@ class DataParticleSystem : Creature {
 
     private fun spawnFoodCrumb() {
         val slot = foodCrumbs.firstOrNull { !it.alive } ?: foodCrumbs.minByOrNull { it.alpha }!!
-        val source = workingAgentPositions[Random.nextInt(workingAgentPositions.size)]
+
+        // Pick source: working octopuses OR routing crayfish
+        val allSources = workingAgentPositions.toMutableList()
+        if (crayfishRouting) {
+            crayfishPosition?.let { allSources.add(it) }
+        }
+        if (allSources.isEmpty()) return
+        val source = allSources[Random.nextInt(allSources.size)]
 
         // Scatter around the agent with wider spread (like scattering food)
         slot.x = (source.first + (Random.nextFloat() - 0.5f) * 0.08f)
@@ -450,15 +505,24 @@ class DataParticleSystem : Creature {
         val sy = fish.y * h
         val tailWag = sin(fish.tailPhase) * 0.35f
         val bodyWave = sin(fish.bodyPhase) * 0.12f
+        val bank = fish.bank.coerceIn(-0.8f, 0.8f) // roll left/right based on turn rate
 
         // Body bend from turn rate — fish curves its body when turning
         // Clamp so fish doesn't fold in half
         val bendAmount = (fish.turnRate * 0.15f).coerceIn(-0.4f, 0.4f)
 
+        // Pseudo-3D parallax: when banking, fish dips “behind” the glass then pops forward
+        val depthScale = 1f - 0.08f * abs(bank) - 0.05f * fish.zDepth
+        val depthOffset = sin(bank) * size * 0.9f + fish.zDepth * size * 2.0f
+        // Subtle fore/aft shift and brightness falloff at extreme bank
+        val bankAlpha = 1f - 0.15f * abs(bank) - 0.12f * abs(fish.zDepth)
+        val facingScaleX = if (fish.facingRight) depthScale else -depthScale
+
         // Pivot rotation at the nose (front of the fish), not center
         // This makes turns look like the head leads and body follows
         scope.withTransform({
-            translate(sx, sy)
+            translate(sx + depthOffset * 0.6f, sy + depthOffset * 0.25f)
+            scale(facingScaleX, depthScale, pivot = Offset.Zero)
             rotate(Math.toDegrees(fish.heading.toDouble()).toFloat(), Offset.Zero)
         }) {
             val bodyLen = size * 2.0f
@@ -490,7 +554,7 @@ class DataParticleSystem : Creature {
             }
             drawPath(
                 path = bodyPath,
-                color = TerrariumColors.TetraBody.copy(alpha = fish.alpha),
+                color = TerrariumColors.TetraBody.copy(alpha = fish.alpha * bankAlpha),
             )
 
             // Neon stripe — follows body curve
@@ -504,7 +568,7 @@ class DataParticleSystem : Creature {
             }
             drawPath(
                 path = stripePath,
-                color = TerrariumColors.TetraNeon.copy(alpha = fish.alpha * 0.95f),
+                color = TerrariumColors.TetraNeon.copy(alpha = fish.alpha * 0.95f * bankAlpha),
                 style = androidx.compose.ui.graphics.drawscope.Stroke(
                     width = size * 0.18f,
                     cap = StrokeCap.Round,
@@ -573,7 +637,8 @@ class DataParticleSystem : Creature {
             .coerceIn(TerrariumLayout.TETRA_SWIM_MIN_Y, TerrariumLayout.TETRA_SWIM_MAX_Y)
         t.vx = (Random.nextFloat() - 0.5f) * 0.02f
         t.vy = (Random.nextFloat() - 0.5f) * 0.02f
-        val h = atan2(t.vy, t.vx)
+        t.facingRight = t.vx >= 0f
+        val h = atan2(t.vy, abs(t.vx).coerceAtLeast(0.0001f)).coerceIn(-0.35f, 0.35f)
         t.heading = h
         t.targetHeading = h
         t.turnRate = 0f

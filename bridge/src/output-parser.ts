@@ -533,7 +533,11 @@ export class OutputParser extends EventEmitter {
       // "❯ \n" → nonWs "❯" (idle), "❯ No" → nonWs "❯No" (cursor move over option)
       const nonWsContent = chunk.replace(/\s/g, '');
       const isGenuineIdle = hasIdlePrompt && (nonWsContent === '❯' || nonWsContent === '>');
-      if (!isGenuineIdle) {
+      // Bare idle prompt line: "❯ " (+ whitespace) on its own line within a larger chunk.
+      // Catches combined chunks where confirmation text precedes the idle prompt,
+      // e.g. "Set model to Default...\n\n❯ \n" from /model selection.
+      const hasBareIdlePrompt = /^[❯>][ \t\u00A0]+$/m.test(chunk);
+      if (!isGenuineIdle && !hasBareIdlePrompt) {
         debug('Parser', 'cursor-only redraw detected — debouncing buffer re-parse');
         this.resetIdleTimer();
         this.resetOptionTimer();
@@ -557,9 +561,10 @@ export class OutputParser extends EventEmitter {
         }, OPTION_DEBOUNCE_MS);
         return;
       }
-      // Genuine idle prompt (only ❯ char, no label text) — clear navigable state, fall through
+      // Genuine idle prompt or bare idle line — clear navigable state, fall through
       this.lastNavigableEmit = false;
       this.lastCursorIndex = 0;
+      this.resetOptionTimer(); // cancel stale timer from ANSI reposition handler
     }
 
     // --- Cursor-only ANSI repositioning (no ❯ in chunk) ---

@@ -24,6 +24,8 @@ import {
   type ModelCatalogEntry,
   type EncoderSlotState,
   type EncoderStateEvent,
+  type ButtonSlotState,
+  type ButtonStateEvent,
   type DeckSlotMapEvent,
   type UtilityCommand,
 } from './types.js';
@@ -384,7 +386,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
           case 'usage_info':
             usageTracker.setUsageInfo(evt.data);
             // Immediately broadcast updated usage
-            wsServer.broadcast(buildUsageEvent(stateMachine.getSnapshot(), cachedApiUsage, oauthConnected));
+            wsServer.broadcast(buildUsageEvent(stateMachine.getSnapshot(), cachedApiUsage, oauthConnected, cachedOllamaStatus));
             break;
           case 'user_prompt': {
             const text = evt.data?.text as string | undefined;
@@ -434,6 +436,14 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
 
   // Debounce tracker for sessions_list on state_changed
   let lastSessionsListBroadcast = 0;
+
+  // Default idle button config (must be before state_changed handler that calls computeButtonState)
+  const DEFAULT_IDLE_BUTTONS: { label: string; action: string }[] = [
+    { label: 'GO ON', action: 'continue' },
+    { label: 'REVIEW', action: '/review' },
+    { label: 'COMMIT', action: '/commit' },
+    { label: 'CLEAR', action: '/clear' },
+  ];
 
   // 5. Wire StateMachine state changes → WsServer broadcast
   stateMachine.on('state_changed', (snapshot: StateSnapshot) => {
@@ -501,7 +511,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       wsServer.broadcast(promptEvent);
     }
 
-    const usageEvt = buildUsageEvent(snapshot, cachedApiUsage, oauthConnected);
+    const usageEvt = buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus);
     wsServer.broadcast(usageEvt);
     broadcastSse(usageEvt);
 
@@ -509,6 +519,11 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     const encEvt = computeEncoderState();
     wsServer.broadcast(encEvt);
     broadcastSse(encEvt);
+
+    // Broadcast button state for Android Deck UI
+    const btnEvt = computeButtonState();
+    wsServer.broadcast(btnEvt);
+    broadcastSse(btnEvt);
   });
 
   // 6. Handle PluginCommands from WsServer
@@ -628,7 +643,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
             }
           }
           const snapshot = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
+          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus));
         });
         break;
       }
@@ -642,6 +657,10 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       cachedSlotMap = msg as unknown as DeckSlotMapEvent;
       wsServer.broadcastExcept(cachedSlotMap, sender);
       broadcastSse(cachedSlotMap);
+      // Re-broadcast button state since PI settings may have changed
+      const btnEvt = computeButtonState();
+      wsServer.broadcast(btnEvt);
+      broadcastSse(btnEvt);
       return true; // consumed
     }
     return false;
@@ -736,7 +755,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       });
     }
 
-    wsServer.sendTo(ws, buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
+    wsServer.sendTo(ws, buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus));
 
     const connectEvt: BridgeEvent = {
       type: 'connection',
@@ -759,6 +778,9 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     // Send encoder state
     wsServer.sendTo(ws, computeEncoderState());
 
+    // Send button state
+    wsServer.sendTo(ws, computeButtonState());
+
     // Send cached slot map if available
     if (cachedSlotMap) {
       wsServer.sendTo(ws, cachedSlotMap);
@@ -779,7 +801,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
             stateMachine.inferBillingType(apiUsage.inferredBillingType);
           }
           const snap2 = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snap2, cachedApiUsage, oauthConnected));
+          wsServer.broadcast(buildUsageEvent(snap2, cachedApiUsage, oauthConnected, cachedOllamaStatus));
         } else {
           oauthConnected = hasOAuthToken();
         }
@@ -800,7 +822,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   const usageInterval = setInterval(() => {
     if (wsServer.getClientCount() > 0) {
       const snapshot = stateMachine.getSnapshot();
-      wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
+      wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus));
     }
   }, 5000);
 
@@ -817,7 +839,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
           }
           // Broadcast updated usage so clients see fresh rate-limit data
           const snapshot = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
+          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus));
         } else {
           oauthConnected = hasOAuthToken();
         }
@@ -841,7 +863,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     probeGateway().then((status) => {
       cachedGatewayAvailable = status.available;
     });
-  }, 5000);
+  }, 800);
   // Initial probe
   probeGateway().then((status) => {
     cachedGatewayAvailable = status.available;
@@ -931,6 +953,267 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     };
   }
 
+  // Button state computation (Android Deck UI)
+  function computeButtonState(): ButtonStateEvent {
+    const snapshot = stateMachine.getSnapshot();
+    const st = snapshot.state;
+    const mode = snapshot.permissionMode;
+    const options = snapshot.options;
+    const isInteractive = st === State.AWAITING_OPTION ||
+      st === State.AWAITING_PERMISSION ||
+      st === State.AWAITING_DIFF;
+
+    const DIM: ButtonSlotState = {
+      slot: 0, title: '', bgColor: '#1a1a1a', textColor: '#444444',
+      enabled: false, dim: true,
+    };
+
+    // Helper: get PI settings for response-button slots from cachedSlotMap
+    function getIdleButtons(): { label: string; action: string }[] {
+      if (!cachedSlotMap) return DEFAULT_IDLE_BUTTONS;
+      const responseSlots = cachedSlotMap.buttons
+        .filter(s => s.actionType === 'response-button')
+        .sort((a, b) => a.slot - b.slot);
+      if (responseSlots.length === 0) return DEFAULT_IDLE_BUTTONS;
+      return responseSlots.map((s, i) => {
+        const settings = s.settings ?? {};
+        const defLabel = DEFAULT_IDLE_BUTTONS[i]?.label ?? '';
+        const defAction = DEFAULT_IDLE_BUTTONS[i]?.action ?? '';
+        return {
+          label: (settings.label as string) ?? defLabel,
+          action: (settings.action as string) ?? defAction,
+        };
+      });
+    }
+
+    // Helper: color for permission/diff options
+    function colorForOption(opt: import('./types.js').PromptOption): { bg: string; text: string } {
+      const shortcut = (opt.shortcut ?? '').toLowerCase();
+      const lower = opt.label.toLowerCase();
+      if (lower.startsWith('always')) return { bg: '#1e40af', text: '#ffffff' };
+      if (/don[''\u2019]t\s+ask\s+again/i.test(lower)) return { bg: '#1e40af', text: '#ffffff' };
+      if (/allow\s+all\s+sessions/i.test(lower)) return { bg: '#1e40af', text: '#ffffff' };
+      if (shortcut === 'n' || shortcut === 'd' || lower.startsWith('no') || lower.startsWith('deny')) {
+        return { bg: '#991b1b', text: '#ffffff' };
+      }
+      if (shortcut === 'y' || shortcut === 'a') return { bg: '#166534', text: '#ffffff' };
+      if (opt.recommended) return { bg: '#1e4d2b', text: '#86efac' };
+      return { bg: '#1e3a5f', text: '#93c5fd' };
+    }
+
+    // Helper: uppercase short labels
+    function uppercaseShort(label: string): string {
+      return label.length <= 12 ? label.toUpperCase() : label;
+    }
+
+    const buttons: ButtonSlotState[] = [];
+
+    // --- Slot 0: Mode ---
+    const modeColors: Record<string, string> = {
+      default: '#2a2a2a', plan: '#7c3aed', acceptEdits: '#2563eb',
+      dontAsk: '#0e7490', bypassPermissions: '#991b1b',
+    };
+    const modeLabels: Record<string, string> = {
+      default: 'DEFAULT', plan: 'PLAN', acceptEdits: 'ACCEPT',
+      dontAsk: "DON'T ASK", bypassPermissions: 'BYPASS',
+    };
+    const modeEnabled = st === State.IDLE;
+    buttons.push({
+      slot: 0,
+      title: modeLabels[mode] ?? 'DEFAULT',
+      subtitle: 'Mode',
+      bgColor: modeEnabled ? (modeColors[mode] ?? '#2a2a2a') : '#1a1a1a',
+      textColor: modeEnabled ? '#ffffff' : '#444444',
+      enabled: modeEnabled,
+      action: modeEnabled ? 'switch_mode' : undefined,
+      dim: !modeEnabled,
+    });
+
+    // --- Slot 1: Session/Status ---
+    if (st === State.IDLE) {
+      buttons.push({
+        slot: 1,
+        title: snapshot.projectName ?? '—',
+        subtitle: snapshot.modelName ?? undefined,
+        bgColor: '#1e293b',
+        textColor: '#ffffff',
+        enabled: false,
+      });
+    } else if (st === State.PROCESSING) {
+      buttons.push({
+        slot: 1,
+        title: snapshot.currentTool ?? '...',
+        subtitle: snapshot.toolProgress ?? undefined,
+        bgColor: '#1e3a5f',
+        textColor: '#93c5fd',
+        enabled: false,
+      });
+    } else if (st === State.AWAITING_PERMISSION || st === State.AWAITING_DIFF) {
+      buttons.push({
+        slot: 1,
+        title: 'PERMIT?',
+        bgColor: '#b45309',
+        textColor: '#ffffff',
+        enabled: false,
+      });
+    } else if (st === State.AWAITING_OPTION) {
+      buttons.push({
+        slot: 1,
+        title: 'SELECT',
+        bgColor: '#b45309',
+        textColor: '#ffffff',
+        enabled: false,
+      });
+    } else {
+      buttons.push({ ...DIM, slot: 1 });
+    }
+
+    // --- Slot 2: Usage ---
+    const pct = cachedApiUsage?.fiveHourPercent ?? null;
+    const usageText = pct != null ? `${Math.round(pct * 100)}%` : '—';
+    const usageBg = pct == null ? '#1e293b'
+      : pct >= 0.9 ? '#991b1b'
+      : pct >= 0.7 ? '#92400e'
+      : '#166534';
+    buttons.push({
+      slot: 2,
+      title: usageText,
+      subtitle: '5h',
+      bgColor: usageBg,
+      textColor: '#ffffff',
+      enabled: false,
+    });
+
+    // --- Slots 3-6: Response buttons ---
+    if (st === State.IDLE) {
+      const idleBtns = getIdleButtons();
+      for (let i = 0; i < 4; i++) {
+        const btn = idleBtns[i];
+        if (btn) {
+          const isGoOn = btn.action === 'continue' || btn.label.toLowerCase() === 'go on';
+          buttons.push({
+            slot: 3 + i,
+            title: btn.label,
+            bgColor: isGoOn ? '#1e3a2f' : '#1e293b',
+            textColor: isGoOn ? '#22c55e' : '#ffffff',
+            enabled: true,
+            action: `command:${btn.action === 'continue' ? 'go on' : btn.action}`,
+          });
+        } else {
+          buttons.push({ ...DIM, slot: 3 + i });
+        }
+      }
+    } else if (st === State.PROCESSING) {
+      for (let i = 0; i < 4; i++) {
+        buttons.push({ ...DIM, slot: 3 + i });
+      }
+    } else if (isInteractive) {
+      // Permission / Option / Diff states
+      if (options.length === 0 && (st === State.AWAITING_PERMISSION)) {
+        buttons.push({ slot: 3, title: 'YES', bgColor: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:y' });
+        buttons.push({ slot: 4, title: 'NO', bgColor: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:n' });
+        buttons.push({ slot: 5, title: 'ALWAYS', bgColor: '#1e40af', textColor: '#ffffff', enabled: true, action: 'respond:a' });
+        buttons.push({ ...DIM, slot: 6 });
+      } else if (options.length === 0 && (st === State.AWAITING_DIFF)) {
+        buttons.push({ slot: 3, title: 'APPLY', bgColor: '#166534', textColor: '#ffffff', enabled: true, action: 'respond:a' });
+        buttons.push({ slot: 4, title: 'DENY', bgColor: '#991b1b', textColor: '#ffffff', enabled: true, action: 'respond:d' });
+        buttons.push({ slot: 5, title: 'VIEW', bgColor: '#1e3a5f', textColor: '#93c5fd', enabled: true, action: 'respond:v' });
+        buttons.push({ ...DIM, slot: 6 });
+      } else if (options.length <= 4) {
+        for (let i = 0; i < 4; i++) {
+          if (i < options.length) {
+            const opt = options[i];
+            const colors = (st === State.AWAITING_PERMISSION || st === State.AWAITING_DIFF)
+              ? colorForOption(opt)
+              : opt.recommended ? { bg: '#1e4d2b', text: '#86efac' } : { bg: '#1e3a5f', text: '#93c5fd' };
+            const action = snapshot.navigable
+              ? `select_option:${opt.index}`
+              : `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`;
+            const badge = opt.recommended ? '\u2605' : opt.selected ? '\u2713' : undefined;
+            buttons.push({
+              slot: 3 + i,
+              title: uppercaseShort(opt.label),
+              bgColor: colors.bg,
+              textColor: colors.text,
+              enabled: true,
+              badge,
+              action,
+            });
+          } else {
+            buttons.push({ ...DIM, slot: 3 + i });
+          }
+        }
+      } else {
+        // 5+ options: first 3 + MORE
+        for (let i = 0; i < 3; i++) {
+          const opt = options[i];
+          const colors = (st === State.AWAITING_PERMISSION || st === State.AWAITING_DIFF)
+            ? colorForOption(opt)
+            : opt.recommended ? { bg: '#1e4d2b', text: '#86efac' } : { bg: '#1e3a5f', text: '#93c5fd' };
+          const action = snapshot.navigable
+            ? `select_option:${opt.index}`
+            : `respond:${opt.shortcut || opt.label.charAt(0).toLowerCase()}`;
+          buttons.push({
+            slot: 3 + i,
+            title: uppercaseShort(opt.label),
+            bgColor: colors.bg,
+            textColor: colors.text,
+            enabled: true,
+            action,
+          });
+        }
+        buttons.push({
+          slot: 6,
+          title: 'MORE \u25BC',
+          bgColor: '#334155',
+          textColor: '#94a3b8',
+          enabled: true,
+          action: 'expand_options',
+        });
+      }
+    } else {
+      // DISCONNECTED or fallback
+      for (let i = 0; i < 4; i++) {
+        buttons.push({ ...DIM, slot: 3 + i });
+      }
+    }
+
+    // --- Slot 7: Stop/ESC ---
+    if (st === State.PROCESSING) {
+      buttons.push({
+        slot: 7,
+        title: 'STOP',
+        bgColor: '#cc0000',
+        textColor: '#ffffff',
+        enabled: true,
+        action: 'interrupt',
+      });
+    } else if (isInteractive) {
+      buttons.push({
+        slot: 7,
+        title: 'ESC',
+        bgColor: '#b45309',
+        textColor: '#ffffff',
+        enabled: true,
+        action: 'escape',
+      });
+    } else if (st === State.IDLE) {
+      buttons.push({
+        slot: 7,
+        title: 'ESC',
+        bgColor: '#3d2607',
+        textColor: '#ffb347',
+        enabled: true,
+        action: 'escape',
+        dim: false,
+      });
+    } else {
+      buttons.push({ ...DIM, slot: 7 });
+    }
+
+    return { type: 'button_state', buttons };
+  }
+
   // 10. Graceful shutdown
   let shutdownInProgress = false;
 
@@ -979,7 +1262,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   });
 }
 
-function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null, oauthStatus?: boolean): BridgeEvent {
+function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null, oauthStatus?: boolean, ollamaStatus?: OllamaStatus | null): BridgeEvent {
   return {
     type: 'usage_update',
     sessionDurationSec: snapshot.sessionDurationSec,
@@ -1001,6 +1284,7 @@ function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null
     extraUsageUsedCredits: apiUsage?.extraUsageUsedCredits ?? undefined,
     extraUsageUtilization: apiUsage?.extraUsageUtilization ?? undefined,
     oauthConnected: oauthStatus,
+    ollamaStatus: ollamaStatus ?? undefined,
   };
 }
 

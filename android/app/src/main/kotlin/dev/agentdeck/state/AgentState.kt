@@ -4,6 +4,7 @@ import dev.agentdeck.net.AgentCapabilities
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.BridgeEvent
+import dev.agentdeck.net.ButtonSlotState
 import dev.agentdeck.net.DeckSlotConfig
 import dev.agentdeck.net.EncoderSlotState
 import dev.agentdeck.net.ModelCatalogEntry
@@ -53,6 +54,7 @@ data class DashboardState(
     val workerSessionCount: Int? = null,
     val encoderStates: List<EncoderSlotState> = emptyList(),
     val encoderTakeoverActive: Boolean = false,
+    val buttonStates: List<ButtonSlotState> = emptyList(),
     val buttonSlotMap: List<DeckSlotConfig>? = null,
     val encoderSlotMap: List<DeckSlotConfig>? = null,
     val oauthConnected: Boolean? = null,
@@ -120,6 +122,7 @@ class AgentStateHolder private constructor() {
                 _state.update { it.copy(
                     usage = event.data,
                     oauthConnected = event.data.oauthConnected ?: it.oauthConnected,
+                    ollamaStatus = event.data.ollamaStatus ?: it.ollamaStatus,
                 ) }
                 lastKnownState = _state.value
                 SessionMetrics.instance.onMessageReceived()
@@ -152,6 +155,10 @@ class AgentStateHolder private constructor() {
                     encoderStates = event.encoders,
                     encoderTakeoverActive = event.takeoverActive,
                 ) }
+            }
+
+            is BridgeEvent.ButtonState -> {
+                _state.update { it.copy(buttonStates = event.buttons) }
             }
 
             is BridgeEvent.SlotMap -> {

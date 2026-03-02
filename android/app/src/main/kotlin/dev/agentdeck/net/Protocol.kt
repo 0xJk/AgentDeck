@@ -113,6 +113,7 @@ data class UsageUpdate(
     val extraUsageUsedCredits: Double? = null,
     val extraUsageUtilization: Double? = null,
     val oauthConnected: Boolean? = null,
+    val ollamaStatus: OllamaStatus? = null,
 )
 
 @Serializable
@@ -133,6 +134,22 @@ data class VoiceState(
     val state: String = "idle",
     val text: String? = null,
     val error: String? = null,
+)
+
+// --- Button state (Bridge → Android) ---
+
+@Serializable
+data class ButtonSlotState(
+    val slot: Int,
+    val title: String,
+    val subtitle: String? = null,
+    val bgColor: String,
+    val textColor: String,
+    val enabled: Boolean = true,
+    val icon: String? = null,
+    val badge: String? = null,
+    val action: String? = null,
+    val dim: Boolean = false,
 )
 
 // --- Encoder LCD state (Bridge → Android) ---
@@ -181,6 +198,7 @@ sealed class BridgeEvent {
     data class DisplaySleep(val displayOn: Boolean) : BridgeEvent()
     data class SessionsList(val sessions: List<SessionInfo>) : BridgeEvent()
     data class EncoderState(val encoders: List<EncoderSlotState>, val takeoverActive: Boolean) : BridgeEvent()
+    data class ButtonState(val buttons: List<ButtonSlotState>) : BridgeEvent()
     data class SlotMap(val buttons: List<DeckSlotConfig>, val encoders: List<DeckSlotConfig>) : BridgeEvent()
 }
 
@@ -263,6 +281,13 @@ fun parseBridgeMessage(text: String): BridgeEvent? {
                 if (encodersArray != null) {
                     val encoders = protocolJson.decodeFromJsonElement<List<EncoderSlotState>>(encodersArray)
                     BridgeEvent.EncoderState(encoders, takeoverActive)
+                } else null
+            }
+            "button_state" -> {
+                val buttonsArray = obj["buttons"]
+                if (buttonsArray != null) {
+                    val buttons = protocolJson.decodeFromJsonElement<List<ButtonSlotState>>(buttonsArray)
+                    BridgeEvent.ButtonState(buttons)
                 } else null
             }
             "deck_slot_map" -> {

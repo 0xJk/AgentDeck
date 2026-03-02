@@ -42,6 +42,7 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
   private userSelection: 'auto' | 'bridge' | 'gateway' = 'auto';
   private gatewayEverConnected = false;
   private bridgeReportedGateway = false;
+  private preconnectEnabled = true;
   private activateTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
@@ -90,9 +91,13 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
 
     dinfo(TAG, `start(port=${port ?? 'auto'})`);
 
-    // Start bridge only — Gateway direct connection is unnecessary
-    // when daemon is running (daemon proxies Gateway sessions)
+    // Start bridge
     this.bridge.connect(port);
+
+    // Preconnect gateway in background for instant switching (even if bridge is primary)
+    if (this.preconnectEnabled) {
+      this.gateway.resume();
+    }
   }
 
   /** Expose bridge's scanLatestPort setter for plugin.ts */
@@ -123,10 +128,13 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
     this.activeLink = this.gateway;
     this.emit('active_agent_changed', 'openclaw');
 
+    // Emit the latest state immediately to fix Stream Deck stuck icon
+    this.gateway.emitStateUpdate();
+
     // If already connected, no timeout needed
     if (this.gateway.isConnected()) return;
 
-    // 5s timeout: if gateway doesn't connect, revert to bridge
+    // 15s timeout: if gateway doesn't connect, revert to bridge
     if (this.activateTimer) clearTimeout(this.activateTimer);
     this.activateTimer = setTimeout(() => {
       this.activateTimer = null;
@@ -135,7 +143,6 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
 
       dwarn(TAG, 'Gateway activation timeout — reverting to bridge');
       this.userSelection = 'auto';
-      this.gateway.pause();
       if (this.bridge.isConnected()) {
         this.activeLink = this.bridge;
         this.emit('active_agent_changed', 'claude-code');
@@ -144,7 +151,7 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
         this.activeLink = null;
         this.emit('disconnected');
       }
-    }, 5000);
+    }, 15000);
   }
 
   /** Explicitly switch to Claude Code (Bridge) as active agent. */
@@ -152,7 +159,6 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
     dinfo(TAG, 'activateBridge()');
     this.userSelection = 'bridge';
     this.activeLink = this.bridge;
-    if (this.gateway.isConnected()) this.gateway.pause();
     this.emit('active_agent_changed', 'claude-code');
   }
 
@@ -162,7 +168,6 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
     this.userSelection = 'auto';
     if (this.bridge.isConnected()) {
       this.activeLink = this.bridge;
-      if (this.gateway.isConnected()) this.gateway.pause();
     } else if (this.gateway.isConnected()) {
       this.gateway.resume();
       this.activeLink = this.gateway;
@@ -182,6 +187,7 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
    */
   setBridgeGatewayAvailable(available: boolean): void {
     this.bridgeReportedGateway = available;
+    if (available) this.maybePreconnectGateway();
   }
 
   isGatewayAvailable(): boolean {
@@ -195,6 +201,18 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
 
   // ===== Private: Event Wiring =====
 
+  /** If gateway is available, keep a background connection ready for instant switching. */
+  private maybePreconnectGateway(): void {
+    if (!this.preconnectEnabled) return;
+    if (!this.bridgeReportedGateway) return;
+    if (this.gateway.isConnected()) return;
+    // Only preconnect when bridge is up (so we have a primary session) and user didn't force bridge-only
+    if (this.bridge.isConnected() && this.userSelection !== 'bridge') {
+      dinfo(TAG, 'Preconnecting Gateway in background');
+      this.gateway.resume();
+    }
+  }
+
   private setupBridgeListeners(): void {
     // Forward all bridge events when bridge is the active link
     for (const eventName of FORWARDED_EVENTS) {
@@ -207,6 +225,8 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
 
     this.bridge.on('connected', () => {
       dinfo(TAG, 'Bridge connected');
+      // Keep Gateway warm in the background for fast switching
+      this.maybePreconnectGateway();
 
       // If user explicitly selected gateway, don't auto-switch
       if (this.userSelection === 'gateway') {
@@ -215,14 +235,8 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
       }
 
       dinfo(TAG, 'Bridge connected — activating');
-      const wasGateway = this.activeLink === this.gateway;
       this.activeLink = this.bridge;
-
-      // Pause gateway when bridge is active (saves resources, avoids confusion)
-      if (wasGateway) {
-        dlog(TAG, 'Pausing gateway (bridge takes priority)');
-        this.gateway.pause();
-      }
+      // Keep gateway connected for instant switching; events only forward when activeLink=gateway
 
       this.emit('connected');
     });

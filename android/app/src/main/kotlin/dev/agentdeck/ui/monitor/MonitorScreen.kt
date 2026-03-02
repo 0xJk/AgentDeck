@@ -296,9 +296,8 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
     )
     val octopuses = remember { mutableStateListOf<OctopusCreature>() }
 
-    LaunchedEffect(state.agents.size) {
-        val targetCount = state.agents.size.coerceAtLeast(1)
-        val isMulti = targetCount > 1
+    LaunchedEffect(state.agents) {
+        val targetCount = state.agents.size
         // Add missing creatures
         while (octopuses.size < targetCount) {
             val idx = octopuses.size
@@ -307,7 +306,7 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
             octopuses.add(OctopusCreature(
                 slot.centerXFraction, slot.centerYFraction, slot.scaleFactor,
                 phaseOffset = idx * 1.7f,
-                displayName = if (isMulti) agent?.displayName else null,
+                displayName = agent?.displayName,
             ).also {
                 if (agent != null) {
                     it.setState(agent.visualState)
@@ -319,10 +318,18 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
         while (octopuses.size > targetCount) {
             octopuses.removeAt(octopuses.lastIndex)
         }
-        // Update home positions (no recreation — preserves swim state)
+        // Update ALL creatures' home positions + states (handles session swap, name change, state change)
         for (i in octopuses.indices) {
             val slot = octopusSlots.getOrElse(i) { octopusSlots.last() }
             octopuses[i].setHomePosition(slot.centerXFraction, slot.centerYFraction, slot.scaleFactor)
+            if (i < state.agents.size) {
+                octopuses[i].setState(state.agents[i].visualState)
+                octopuses[i].setMark(state.agents[i].mark)
+                octopuses[i].setDisplayName(
+                    state.agents[i].displayName,
+                    show = true,
+                )
+            }
         }
     }
 
@@ -343,27 +350,6 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
         }
     }
 
-    // Update visual states when terrarium state changes
-    LaunchedEffect(state.octopus, state.agents) {
-        val isMulti = state.agents.size > 1
-        if (octopuses.isNotEmpty()) {
-            octopuses[0].setState(state.octopus)
-            if (state.agents.isNotEmpty()) {
-                octopuses[0].setMark(state.agents[0].mark)
-                octopuses[0].setDisplayName(
-                    if (isMulti) state.agents[0].displayName else null,
-                    show = isMulti,
-                )
-            }
-            for (i in 1 until octopuses.size) {
-                if (i < state.agents.size) {
-                    octopuses[i].setState(state.agents[i].visualState)
-                    octopuses[i].setMark(state.agents[i].mark)
-                    octopuses[i].setDisplayName(state.agents[i].displayName, show = isMulti)
-                }
-            }
-        }
-    }
     LaunchedEffect(state.crayfish) { mainCrayfish.setState(state.crayfish) }
     LaunchedEffect(state.tetra) { dataParticles.setState(state.tetra) }
     LaunchedEffect(state.agents, octopusSlots) {
@@ -398,6 +384,11 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
                 )
                 dataParticles.setWorkingAgentPositions(
                     octopuses.filter { it.isWorking() }.map { it.currentPosition() }
+                )
+                // Pass crayfish position + routing state for food spawning + school attraction
+                dataParticles.setCrayfishState(
+                    mainCrayfish.currentPosition(),
+                    mainCrayfish.isRouting(),
                 )
                 dataParticles.update(clampedDt)
                 bubbleSystem.update(clampedDt)
@@ -447,11 +438,7 @@ private fun MonitorHUD(
 
         // Top-right: Tank status (aquarium engine panel)
         TankStatusPanel(
-            usage = dashState.usage,
-            oauthConnected = dashState.oauthConnected,
-            ollamaStatus = dashState.ollamaStatus,
-            modelName = dashState.modelName,
-            modelCatalog = dashState.modelCatalog ?: emptyList(),
+            state = dashState,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(end = 12.dp, top = 12.dp)

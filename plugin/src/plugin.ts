@@ -542,19 +542,23 @@ function sendSlotMap(): void {
 
 // ---- Connect ----
 
-/** Find the most recently started session's port, or undefined for default */
+/** Find the most recently started interactive session's port, or undefined for default */
 function findLatestSessionPort(): number | undefined {
   try {
     const data = readFileSync(`${homedir()}/.agentdeck/sessions.json`, 'utf-8');
-    const sessions = JSON.parse(data) as Array<{ port: number; pid: number; startedAt: string }>;
+    const sessions = JSON.parse(data) as Array<{
+      port: number; pid: number; startedAt: string; agentType?: string;
+    }>;
     // Filter alive sessions
     const alive = sessions.filter((s) => {
       try { process.kill(s.pid, 0); return true; } catch { return false; }
     });
-    if (alive.length === 0) return undefined;
-    alive.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-    dinfo('Plugin', `Latest session port: ${alive[0].port} (${alive.length} active)`);
-    return alive[0].port;
+    // Filter out daemon sessions — daemon is infrastructure, not an interactive agent
+    const interactive = alive.filter((s) => s.agentType !== 'daemon');
+    if (interactive.length === 0) return undefined;
+    interactive.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    dinfo('Plugin', `Latest session port: ${interactive[0].port} (${interactive.length} interactive, ${alive.length} total)`);
+    return interactive[0].port;
   } catch {
     return undefined;
   }

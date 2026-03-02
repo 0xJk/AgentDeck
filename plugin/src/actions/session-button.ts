@@ -16,7 +16,7 @@ import { handleExpandedAction } from '../expanded-actions.js';
 import { setCcNoSessionMode } from './response-button.js';
 import { setUsageCapabilities } from './usage-button.js';
 import { updateOptionDialState } from './option-dial.js';
-import { updateItermDialState } from './iterm-dial.js';
+import { updateItermDialState, suppressAutoSwitch } from './iterm-dial.js';
 import { dlog } from '../log.js';
 import { readFileSync, watchFile, unwatchFile } from 'fs';
 import { execSync, execFile } from 'child_process';
@@ -771,6 +771,7 @@ function cycleSession(): void {
     currentSessionIndex = sessions.indexOf(session);
     currentProjectName = session.projectName;
     dlog('SesBut', `cycle: ${currentSessionIndex + 1}/${sessions.length} → ${getDisplayName(session, sessions)}:${session.port}`);
+    suppressAutoSwitch();
     bridge.activateBridge();
     bridge.reconnectBridgeTo(session.port);
   }

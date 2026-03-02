@@ -2640,6 +2640,71 @@ describe('OutputParser', () => {
       expect(idleEvents).toHaveLength(0);
     });
 
+    it('/model combined chunk: confirmation + idle prompt clears options', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const optEvents = collectEvents(p, 'option_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Initial /model option prompt — sets lastNavigableEmit=true
+      p.feed('❯ 1. Default (claude-sonnet-4-20250514)\n  2. claude-opus-4-20250514\n  3. claude-haiku-4-5-20251001\n');
+      vi.advanceTimersByTime(200);
+      expect(optEvents).toHaveLength(1);
+
+      // User selects → confirmation text + idle prompt arrive as single chunk.
+      // The bare idle line "❯ \n" should be detected even though
+      // nonWsContent includes the confirmation text.
+      p.feed('Set model to Default (claude-sonnet-4-20250514)\n\n❯ \n');
+      vi.advanceTimersByTime(500);
+
+      expect(idleEvents).toHaveLength(1);
+    });
+
+    it('/model separate chunks: ANSI reposition timer does not block idle', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const optEvents = collectEvents(p, 'option_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Initial /model option prompt — sets lastNavigableEmit=true
+      p.feed('❯ 1. Default (claude-sonnet-4-20250514)\n  2. claude-opus-4-20250514\n  3. claude-haiku-4-5-20251001\n');
+      vi.advanceTimersByTime(200);
+      expect(optEvents).toHaveLength(1);
+
+      // Chunk 1: confirmation text (no ❯) — triggers ANSI reposition handler,
+      // which sets optionTimer via setTimeout.
+      p.feed('Set model to Default\n');
+
+      // Chunk 2: genuine idle prompt. Should clear navigable state AND
+      // cancel the stale optionTimer so idle is not suppressed at line 588.
+      p.feed('❯ \n');
+      vi.advanceTimersByTime(500);
+
+      expect(idleEvents).toHaveLength(1);
+    });
+
+    it('cursor move chunk with option text does NOT falsely trigger idle', () => {
+      const p = armParser();
+      vi.advanceTimersByTime(500);
+
+      const optEvents = collectEvents(p, 'option_prompt');
+      const idleEvents = collectEvents(p, 'idle');
+
+      // Initial option prompt — sets lastNavigableEmit=true
+      p.feed('❯ 1. Default\n  2. Sonnet\n  3. Haiku\n');
+      vi.advanceTimersByTime(200);
+      expect(optEvents).toHaveLength(1);
+
+      // Cursor moves to "Sonnet" option. Contains ❯ + label text.
+      // "❯ Sonnet" has a non-bare line, so should NOT trigger idle.
+      p.feed('❯ Sonnet');
+      vi.advanceTimersByTime(500);
+
+      expect(idleEvents).toHaveLength(0);
+    });
+
     it('genuine idle prompt exits navigable state and emits idle', () => {
       const p = armParser();
       vi.advanceTimersByTime(500);

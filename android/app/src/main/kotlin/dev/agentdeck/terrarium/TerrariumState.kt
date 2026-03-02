@@ -104,10 +104,11 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         }
     }
 
+    val crayfishRouting = crayfish == CrayfishVisualState.ROUTING
     val tetra = when (agentState) {
         AgentState.DISCONNECTED -> TetraVisualState.ABSENT
-        AgentState.IDLE -> TetraVisualState.CIRCLING
-        AgentState.PROCESSING -> if (hasTool) TetraVisualState.STREAMING else TetraVisualState.CIRCLING
+        AgentState.IDLE -> if (crayfishRouting) TetraVisualState.STREAMING else TetraVisualState.CIRCLING
+        AgentState.PROCESSING -> if (hasTool || isOpenClaw || crayfishRouting) TetraVisualState.STREAMING else TetraVisualState.CIRCLING
         AgentState.AWAITING_PERMISSION,
         AgentState.AWAITING_OPTION,
         AgentState.AWAITING_DIFF -> TetraVisualState.HOVERING
@@ -125,8 +126,8 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     // Build multi-agent creature list from sibling sessions
     val agents = mutableListOf<AgentCreatureState>()
 
-    // Primary agent — skip if daemon or openclaw proxy (not a coding agent)
-    if (agentType != "daemon" && agentType != "openclaw") {
+    // Primary agent — skip if disconnected (no session), daemon, or openclaw proxy
+    if (agentState != AgentState.DISCONNECTED && agentType != "daemon" && agentType != "openclaw") {
         agents.add(
             AgentCreatureState(
                 sessionId = sessionId ?: "primary",

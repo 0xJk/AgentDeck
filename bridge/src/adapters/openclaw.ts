@@ -85,6 +85,12 @@ interface GatewaySession {
  * - Has no terminal (PTY), mode switching, or diff review
  * - Handles select_option/navigate_option/send_prompt directly via RPC
  */
+export interface OpenClawAdapterOptions {
+  gatewayUrl?: string;
+  /** Set false to disable automatic reconnect (daemon manages lifecycle externally) */
+  autoReconnect?: boolean;
+}
+
 export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   readonly capabilities: AgentCapabilities = OPENCLAW_CAPABILITIES;
 
@@ -104,6 +110,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   private externalHttpServer = false;
   private diagHandler: ((tail?: number) => unknown) | null = null;
   private rawDataCallback: ((data: string) => void) | null = null;
+  private autoReconnect: boolean;
 
   // Session tracking
   private currentSessionKey: string | null = null;
@@ -119,9 +126,16 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   private static readonly MAX_RECONNECT_DELAY = 30_000;
   private static readonly RPC_TIMEOUT = 10_000;
 
-  constructor(gatewayUrl?: string) {
+  constructor(options?: string | OpenClawAdapterOptions) {
     super();
-    this.gatewayUrl = gatewayUrl || `ws://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`;
+    if (typeof options === 'string') {
+      // Legacy: constructor(gatewayUrl?: string)
+      this.gatewayUrl = options || `ws://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`;
+      this.autoReconnect = true;
+    } else {
+      this.gatewayUrl = options?.gatewayUrl || `ws://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`;
+      this.autoReconnect = options?.autoReconnect ?? true;
+    }
 
     // Create bare HTTP server for WsServer (plugin) attachment.
     this.httpServer = createServer((req, res) => {
@@ -496,7 +510,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   }
 
   private scheduleReconnect(): void {
-    if (this.shutdownRequested || this.reconnectTimer) return;
+    if (this.shutdownRequested || this.reconnectTimer || !this.autoReconnect) return;
 
     debug('adapter:openclaw', `Reconnecting in ${this.reconnectDelay}ms...`);
     this.reconnectTimer = setTimeout(() => {
@@ -730,10 +744,10 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
         }
 
         // Fetch sessions (async, non-blocking)
-        this.fetchSessions();
+        this.fetchSessions().catch(err => debug('adapter:openclaw', `fetchSessions error: ${err}`));
 
         // Fetch model catalog (async, non-blocking)
-        this.emitModelCatalog();
+        this.emitModelCatalog().catch(err => debug('adapter:openclaw', `emitModelCatalog error: ${err}`));
       },
       reject: (err) => {
         debug('adapter:openclaw', `Handshake failed: ${err.message}`);
@@ -796,12 +810,12 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /** Fetch model catalog via CLI and emit events. Retries once on failure. */
-  private emitModelCatalog(retry = true): void {
+  private async emitModelCatalog(retry = true): Promise<void> {
     // Invalidate cache on reconnect to get fresh data
     invalidateModelCache();
 
     try {
-      const catalog = fetchModelCatalog();
+      const catalog = await fetchModelCatalog();
       if (!catalog) {
         if (retry && this.alive) {
           debug('adapter:openclaw', 'Model catalog empty — retrying in 10s');
@@ -811,7 +825,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
       }
 
       // Emit model_info for default model name (StateMachine uses this)
-      const defaultModel = getDefaultModelName();
+      const defaultModel = await getDefaultModelName();
       if (defaultModel) {
         this.emitAdapterEvent({
           source: 'parser',

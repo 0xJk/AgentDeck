@@ -171,13 +171,13 @@ class OctopusCreature(
 
         val bodyAlpha = if (visualState == OctopusVisualState.SLEEPING) 0.4f else 1f
 
-        // WORKING: subtle glow behind pixel body (not the giant starburst)
-        if (visualState == OctopusVisualState.WORKING) {
-            drawStarburst(scope, centerX, effectiveCenterY, bodyRadius * 1.0f, bodyAlpha * 0.5f)
-        }
-
         // Draw pixel body with animated tentacles
         drawPixelBody(scope, centerX, effectiveCenterY, bodyRadius, bodyAlpha)
+
+        // WORKING: compact starburst sparkle in front of pixel body
+        if (visualState == OctopusVisualState.WORKING) {
+            drawStarburst(scope, centerX, effectiveCenterY, bodyRadius * 0.55f, bodyAlpha * 0.7f)
+        }
 
         // ASKING: speech bubble with "?"
         if (visualState == OctopusVisualState.ASKING) {

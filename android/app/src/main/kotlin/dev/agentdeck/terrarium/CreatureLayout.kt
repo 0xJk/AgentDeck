@@ -75,13 +75,7 @@ data class AgentLayoutInfo(
  * Same-project agents cluster together; groups are spaced apart.
  */
 fun layoutOctopusesByProject(agents: List<AgentLayoutInfo>): List<CreatureSlot> {
-    if (agents.isEmpty()) return listOf(
-        CreatureSlot(
-            TerrariumLayout.OCTOPUS_CENTER_X_FRACTION,
-            TerrariumLayout.OCTOPUS_CENTER_Y_FRACTION,
-            1.0f,
-        )
-    )
+    if (agents.isEmpty()) return emptyList()
     if (agents.size == 1) return listOf(
         CreatureSlot(
             TerrariumLayout.OCTOPUS_CENTER_X_FRACTION,

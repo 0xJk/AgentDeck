@@ -44,10 +44,7 @@ fun ColorTerrariumCanvas(
         // Layer 1: Deep-sea gradient background
         drawDeepSeaBackground(w, h, state.environment)
 
-        // Layer 2: Animated water surface (waves + glow)
-        waterEffect.drawSurface(this)
-
-        // Layer 3: Caustics overlay
+        // Layer 2: Caustics overlay
         waterEffect.draw(this)
 
         // Layer 4: Rocks + sand (bottom)

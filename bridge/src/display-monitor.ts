@@ -1,11 +1,12 @@
 import { EventEmitter } from 'events';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, execFileSync, type ChildProcess } from 'child_process';
 import { createInterface } from 'readline';
 import { debug } from './logger.js';
 
 const POLL_INTERVAL_S = 2;
-const MAX_RESTARTS = 3;
+const MAX_RESTARTS = Infinity; // keep trying forever
 const RESTART_DELAY_MS = 5_000;
+const FALLBACK_POLL_MS = 5_000;
 
 const PYTHON_SCRIPT = `
 import ctypes, ctypes.util, time, sys
@@ -37,6 +38,7 @@ export class DisplayMonitor extends EventEmitter {
   private running = false;
   private restartCount = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private fallbackTimer: ReturnType<typeof setInterval> | null = null;
 
   start(): void {
     if (this.running) return;
@@ -44,6 +46,7 @@ export class DisplayMonitor extends EventEmitter {
     this.restartCount = 0;
     debug('display', `DisplayMonitor started (${POLL_INTERVAL_S}s persistent poll)`);
     this.spawnProcess();
+    this.startFallbackPoll();
   }
 
   stop(): void {
@@ -51,6 +54,10 @@ export class DisplayMonitor extends EventEmitter {
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
+    }
+    if (this.fallbackTimer) {
+      clearInterval(this.fallbackTimer);
+      this.fallbackTimer = null;
     }
     if (this.proc) {
       this.proc.kill('SIGTERM');
@@ -105,7 +112,7 @@ export class DisplayMonitor extends EventEmitter {
   private scheduleRestart(): void {
     if (!this.running) return;
     if (this.restartCount >= MAX_RESTARTS) {
-      debug('display', `Max restarts (${MAX_RESTARTS}) reached, giving up`);
+      debug('display', `Max restarts (${MAX_RESTARTS}) reached, keeping fallback poll only`);
       return;
     }
     this.restartCount++;
@@ -114,5 +121,28 @@ export class DisplayMonitor extends EventEmitter {
       this.restartTimer = null;
       this.spawnProcess();
     }, RESTART_DELAY_MS);
+  }
+
+  /** Fallback poll using pmset (works even if python/CGDisplayIsAsleep fails). */
+  private startFallbackPoll(): void {
+    if (this.fallbackTimer) return;
+    this.fallbackTimer = setInterval(() => {
+      try {
+        const out = execFileSync('pmset', ['-g', 'powerstate', 'IODisplayWrangler'], { encoding: 'utf8' });
+        const match = out.match(/state:\s*(\d+)/);
+        if (match) {
+          const stateNum = parseInt(match[1], 10);
+          // 4 = awake, 1 = asleep (common mapping)
+          const nowOn = stateNum >= 4;
+          if (nowOn !== this.displayOn) {
+            this.displayOn = nowOn;
+            debug('display', `fallback pmset state changed: ${nowOn ? 'ON' : 'ASLEEP'} (state=${stateNum})`);
+            this.emit('display_state_changed', nowOn);
+          }
+        }
+      } catch (err) {
+        debug('display', `pmset poll failed: ${err}`);
+      }
+    }, FALLBACK_POLL_MS);
   }
 }

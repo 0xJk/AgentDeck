@@ -11,18 +11,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.neverEqualPolicy
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import dev.agentdeck.terrarium.CrayfishVisualState
 import dev.agentdeck.terrarium.OctopusVisualState
 import dev.agentdeck.terrarium.TetraVisualState
 import dev.agentdeck.terrarium.TerrariumState
-import dev.agentdeck.terrarium.TerrariumTiming
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -113,44 +114,68 @@ private val einkCrayfishRightAntennaPath: android.graphics.Path by lazy {
 fun EinkTerrariumView(
     state: TerrariumState,
     modifier: Modifier = Modifier,
+    onFrameRendered: ((isAnimationFrame: Boolean) -> Unit)? = null,
 ) {
-    var renderedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var lastRenderState by remember { mutableStateOf<TerrariumState?>(null) }
-    var pendingRender by remember { mutableLongStateOf(0L) }
+    // neverEqualPolicy: bitmap is reused (same reference), so every assignment
+    // must trigger recomposition even though the reference doesn't change.
+    var renderedBitmap by remember { mutableStateOf<Bitmap?>(null, neverEqualPolicy()) }
+    // Capture hosting Android View — postInvalidate() flushes the LAYER_TYPE_SOFTWARE
+    // cache in the parent EinkRefreshZone FrameLayout, ensuring animation frames reach the EPD.
+    val hostView = LocalView.current
+    // Reusable render target — NOT displayed directly, only used as renderEinkFrame target
+    var reusableBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var animFrame by remember { mutableIntStateOf(0) }
+    val currentState by rememberUpdatedState(state)
 
     val isAnimating = state.octopus != OctopusVisualState.SLEEPING ||
         state.crayfish != CrayfishVisualState.DORMANT
 
-    // Animation loop for active states (4-frame, 800ms interval)
+    // Unified animation loop — handles both periodic frames and state-change renders.
+    // Keyed on isAnimating only; uses rememberUpdatedState to always see latest state.
+    // No separate debounce LaunchedEffect, so no animFrame reset race.
     LaunchedEffect(isAnimating) {
-        if (!isAnimating) return@LaunchedEffect
+        if (!isAnimating) {
+            // Static state: render once with full dither
+            val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
+                .also { reusableBitmap = it }
+            renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, 0, bmp)
+            hostView.postInvalidate()
+            onFrameRendered?.invoke(false)
+            return@LaunchedEffect
+        }
         while (isActive) {
-            delay(EINK_ANIM_FRAME_MS)
+            val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
+                .also { reusableBitmap = it }
             animFrame = (animFrame + 1) % EINK_ANIM_CYCLE
-            renderedBitmap = renderEinkFrame(state, EINK_WIDTH, EINK_HEIGHT, animFrame)
+            // skipDither=true: all colors are pre-quantized grays, AA is off.
+            // Saves ~100-200ms per frame on RK3566.
+            renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, animFrame, bmp, skipDither = true)
+            hostView.postInvalidate()
+            onFrameRendered?.invoke(true)
+            delay(EINK_ANIM_FRAME_MS)
         }
     }
 
-    // Debounced re-render on state change (agents list includes sibling visual states)
+    // Force immediate re-render on state change (e.g. FLOATING→WORKING).
+    // The animation loop picks up currentState automatically, but we also render
+    // one frame immediately so the transition isn't delayed by up to 600ms.
     val agentsKey = state.agents.map { it.visualState }
     LaunchedEffect(state.octopus, state.crayfish, state.tetra, state.environment, agentsKey) {
-        if (state == lastRenderState) return@LaunchedEffect
-        pendingRender = System.currentTimeMillis()
-        delay(TerrariumTiming.EINK_DEBOUNCE_MS)
-
-        if (System.currentTimeMillis() - pendingRender >= TerrariumTiming.EINK_DEBOUNCE_MS - 50) {
-            lastRenderState = state
-            animFrame = 0
-            renderedBitmap = renderEinkFrame(state, EINK_WIDTH, EINK_HEIGHT, 0)
-        }
+        val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
+            .also { reusableBitmap = it }
+        renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, animFrame, bmp)
+        hostView.postInvalidate()
+        onFrameRendered?.invoke(false)
     }
 
     // Initial render
     LaunchedEffect(Unit) {
         if (renderedBitmap == null) {
-            renderedBitmap = renderEinkFrame(state, EINK_WIDTH, EINK_HEIGHT, 0)
-            lastRenderState = state
+            val bmp = Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
+                .also { reusableBitmap = it }
+            renderedBitmap = renderEinkFrame(state, EINK_WIDTH, EINK_HEIGHT, 0, bmp)
+            hostView.postInvalidate()
+            onFrameRendered?.invoke(false)
         }
     }
 
@@ -163,55 +188,52 @@ fun EinkTerrariumView(
     }
 }
 
-/** Render a single e-ink frame with optional animation. */
+/**
+ * Render a single e-ink frame with optional animation. Reuses [target] bitmap to avoid allocation.
+ * [skipDither] skips the snapToNearestGray pass — safe because all draw colors are pre-quantized
+ * 16-level grays and paint.isAntiAlias=false. Use for animation frames where speed matters.
+ */
 private fun renderEinkFrame(
     state: TerrariumState, width: Int, height: Int, animFrame: Int = 0,
+    target: Bitmap? = null, skipDither: Boolean = false,
 ): Bitmap {
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val bitmap = if (target != null && target.width == width && target.height == height) {
+        target.eraseColor(0)
+        target
+    } else {
+        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    }
     val canvas = android.graphics.Canvas(bitmap)
     val paint = Paint().apply { isAntiAlias = false }
 
     // Water background — entire frame is the aquarium (no inner border)
     canvas.drawColor(GRAY_WATER_BG)
 
-    // Water surface — air region above sine wave (4-frame cycle for wave)
+    // Water surface — flat air region above water line, wave only on the boundary
     val creatureFrame = animFrame % 4
     val surfaceY = height * 0.08f
     val surfaceAmp = height * 0.012f
     val surfaceFreq = (2.0 * kotlin.math.PI / (width * 0.5)).toFloat()
     val phaseShift = creatureFrame * kotlin.math.PI.toFloat() / 2f
 
-    // Fill above wave with air color (white region above water)
+    // Air fill — everything above the sine wave curve.
+    // The contrast between GRAY_AIR (0xEE) and GRAY_WATER_BG (0xDD) forms a natural
+    // subtle water surface. No separate wave stroke needed (it was too prominent on e-ink).
     paint.style = Paint.Style.FILL
     paint.color = GRAY_AIR
-    val airFillPath = android.graphics.Path().apply {
+    val airPath = android.graphics.Path().apply {
         moveTo(0f, 0f)
-        var sx = 0f
-        while (sx <= width) {
+        lineTo(width.toFloat(), 0f)
+        // Trace sine wave from right to left (bottom edge of air region)
+        var sx = width.toFloat()
+        while (sx >= 0f) {
             val sy = surfaceY + kotlin.math.sin((surfaceFreq * sx + phaseShift).toDouble()).toFloat() * surfaceAmp
             lineTo(sx, sy)
-            sx += 2f
+            sx -= 4f
         }
-        lineTo(width.toFloat(), 0f)
         close()
     }
-    canvas.drawPath(airFillPath, paint)
-
-    // Wave stroke for crisp boundary after dithering
-    paint.style = Paint.Style.STROKE
-    paint.color = GRAY_WAVE
-    paint.strokeWidth = 1.5f
-    val waveStrokePath = android.graphics.Path().apply {
-        var sx = 0f
-        moveTo(sx, surfaceY + kotlin.math.sin((surfaceFreq * sx + phaseShift).toDouble()).toFloat() * surfaceAmp)
-        sx += 2f
-        while (sx <= width) {
-            val sy = surfaceY + kotlin.math.sin((surfaceFreq * sx + phaseShift).toDouble()).toFloat() * surfaceAmp
-            lineTo(sx, sy)
-            sx += 2f
-        }
-    }
-    canvas.drawPath(waveStrokePath, paint)
+    canvas.drawPath(airPath, paint)
 
     // Bubbles — filled + outline for e-ink visibility (4-frame cycle)
     val bubbleBasePositions = floatArrayOf(0.15f, 0.35f, 0.55f, 0.75f)
@@ -243,10 +265,12 @@ private fun renderEinkFrame(
     drawEinkGravel(canvas, paint, width, height)
 
     // Back-layer fish (behind creatures for 3D depth)
-    drawEinkDataParticles(canvas, paint, width, height, state.tetra, state.agents.size, animFrame, layer = 0)
+    drawEinkDataParticles(canvas, paint, width, height, state.tetra, state.agents.size, state.crayfish, animFrame, layer = 0)
 
     // Creatures (4-frame cycle for limb animation)
-    if (state.agents.size > 1) {
+    if (state.agents.isEmpty()) {
+        // No agents — skip octopus drawing
+    } else if (state.agents.size > 1) {
         val slots = dev.agentdeck.terrarium.layoutOctopuses(state.agents.size)
         for (i in state.agents.indices) {
             val slot = slots.getOrElse(i) { slots.last() }
@@ -259,15 +283,19 @@ private fun renderEinkFrame(
     } else {
         drawEinkOctopus(canvas, paint, width, height, state.octopus, state.agentType,
             animFrame = creatureFrame,
-            displayName = if (state.agents.size > 1) state.agents.firstOrNull()?.displayName else null)
+            displayName = state.agents.getOrNull(0)?.displayName)
     }
     drawEinkCrayfish(canvas, paint, width, height, state.crayfish, creatureFrame)
 
     // Front-layer fish (in front of creatures for 3D depth)
-    drawEinkDataParticles(canvas, paint, width, height, state.tetra, state.agents.size, animFrame, layer = 1)
+    drawEinkDataParticles(canvas, paint, width, height, state.tetra, state.agents.size, state.crayfish, animFrame, layer = 1)
 
-    // Snap to native 16-level grayscale (no dithering — e-ink hardware renders gray natively)
-    DitherEngine.snapToNearestGray(bitmap)
+    // Snap to native 16-level grayscale — only needed on state-change renders.
+    // Animation frames skip this because all draw colors are already pre-quantized
+    // gray values and isAntiAlias=false, so the 180K-pixel pass is essentially a no-op.
+    if (!skipDither) {
+        DitherEngine.snapToNearestGray(bitmap)
+    }
 
     return bitmap
 }
@@ -397,8 +425,8 @@ private fun drawEinkOctopus(
     val standingOffset = (centerXFraction - 0.38f) * 0.10f
     val cy = when (state) {
         OctopusVisualState.SLEEPING -> h * (0.78f + standingOffset * 0.5f)
-        OctopusVisualState.FLOATING -> h * (0.66f + standingOffset)
-        OctopusVisualState.ASKING -> h * (0.60f + standingOffset)
+        OctopusVisualState.FLOATING -> h * (0.74f + standingOffset)
+        OctopusVisualState.ASKING -> h * (0.74f + standingOffset)
         // WORKING: subtle vertical bob (4-frame cycle) like floating while busy
         OctopusVisualState.WORKING -> h * (centerYFraction +
             0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat())
@@ -413,28 +441,28 @@ private fun drawEinkOctopus(
     val startX = cx - gridW / 2f
     val startY = cy - gridH / 2f
 
-    // WORKING: starburst glow behind the body (subtle radiating arms)
+    // WORKING: pulsing outline behind body — visible state indicator replacing starburst
     if (state == OctopusVisualState.WORKING) {
         paint.style = Paint.Style.STROKE
         paint.color = GRAY_STARBURST
-        paint.strokeWidth = 1.5f * scaleFactor
-        val burstR = gridW * 0.6f
-        val armCount = 8
-        val rotation = animFrame * 0.4f
-        for (i in 0 until armCount) {
-            val angle = (rotation + i * 2.0 * kotlin.math.PI / armCount).toFloat()
-            val innerR = gridW * 0.35f
-            val x1 = cx + kotlin.math.cos(angle.toDouble()).toFloat() * innerR
-            val y1 = cy + kotlin.math.sin(angle.toDouble()).toFloat() * innerR
-            val x2 = cx + kotlin.math.cos(angle.toDouble()).toFloat() * burstR
-            val y2 = cy + kotlin.math.sin(angle.toDouble()).toFloat() * burstR
-            canvas.drawLine(x1, y1, x2, y2, paint)
-        }
+        // 4-frame pulse cycle: expand/contract outline
+        val pulseR = gridW * (0.55f + (animFrame % 4) * 0.05f)
+        paint.strokeWidth = 2f * scaleFactor
+        canvas.drawOval(
+            RectF(cx - pulseR, cy - pulseR * 0.6f, cx + pulseR, cy + pulseR * 0.6f),
+            paint,
+        )
     }
 
-    // Animation (4-frame, left/right opposite phase) — amplified for e-ink visibility
-    val isActive = state != OctopusVisualState.SLEEPING
-    val leftTentacleStretch = if (isActive) when (animFrame % 4) {
+    // Animation (4-frame, left/right opposite phase)
+    // WORKING: full amplitude for e-ink visibility; ASKING: moderate; FLOATING: near-static (match tablet)
+    val tentacleScale = when (state) {
+        OctopusVisualState.WORKING -> 1.0f
+        OctopusVisualState.ASKING -> 0.3f
+        OctopusVisualState.FLOATING -> 0f
+        OctopusVisualState.SLEEPING -> 0f
+    }
+    val leftTentacleStretch = if (tentacleScale > 0f) tentacleScale * when (animFrame % 4) {
         0 -> pixelH * 0.3f
         1 -> pixelH * 0.8f
         2 -> -pixelH * 0.3f
@@ -442,7 +470,13 @@ private fun drawEinkOctopus(
         else -> 0f
     } else 0f
     val rightTentacleStretch = -leftTentacleStretch
-    val leftArmOffset = if (isActive) when (animFrame % 4) {
+    val armScale = when (state) {
+        OctopusVisualState.WORKING -> 1.0f
+        OctopusVisualState.ASKING -> 0.3f
+        OctopusVisualState.FLOATING -> 0f
+        OctopusVisualState.SLEEPING -> 0f
+    }
+    val leftArmOffset = if (armScale > 0f) armScale * when (animFrame % 4) {
         0 -> pixelH * 0.4f
         1 -> pixelH * 0.15f
         2 -> -pixelH * 0.4f
@@ -527,7 +561,7 @@ private fun drawEinkOctopus(
     if (state == OctopusVisualState.ASKING) {
         val bubbleR = gridW * 0.25f * scaleFactor
         val bubbleX = cx + gridW * 0.6f
-        val bubbleY = startY - gridH * 0.3f
+        val bubbleY = (startY - gridH * 0.3f).coerceAtLeast(bubbleR + 2f)
 
         // Bubble circle
         paint.color = GRAY_AIR
@@ -553,15 +587,16 @@ private fun drawEinkOctopus(
     }
 }
 
-/** E-ink name tag above octopus — adaptive font with 2-line wrapping. */
+/** E-ink name tag above octopus — adaptive font with 2-line wrapping, text-fit width. */
 private fun drawEinkNameTag(
     canvas: android.graphics.Canvas, paint: Paint,
     cx: Float, startY: Float, scaleFactor: Float,
     name: String, w: Int,
 ) {
-    val baseFontSize = w * 0.018f * scaleFactor
-    val tagWidth = w * 0.14f * scaleFactor * 1.8f
-    val maxTextWidth = tagWidth * 0.9f
+    val baseFontSize = w * 0.024f * scaleFactor
+    val maxTagWidth = w * 0.16f * scaleFactor * 1.8f
+    val maxTextWidth = maxTagWidth * 0.9f
+    val hPad = baseFontSize * 0.6f  // horizontal padding each side
     val gap = baseFontSize * 0.4f
 
     // 3-tier adaptive font: 100% → 75% → 60%
@@ -583,14 +618,23 @@ private fun drawEinkNameTag(
         }
     }
 
+    // Dynamic width: measure actual text + minimal padding
+    val measuredMaxLine = lines.maxOf { paint.measureText(it) }
+    val tagWidth = (measuredMaxLine + hPad * 2).coerceAtMost(maxTagWidth)
+
     val lineHeight = chosenSize * 1.3f
     val tagHeight = if (lines.size == 1) chosenSize * 1.6f else lineHeight * lines.size + chosenSize * 0.4f
-    val tagTop = startY - tagHeight - gap
+    val tagTop = (startY - tagHeight - gap).coerceAtLeast(2f)
 
     // Background rounded rect for readability
     paint.color = GRAY_WATER_BG
     paint.style = Paint.Style.FILL
     val rect = RectF(cx - tagWidth / 2, tagTop, cx + tagWidth / 2, tagTop + tagHeight)
+    canvas.drawRoundRect(rect, 3f, 3f, paint)
+    // Border for separation from background
+    paint.color = GRAY_OCTO_LIMB
+    paint.style = Paint.Style.STROKE
+    paint.strokeWidth = 1f
     canvas.drawRoundRect(rect, 3f, 3f, paint)
 
     // Text in dark gray for contrast
@@ -639,13 +683,19 @@ private fun drawEinkCrayfish(
 ) {
     val cx = w * 0.75f
     // Y-position by state — sitting on rock when idle, floating up when active
-    val cy = when (state) {
+    // ROUTING: bob animation (match tablet's sin(time*3f) * 0.05f)
+    val baseY = when (state) {
         CrayfishVisualState.DORMANT -> h * 0.82f
         CrayfishVisualState.SITTING -> h * 0.72f
         CrayfishVisualState.ROUTING -> h * 0.55f
         CrayfishVisualState.OBSERVING -> h * 0.62f
         CrayfishVisualState.WAITING -> h * 0.60f
     }
+    val bobOffset = when (state) {
+        CrayfishVisualState.ROUTING -> h * 0.015f * kotlin.math.sin(animFrame * kotlin.math.PI / 6).toFloat()
+        else -> 0f
+    }
+    val cy = baseY + bobOffset
     val bodyWidth = w * 0.14f
 
     if (state == CrayfishVisualState.DORMANT) {
@@ -760,169 +810,200 @@ private fun drawEinkCrayfish(
 // --- Data particles & labels ---
 
 /**
- * Two-school neon tetra with Lissajous wandering centers + agent attraction.
+ * Two-school neon tetra — 10 fish (5+5) optimized for e-ink 600ms frames.
  *
- * School A (6 fish, indices 0-5): left-start, slow elliptical path
- * School B (6 fish, indices 6-11): right-start, different period elliptical path
- * Total 12 fish, size 0.013f (72% of previous 0.018f)
+ * School A (5 fish, indices 0-4): left-start elliptical orbit
+ * School B (5 fish, indices 5-9): right-start, different period
  *
- * The different Lissajous periods cause the two schools to naturally
- * converge and diverge every ~20-30 seconds.
+ * E-ink strategy: heading from path derivative, per-fish orbit speeds, tail wiggle.
+ * Depth layers: indices 0-3/5-8 = front, 4/9 = back (smaller, behind creatures).
  *
- * STREAMING: both school centers pull 30% toward WORKING octopus +
- *   data particles orbit around the agent.
- * HOVERING: 8 fish gather near options area, 4 drift at distance.
+ * STREAMING: school centers pull 30% toward WORKING octopus + data particles orbit.
+ * HOVERING: 7 fish gather near options area, 3 drift at distance.
  */
-private val einkPrevFishX = FloatArray(12) { 0f }
+private const val EINK_FISH_COUNT = 10
+private const val EINK_FISH_PER_SCHOOL = 5
 
 private fun drawEinkDataParticles(
     canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int,
     state: TetraVisualState,
     agentCount: Int,
+    crayfishState: CrayfishVisualState = CrayfishVisualState.DORMANT,
     animFrame: Int = 0,
     layer: Int = -1, // -1 = all, 0 = back (behind creatures), 1 = front
 ) {
     if (state == TetraVisualState.ABSENT) return
 
     val slots = dev.agentdeck.terrarium.layoutOctopuses(agentCount.coerceAtLeast(1))
-    val fishCount = 12
-    val fishSize = w * 0.013f
-    val step = animFrame % EINK_ANIM_CYCLE
-    val t = step.toFloat() / EINK_ANIM_CYCLE  // 0..1 normalized cycle position
-    val twoPi = 2.0 * kotlin.math.PI
+    val crayfishRouting = crayfishState == CrayfishVisualState.ROUTING
+    val fishSize = w * 0.014f  // slightly larger with fewer fish
+    val frame = animFrame.toFloat()
 
     if (state == TetraVisualState.STREAMING || state == TetraVisualState.CIRCLING) {
-        // School center Lissajous paths (different periods → natural merge/split)
-        var cxA = 0.30f + 0.22f * kotlin.math.sin(t * twoPi * 0.7).toFloat()
-        var cyA = 0.38f + 0.18f * kotlin.math.sin(t * twoPi * 1.0).toFloat()
-        var cxB = 0.60f + 0.22f * kotlin.math.cos(t * twoPi * 0.9).toFloat()
-        var cyB = 0.42f + 0.18f * kotlin.math.cos(t * twoPi * 0.7).toFloat()
+        // School center elliptical orbits
+        val angA = frame * 0.14
+        val angB = frame * 0.11
+        var cxA = 0.30f + 0.22f * kotlin.math.cos(angA).toFloat()
+        var cyA = 0.38f + 0.18f * kotlin.math.sin(angA * 1.3).toFloat()
+        var cxB = 0.60f + 0.22f * kotlin.math.cos(angB).toFloat()
+        var cyB = 0.42f + 0.18f * kotlin.math.sin(angB * 1.3).toFloat()
 
-        // STREAMING: pull school centers toward first WORKING agent
-        if (state == TetraVisualState.STREAMING && slots.isNotEmpty()) {
-            val agentX = slots[0].centerXFraction
-            // WORKING octopus Y with bob (matching drawEinkOctopus)
-            val agentY = slots[0].centerYFraction +
-                0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat()
-            val pull = 0.30f
-            cxA += (agentX - cxA) * pull
-            cyA += (agentY - cyA) * pull
-            cxB += (agentX - cxB) * pull
-            cyB += (agentY - cyB) * pull
+        // School velocity direction for heading
+        val vxA = -kotlin.math.sin(angA).toFloat()
+        val vxB = -kotlin.math.sin(angB).toFloat()
+
+        // STREAMING: pull toward active agent (octopus or crayfish)
+        if (state == TetraVisualState.STREAMING) {
+            val pullX: Float
+            val pullY: Float
+            if (agentCount > 0 && slots.isNotEmpty()) {
+                // Pull toward working octopus
+                pullX = slots[0].centerXFraction
+                pullY = slots[0].centerYFraction +
+                    0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat()
+            } else if (crayfishRouting) {
+                // No octopuses — pull toward routing crayfish
+                pullX = 0.75f  // crayfish e-ink X
+                pullY = 0.55f  // crayfish ROUTING Y
+            } else {
+                pullX = Float.NaN
+                pullY = Float.NaN
+            }
+            if (!pullX.isNaN()) {
+                val pull = 0.30f
+                cxA += (pullX - cxA) * pull; cyA += (pullY - cyA) * pull
+                cxB += (pullX - cxB) * pull; cyB += (pullY - cyB) * pull
+            }
         }
 
-        val spacing = w * 0.025f
+        val spacing = w * 0.032f
 
-        for (i in 0 until fishCount) {
-            // Depth layer: front (indices 0-3, 6-9) vs back (indices 4-5, 10-11)
-            val fishLayer = if (i % 6 < 4) 1 else 0
+        for (i in 0 until EINK_FISH_COUNT) {
+            // Depth: last fish of each school (4, 9) = back layer
+            val fishLayer = if (i % EINK_FISH_PER_SCHOOL == EINK_FISH_PER_SCHOOL - 1) 0 else 1
             if (layer != -1 && fishLayer != layer) continue
             val depthScale = if (fishLayer == 0) 0.80f else 1.0f
 
-            // Which school?
-            val schoolA = i < 6
+            val schoolA = i < EINK_FISH_PER_SCHOOL
             val baseX = if (schoolA) w * cxA else w * cxB
             val baseY = if (schoolA) h * cyA else h * cyB
 
-            // Individual offset — sin/cos with per-fish unique phase (no fixed formation)
-            val localIdx = i % 6
-            val dx = kotlin.math.sin(step * 0.2 + localIdx * 1.7).toFloat() * spacing * 0.8f
-            val dy = kotlin.math.cos(step * 0.15 + localIdx * 2.3).toFloat() * spacing * 0.5f
+            val localIdx = i % EINK_FISH_PER_SCHOOL
+            val fishAng = frame * (0.18 + localIdx * 0.05) + localIdx * 1.26
+            val dx = kotlin.math.cos(fishAng).toFloat() * spacing * (0.6f + localIdx * 0.15f)
+            val dy = kotlin.math.sin(fishAng * 0.7).toFloat() * spacing * 0.5f
 
             val fx = (baseX + dx).coerceIn(w * 0.05f, w * 0.95f)
             val fy = (baseY + dy).coerceIn(h * 0.10f, h * 0.72f)
 
-            // Heading from frame-to-frame movement direction
-            val heading = if (fx > einkPrevFishX[i]) 0f else 180f
-            einkPrevFishX[i] = fx
+            val fishVx = -kotlin.math.sin(fishAng).toFloat()
+            val schoolVx = if (schoolA) vxA else vxB
+            val heading = if (fishVx + schoolVx * 0.5f >= 0f) 0f else 180f
+            val tailPhase = (animFrame + localIdx * 2) % 4
 
-            drawEinkFish(canvas, paint, fx, fy, fishSize * depthScale, heading)
+            drawEinkFish(canvas, paint, fx, fy, fishSize * depthScale, heading, tailPhase)
         }
 
-        // STREAMING: data particles orbiting around working agents
-        if (state == TetraVisualState.STREAMING && (layer == -1 || layer == 1) && slots.isNotEmpty()) {
-            val agentX = w * slots[0].centerXFraction
-            val agentY = h * (slots[0].centerYFraction +
-                0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat())
-            val particleR = w * 0.06f
-            paint.style = Paint.Style.FILL
-            paint.color = GRAY_PARTICLE
-            for (p in 0 until 4) {
-                val angle = animFrame * 0.8 + p * kotlin.math.PI / 2.0
-                val pr = particleR * (0.6f + 0.4f * kotlin.math.sin(animFrame * 0.5 + p * 1.2).toFloat())
-                val px = agentX + kotlin.math.cos(angle).toFloat() * pr
-                val py = agentY + kotlin.math.sin(angle).toFloat() * pr
-                canvas.drawCircle(px, py, 1.5f + (p % 2) * 0.5f, paint)
+        // STREAMING: data particles (orbit around active agent or crayfish)
+        if (state == TetraVisualState.STREAMING && (layer == -1 || layer == 1)) {
+            val particleCenterX: Float
+            val particleCenterY: Float
+            if (agentCount > 0 && slots.isNotEmpty()) {
+                particleCenterX = w * slots[0].centerXFraction
+                particleCenterY = h * (slots[0].centerYFraction +
+                    0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat())
+            } else if (crayfishRouting) {
+                particleCenterX = w * 0.75f
+                particleCenterY = h * 0.55f
+            } else {
+                particleCenterX = Float.NaN
+                particleCenterY = Float.NaN
+            }
+            if (!particleCenterX.isNaN()) {
+                val agentX = particleCenterX
+                val agentY = particleCenterY
+                val particleR = w * 0.06f
+                paint.style = Paint.Style.FILL
+                paint.color = GRAY_PARTICLE
+                for (p in 0 until 4) {
+                    val angle = animFrame * 0.8 + p * kotlin.math.PI / 2.0
+                    val pr = particleR * (0.6f + 0.4f * kotlin.math.sin(animFrame * 0.5 + p * 1.2).toFloat())
+                    val px = agentX + kotlin.math.cos(angle).toFloat() * pr
+                    val py = agentY + kotlin.math.sin(angle).toFloat() * pr
+                    canvas.drawCircle(px, py, 1.5f + (p % 2) * 0.5f, paint)
+                }
             }
         }
 
-        // Dashed lines between agents if multiple (front layer only to avoid double-draw)
+        // Dashed lines between agents (front layer only)
         if ((layer == -1 || layer == 1) && slots.size > 1) {
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 0.5f
             paint.color = GRAY_PARTICLE
-            val dashPath = DashPathEffect(floatArrayOf(4f, 4f), 0f)
-            paint.pathEffect = dashPath
+            paint.pathEffect = DashPathEffect(floatArrayOf(4f, 4f), 0f)
             for (i in 0 until slots.size - 1) {
-                val a = slots[i]
-                val b = slots[i + 1]
-                canvas.drawLine(
-                    w * a.centerXFraction, h * a.centerYFraction,
-                    w * b.centerXFraction, h * b.centerYFraction,
-                    paint,
-                )
+                val a = slots[i]; val b = slots[i + 1]
+                canvas.drawLine(w * a.centerXFraction, h * a.centerYFraction,
+                    w * b.centerXFraction, h * b.centerYFraction, paint)
             }
             paint.pathEffect = null
         }
     } else if (state == TetraVisualState.HOVERING) {
-        // 8 fish gather near options area, 4 drift at distance
-        val driftX = w * 0.008f * kotlin.math.sin(t * twoPi).toFloat()
-        val nearX = w * 0.45f + driftX
+        val driftAng = frame * 0.12
+        val nearX = w * 0.45f + w * 0.012f * kotlin.math.cos(driftAng).toFloat()
         val nearY = h * 0.35f
 
-        for (i in 0 until fishCount) {
-            val fishLayer = if (i % 6 < 4) 1 else 0
+        for (i in 0 until EINK_FISH_COUNT) {
+            val fishLayer = if (i % EINK_FISH_PER_SCHOOL == EINK_FISH_PER_SCHOOL - 1) 0 else 1
             if (layer != -1 && fishLayer != layer) continue
             val depthScale = if (fishLayer == 0) 0.80f else 1.0f
 
-            val isNear = i < 8  // 8 gather, 4 drift
-            val localIdx = i % 6
-            val bx: Float
-            val by: Float
+            val isNear = i < 7  // 7 gather, 3 drift
+            val localIdx = i % EINK_FISH_PER_SCHOOL
+            val bx: Float; val by: Float; val vx: Float
             if (isNear) {
-                // Loose cluster near options area
-                val dx = kotlin.math.sin(step * 0.15 + localIdx * 1.3).toFloat() * w * 0.04f
-                val dy = kotlin.math.cos(step * 0.12 + localIdx * 1.8).toFloat() * h * 0.03f
-                bx = nearX + dx
-                by = nearY + dy
+                val ang = frame * (0.12 + localIdx * 0.03) + localIdx * 1.1
+                bx = nearX + kotlin.math.cos(ang).toFloat() * w * 0.04f
+                by = nearY + kotlin.math.sin(ang * 0.8).toFloat() * h * 0.03f
+                vx = -kotlin.math.sin(ang).toFloat()
             } else {
-                // Distant wanderers
-                val dx = kotlin.math.sin(step * 0.1 + i * 2.1).toFloat() * w * 0.10f
-                val dy = kotlin.math.cos(step * 0.08 + i * 1.5).toFloat() * h * 0.06f
-                bx = w * 0.50f + dx
-                by = h * 0.45f + dy
+                val ang = frame * (0.08 + i * 0.02) + i * 2.1
+                bx = w * 0.50f + kotlin.math.cos(ang).toFloat() * w * 0.10f
+                by = h * 0.45f + kotlin.math.sin(ang * 0.7).toFloat() * h * 0.06f
+                vx = -kotlin.math.sin(ang).toFloat()
             }
 
             val fx = bx.coerceIn(w * 0.05f, w * 0.95f)
             val fy = by.coerceIn(h * 0.10f, h * 0.72f)
-            val heading = if (fx > einkPrevFishX[i]) 0f else 180f
-            einkPrevFishX[i] = fx
+            val heading = if (vx >= 0f) 0f else 180f
+            val tailPhase = (animFrame + localIdx * 2) % 4
 
-            drawEinkFish(canvas, paint, fx, fy, fishSize * depthScale, heading)
+            drawEinkFish(canvas, paint, fx, fy, fishSize * depthScale, heading, tailPhase)
         }
     }
 }
 
-/** Draw a single e-ink fish — teardrop body with neon stripe, scaled for e-ink visibility. */
+/**
+ * Draw a single e-ink fish — teardrop body with neon stripe, animated tail.
+ * [tailPhase] 0-3 drives tail wiggle (4 positions per cycle).
+ */
 private fun drawEinkFish(
     canvas: android.graphics.Canvas, paint: Paint,
     cx: Float, cy: Float, size: Float, heading: Float,
+    tailPhase: Int = 0,
 ) {
     canvas.save()
     canvas.rotate(heading, cx, cy)
 
     val halfLen = size * 1.8f
     val halfH = size * 0.75f
+    // Tail wiggle: 4-phase sinusoidal offset (±30% of halfH)
+    val tailWiggle = when (tailPhase % 4) {
+        0 -> 0f
+        1 -> halfH * 0.30f
+        2 -> 0f
+        else -> -halfH * 0.30f
+    }
 
     // Body — asymmetric diamond (wider toward head for fish shape)
     paint.style = Paint.Style.FILL
@@ -930,7 +1011,7 @@ private fun drawEinkFish(
     val bodyPath = android.graphics.Path().apply {
         moveTo(cx + halfLen, cy)                         // nose
         lineTo(cx + halfLen * 0.1f, cy - halfH)         // top (shifted forward)
-        lineTo(cx - halfLen, cy)                         // tail base
+        lineTo(cx - halfLen, cy + tailWiggle)            // tail base (wiggle)
         lineTo(cx + halfLen * 0.1f, cy + halfH)         // bottom
         close()
     }
@@ -948,15 +1029,15 @@ private fun drawEinkFish(
     paint.strokeCap = Paint.Cap.ROUND
     canvas.drawLine(cx - halfLen * 0.3f, cy, cx + halfLen * 0.6f, cy, paint)
 
-    // Tail — filled forked V
+    // Tail — filled forked V with wiggle
     paint.color = GRAY_FISH_BODY
     paint.style = Paint.Style.FILL
     val tailX = cx - halfLen
     val tailPath = android.graphics.Path().apply {
-        moveTo(tailX, cy)
-        lineTo(tailX - halfLen * 0.4f, cy - halfH * 0.9f)
-        lineTo(tailX + halfLen * 0.1f, cy)
-        lineTo(tailX - halfLen * 0.4f, cy + halfH * 0.9f)
+        moveTo(tailX, cy + tailWiggle)
+        lineTo(tailX - halfLen * 0.4f, cy + tailWiggle - halfH * 0.9f)
+        lineTo(tailX + halfLen * 0.1f, cy + tailWiggle)
+        lineTo(tailX - halfLen * 0.4f, cy + tailWiggle + halfH * 0.9f)
         close()
     }
     canvas.drawPath(tailPath, paint)
@@ -1030,6 +1111,13 @@ object EinkRefreshHelper {
         } catch (_: Exception) {}
 
         // Fallback
+        view.invalidate()
+    }
+
+    /** GC16 partial refresh without full-screen flash — for animation frames. */
+    fun requestAnimationRefresh(view: View) {
+        if (tryRockchipRefresh(view, RK_EPD_FULL_GC16, sendFullFrame = false)) return
+        // Onyx/fallback: standard invalidate
         view.invalidate()
     }
 

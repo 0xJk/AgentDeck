@@ -326,8 +326,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       // Gateway appeared — create adapter
       connectGatewayAdapter();
     } else if (!status.available && wasAvailable && gatewayAdapter) {
-      // Gateway disappeared — cleanup adapter
-      disconnectGatewayAdapter();
+      // Gateway disappeared — only cleanup if adapter is also dead
+      // (it may have already reconnected on its own before probe detected the gap)
+      if (!gatewayAdapter.isAlive()) {
+        disconnectGatewayAdapter();
+      }
     }
   }, 5000);
   // Initial probe
@@ -383,7 +386,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     gatewayConnecting = true;
 
     log('[agentdeck] OpenClaw Gateway detected, connecting...');
-    const adapter = new OpenClawAdapter();
+    const adapter = new OpenClawAdapter({ autoReconnect: false });
 
     // Wire adapter events → StateMachine
     adapter.on('event', (evt: AdapterEvent) => {
@@ -423,6 +426,23 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           wsServer.broadcast(connEvt);
           if (evt.status === 'connected') {
             log('[agentdeck] OpenClaw Gateway connected');
+            // Force full state_update — StateMachine may not transition if already IDLE
+            const snap = stateMachine.getSnapshot();
+            wsServer.broadcast({
+              type: 'state_update',
+              state: snap.state,
+              permissionMode: snap.permissionMode,
+              agentType: 'openclaw',
+              agentCapabilities: OPENCLAW_CAPABILITIES,
+              projectName: snap.projectName ?? projectName,
+              modelName: snap.modelName ?? undefined,
+              billingType: snap.billingType,
+              options: snap.options.length > 0 ? snap.options : undefined,
+              modelCatalog: cachedModelCatalog ?? undefined,
+              pairingUrl: wsUrl,
+              ollamaStatus: cachedOllamaStatus ?? undefined,
+            } as BridgeEvent);
+            wsServer.broadcast(buildUsageEvent(snap, cachedApiUsage, oauthConnected));
           } else {
             log('[agentdeck] OpenClaw Gateway disconnected');
           }
@@ -450,12 +470,16 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     if (!gatewayAdapter) return;
     log('[agentdeck] OpenClaw Gateway lost, cleaning up adapter...');
 
+    const wasAlive = gatewayAdapter.isAlive();
     gatewayAdapter.shutdown().catch(() => {});
     gatewayAdapter = null;
     cachedModelCatalog = null;
 
-    // Reset to idle
-    stateMachine.handleHookEvent('SessionEnd', {});
+    // Only emit SessionEnd if adapter was still alive (hasn't already emitted its own via ws.close)
+    if (wasAlive) {
+      stateMachine.handleHookEvent('SessionEnd', {});
+    }
+    // Always broadcast disconnected to ensure clients are notified
     wsServer.broadcast({ type: 'connection', status: 'disconnected' } as BridgeEvent);
   }
 

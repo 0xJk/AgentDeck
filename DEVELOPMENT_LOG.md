@@ -2,6 +2,118 @@
 
 ---
 
+## 2026-03-03 — E-ink 수조 애니메이션 EPD 리프레시 누락 수정
+
+### 문제
+E-ink 수조 영역의 `EinkRefreshZone`이 `triggerKey` 변경 시 1회만 EPD 리프레시. 이후 600ms 간격 내부 애니메이션 프레임은 비트맵만 갱신되고 EPD 컨트롤러에 도달하지 않았다. `EinkTerrariumView`의 내부 `animFrame` 루프와 외부 `EinkRefreshZone`의 `triggerKey` 사이에 동기화가 없었기 때문.
+
+### 해결
+Callback 기반 EPD 리프레시: `EinkTerrariumView`에 `onFrameRendered: ((isAnimationFrame: Boolean) -> Unit)?` 콜백 추가. 새 `EinkAnimatedRefreshZone` composable이 콜백을 받아 animation frame → `requestAnimationRefresh()` (GC16 partial, 플래시 없음), state transition → `requestFullRefresh()` (FULL GC16) 호출. 기존 `EinkRefreshZone`은 수정하지 않음 (다른 영역에서 정상 동작).
+
+### 핵심 설계 결정
+- **기존 zone 미수정**: `EinkRefreshZone`은 triggerKey 기반으로 다른 영역(agent panel, status, timeline)에서 잘 동작. 애니메이션 전용 신규 zone 분리
+- **GC16 partial vs FULL**: animation frame에 `sendOneFullFrame=false`로 16-level 그레이스케일 유지하면서 전체 화면 플래시 방지. 상태 전환 시에만 FULL로 고스팅 클리어
+- **null 기본값**: `onFrameRendered = null` → 태블릿 등 non-e-ink 호출 코드 변경 불필요
+
+---
+
+## 2026-03-02 — E-ink & 태블릿 디스플레이 통합 + OpenClaw 애니메이션
+
+### 문제
+1. **태블릿 멀티세션**: `LaunchedEffect(state.agents.size)`가 에이전트 수 변경 시에만 재실행 — 세션 교체/이름 변경/상태 변경 반영 안 됨
+2. **E-ink 말풍선/이름태그**: WORKING 상태에서 말풍선이 캔버스 상단 밖으로 나갈 수 있음
+3. **올라마 상태 간헐적**: `ollamaStatus`가 `state_update`에만 포함되어 5초 polling에도 `usage_update`에는 누락
+4. **OpenClaw 애니메이션**: PROCESSING 시 가재만 ROUTING, 물고기(테트라)는 CIRCLING 유지 — `hasTool` 항상 false (OpenClaw adapter가 `currentTool` 미설정)
+5. **가재-물고기 상호작용 없음**: food crumb이 WORKING 옥토퍼스에서만 산란, OpenClaw primary면 옥토퍼스 없어서 물고기에 먹이 공급 안 됨
+
+### 해결
+- **`LaunchedEffect(state.agents)`**: 리스트 참조 변경 시마다 트리거 — add/remove + 전체 creature homePosition/state/mark/displayName 갱신
+- **Y 클램프**: `bubbleY.coerceAtLeast(bubbleR + 2f)`, `tagTop.coerceAtLeast(2f)` — 캔버스 밖 방지
+- **이름태그 가시성**: 폰트 `0.018f→0.024f`, 태그 너비 `0.14f→0.16f*1.8f`, 1px GRAY_OCTO_LIMB 테두리
+- **올라마 piggyback**: `buildUsageEvent()`에 `ollamaStatus` 파라미터 추가 → 모든 `usage_update`에 포함
+- **TankStatusPanel → DashboardState**: 5개 개별 파라미터 → 단일 DashboardState (e-ink 패턴 통일)
+- **E-ink Status 2-section**: TOKENS & COST 제거 → Rate Limits + Models 2-column Row
+- **OpenClaw 테트라 STREAMING**: `crayfishRouting` flag 도입 — 가재 ROUTING 시 IDLE/PROCESSING 모두 → STREAMING
+- **가재 heartbeat**: SITTING 상태에 4초 주기 더블펄스 teal glow 추가 — 생존 신호
+- **가재 위치 추적**: `CrayfishCreature.currentPosition()` + `isRouting()` API 추가
+- **DataParticleSystem 가재 인식**: `setCrayfishState(position, routing)` — ROUTING 가재에서 food crumb 산란 + school center 30% 인력
+- **E-ink 테트라 가재 타겟**: 옥토퍼스 없을 때 가재 위치(0.75, 0.55)로 STREAMING pull + 데이터 파티클 orbit
+
+### 교훈 / 핵심 설계 결정
+- **이벤트 piggyback 패턴**: 정기 폴링 데이터(ollamaStatus)는 별도 이벤트보다 기존 주기적 이벤트(usage_update)에 piggyback하는 것이 효율적 + 클라이언트 코드 단순
+- **크리처 간 상호작용**: 가재-물고기처럼 서로 다른 크리처 시스템 간 연동은 중간 데이터 계층(DataParticleSystem)에 위치/상태를 주입하는 pull 모델이 깔끔 — 각 크리처는 자신의 렌더링만 책임, 상호작용은 데이터 계층이 조율
+- **LaunchedEffect 키 선택**: `.size`가 아닌 리스트 자체를 키로 — data class 기반 리스트는 내용 변경 시 참조가 바뀌므로 정확하게 트리거
+
+---
+
+## 2026-03-02 — E-ink Tank Status 뷰 재설계
+
+### 문제
+`EinkStatusCompact`가 3줄 monospace 텍스트로 모든 정보를 표시:
+1. `OAuth✓ ●Bridge UP:0:03` — Bridge 연결/업타임은 불필요한 정보
+2. `Olla✓` — 말줄임으로 가독성 저하
+3. Unicode 게이지 바 (`██░░`) — e-ink 16-level 그레이에서 채움/빈칸 구분 어려움
+4. 토큰 수/비용 미표시, `modelCatalog` 미활용
+5. 정보 위계 없음 (모두 동일 monoStyle)
+
+### 해결
+- **3-section 분리**: Rate Limits + Tokens & Cost + Models — 시각적 섹션 헤더(Bold, letterSpacing 1sp)
+- **Compose Box 게이지바**: `EinkGaugeBar` — black fill + white empty + black `border(1.dp)`. Unicode 문자 대비 e-ink 대비 극대화, 디더링 아티팩트 0
+- **`BoxWithConstraints` 적응 레이아웃**: >700dp = 3-column (IDLE 전체 너비), ≤700dp = 세로 스택 (ACTIVE 좁은 영역)
+- **`modelCatalog` 활용**: OAuth 연결 + 사용 가능 모델 전체 목록 표시 (말줄임 없음)
+- **billingType 분기**: API 사용자는 Rate Limits 숨기고 "API Key" 표시
+- **ACTIVE 모드 weight 균등화**: context/status 55%/45% → 50%/50%
+- **Refresh trigger 확장**: `usage`만 → `usage + oauthConnected + ollamaStatus + modelCatalog`
+
+### 교훈 / 핵심 설계 결정
+- **E-ink 게이지 = Compose Box**: Unicode block 문자는 e-ink EPD에서 그레이레벨 차이가 미미하여 사실상 구분 불가. 순수 흑백 Compose Box가 최적
+- **적응 레이아웃 기준**: 700dp는 Crema S 1072dp landscape의 78%(우측 컬럼) ≈ 836dp → wide, ACTIVE 45% ≈ 376dp → narrow
+
+---
+
+## 2026-03-02 — Dashboard ghost creature + Stream Deck daemon port collision
+
+### 문제
+1. **Ghost creature**: daemon만 실행 중 (sdc 세션 없음) Android Dashboard에 SLEEPING 옥토퍼스 1마리 표시. `TerrariumState`가 DISCONNECTED에서도 `agentType`이 null이면 primary agent를 추가, `MonitorScreen`의 `coerceAtLeast(1)` + `CreatureLayout`의 빈 리스트 fallback이 최소 1마리 강제
+2. **SD+ 버튼 지연**: daemon 도입 후 버튼이 첫 번째 누름에 반응 안 함. `findLatestSessionPort()`가 daemon 세션을 필터링하지 않아 plugin이 daemon 포트로 연결 → daemon의 `onCommand()`가 대부분의 명령을 무시
+
+### 해결
+- **TerrariumState.kt**: `agentState != AgentState.DISCONNECTED` 가드 추가 — DISCONNECTED시 primary agent 목록 제외
+- **MonitorScreen.kt**: `coerceAtLeast(1)` 제거 → agents 0이면 octopuses 0
+- **CreatureLayout.kt**: `layoutOctopusesByProject()` 빈 agents → `emptyList()` 반환 (기존: 기본 슬롯 1개)
+- **EinkRenderer.kt**: `agents.isEmpty()` 분기 추가로 octopus 그리기 스킵
+- **plugin.ts**: `findLatestSessionPort()`에 `agentType !== 'daemon'` 필터 추가
+
+### 교훈
+- Daemon은 인프라 프로세스이지 코딩 에이전트가 아님 — `sessions.json`에 등록되더라도 플러그인/UI에서 interactive session으로 취급하면 안 됨
+- "최소 1" 보장 로직은 크리처 시스템의 여러 레이어에 분산되어 있었음 (TerrariumState, MonitorScreen, CreatureLayout) → 한 곳만 고치면 다른 곳에서 다시 1마리가 생성됨. 전체 경로 추적 필요
+
+---
+
+## 2026-03-02 — Android Deck UI 개선: bridge-driven button_state + compact layout
+
+### 문제
+1. Android Deck 탭 버튼이 `aspectRatio(1f)` 정사각형으로 10" 태블릿에서 ~260dp 차지, Context Area 부족
+2. 버튼 내용이 Android 로컬 하드코딩 — SD+ 플러그인 PI 커스텀 설정과 불일치
+3. AWAITING 상태에서 MORE 눌러야 전체 옵션 표시, PROCESSING시 진행 표시 부족
+
+### 해결
+- **`button_state` 프로토콜 신설**: Bridge `computeButtonState()` → 8개 슬롯 상태 계산 + WS broadcast. `ButtonSlotState` 타입 (shared/protocol.ts), Android `parseBridgeMessage()` 파싱, `DashboardState.buttonStates` 필드 추가
+- **Bridge-driven 우선, 로컬 fallback**: `computeDeckLayout()`이 `buttonStates.isNotEmpty()` 체크 → bridge 데이터 사용, 미연결시 기존 로컬 로직 유지
+- **PI 설정 반영**: `cachedSlotMap`에서 `response-button` 슬롯의 PI settings(label/action) 추출하여 IDLE 버튼에 적용
+- **CompactStatusBar(36dp)**: 프로젝트명 + 상태칩(colored dot) + 모델명 + usage% pill 배지
+- **직사각형 버튼(80dp)**: `aspectRatio(1f)` 제거 → ~84dp 추가 Context Area 확보
+- **터치 피드백**: scale(0.95) + alpha(0.85) 애니메이션, icon/badge 렌더링
+- **Context Area 개선**: AWAITING시 전체 옵션 LazyColumn 항상 표시 (cursor highlight + shortcut badge), PROCESSING시 LinearProgressIndicator + ProcessingDots, IDLE시 suggestedPrompt AssistChip
+- **Action dispatch 이중 경로**: bridge-driven `actionString` 직접 실행 + 로컬 `DeckAction` sealed class fallback
+
+### 핵심 설계 결정
+- `computeButtonState()`는 `computeEncoderState()`와 동일 패턴 — state_changed/connect/slot_map 3곳 broadcast
+- `colorForOption` 로직이 plugin/bridge/android 3곳에 중복 — 향후 shared util 추출 고려
+- DIM 버튼은 `{ ...DIM, slot: N }` spread override 패턴 사용
+
+---
+
 ## 2026-03-02 — 네온테트라 2개 무리 + E-ink 수조 자연화
 
 ### 문제

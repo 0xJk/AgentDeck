@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import dev.agentdeck.net.ModelCatalogEntry
 import dev.agentdeck.net.OllamaStatus
 import dev.agentdeck.net.UsageUpdate
+import dev.agentdeck.state.DashboardState
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.util.formatBytes
 import dev.agentdeck.util.formatResetTime
@@ -39,13 +40,14 @@ import dev.agentdeck.util.formatResetTime
  */
 @Composable
 fun TankStatusPanel(
-    usage: UsageUpdate,
-    oauthConnected: Boolean? = null,
-    ollamaStatus: OllamaStatus? = null,
-    modelName: String? = null,
-    modelCatalog: List<ModelCatalogEntry> = emptyList(),
+    state: DashboardState,
     modifier: Modifier = Modifier,
 ) {
+    val usage = state.usage
+    val oauthConnected = state.oauthConnected
+    val ollamaStatus = state.ollamaStatus
+    val modelName = state.modelName
+    val modelCatalog = state.modelCatalog ?: emptyList()
     Column(
         modifier = modifier
             .background(TerrariumColors.HUDBg, RoundedCornerShape(8.dp))
@@ -233,7 +235,11 @@ private fun OllamaInfoSection(ollamaStatus: OllamaStatus?) {
         )
 
         ollamaStatus.models.forEach { model ->
-            val vramText = if (model.sizeVram > 0) " ${formatBytes(model.sizeVram)}" else ""
+            val vramText = when {
+                model.sizeVram > 0 -> " ${formatBytes(model.sizeVram)}"
+                model.size > 0 -> " ${formatBytes(model.size)}"
+                else -> ""
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
                 verticalAlignment = Alignment.CenterVertically,

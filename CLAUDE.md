@@ -53,9 +53,9 @@ Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 [claude-code]          (octopus)  (crayfish)
 [  opus-4]           ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿
 [  ● PROCESSING]
-[openclaw]
-[  gpt-4o]           OAuth✓ ●Bridge  5h ██░░ 45% 2h
-[  ● ROUTING]        > Read file...  7d ███░ 73% 3d
+[openclaw]           RATE LIMITS              MODELS
+[  gpt-4o]           5h [████░░] 72% 1h      OAuth: opus-4, sonnet-4
+[  ● ROUTING]        7d [██░░░░] 63% 2d      Ollama: qwen2.5:7b 4.5G
 [Workers: 2]         10:32 [T] Read file_path.ts
 ⚙ Settings           10:33 [M] Model call opus-4
                      10:33 [S] IDLE → PROCESSING
@@ -63,11 +63,12 @@ Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 
 - 좌측(22%): AgentDeck 로고 + 에이전트 목록 (primary + siblings + gateway-detected)
 - 우측(78%): 아쿠아리움 수조(상단 40-50%) + context/status(중간, PROCESSING시만) + 타임라인(하단 35-38%)
-- IDLE시 context 숨김 → 수조 50% + 상태바 12% + 타임라인 38%
+- IDLE시 context 숨김 → 수조 47% + 상태바 15% + 타임라인 38%
+- **Status 2-section**: Rate Limits (Compose Box 게이지바: black fill/white empty/black border) + Models (OAuth catalog + Ollama). `BoxWithConstraints` 700dp 기준 wide(2컬럼)/narrow(2컬럼 Row) 적응
 - 수조: Compose `clip(RoundedCornerShape)` 둥근 모서리 (내부 테두리 없음), 수면 파도, 해초, 자갈, 거품 — 수족관 느낌
 - **Multi-agent visibility**: Bridge `/health`에서 sibling state 조회, Gateway TCP probe로 OpenClaw 감지. Daemon primary는 agent list에서 제외 (coding agent 아님). OpenClaw primary는 목록에 🦞로 표시하되 terrarium octopus에서는 제외 (crayfish가 담당)
 - **Crayfish 독립 상태**: sibling OpenClaw session의 state에서 ROUTING/SITTING 결정 (primary agentType 의존 제거)
-- **Refresh zones**: 좌측 A2(200ms), 수조 FULL(500ms), context+status A2(200ms), timeline A2(300ms), IDLE status DU(2000ms). `LAYER_TYPE_SOFTWARE` on wrapper FrameLayout for EPD grayscale
+- **Refresh zones**: 좌측 A2(200ms), 수조 `EinkAnimatedRefreshZone`(callback 기반), context+status A2(200ms), timeline A2(300ms), IDLE status DU(2000ms). `LAYER_TYPE_SOFTWARE` on wrapper FrameLayout for EPD grayscale. 수조 애니메이션: `EinkTerrariumView.onFrameRendered` 콜백 → animation frame=GC16 partial(플래시 없음), state transition=FULL GC16(고스팅 클리어)
 - **EPD vendor API**: Rockchip RK3566 (Crema S) — `android.os.EinkManager` system service, `setMode("2"=GC16/"12"=A2/"14"=DU)` + `sendOneFullFrame()`. Onyx — `BaseDevice.setViewDefaultUpdateMode()`. KOReader `RK35xxEPDController` 참고
 - **E-ink grayscale**: 네이티브 16-level 그레이, `DitherEngine.snapToNearestGray()` (에러 디퓨전 없음). 수조 내부 테두리 없음 — Compose `clip(RoundedCornerShape)` 만 사용. 크리처 부위별 그레이: body(0x44), limb/claw(0x33), starburst(0x99), sleeping=dimmed. 환경: sand(0xCC), fish body(0x55)+stripe(0xBB), rock outline(0x22), seaweed 2px. 멀티세션 Y stagger: `standingOffset = (centerXFraction - 0.38) * 0.10`
 
@@ -81,8 +82,8 @@ Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 
 ### Creature Design — 도트 아트 통일
 - **OctopusCreature** (Claude Code): 14×5 픽셀 그리드, terracotta, 셀 타입 태깅. Standing 상태: per-instance `standingJitter` + X-correlated depth offset로 자연스러운 멀티세션 배치. 수영(SWIM) 경계 `0.20~0.68` — HUD 패널과 겹치지 않음
-- **CrayfishCreature** (OpenClaw): SVG Path 기반 front-facing 렌더링, red/teal gradient, `PathParser` + `withTransform` pivot rotation
-- **Neon Tetra**: 14마리 2개 무리(schoolId 0/1, 7마리씩), Lissajous 경로 school centers로 만남/흩어짐 반복. Boids: cohesion/alignment=같은 무리만, separation=전체. `SCHOOL_ATTRACTOR_WEIGHT=0.4` (먹이 있으면 무효). `TETRA_SWIM` 경계 `0.03~0.92 X`, `0.08~0.68 Y`. E-ink: 12마리 2무리(6+6), size `0.013f`, `einkPrevFishX` heading 추적, STREAMING시 에이전트 인력 30% + 데이터 파티클 4개
+- **CrayfishCreature** (OpenClaw): SVG Path 기반 front-facing 렌더링, red/teal gradient, `PathParser` + `withTransform` pivot rotation. SITTING: heartbeat glow (4초 주기 더블펄스), ROUTING: full animation (claw clap, signal waves, eye flash, glow pulse). `currentPosition()` + `isRouting()` — DataParticleSystem에 위치/상태 제공
+- **Neon Tetra**: 14마리 2개 무리(schoolId 0/1, 7마리씩), Lissajous 경로 school centers로 만남/흩어짐 반복. Boids: cohesion/alignment=같은 무리만, separation=전체. `SCHOOL_ATTRACTOR_WEIGHT=0.4` (먹이 있으면 무효). `TETRA_SWIM` 경계 `0.03~0.92 X`, `0.08~0.68 Y`. E-ink: 12마리 2무리(6+6), size `0.013f`, `einkPrevFishX` heading 추적, STREAMING시 에이전트 인력 30% + 데이터 파티클 4개. **가재 반응**: ROUTING 가재도 food crumb 산란 + school center 30% 인력 → 옥토퍼스 없을 때(OpenClaw primary) 가재가 물고기 유도
 - 독립 애니메이션 가능한 부위별 셀 타입 분리 (눈, 팔/집게, 다리 등)
 - 상태 애니메이션: 셀 좌표 오프셋, 색상 lerp, pivot 기반 회전 (SVG transform 아님)
 
@@ -136,7 +137,7 @@ sdc stop           # stop bridge and session
 - **Button label intelligence**: 3-tier 라벨 축약 시스템 — (1) CJK-aware 픽셀 기반 줄바꿈 (`text-utils.ts`) (2) 로컬 휴리스틱 약어 (`abbreviateLabel`) (3) `claude -p --model haiku` CLI 폴백 (`label-summarizer.ts`). 1-2단계 즉시(0ms), 3단계 1-3초(캐시 200개). 약어된 버튼 우하단 `~` 표시. CJK 문자 1em, Latin 0.55em 폭 계산. Wide canvas는 충분한 가로폭이라 변경 불필요
 - **npm packages**: `@agentdeck/shared`, `@agentdeck/bridge`, `@agentdeck/setup` — public npm packages (MIT license)
 - **Multi-surface monitoring**: mDNS (`_agentdeck._tcp`), auth token (`~/.agentdeck/auth-token`), SSE (`/sse`), remote WS token validation. `0.0.0.0` binding for LAN access
-- **Android launcher**: `android/` — Jetpack Compose, minSdk 29, CATEGORY_HOME, NSD mDNS discovery, QR pairing (CameraX + ML Kit), e-ink detection (Crema/Onyx/Kobo). **3-tab nav**: Dashboard (terrarium bg + HUD overlay panels, connection overlay when disconnected) / Deck (encoder strip + 2×4 button grid + context area) / Settings. MonitorService: CPU wake lock + system stay-on + screen wake on state change (e-ink). **Deck encoder strip**: 4-panel LCD mirroring (Utility/Action/Session/Voice), touch gestures (swipe=rotate, tap=push, long-press=record). **Voice**: Android AudioRecord → WAV → HTTP POST `/voice/transcribe` → whisper. **Utility proxy**: `bridge/src/utility-proxy.ts` — osascript macOS volume/brightness/media control via Android remote. **Slot map**: Plugin reports SD+ profile layout → Bridge caches → Android mirrors dynamically
+- **Android launcher**: `android/` — Jetpack Compose, minSdk 29, CATEGORY_HOME, NSD mDNS discovery, QR pairing (CameraX + ML Kit), e-ink detection (Crema/Onyx/Kobo). **3-tab nav**: Dashboard (terrarium bg + HUD overlay panels, connection overlay when disconnected) / Deck (encoder strip + 2×4 button grid + context area) / Settings. MonitorService: CPU wake lock + system stay-on + screen wake on state change (e-ink). **Deck encoder strip**: 4-panel LCD mirroring (Utility/Action/Session/Voice), touch gestures (swipe=rotate, tap=push, long-press=record). **Deck button grid**: Bridge `button_state` 프로토콜 우선, 로컬 fallback. CompactStatusBar(36dp) 상단 + 직사각형 버튼(80dp) + 넓은 ContextArea. 터치 피드백(scale 0.95+alpha 0.85), AWAITING시 전체 옵션 리스트 항상 표시, PROCESSING시 LinearProgressIndicator, IDLE시 suggestedPrompt AssistChip. **Voice**: Android AudioRecord → WAV → HTTP POST `/voice/transcribe` → whisper. **Utility proxy**: `bridge/src/utility-proxy.ts` — osascript macOS volume/brightness/media control via Android remote. **Slot map**: Plugin reports SD+ profile layout → Bridge caches → Android mirrors dynamically
 - **Setup-required UI**: Plugin detects `sdc` not installed → INSTALL button → `npx @agentdeck/setup` via iTerm
 
 ## v3 Layout (0.3.0)

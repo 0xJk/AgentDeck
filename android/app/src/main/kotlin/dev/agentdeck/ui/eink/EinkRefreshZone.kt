@@ -96,3 +96,58 @@ fun EinkRefreshZone(
         modifier = modifier,
     )
 }
+
+/**
+ * E-ink refresh zone for animated content (terrarium aquarium).
+ *
+ * Unlike [EinkRefreshZone] which only refreshes on [stateKey] changes,
+ * this zone receives per-frame callbacks from the animation loop and
+ * triggers appropriate EPD refreshes:
+ * - Animation frames → GC16 partial (no flash, 16-level grayscale)
+ * - State transitions → Full GC16 with flash (ghosting clear)
+ *
+ * The [content] lambda receives an `onFrameRendered` callback that the
+ * child composable (e.g. [EinkAquariumFrame]) should invoke after each render.
+ */
+@Composable
+fun EinkAnimatedRefreshZone(
+    stateKey: Any,
+    modifier: Modifier = Modifier,
+    content: @Composable (onFrameRendered: (isAnimationFrame: Boolean) -> Unit) -> Unit,
+) {
+    val currentContent by rememberUpdatedState(content)
+    var viewRef by remember { mutableStateOf<View?>(null) }
+
+    // State transition → full GC16 refresh (debounced to avoid rapid flashes)
+    LaunchedEffect(stateKey) {
+        delay(500)
+        viewRef?.let { EinkRefreshHelper.requestFullRefresh(it) }
+    }
+
+    AndroidView(
+        factory = { context ->
+            FrameLayout(context).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                val composeView = ComposeView(context).apply {
+                    setContent {
+                        currentContent { isAnimationFrame ->
+                            val view = viewRef ?: return@currentContent
+                            if (isAnimationFrame) {
+                                EinkRefreshHelper.requestAnimationRefresh(view)
+                            } else {
+                                EinkRefreshHelper.requestFullRefresh(view)
+                            }
+                        }
+                    }
+                }
+                addView(composeView)
+                viewRef = this
+            }
+        },
+        modifier = modifier,
+    )
+}
