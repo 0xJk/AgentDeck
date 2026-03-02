@@ -49,11 +49,11 @@ bash scripts/build-android-release.sh   # local → dist/agentdeck-v{VERSION}.ap
 Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 
 ```
-[AgentDeck 로고]     ╭───────────────────────────────╮
-[claude-code]        │     🐙        🦞              │
-[  opus-4]           │   (octopus)  (crayfish)       │
-[  ● PROCESSING]     │  ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿  │
-[openclaw]           ╰───────────────────────────────╯
+[AgentDeck 로고]          🐙        🦞
+[claude-code]          (octopus)  (crayfish)
+[  opus-4]           ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿
+[  ● PROCESSING]
+[openclaw]
 [  gpt-4o]           OAuth✓ ●Bridge  5h ██░░ 45% 2h
 [  ● ROUTING]        > Read file...  7d ███░ 73% 3d
 [Workers: 2]         10:32 [T] Read file_path.ts
@@ -64,7 +64,7 @@ Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 - 좌측(22%): AgentDeck 로고 + 에이전트 목록 (primary + siblings + gateway-detected)
 - 우측(78%): 아쿠아리움 수조(상단 40-50%) + context/status(중간, PROCESSING시만) + 타임라인(하단 35-38%)
 - IDLE시 context 숨김 → 수조 50% + 상태바 12% + 타임라인 38%
-- 수조: 둥근 모서리, 수면 파도, 해초, 자갈, 거품 — 수족관 느낌
+- 수조: Compose `clip(RoundedCornerShape)` 둥근 모서리 (내부 테두리 없음), 수면 파도, 해초, 자갈, 거품 — 수족관 느낌
 - **Multi-agent visibility**: Bridge `/health`에서 sibling state 조회, Gateway TCP probe로 OpenClaw 감지, 가상 세션 삽입
 - **Crayfish 독립 상태**: sibling OpenClaw session의 state에서 ROUTING/SITTING 결정 (primary agentType 의존 제거)
 - **Refresh zones**: 좌측 A2(200ms), 수조 FULL(500ms), context+status A2(200ms), timeline A2(300ms), IDLE status DU(2000ms). `LAYER_TYPE_SOFTWARE` on wrapper FrameLayout for EPD grayscale
@@ -80,7 +80,7 @@ Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 - 하단: Timeline strip (이벤트 로그)
 
 ### Creature Design — 도트 아트 통일
-- **OctopusCreature** (Claude Code): 10×7 픽셀 그리드, terracotta, 셀 타입 태깅
+- **OctopusCreature** (Claude Code): 14×5 픽셀 그리드, terracotta, 셀 타입 태깅
 - **CrayfishCreature** (OpenClaw): SVG Path 기반 front-facing 렌더링, red/teal gradient, `PathParser` + `withTransform` pivot rotation
 - 독립 애니메이션 가능한 부위별 셀 타입 분리 (눈, 팔/집게, 다리 등)
 - 상태 애니메이션: 셀 좌표 오프셋, 색상 lerp, pivot 기반 회전 (SVG transform 아님)

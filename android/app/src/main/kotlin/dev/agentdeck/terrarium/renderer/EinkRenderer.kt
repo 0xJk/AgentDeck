@@ -29,7 +29,7 @@ import kotlinx.coroutines.isActive
 /** E-ink animation frame interval (ms). 600ms for snappier movement. */
 private const val EINK_ANIM_FRAME_MS = 600L
 
-// --- E-ink octopus pixel grid (12×9, matching OctopusCreature) ---
+// --- E-ink octopus pixel grid (14×5, matching OctopusCreature) ---
 
 private const val EINK_OCTOPUS_COLS = 14
 private const val EINK_OCTOPUS_ROWS = 5
@@ -101,7 +101,7 @@ private val einkCrayfishRightAntennaPath: android.graphics.Path by lazy {
 
 /**
  * E-ink terrarium renderer — draws creatures into an offscreen bitmap,
- * applies Floyd-Steinberg 1-bit dithering, then renders the result.
+ * applies 16-level grayscale quantization, then renders the result.
  *
  * Style: "Marine biologist's journal" — pixel blocks + SVG outlines, native 16-level grayscale.
  * Supports slow 4-frame animation (600ms interval) for active states.
@@ -346,7 +346,7 @@ private fun drawEinkGravel(canvas: android.graphics.Canvas, paint: Paint, w: Int
 
 // --- Creatures ---
 
-/** E-ink octopus — 12×9 pixel block rendering matching the color OctopusCreature grid. */
+/** E-ink octopus — 14×5 pixel block rendering matching the color OctopusCreature grid. */
 private fun drawEinkOctopus(
     canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int,
     state: OctopusVisualState,
