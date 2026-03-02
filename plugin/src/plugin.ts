@@ -193,6 +193,9 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   if (ev.projectName) currentProjectName = ev.projectName;
   if (ev.modelName) currentModelName = ev.modelName;
   if (ev.billingType) currentBillingType = ev.billingType;
+  if (ev.gatewayAvailable !== undefined) {
+    connMgr.setBridgeGatewayAvailable(ev.gatewayAvailable);
+  }
 
   // Track proxied agent type from daemon (state_update.agentType overrides connection-level detection)
   if (ev.agentType === 'openclaw' || ev.agentType === 'claude-code') {

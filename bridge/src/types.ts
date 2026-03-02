@@ -28,6 +28,8 @@ export {
   type ModelCatalogEntry,
   type EncoderSlotState,
   type EncoderStateEvent,
+  type ButtonSlotState,
+  type ButtonStateEvent,
   type DeckSlotConfig,
   type DeckSlotMapEvent,
   type StateUpdateEvent,

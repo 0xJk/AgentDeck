@@ -432,6 +432,9 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     shutdown();
   });
 
+  // Debounce tracker for sessions_list on state_changed
+  let lastSessionsListBroadcast = 0;
+
   // 5. Wire StateMachine state changes → WsServer broadcast
   stateMachine.on('state_changed', (snapshot: StateSnapshot) => {
     hookServer?.setMeta({ state: snapshot.state });
@@ -477,6 +480,15 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     };
     wsServer.broadcast(stateEvent);
     broadcastSse(stateEvent);
+
+    // Trigger sessions_list refresh on state change (debounced 2s)
+    const now = Date.now();
+    if (now - lastSessionsListBroadcast > 2000 && wsServer.getClientCount() > 0) {
+      lastSessionsListBroadcast = now;
+      buildSessionsList().then((sessions) => {
+        wsServer.broadcast({ type: 'sessions_list', sessions } as BridgeEvent);
+      });
+    }
 
     // Also send separate prompt_options for backward compatibility
     if (snapshot.options.length > 0) {
@@ -850,7 +862,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
         } as BridgeEvent);
       });
     }
-  }, 30_000);
+  }, 10_000);
 
   // Encoder state computation (scoped inside startBridge for access to local vars)
   function computeEncoderState(): EncoderStateEvent {

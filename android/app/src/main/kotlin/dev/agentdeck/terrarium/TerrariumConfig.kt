@@ -80,6 +80,18 @@ object TerrariumLayout {
     // Tetra sizing
     const val TETRA_SIZE_FRACTION = 0.015f
     const val TETRA_COUNT = 7
+
+    // Octopus swimming boundaries (fraction of canvas)
+    const val SWIM_MIN_X = 0.20f   // clear of left HUD panel (~19%)
+    const val SWIM_MAX_X = 0.68f   // before crayfish area (0.78)
+    const val SWIM_MIN_Y = 0.10f   // below surface (0.05) margin
+    const val SWIM_MAX_Y = 0.68f   // above sand (0.72)
+
+    // Neon Tetra swim boundaries — full aquarium range
+    const val TETRA_SWIM_MIN_X = 0.03f   // near left wall
+    const val TETRA_SWIM_MAX_X = 0.92f   // near right wall (seaweed at 0.93)
+    const val TETRA_SWIM_MIN_Y = 0.08f   // just below surface (0.05)
+    const val TETRA_SWIM_MAX_Y = 0.68f   // above sand (0.72)
 }
 
 /** Animation timing constants. */
@@ -101,6 +113,15 @@ object TerrariumTiming {
     const val SEPARATION_RADIUS = 0.04f
     const val ALIGNMENT_RADIUS = 0.08f
     const val COHESION_RADIUS = 0.12f
+
+    // Octopus swimming
+    const val SWIM_SPEED = 0.03f           // canvas fraction/sec
+    const val SWIM_LERP_RATE = 1.5f        // target convergence speed
+    const val WAYPOINT_MIN_INTERVAL = 3.0f // seconds
+    const val WAYPOINT_MAX_INTERVAL = 5.0f
+
+    // Neon Tetra tail
+    const val TETRA_TAIL_SPEED = 8.0f
 
     // Bubbles
     const val BUBBLE_RISE_SPEED = 0.08f

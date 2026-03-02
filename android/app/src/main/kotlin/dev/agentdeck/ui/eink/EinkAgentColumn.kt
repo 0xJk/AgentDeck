@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.state.DashboardState
 
@@ -30,8 +31,6 @@ fun EinkAgentPanel(
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val monoStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-
     // Build display list: primary + siblings (excluding self)
     data class AgentEntry(
         val projectName: String,
@@ -42,17 +41,20 @@ fun EinkAgentPanel(
 
     val entries = mutableListOf<AgentEntry>()
 
-    // Primary agent
-    entries += AgentEntry(
-        projectName = state.projectName ?: "Agent",
-        agentType = state.agentType,
-        modelName = state.modelName,
-        agentState = state.agentState,
-    )
+    // Primary agent — skip if daemon (not a coding agent; openclaw shows as 🦞)
+    if (state.agentType != "daemon") {
+        entries += AgentEntry(
+            projectName = state.projectName ?: "Agent",
+            agentType = state.agentType,
+            modelName = state.modelName,
+            agentState = state.agentState,
+        )
+    }
 
-    // Siblings (skip self)
+    // Siblings (skip self and daemon)
     state.siblingSessions.forEach { session ->
         if (session.id == state.sessionId) return@forEach
+        if (session.agentType == "daemon") return@forEach
         entries += AgentEntry(
             projectName = session.projectName ?: "Agent",
             agentType = session.agentType,
@@ -61,15 +63,18 @@ fun EinkAgentPanel(
         )
     }
 
-    // Count projectName occurrences for #N suffix
-    val nameCounts = entries.groupBy { it.projectName }.mapValues { it.value.size }
-    val nameCounters = mutableMapOf<String, Int>()
+    // Count occurrences per (projectName, agentType) for #N suffix —
+    // different agent types (🦞 vs 🐙) with the same project name don't need numbering
+    data class NameKey(val projectName: String, val agentType: String?)
+    val nameCounts = entries.groupBy { NameKey(it.projectName, it.agentType) }
+        .mapValues { it.value.size }
+    val nameCounters = mutableMapOf<NameKey, Int>()
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         // Brand logo — largest text at top
         Text(
@@ -77,14 +82,15 @@ fun EinkAgentPanel(
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onSurface,
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         entries.forEach { entry ->
             val icon = agentIcon(entry.agentType)
-            val needsSuffix = (nameCounts[entry.projectName] ?: 1) > 1
+            val key = NameKey(entry.projectName, entry.agentType)
+            val needsSuffix = (nameCounts[key] ?: 1) > 1
             val suffix = if (needsSuffix) {
-                val idx = (nameCounters[entry.projectName] ?: 0) + 1
-                nameCounters[entry.projectName] = idx
+                val idx = (nameCounters[key] ?: 0) + 1
+                nameCounters[key] = idx
                 " #$idx"
             } else {
                 ""
@@ -100,7 +106,12 @@ fun EinkAgentPanel(
 
         // Worker count
         state.workerSessionCount?.takeIf { it > 0 }?.let {
-            Text(text = "Workers: $it", style = monoStyle, color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                text = "Workers: $it",
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
         }
 
         Spacer(modifier = Modifier.weight(1f))
@@ -116,7 +127,7 @@ fun EinkAgentPanel(
 }
 
 /**
- * Compact agent identity block: display name (single line, ellipsis) + model·state on one line.
+ * Compact agent identity block: display name (up to 2 lines) + model·state on one line.
  */
 @Composable
 internal fun EinkAgentBlock(
@@ -124,8 +135,6 @@ internal fun EinkAgentBlock(
     modelName: String?,
     agentState: AgentState,
 ) {
-    val monoStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-
     // Model + state merged into one line: "  opus-4 · ◉ PROC" or "  ◉ PROC"
     val stateMarker = compactStateMarker(agentState)
     val subLine = if (modelName != null) {
@@ -137,14 +146,16 @@ internal fun EinkAgentBlock(
     Column {
         Text(
             text = displayName,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = subLine,
-            style = monoStyle,
+            fontSize = 13.sp,
+            fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -165,18 +176,3 @@ fun EinkAgentColumn(
     EinkAgentPanel(state = state, onSettingsClick = onSettingsClick, modifier = modifier)
 }
 
-private fun agentIcon(agentType: String?): String = when (agentType) {
-    "claude-code" -> "\uD83D\uDC19"  // octopus
-    "openclaw" -> "\uD83E\uDD9E"     // lobster (closest to crayfish)
-    else -> "\u25CF"                   // bullet
-}
-
-private fun mapSessionState(session: dev.agentdeck.net.SessionInfo): AgentState {
-    if (!session.alive) return AgentState.DISCONNECTED
-    return when (session.state) {
-        "processing" -> AgentState.PROCESSING
-        "idle" -> AgentState.IDLE
-        "awaiting_permission", "awaiting_option", "awaiting_diff" -> AgentState.AWAITING_PERMISSION
-        else -> AgentState.IDLE
-    }
-}

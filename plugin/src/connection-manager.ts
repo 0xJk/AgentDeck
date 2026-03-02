@@ -41,6 +41,8 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
   private started = false;
   private userSelection: 'auto' | 'bridge' | 'gateway' = 'auto';
   private gatewayEverConnected = false;
+  private bridgeReportedGateway = false;
+  private activateTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     super();
@@ -116,8 +118,33 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
     dinfo(TAG, 'activateGateway()');
     this.userSelection = 'gateway';
     this.gateway.resume();
+
+    // Activate immediately (UI responds right away)
     this.activeLink = this.gateway;
     this.emit('active_agent_changed', 'openclaw');
+
+    // If already connected, no timeout needed
+    if (this.gateway.isConnected()) return;
+
+    // 5s timeout: if gateway doesn't connect, revert to bridge
+    if (this.activateTimer) clearTimeout(this.activateTimer);
+    this.activateTimer = setTimeout(() => {
+      this.activateTimer = null;
+      if (this.gateway.isConnected()) return;
+      if (this.userSelection !== 'gateway') return;
+
+      dwarn(TAG, 'Gateway activation timeout — reverting to bridge');
+      this.userSelection = 'auto';
+      this.gateway.pause();
+      if (this.bridge.isConnected()) {
+        this.activeLink = this.bridge;
+        this.emit('active_agent_changed', 'claude-code');
+        this.emit('connected');
+      } else {
+        this.activeLink = null;
+        this.emit('disconnected');
+      }
+    }, 5000);
   }
 
   /** Explicitly switch to Claude Code (Bridge) as active agent. */
@@ -153,8 +180,12 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
    * Whether gateway is available (connected, or was previously connected and can be resumed).
    * Used to determine if OC should appear in the session cycle list.
    */
+  setBridgeGatewayAvailable(available: boolean): void {
+    this.bridgeReportedGateway = available;
+  }
+
   isGatewayAvailable(): boolean {
-    return this.gateway.isConnected() || this.gatewayEverConnected;
+    return this.gateway.isConnected() || this.gatewayEverConnected || this.bridgeReportedGateway;
   }
 
   /** Get the user's current agent selection preference. */
@@ -248,6 +279,10 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
       // User explicitly selected gateway — activate even if bridge is connected
       if (this.userSelection === 'gateway') {
         dinfo(TAG, 'User selected gateway — activating');
+        if (this.activateTimer) {
+          clearTimeout(this.activateTimer);
+          this.activateTimer = null;
+        }
         this.activeLink = this.gateway;
         this.emit('connected');
         return;

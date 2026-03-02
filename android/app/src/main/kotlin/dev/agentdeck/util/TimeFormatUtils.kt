@@ -1,15 +1,18 @@
 package dev.agentdeck.util
 
-import java.time.Instant
 import java.time.Duration
+import java.time.Instant
+import java.time.OffsetDateTime
 
 /**
  * Format ISO 8601 timestamp to relative time string.
  * Mirrors bridge/src/usage-api.ts formatResetTime().
+ * Handles both "Z" and "+00:00" timezone offset formats.
  */
 fun formatResetTime(isoString: String): String {
     return try {
-        val resetAt = Instant.parse(isoString)
+        // OffsetDateTime handles both "Z" and "+00:00" / "+09:00" etc.
+        val resetAt = OffsetDateTime.parse(isoString).toInstant()
         val now = Instant.now()
         val diffMs = Duration.between(now, resetAt).toMillis()
         if (diffMs <= 0) return "now"
@@ -42,6 +45,27 @@ fun gaugeBar(percent: Double, width: Int = 6): String {
     val filled = ((percent / 100.0) * width).toInt().coerceIn(0, width)
     val empty = width - filled
     return "█".repeat(filled) + "░".repeat(empty)
+}
+
+/** Format byte sizes compactly: 1073741824 → "1.0G", 536870912 → "512M" */
+fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_073_741_824 -> "%.1fG".format(bytes / 1_073_741_824.0)
+    bytes >= 1_048_576 -> "%dM".format(bytes / 1_048_576)
+    bytes >= 1_024 -> "%dK".format(bytes / 1_024)
+    else -> "${bytes}B"
+}
+
+/** Format millisecond duration compactly: 45000 → "45s", 125000 → "2m 5s" */
+fun formatDurationCompact(ms: Long): String {
+    if (ms < 1000) return "<1s"
+    val totalSec = (ms / 1000).toInt()
+    val m = totalSec / 60
+    val s = totalSec % 60
+    return when {
+        m == 0 -> "${s}s"
+        s == 0 -> "${m}m"
+        else -> "${m}m ${s}s"
+    }
 }
 
 /** Format duration from epoch millis to "H:MM" or "D:HH:MM" */

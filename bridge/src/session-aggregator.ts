@@ -45,6 +45,6 @@ export async function buildEnrichedSessionsList(
   ownSessionId: string,
   ownState: string,
 ): Promise<EnrichedSession[]> {
-  const siblings = listActiveSessions().filter(s => s.agentType !== 'daemon');
+  const siblings = listActiveSessions().filter(s => s.agentType !== 'daemon' && s.id !== ownSessionId);
   return enrichSessionsWithState(siblings, ownSessionId, ownState);
 }

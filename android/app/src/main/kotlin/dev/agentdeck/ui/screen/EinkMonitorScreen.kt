@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -157,18 +158,21 @@ fun EinkMonitorScreen(
             )
         } else if (isLandscape) {
             // Aquarium-centered layout: agent panel | aquarium + content + timeline
-            val terrariumState = state.toTerrariumState()
+            val terrariumState by remember { derivedStateOf { state.toTerrariumState() } }
             val isActive = state.agentState == AgentState.PROCESSING ||
                 state.agentState == AgentState.AWAITING_PERMISSION ||
                 state.agentState == AgentState.AWAITING_OPTION ||
                 state.agentState == AgentState.AWAITING_DIFF
 
+            // Stable key that captures session count + individual states (for refresh triggers)
+            val sessionsKey = state.siblingSessions.joinToString(",") { "${it.id}:${it.state}" }
+
             Row(modifier = Modifier.fillMaxSize()) {
-                // Left (22%): Agent panel
+                // Left (22%): Agent panel — refresh on state, session list, or worker count changes
                 EinkRefreshZone(
                     mode = RefreshMode.A2,
                     debounceMs = 200,
-                    triggerKey = Triple(state.agentState, state.siblingSessions.size, state.workerSessionCount),
+                    triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
                     modifier = Modifier.weight(0.22f).fillMaxHeight(),
                 ) {
                     EinkAgentPanel(
@@ -183,12 +187,13 @@ fun EinkMonitorScreen(
                 // Right (78%): Aquarium + Content + Timeline
                 Column(modifier = Modifier.weight(0.78f).fillMaxHeight()) {
                     // Aquarium frame — large tank (bigger when IDLE)
+                    // Trigger includes agentState + sessions (affects crayfish + multi-octopus positions)
                     EinkRefreshZone(
                         mode = RefreshMode.FULL,
                         debounceMs = 500,
-                        triggerKey = state.agentState,
+                        triggerKey = Pair(state.agentState, sessionsKey),
                         modifier = Modifier
-                            .weight(if (isActive) 0.40f else 0.50f)
+                            .weight(if (isActive) 0.40f else 0.47f)
                             .fillMaxWidth(),
                     ) {
                         EinkAquariumFrame(state = terrariumState)
@@ -226,7 +231,7 @@ fun EinkMonitorScreen(
                             mode = RefreshMode.DU,
                             debounceMs = 2000,
                             triggerKey = state.usage,
-                            modifier = Modifier.weight(0.12f).fillMaxWidth(),
+                            modifier = Modifier.weight(0.15f).fillMaxWidth(),
                         ) {
                             EinkStatusCompact(state = state)
                         }
@@ -413,7 +418,7 @@ private fun EinkPortraitLayout(
         HorizontalDivider(thickness = 2.dp, color = Color.Black)
 
         // Terrarium band (~15%)
-        val terrariumState = state.toTerrariumState()
+        val terrariumState by remember { derivedStateOf { state.toTerrariumState() } }
         EinkTerrariumView(
             state = terrariumState,
             modifier = Modifier

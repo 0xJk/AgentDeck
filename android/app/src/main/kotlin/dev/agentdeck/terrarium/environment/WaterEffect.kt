@@ -10,12 +10,15 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import dev.agentdeck.terrarium.EnvironmentVisualState
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.terrarium.TerrariumLayout
 import dev.agentdeck.terrarium.TerrariumTiming
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.sin
 
 /**
@@ -153,43 +156,73 @@ class WaterEffect {
         drawCausticLayer(scope, w, h, alpha * 0.6f, phase = PI.toFloat() * 0.7f)
     }
 
+    /**
+     * Crossing wave-line mesh — two families of undulating lines at different angles.
+     * Their intersections create organic, irregularly-shaped caustic cells,
+     * mimicking real underwater light refraction patterns.
+     */
     private fun drawCausticLayer(
         scope: DrawScope, w: Float, h: Float, alpha: Float, phase: Float,
     ) {
-        val cellSize = w / GRID_SIZE
+        val twoPi = 2f * PI.toFloat()
+        val spacing = w / LINE_COUNT
+        val waveLen1 = w * 0.4f
+        val waveLen2 = w * 0.32f
+        val amp = spacing * 0.35f
+        val strokeW = w * 0.008f
+        val color = TerrariumColors.CausticsLight.copy(alpha = alpha)
+        val stroke = Stroke(width = strokeW, cap = StrokeCap.Round)
 
-        for (row in 0 until GRID_SIZE) {
-            for (col in 0 until GRID_SIZE) {
-                val baseX = col * cellSize
-                val baseY = row * cellSize
+        val freq1 = twoPi / waveLen1
+        val freq2 = twoPi / waveLen2
+        val step = 4f
 
-                // Distorted diamond shape
-                val offset1 = sin(time + col * 0.5f + phase) * cellSize * 0.3f
-                val offset2 = sin(time * 0.7f + row * 0.4f + phase) * cellSize * 0.3f
+        // Family 1: near-horizontal lines (~10° tilt), slow undulation
+        val angle1 = 10f * PI.toFloat() / 180f
+        val sin1 = sin(angle1)
+        val cos1 = cos(angle1)
+        val extent = w * 0.15f  // overdraw beyond edges to avoid gaps from sine displacement
 
-                val cx = baseX + cellSize / 2 + offset1
-                val cy = baseY + cellSize / 2 + offset2
-
-                val size = cellSize * (0.3f + sin(time * 1.3f + col + row + phase) * 0.15f)
-
-                val path = Path().apply {
-                    moveTo(cx, cy - size)
-                    lineTo(cx + size * 0.8f, cy)
-                    lineTo(cx, cy + size)
-                    lineTo(cx - size * 0.8f, cy)
-                    close()
-                }
-
-                scope.drawPath(
-                    path = path,
-                    color = TerrariumColors.CausticsLight.copy(alpha = alpha),
-                    blendMode = BlendMode.Overlay,
-                )
+        for (i in 0 until LINE_COUNT) {
+            val lineOffset = (i - LINE_COUNT / 2) * spacing
+            val linePhase = phase + i * 0.7f
+            val path = Path()
+            var t = -extent
+            var first = true
+            while (t <= w + extent) {
+                val wave = sin(freq1 * t + time + linePhase) * amp
+                val x = t * cos1 - (lineOffset + wave) * sin1
+                val y = t * sin1 + (lineOffset + wave) * cos1 + h * 0.5f
+                if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
+                t += step
             }
+            scope.drawPath(path, color, blendMode = BlendMode.Overlay, style = stroke)
+        }
+
+        // Family 2: ~60° angled lines, slightly different frequency
+        val angle2 = 60f * PI.toFloat() / 180f
+        val sin2 = sin(angle2)
+        val cos2 = cos(angle2)
+        val diag = w + h  // longer span needed for steep angle
+
+        for (i in 0 until LINE_COUNT) {
+            val lineOffset = (i - LINE_COUNT / 2) * spacing * 1.2f
+            val linePhase = phase + i * 0.9f + 2.0f
+            val path = Path()
+            var t = -extent
+            var first = true
+            while (t <= diag + extent) {
+                val wave = sin(freq2 * t + time * 0.85f + linePhase) * amp
+                val x = t * cos2 - (lineOffset + wave) * sin2
+                val y = t * sin2 + (lineOffset + wave) * cos2
+                if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
+                t += step
+            }
+            scope.drawPath(path, color, blendMode = BlendMode.Overlay, style = stroke)
         }
     }
 
     companion object {
-        private const val GRID_SIZE = 8
+        private const val LINE_COUNT = 12
     }
 }

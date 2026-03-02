@@ -53,8 +53,9 @@ fun EinkEventLog(
         } else {
             recent.forEach { entry ->
                 val time = formatTimeHHMM(entry.timestamp)
+                val agentTag = agentTag(entry.agentType)
                 val typeTag = typeTag(entry.type)
-                val line = "$time $typeTag ${entry.summary}"
+                val line = "$time $agentTag$typeTag ${entry.summary}"
                 Text(
                     text = line,
                     style = MaterialTheme.typography.bodySmall.copy(
@@ -87,4 +88,11 @@ private fun typeTag(type: String): String = when (type) {
     "memory_recall" -> "[R]"
     "tool_exec" -> "[X]"
     else -> "[S]"  // state changes and others
+}
+
+private fun agentTag(agentType: String?): String = when (agentType) {
+    "claude-code" -> "[CC]"
+    "openclaw" -> "[OC]"
+    null -> ""
+    else -> "[AG]"
 }

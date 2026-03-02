@@ -24,6 +24,26 @@ export interface OcSessionStatus {
   [key: string]: unknown;
 }
 
+// ===== Button State (Bridge → Android) =====
+
+export interface ButtonSlotState {
+  slot: number;           // 0-7
+  title: string;
+  subtitle?: string;
+  bgColor: string;        // hex
+  textColor: string;      // hex
+  enabled: boolean;
+  icon?: string;
+  badge?: string;         // "★", "1/3"
+  action?: string;        // "switch_mode" | "command:go on" | "respond:y" | "select_option:2" | "interrupt" | "escape" | "expand_options"
+  dim?: boolean;
+}
+
+export interface ButtonStateEvent {
+  type: 'button_state';
+  buttons: ButtonSlotState[];
+}
+
 // ===== Encoder LCD State (Bridge → Plugin/Android) =====
 
 export interface EncoderSlotState {
@@ -191,7 +211,8 @@ export type BridgeEvent =
   | DisplayStateEvent
   | SessionsListEvent
   | EncoderStateEvent
-  | DeckSlotMapEvent;
+  | DeckSlotMapEvent
+  | ButtonStateEvent;
 
 // ===== Plugin → Bridge (Commands) =====
 

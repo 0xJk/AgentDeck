@@ -11,6 +11,7 @@ data class TimelineEntry(
     val type: String,
     val summary: String,
     val detail: String? = null,
+    val agentType: String? = null,
 )
 
 class TimelineStore private constructor() {

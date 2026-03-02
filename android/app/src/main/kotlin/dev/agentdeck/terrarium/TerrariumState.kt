@@ -1,11 +1,8 @@
 package dev.agentdeck.terrarium
 
-import android.util.Log
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.terrarium.creature.AgentMark
-
-private const val TAG = "Terrarium"
 
 /** Visual states for each creature and the environment. */
 
@@ -71,8 +68,6 @@ data class TerrariumState(
 fun DashboardState.toTerrariumState(): TerrariumState {
     val isOpenClaw = agentType == "openclaw"
     val hasTool = currentTool != null
-    Log.d(TAG, "toTerrariumState: agentState=$agentState, agentType=$agentType, isOpenClaw=$isOpenClaw, hasTool=$hasTool")
-
     val octopus = when (agentState) {
         AgentState.DISCONNECTED -> OctopusVisualState.SLEEPING
         AgentState.IDLE -> OctopusVisualState.FLOATING
@@ -127,30 +122,30 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         AgentState.AWAITING_DIFF -> EnvironmentVisualState.ALERT
     }
 
-    Log.d(TAG, "Terrarium mapped: octopus=$octopus, crayfish=$crayfish, tetra=$tetra, env=$environment")
-
     // Build multi-agent creature list from sibling sessions
     val agents = mutableListOf<AgentCreatureState>()
 
-    // Primary agent (currently connected session)
-    agents.add(
-        AgentCreatureState(
-            sessionId = sessionId ?: "primary",
-            agentType = agentType,
-            mark = AgentMark.fromAgentType(agentType),
-            visualState = octopus,
-            isPrimary = true,
-            layoutSlot = 0,
-            displayName = projectName,
+    // Primary agent — skip if daemon or openclaw proxy (not a coding agent)
+    if (agentType != "daemon" && agentType != "openclaw") {
+        agents.add(
+            AgentCreatureState(
+                sessionId = sessionId ?: "primary",
+                agentType = agentType,
+                mark = AgentMark.fromAgentType(agentType),
+                visualState = octopus,
+                isPrimary = true,
+                layoutSlot = 0,
+                displayName = projectName,
+            )
         )
-    )
+    }
 
     // Sibling sessions (coding agents only — not the current session)
-    var slot = 1
+    var slot = agents.size
     for (sibling in siblingSessions) {
         if (sessionId != null && sibling.id == sessionId) continue // skip self (null guard)
         val siblingType = sibling.agentType
-        if (siblingType == "openclaw") continue // crayfish, not octopus
+        if (siblingType == "openclaw" || siblingType == "daemon") continue // not octopus
         agents.add(
             AgentCreatureState(
                 sessionId = sibling.id,
@@ -162,6 +157,18 @@ fun DashboardState.toTerrariumState(): TerrariumState {
                 displayName = sibling.projectName,
             )
         )
+    }
+
+    // Number duplicate display names: "AgentDeck", "AgentDeck" → "AgentDeck #1", "AgentDeck #2"
+    val nameCounts = agents.groupingBy { it.displayName }.eachCount()
+    val nameCounters = mutableMapOf<String?, Int>()
+    for (i in agents.indices) {
+        val name = agents[i].displayName
+        if (name != null && (nameCounts[name] ?: 0) >= 2) {
+            val seq = (nameCounters[name] ?: 0) + 1
+            nameCounters[name] = seq
+            agents[i] = agents[i].copy(displayName = "$name #$seq")
+        }
     }
 
     return TerrariumState(

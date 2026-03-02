@@ -118,6 +118,12 @@ The bridge stays transparent: if it's off, Claude Code works exactly as before.
                                                              └────────────────────┘
 ```
 
+**Multi-surface control (macOS host + Stream Deck + Android)**
+- The macOS bridge (`sdc`) listens on `0.0.0.0:9120`; local clients are auto-trusted, LAN clients must present the auth token stored at `~/.agentdeck/auth-token`.
+- Stream Deck plugin connects locally; Android tablet/e-ink app connects over the same WebSocket (pair via `sdc qr`) and mirrors encoder LCDs and buttons.
+- Bridge computes encoder state and relays the Stream Deck slot map. If the plugin is absent, Android falls back to the v3 default layout while staying fully controllable.
+- Voice from Android uploads WAV to `POST /voice/transcribe`; utility actions (volume/brightness/media/timer) go through the bridge’s macOS `osascript` proxy, so either surface can monitor and steer the agent independently or simultaneously.
+
 ---
 
 ## Prerequisites

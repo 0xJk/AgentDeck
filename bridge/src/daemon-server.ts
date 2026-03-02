@@ -174,6 +174,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     startedAt: new Date().toISOString(),
   });
 
+  // Debounce tracker for sessions_list on state_changed
+  let lastSessionsListBroadcast = 0;
+
   // Wire StateMachine → WS broadcast
   stateMachine.on('state_changed', (snapshot: StateSnapshot) => {
     const gwAlive = gatewayAdapter?.isAlive() ?? false;
@@ -192,6 +195,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       ollamaStatus: cachedOllamaStatus ?? undefined,
     };
     wsServer.broadcast(stateEvent);
+
+    // Trigger sessions_list refresh on state change (debounced 2s)
+    const now = Date.now();
+    if (now - lastSessionsListBroadcast > 2000 && wsServer.getClientCount() > 0) {
+      lastSessionsListBroadcast = now;
+      buildEnrichedSessionsList(sessionId, snapshot.state).then((sessions) => {
+        wsServer.broadcast({ type: 'sessions_list', sessions } as BridgeEvent);
+      });
+    }
 
     const usageEvt = buildUsageEvent(snapshot, cachedApiUsage, oauthConnected);
     wsServer.broadcast(usageEvt);
@@ -354,7 +366,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
   }, 60_000);
 
-  // Sessions list broadcast (30s)
+  // Sessions list broadcast (10s)
   const sessionsListInterval = setInterval(() => {
     if (wsServer.getClientCount() > 0) {
       const snapshot = stateMachine.getSnapshot();
@@ -362,7 +374,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         wsServer.broadcast({ type: 'sessions_list', sessions } as BridgeEvent);
       });
     }
-  }, 30_000);
+  }, 10_000);
 
   // ===== Gateway Adapter Lifecycle =====
 

@@ -85,7 +85,11 @@ class CrayfishCreature(
             }
             CrayfishVisualState.ROUTING -> {
                 effectiveCX = cx
-                effectiveCY = cy + sin(time * 3f) * bodyWidth * 0.03f
+                effectiveCY = cy + sin(time * 3f) * bodyWidth * 0.05f
+            }
+            CrayfishVisualState.SITTING -> {
+                effectiveCX = cx
+                effectiveCY = cy + sin(time * 0.5f) * bodyWidth * 0.008f
             }
             else -> {
                 effectiveCX = cx
@@ -153,12 +157,16 @@ class CrayfishCreature(
             val antennaColor = shellColorForState().copy(alpha = alpha)
             val antennaStroke = Stroke(width = 3f, cap = StrokeCap.Round)
 
-            val wiggleX = if (visualState == CrayfishVisualState.ROUTING) {
-                sin(time * 7f) * 3f
-            } else 0f
-            val wiggleY = if (visualState == CrayfishVisualState.ROUTING) {
-                sin(time * 5f) * 2f
-            } else 0f
+            val wiggleX = when (visualState) {
+                CrayfishVisualState.ROUTING -> sin(time * 7f) * 4f
+                CrayfishVisualState.SITTING -> sin(time * 0.8f) * 0.7f
+                else -> 0f
+            }
+            val wiggleY = when (visualState) {
+                CrayfishVisualState.ROUTING -> sin(time * 5f) * 3f
+                CrayfishVisualState.SITTING -> sin(time * 0.5f) * 0.4f
+                else -> 0f
+            }
 
             withTransform({ translate(left = wiggleX, top = -wiggleY) }) {
                 drawPath(leftAntennaPath, color = antennaColor, style = antennaStroke)
@@ -210,8 +218,12 @@ class CrayfishCreature(
     private fun clawAngleForState(side: Float): Float {
         return when (visualState) {
             CrayfishVisualState.ROUTING -> {
-                val clap = sin(time * 2f * PI.toFloat() / (TerrariumTiming.CLAW_CLAP_PERIOD_MS / 1000f))
-                side * clap * 25f
+                val phase = time * 2f * PI.toFloat() / (TerrariumTiming.CLAW_CLAP_PERIOD_MS / 1000f)
+                val clap = sin(phase + side * 0.3f)
+                side * clap * 28f
+            }
+            CrayfishVisualState.SITTING -> {
+                side * sin(time * 0.4f) * 1.5f
             }
             CrayfishVisualState.WAITING -> side * 15f
             CrayfishVisualState.OBSERVING -> side * (3f + sin(time * 2f) * 5f)
@@ -225,6 +237,10 @@ class CrayfishCreature(
                 val flash = sin(time * 2f * PI.toFloat() / (TerrariumTiming.EYE_FLASH_PERIOD_MS / 1000f))
                 val intensity = flash * 0.5f + 0.5f
                 lerpColor(TerrariumColors.CrayfishEye, Color.White, intensity * 0.5f)
+            }
+            CrayfishVisualState.SITTING -> {
+                val breath = sin(time * 0.6f) * 0.15f + 0.85f
+                TerrariumColors.CrayfishEye.copy(alpha = breath)
             }
             else -> TerrariumColors.CrayfishEye
         }

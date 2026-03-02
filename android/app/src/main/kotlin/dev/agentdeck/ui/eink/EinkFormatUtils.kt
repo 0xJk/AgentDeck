@@ -50,6 +50,22 @@ fun compactStateMarker(state: AgentState): String = when (state) {
     AgentState.DISCONNECTED -> "\u25CB OFF"
 }
 
+fun agentIcon(agentType: String?): String = when (agentType) {
+    "claude-code" -> "\uD83D\uDC19"  // octopus
+    "openclaw" -> "\uD83E\uDD9E"     // lobster (closest to crayfish)
+    else -> "\u25CF"                   // bullet
+}
+
+fun mapSessionState(session: dev.agentdeck.net.SessionInfo): AgentState {
+    if (!session.alive) return AgentState.DISCONNECTED
+    return when (session.state) {
+        "processing" -> AgentState.PROCESSING
+        "idle" -> AgentState.IDLE
+        "awaiting_permission", "awaiting_option", "awaiting_diff" -> AgentState.AWAITING_PERMISSION
+        else -> AgentState.IDLE
+    }
+}
+
 @Composable
 fun EinkTextGauge(
     label: String,

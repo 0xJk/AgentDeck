@@ -59,17 +59,20 @@ fun ColorTerrariumCanvas(
         // Layer 6: LED cables on rocks
         rockFormation.drawLEDs(this, state.environment)
 
+        // Layer 6.5: Back-layer fish (behind creatures for 3D depth)
+        dataParticles.drawBackLayer(this)
+
         // Layer 7a: Worker crayfish (smaller, behind main)
         for (wc in workerCrayfish) wc.draw(this)
 
         // Layer 7b: Main crayfish (on rocks, bottom-right)
         mainCrayfish.draw(this)
 
-        // Layer 8: Data particles (mid-water)
-        dataParticles.draw(this)
-
         // Layer 9: Octopuses (all coding agent avatars)
         for (oct in octopuses) oct.draw(this)
+
+        // Layer 9.5: Front-layer fish (in front of creatures for 3D depth)
+        dataParticles.drawFrontLayer(this)
 
         // Layer 10: Bubbles (on top of creatures)
         bubbleSystem.draw(this)
@@ -87,18 +90,19 @@ fun ColorTerrariumCanvas(
     }
 }
 
-/** Glass-etched "AgentDeck" logo — subtle engraving on the tank glass surface. */
+/** Glass-etched "AgentDeck" logo — subtle engraving on the tank glass surface, centered top. */
 private fun DrawScope.drawGlassLogo(w: Float, h: Float) {
     val canvas = drawContext.canvas.nativeCanvas
     val fontSize = h * 0.056f
-    val x = w * 0.03f
-    val y = h * 0.07f
+    val x = w * 0.5f
+    val y = h * 0.06f
 
     val paint = android.graphics.Paint().apply {
         isAntiAlias = true
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
         textSize = fontSize
         letterSpacing = 0.08f
+        textAlign = android.graphics.Paint.Align.CENTER
     }
 
     // Shadow pass — depth effect (dark offset)

@@ -37,7 +37,7 @@ fun EncoderStrip(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(80.dp)
+            .height(96.dp)
             .background(LCD_BACKGROUND),
     ) {
         states.forEachIndexed { index, encoderState ->
@@ -46,7 +46,7 @@ fun EncoderStrip(
                 Box(
                     modifier = Modifier
                         .width(1.dp)
-                        .height(80.dp)
+                        .height(96.dp)
                         .background(DIVIDER_COLOR),
                 )
             }
@@ -59,7 +59,7 @@ fun EncoderStrip(
                 onRelease = { onRelease(encoderState.slot) },
                 modifier = Modifier
                     .weight(1f)
-                    .height(80.dp),
+                    .height(96.dp),
             )
         }
     }

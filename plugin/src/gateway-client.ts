@@ -300,6 +300,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
   resume(): void {
     dlog(TAG, 'resume()');
     this.shutdownRequested = false;
+    if (!this.deviceIdentity) this.loadDeviceIdentity();
     if (!this._connected && !this.reconnectTimer) {
       this.reconnectDelay = 1000;
       this.connectGateway();

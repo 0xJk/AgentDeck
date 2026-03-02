@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,7 +44,6 @@ import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.state.DashboardState
-import dev.agentdeck.state.SessionMetrics
 import dev.agentdeck.state.TimelineStore
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.terrarium.TerrariumState
@@ -54,7 +54,9 @@ import dev.agentdeck.terrarium.creature.OctopusCreature
 import dev.agentdeck.terrarium.environment.KelpField
 import dev.agentdeck.terrarium.environment.RockFormation
 import dev.agentdeck.terrarium.environment.WaterEffect
+import dev.agentdeck.terrarium.AgentLayoutInfo
 import dev.agentdeck.terrarium.layoutOctopuses
+import dev.agentdeck.terrarium.layoutOctopusesByProject
 import dev.agentdeck.terrarium.layoutWorkerCrayfish
 import dev.agentdeck.terrarium.renderer.ColorTerrariumCanvas
 import dev.agentdeck.terrarium.toTerrariumState
@@ -72,10 +74,8 @@ fun MonitorScreen(
     displayPrefs: DisplayPreferences,
 ) {
     val dashState by stateHolder.state.collectAsState()
-    val terrariumState = dashState.toTerrariumState()
+    val terrariumState by remember { derivedStateOf { dashState.toTerrariumState() } }
     val timelineEntries by TimelineStore.instance.entries.collectAsState()
-    val metrics by SessionMetrics.instance.metrics.collectAsState()
-
     val connectionStatus by connection.status.collectAsState()
     val currentUrl by connection.url.collectAsState()
     val lastError by connection.lastError.collectAsState()
@@ -127,10 +127,7 @@ fun MonitorScreen(
             )
         } else {
             // Layer 2: HUD overlay panels
-            MonitorHUD(
-                dashState = dashState,
-                metrics = metrics,
-            )
+            MonitorHUD(dashState = dashState)
 
             // Layer 3: Timeline over sand area
             TimelineStrip(
@@ -293,13 +290,16 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
     val dataParticles = remember { DataParticleSystem() }
     val bubbleSystem = remember { BubbleSystem() }
 
-    // Multi-octopus: create/remove creatures when agent count changes
-    val octopusSlots = layoutOctopuses(state.agents.size.coerceAtLeast(1))
+    // Multi-octopus: project-based clustering layout
+    val octopusSlots = layoutOctopusesByProject(
+        state.agents.map { AgentLayoutInfo(it.sessionId, it.displayName) }
+    )
     val octopuses = remember { mutableStateListOf<OctopusCreature>() }
 
     LaunchedEffect(state.agents.size) {
         val targetCount = state.agents.size.coerceAtLeast(1)
         val isMulti = targetCount > 1
+        // Add missing creatures
         while (octopuses.size < targetCount) {
             val idx = octopuses.size
             val slot = octopusSlots.getOrElse(idx) { octopusSlots.last() }
@@ -308,24 +308,21 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
                 slot.centerXFraction, slot.centerYFraction, slot.scaleFactor,
                 phaseOffset = idx * 1.7f,
                 displayName = if (isMulti) agent?.displayName else null,
-            ))
-        }
-        while (octopuses.size > targetCount) {
-            octopuses.removeAt(octopuses.lastIndex)
-        }
-        for (i in octopuses.indices) {
-            val slot = octopusSlots.getOrElse(i) { octopusSlots.last() }
-            val agent = state.agents.getOrNull(i)
-            octopuses[i] = OctopusCreature(
-                slot.centerXFraction, slot.centerYFraction, slot.scaleFactor,
-                phaseOffset = i * 1.7f,
-                displayName = if (isMulti) agent?.displayName else null,
             ).also {
                 if (agent != null) {
                     it.setState(agent.visualState)
                     it.setMark(agent.mark)
                 }
-            }
+            })
+        }
+        // Remove excess
+        while (octopuses.size > targetCount) {
+            octopuses.removeAt(octopuses.lastIndex)
+        }
+        // Update home positions (no recreation — preserves swim state)
+        for (i in octopuses.indices) {
+            val slot = octopusSlots.getOrElse(i) { octopusSlots.last() }
+            octopuses[i].setHomePosition(slot.centerXFraction, slot.centerYFraction, slot.scaleFactor)
         }
     }
 
@@ -394,8 +391,15 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
                 kelpField.update(clampedDt)
                 mainCrayfish.update(clampedDt)
                 for (wc in workerCrayfish) wc.update(clampedDt)
-                dataParticles.update(clampedDt)
                 for (oct in octopuses) oct.update(clampedDt)
+                // Pass live positions + working positions to tetra school
+                dataParticles.setLiveAgentPositions(
+                    octopuses.map { it.currentPosition() }
+                )
+                dataParticles.setWorkingAgentPositions(
+                    octopuses.filter { it.isWorking() }.map { it.currentPosition() }
+                )
+                dataParticles.update(clampedDt)
                 bubbleSystem.update(clampedDt)
             }
         }
@@ -417,61 +421,41 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
 
 /**
  * HUD overlay — semi-transparent panels positioned over the terrarium.
+ * Top-left: agent list (logo + sessions + mode badge).
+ * Top-right: tank status (aquarium-themed engine panel).
  */
 @Composable
 private fun MonitorHUD(
     dashState: DashboardState,
-    metrics: dev.agentdeck.state.MetricsSnapshot,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
-        // Top bar: project, state, mode / model, agent type
-        MonitorTopBar(
-            agentState = dashState.agentState,
+        // Top-left: Agent list (logo + sessions + mode)
+        SessionListPanel(
             projectName = dashState.projectName,
-            modelName = dashState.modelName,
             agentType = dashState.agentType,
+            modelName = dashState.modelName,
+            agentState = dashState.agentState,
+            sessionId = dashState.sessionId,
+            siblingSessions = dashState.siblingSessions,
+            workerSessionCount = dashState.workerSessionCount,
             permissionMode = dashState.permissionMode,
-            modifier = Modifier.align(Alignment.TopCenter),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 12.dp, top = 12.dp)
+                .widthIn(max = 220.dp),
         )
 
-        // Left side panels
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .padding(start = 12.dp, top = 60.dp, bottom = 12.dp)
-                .widthIn(max = 220.dp),
-        ) {
-            // Activity panel
-            ActivityPanel(
-                agentState = dashState.agentState,
-                currentTool = dashState.currentTool,
-                toolInput = dashState.toolInput,
-                toolProgress = dashState.toolProgress,
-                question = dashState.question,
-                suggestedPrompt = dashState.suggestedPrompt,
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Multi-agent panel (conditional)
-            MultiAgentPanel(
-                siblingSessions = dashState.siblingSessions,
-                workerSessionCount = dashState.workerSessionCount,
-                sessionStatus = dashState.sessionStatus,
-            )
-        }
-
-        // Right: Engine panel
-        EnginePanel(
+        // Top-right: Tank status (aquarium engine panel)
+        TankStatusPanel(
             usage = dashState.usage,
-            metrics = metrics,
             oauthConnected = dashState.oauthConnected,
             ollamaStatus = dashState.ollamaStatus,
+            modelName = dashState.modelName,
+            modelCatalog = dashState.modelCatalog ?: emptyList(),
             modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 12.dp, top = 60.dp)
-                .widthIn(max = 160.dp),
+                .align(Alignment.TopEnd)
+                .padding(end = 12.dp, top = 12.dp)
+                .widthIn(max = 220.dp),
         )
-
     }
 }

@@ -52,6 +52,11 @@ let animFrame = 0;
 let fileWatchActive = false;
 let showingCcNoSession = false;
 
+/** Bridge can proxy OpenClaw (daemon) so agentType may be 'openclaw' while active link remains bridge. */
+function isProxiedOpenClaw(): boolean {
+  return currentAgentType === 'openclaw' && bridge.getActiveAgentType() !== 'openclaw';
+}
+
 /** Enter or exit NO SESSION mode, propagating to all affected components. */
 function setNoSessionMode(active: boolean): void {
   showingCcNoSession = active;
@@ -397,7 +402,7 @@ function renderSessionSvg(): string {
     return simpleSvg('NO', 'SESSION', '#666666', '#1a1a1a');
   }
 
-  // OpenClaw active
+  // OpenClaw active — show whenever agentType reports openclaw (daemon-proxied or direct gateway)
   if (currentAgentType === 'openclaw') {
     return renderOpenClawSvg();
   }
@@ -731,8 +736,16 @@ function cycleSession(): void {
   } else if (currentAgentType === 'openclaw') {
     currentPos = cycleList.findIndex(e => e.type === 'oc');
     if (currentPos === -1) currentPos = cycleList.length - 1;
+  } else if (bridge.getUserSelection() === 'gateway') {
+    currentPos = cycleList.findIndex(e => e.type === 'oc');
+    if (currentPos === -1) currentPos = cycleList.length - 1;
   } else {
-    currentPos = currentSessionIndex < sessions.length ? currentSessionIndex : 0;
+    // Port-based lookup: find current bridge port in cycle list
+    const currentPort = bridge.getBridgePort();
+    const portIdx = cycleList.findIndex(e =>
+      e.type === 'cc' && e.session.port === currentPort
+    );
+    currentPos = portIdx !== -1 ? portIdx : 0;
   }
 
   // If only one entry (current), nothing to cycle to
@@ -748,7 +761,7 @@ function cycleSession(): void {
     dlog('SesBut', `cycle: → OpenClaw`);
     const wasNoSession = showingCcNoSession;
     setNoSessionMode(false);
-    if (!wasNoSession) {
+    if (!wasNoSession && !isProxiedOpenClaw()) {
       bridge.activateGateway();
     }
     // wasNoSession: already on gateway, just clear the virtual state

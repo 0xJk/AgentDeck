@@ -14,14 +14,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.state.SessionMetrics
-import dev.agentdeck.util.formatCount
+import dev.agentdeck.util.formatBytes
 import dev.agentdeck.util.formatResetTime
 import dev.agentdeck.util.formatUptime
 import dev.agentdeck.util.gaugeBar
 
 /**
  * Compact horizontal status display for e-ink landscape layout.
- * Condenses OAuth, rate limits, ollama, tokens, cost into minimal rows.
+ * Condenses OAuth, rate limits, ollama, tokens, cost into 3 rows to fit IDLE 12% height.
  */
 @Composable
 fun EinkStatusCompact(
@@ -35,56 +35,57 @@ fun EinkStatusCompact(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
     ) {
-        // OAuth + Connection (one line)
+        // Row 1: OAuth + Bridge + Uptime
         val oauthIcon = if (state.oauthConnected == true) "\u2713" else "\u2717"
         val connIcon = if (state.bridgeConnected) "\u25CF" else "\u25CB"
-        Text(
-            text = "OAuth$oauthIcon  $connIcon Bridge",
-            style = monoStyle,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-
-        // 5h gauge
-        usage.fiveHourPercent?.let { pct ->
-            val bar = gaugeBar(pct, width = 4)
-            val reset = usage.fiveHourResetsAt?.let { formatResetTime(it) } ?: ""
-            Text(
-                text = "5h $bar ${pct.toInt()}% $reset",
-                style = monoStyle,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-
-        // 7d gauge
-        usage.sevenDayPercent?.let { pct ->
-            val bar = gaugeBar(pct, width = 4)
-            val reset = usage.sevenDayResetsAt?.let { formatResetTime(it) } ?: ""
-            Text(
-                text = "7d $bar ${pct.toInt()}% $reset",
-                style = monoStyle,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-
-        // Ollama + Tokens + Cost (one line)
-        val ollamaLabel = state.ollamaStatus?.let { if (it.available) "Olla\u2713" else "" } ?: ""
-        val tok = formatCount(usage.inputTokens.toLong() + usage.outputTokens.toLong())
-        val cost = usage.estimatedCostUsd?.let { "$${"%.2f".format(it)}" } ?: ""
-        Text(
-            text = "$ollamaLabel Tok:$tok $cost",
-            style = monoStyle,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-
-        // Uptime
         val uptime = formatUptime(metricsSnapshot.connectedSince ?: 0L)
         Text(
-            text = "UP: $uptime",
+            text = "OAuth$oauthIcon $connIcon Bridge  UP:$uptime",
             style = monoStyle,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.colorScheme.onSurface,
         )
+
+        // Row 2: 5h + 7d gauges combined in single line
+        val parts = mutableListOf<String>()
+        usage.fiveHourPercent?.let { pct ->
+            val bar = gaugeBar(pct, width = 3)
+            val reset = usage.fiveHourResetsAt?.let { formatResetTime(it) } ?: ""
+            parts += "5h $bar ${pct.toInt()}% $reset"
+        }
+        usage.sevenDayPercent?.let { pct ->
+            val bar = gaugeBar(pct, width = 3)
+            val reset = usage.sevenDayResetsAt?.let { formatResetTime(it) } ?: ""
+            parts += "7d $bar ${pct.toInt()}% $reset"
+        }
+        if (parts.isNotEmpty()) {
+            Text(
+                text = parts.joinToString("  "),
+                style = monoStyle,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+        }
+
+        // Row 3: Ollama status + running model names with VRAM
+        val ollamaLabel = state.ollamaStatus?.let { if (it.available) "Olla\u2713" else "" } ?: ""
+        val modelParts = state.ollamaStatus?.models?.map { model ->
+            val vram = if (model.sizeVram > 0) " ${formatBytes(model.sizeVram)}" else ""
+            "${model.name}$vram"
+        } ?: emptyList()
+        val row3 = if (modelParts.isNotEmpty()) {
+            "$ollamaLabel ${modelParts.joinToString(" \u00B7 ")}".trim()
+        } else {
+            ollamaLabel
+        }
+        if (row3.isNotEmpty()) {
+            Text(
+                text = row3,
+                style = monoStyle,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }

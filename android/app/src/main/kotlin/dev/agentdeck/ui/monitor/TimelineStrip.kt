@@ -81,6 +81,7 @@ fun TimelineStrip(
 private fun TimelineRow(entry: TimelineEntry) {
     val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
     val timeStr = timeFormat.format(Date(entry.timestamp))
+    val agentTag = agentTag(entry.agentType)
     val prefix = typePrefix(entry.type)
     val prefixColor = typeColor(entry.type)
 
@@ -95,7 +96,7 @@ private fun TimelineRow(entry: TimelineEntry) {
             fontFamily = FontFamily.Monospace,
         )
         Text(
-            text = "[$prefix]",
+            text = "$agentTag[$prefix]",
             color = prefixColor,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
@@ -135,4 +136,11 @@ private fun typeColor(type: String) = when (type) {
     "error" -> TerrariumColors.LEDRed
     "state_change" -> TerrariumColors.LEDAmber
     else -> TerrariumColors.HUDSubtext
+}
+
+private fun agentTag(agentType: String?): String = when (agentType) {
+    "claude-code" -> "[CC]"
+    "openclaw" -> "[OC]"
+    null -> ""
+    else -> "[AG]"
 }

@@ -29,6 +29,9 @@ data class DeckButtonConfig(
     val enabled: Boolean = true,
     val action: DeckAction = DeckAction.Noop,
     val dim: Boolean = false,
+    val icon: String? = null,
+    val badge: String? = null,
+    val actionString: String? = null,
 )
 
 // Dim placeholder

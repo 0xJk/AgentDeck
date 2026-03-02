@@ -2,6 +2,149 @@
 
 ---
 
+## 2026-03-02 — 네온테트라 2개 무리 + E-ink 수조 자연화
+
+### 문제
+1. 네온테트라 7마리 1개 무리로 단조로움. 실제 수족관처럼 두 무리가 만남/흩어짐 반복 필요
+2. E-ink 물고기가 V-대형으로 좌↔우 기계적 순찰, 크기도 큼(0.018f)
+3. E-ink 옥토퍼스 WORKING 상태에서 고정 위치, 데이터 파티클 없음
+
+### 해결
+
+**태블릿 (DataParticleSystem.kt)**:
+- SCHOOL_SIZE 7→14, `schoolId: Int` (0/1) 추가, 무리당 7마리
+- Lissajous school centers: 서로 다른 sin/cos 주기로 ~20-30초마다 자연스러운 합류/분리
+- Boids 수정: cohesion/alignment = 같은 schoolId만, separation = 전체
+- `SCHOOL_ATTRACTOR_WEIGHT=0.4` — 먹이 없을 때만 활성, 먹이 있으면 두 무리 뒤섞임
+
+**E-ink (EinkRenderer.kt)**:
+- `drawEinkDataParticles()` 전면 교체: 12마리 2무리(6+6), Lissajous 경로
+- 물고기 크기 `0.018f→0.013f` (72%), 그리드 스냅 제거 → 부드러운 이동
+- `einkPrevFishX` 배열로 프레임간 heading 추적 (V-대형 고정 → 개별 자유 이동)
+- STREAMING: school centers가 에이전트로 30% 보간 + 데이터 파티클 4개 orbit
+- HOVERING: 8마리 옵션 근처 + 4마리 먼 거리 배회
+- 옥토퍼스 WORKING bob: `0.02f * sin(animFrame * PI/8)` 미세 상하 흔들림
+
+### 핵심 설계 결정
+- **Lissajous curve 선택 이유**: 주기성이 있되 비정수 주기 비율로 경로가 정확히 반복되지 않음 → 장시간 봐도 패턴이 느껴지지 않음
+- **schoolId 기반 boids 분리**: separation만 전체 적용하면 두 무리가 겹칠 때 자연스러운 충돌 회피 발생, cohesion/alignment은 같은 무리끼리만 → 합류 후 다시 분리되는 행동
+- **E-ink heading 추적**: `prevFishX` float array 캐시가 file-level private이므로 frame 간 상태 유지 가능. animFrame 기반 sin/cos 위치에서 이전 프레임과 비교하면 실제 이동 방향 반영
+
+---
+
+## 2026-03-02 — 네온테트라 전체 수조 유영 + 자연스러운 크리처 배치 + E-ink 가시성 개선
+
+### 문제
+1. **테트라 활동 범위 제한**: 문어와 동일한 SWIM 경계(0.08~0.68)로 수조 좌측~중앙만 커버
+2. **태블릿 멀티세션 배치 부자연**: FLOATING/ASKING 시 모든 문어가 동일한 Y=0.66에 일렬 정렬
+3. **문어가 HUD 패널과 겹침**: SWIM_MIN_X=0.08이 좌측 HUD(~19%)보다 좌측
+4. **E-ink 물고기/환경 가시성 저조**: 작은 다이아몬드 물고기, 얇은 해초/바위, 바닥 구분 없음
+
+### 해결
+
+**테트라 경계 분리** (TerrariumConfig + DataParticleSystem):
+- `TETRA_SWIM_*` 신규: X `0.03~0.92`, Y `0.08~0.68` — 수조 전체 자유 유영
+- 기존 `SWIM_*`는 문어 전용 유지. 벽 반발 `0.05→0.08`, 최대속도 `0.15→0.20` 배수
+- HOVERING 어트랙터 수조 중앙(0.50, 0.35)으로 이동
+
+**자연스러운 배치** (OctopusCreature + CreatureLayout):
+- `standingJitter`: per-instance ±0.02 랜덤 Y 오프셋
+- X-correlated depth: `(homeX - 0.4) * 0.12` — X 위치에 따라 Y 자연 변동
+- `SWIM_MIN_X`: 0.08→0.20 (좌측 HUD 패널 회피)
+- `areaMinX`: 0.15→0.22 (멀티세션 홈 위치도 HUD 밖)
+
+**E-ink 가시성** (EinkRenderer):
+- **물고기 리디자인**: 50% 확대, 비대칭 물방울형 몸체, 어두운 `GRAY_FISH_BODY(0x55)` + 밝은 `GRAY_FISH_STRIPE(0xBB)`, 윤곽선, 포크형 꼬리, 흰눈+동공
+- **모래 바닥**: `GRAY_SAND(0xCC)` — 수면 아래 바닥 영역 구분
+- **바위 윤곽선**: fill 후 `GRAY_CREATURE` stroke 추가로 형태 뚜렷
+- **해초**: 1.2px→2.0px, 자갈 1.5배, 조약돌 1.5배, 거품 filled+outline
+- **멀티세션 Y stagger**: `standingOffset = (centerXFraction - 0.38) * 0.10`
+
+### 교훈 / 핵심 설계 결정
+- **경계 분리 원칙**: 크리처별 활동 영역은 독립 상수 (SWIM vs TETRA_SWIM). 공유 경계는 변경 시 의도치 않은 영향
+- **자연스러운 배치 = jitter + correlation**: 순수 랜덤보다 position-correlated offset이 시각적으로 더 자연스럽고 재현 가능
+- **E-ink 가시성 3원칙**: (1) 충분한 크기, (2) 배경과 최소 2 gray level 차이, (3) fill + outline 겸용
+
+---
+
+## 2026-03-02 — Android 에이전트 상태 업데이트 지연 + E-ink 크리처 개선
+
+### 문제
+1. **세션 추가/종료 시 Android 반영 최대 30초 지연**: Bridge `sessions_list` 30초 폴링만 사용
+2. **E-ink 크리처 반영 안됨**: RefreshZone triggerKey가 `siblingSessions.size`만 감시 — 상태 변경 무시
+3. **E-ink 크리처 위치 비정상**: IDLE octopus가 0.42f(수중)에 떠있음 — 바닥에 있어야 함
+4. **E-ink 크리처 흑백만 표시**: 모든 부위가 `GRAY_CREATURE=0x222222` 단일 색상
+
+### 해결
+
+**Bridge (sessions_list 즉시성)**:
+- `state_changed` 이벤트 시 `sessions_list`도 2초 debounce로 즉시 broadcast
+- 폴링 주기 30초 → 10초 단축
+- **TDZ 함정**: `let` 변수를 `state_changed` 핸들러보다 뒤에 선언하면 핸들러 실행 시 `ReferenceError`. `let`의 Temporal Dead Zone은 `var`와 달리 선언 전 접근 불가
+
+**Android (E-ink 리프레시)**:
+- Agent panel triggerKey: `siblingSessions.size` → `sessionsKey` (id:state join 문자열)
+- Aquarium triggerKey: `agentState` → `Pair(agentState, sessionsKey)`
+- EinkTerrariumView LaunchedEffect: `agents.size` → `agentsKey` (visualState 리스트)
+- `toTerrariumState()` → `derivedStateOf` 적용 (불필요한 recomposition 방지)
+
+**E-ink 크리처 Y-position** (color renderer 일치):
+- Octopus: SLEEPING=0.78(바닥), FLOATING=0.66(모래 위), WORKING=0.42(수영), ASKING=0.60
+- Crayfish: DORMANT=0.82, SITTING=0.72(바위 위), ROUTING=0.55(떠오름), OBSERVING=0.62
+
+**E-ink 그레이스케일**:
+- 부위별 분리: body(0x44), limb/claw(0x33), eyes(black/white)
+- SLEEPING 감쇠: body→seaweed(0x55), limb→gravel(0x66)
+- WORKING starburst: 8방사 그레이(0x99) 글로우
+- Crayfish 분리: body(0x44), claw(0x33, 더 진함)
+
+### 교훈 / 핵심 설계 결정
+- `let`/`const` TDZ: 이벤트 핸들러에서 참조하는 변수는 반드시 핸들러 등록 전에 선언
+- E-ink RefreshZone triggerKey는 **내용 기반 키**(상태 문자열 join)를 사용해야 실제 변경 감지 가능
+- E-ink 크리처 Y-position은 color renderer와 동일한 "바닥=대기, 부상=활동" 패턴 유지
+
+---
+
+## 2026-03-02 — SD 세션 전환 + OpenClaw 연결 데드스테이트
+
+### 문제
+SD 세션 버튼에서 OpenClaw 전환 시 3가지 결함:
+1. **`activateGateway()` 데드스테이트**: activeLink를 즉시 gateway로 전환하지만, WS 연결 실패 시 bridge 이벤트도 끊기고 gateway 이벤트도 없는 교착 상태. 복구 불가
+2. **`resume()` 인증 누락**: `connect()`만 `loadDeviceIdentity()` 호출. `resume()`은 identity 없이 연결 시도 → Ed25519 핸드셰이크 실패 → 무한 재연결 루프
+3. **`cycleSession()` daemon-proxied OC 오판**: `getActiveAgentType()`이 daemon 경유 OC에서 `'claude-code'` 반환 (activeLink=bridge이므로)
+
+### 해결
+1. **5초 타임아웃 폴백**: `activateGateway()`에서 즉시 UI 전환 + 5초 내 미연결 시 `userSelection='auto'`로 리셋, gateway pause, bridge 복귀
+2. **`resume()` identity 로드**: `if (!this.deviceIdentity) this.loadDeviceIdentity()` 추가
+3. **`getUserSelection()` 기반 판단**: `getActiveAgentType()` 대신 `getUserSelection() === 'gateway'`로 OC 위치/렌더링 판단. daemon이 `agentType: 'openclaw'` 보고해도 영향 없음
+
+### 교훈 / 핵심 설계 결정
+- **activeLink 전환 시 반드시 타임아웃**: 즉시 전환은 UI 반응성을 위해 필요하지만, 연결 실패 시 복구 경로가 없으면 데드스테이트 진입
+- **`userSelection` vs `activeAgentType` 구분**: daemon proxy 환경에서 `activeAgentType`은 연결 경로에 의존 (bridge→CC, gateway→OC). 유저 의도는 `userSelection`으로만 정확히 판단 가능
+- **`resume()`과 `connect()` 초기화 대칭**: lifecycle 메서드 간 전제조건(identity 로드 등)이 비대칭이면 특정 경로에서만 실패하는 간헐적 버그 발생
+
+---
+
+## 2026-03-02 — Daemon/OpenClaw primary 세션 카운트 불일치
+
+### 문제
+실제 coding agent 3개 실행 중인데 크레마(e-ink)에서 1개, 태블릿에서 4개 표시. 원인 2가지:
+
+1. **Daemon self-filter 실패**: Daemon의 `sessions_list`에서 자신을 제거하지만, `connection` 이벤트의 daemon UUID가 siblings에 없어 클라이언트 self-filter 불가 → primary(daemon) 1 + siblings 3 = 4개
+2. **Daemon agentType 변동**: `daemon-server.ts`가 OpenClaw gateway alive 시 `agentType: 'openclaw'`로 보고 → `!= "daemon"` 체크 통과 → openclaw primary가 octopus creature로 렌더링
+
+### 해결
+**클라이언트(Android) 3곳에서 필터링**:
+- `EinkAgentColumn.kt`, `SessionListPanel.kt`: primary `agentType == "daemon"` → 스킵. Sibling `agentType == "daemon"` → 스킵. OpenClaw는 🦞 아이콘으로 정상 표시
+- `TerrariumState.kt`: primary/sibling `"daemon"` 또는 `"openclaw"` → octopus 목록에서 제외 (crayfish가 별도 처리)
+
+### 교훈 / 핵심 설계 결정
+- **Daemon agentType 변동 주의**: `daemon-server.ts`가 gateway 상태에 따라 `agentType`을 `"daemon"` ↔ `"openclaw"`로 전환. 클라이언트에서 `"daemon"` 하나만 체크하면 gateway alive 시 필터 실패
+- **Session list vs Terrarium 분리**: 에이전트 목록에는 OpenClaw 표시 (🦞), terrarium에서는 crayfish로 표현 → 두 레이어의 필터링 규칙이 다름
+- **Primary vs Sibling 필터 차이**: Primary는 bridge가 자신을 보고하는 것 (daemon/openclaw 스킵). Sibling은 sessions_list에서 오는 것 (daemon만 스킵, openclaw는 표시)
+
+---
+
 ## 2026-03-02 — E-ink 네이티브 그레이스케일 복원
 
 ### 문제
