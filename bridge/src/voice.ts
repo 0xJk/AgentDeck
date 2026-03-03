@@ -25,6 +25,11 @@ function findBinary(candidates: string[], fallback: string): string {
 
 /** Check if a whisper-cli binary has Metal GPU support (native arm64 + libggml-metal). */
 function detectMetal(whisperPath: string): boolean {
+  // Skip if whisper-cli doesn't exist (just a fallback name, not installed)
+  if (!existsSync(whisperPath)) {
+    debug('Voice', `whisper-cli not found, skipping Metal detection`);
+    return false;
+  }
   try {
     const otoolOut = execSync(`otool -L "${whisperPath}"`, { encoding: 'utf8' });
     const hasMetal = otoolOut.includes('libggml-metal');

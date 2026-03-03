@@ -11,7 +11,8 @@
     "generate-icons": "node scripts/generate-icons.mjs",
     "package": "bash scripts/package-plugin.sh",
     "setup": "bash scripts/install.sh",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "bash scripts/postinstall.sh"
   },
   "engines": {
     "node": ">=20.0.0"
