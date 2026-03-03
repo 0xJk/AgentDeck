@@ -50,6 +50,7 @@ import { probeGateway } from './gateway-probe.js';
 import { getOrCreateToken, getWsUrl } from './auth.js';
 import { buildEnrichedSessionsList } from './session-aggregator.js';
 import type { HookServer } from './hook-server.js';
+import { setupAdbReverse, cleanupAdbReverse } from './adb-reverse.js';
 
 // Load prompt templates
 interface PromptTemplate {
@@ -322,6 +323,9 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
 
   // mDNS is handled by daemon-server only (avoids name collisions in multi-session)
   log(`[sdc] Auth token ready. Pairing URL: ${wsUrl}`);
+
+  // 2d. Set up adb reverse for all connected Android devices (best-effort)
+  setupAdbReverse(port);
 
   // 2e. SSE broadcasting helper (only for ClaudeCode adapter which has HookServer)
   let hookServer: HookServer | null = null;
@@ -1238,6 +1242,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     voiceManager.disconnectFromServer();
     journal.close();
     wsServer.close();
+    cleanupAdbReverse(port);
 
     // Adapter handles killing the agent process and closing its HTTP server
     adapter.shutdown().then(() => {
