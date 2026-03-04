@@ -12,8 +12,8 @@ import android.util.Log
  * SCREEN_OFF_TIMEOUT to 2s so the backlight turns off completely.
  * On wake: restores timeout first, sends WAKEUP, then restores brightness + mode.
  *
- * E-ink devices: Sets SCREEN_OFF_TIMEOUT to 3s (allows natural sleep),
- * restores MAX + WAKEUP on wake.
+ * E-ink devices: Turns off frontlight via sysfs (/sys/class/backlight/{warm,white}).
+ * Screen content remains visible in ambient light; system stays awake.
  */
 class BrightnessController(
     private val contentResolver: ContentResolver,
@@ -22,14 +22,18 @@ class BrightnessController(
 ) {
     companion object {
         private const val TAG = "BrightnessController"
-        private const val EINK_SLEEP_TIMEOUT_MS = 3_000
         private const val LCD_OFF_TIMEOUT_MS = 2_000
+        private val FRONTLIGHT_PATHS = listOf(
+            "/sys/class/backlight/warm/brightness",
+            "/sys/class/backlight/white/brightness",
+        )
     }
 
     private var isDimmed = false
     private var savedBrightness: Int? = null
     private var savedBrightnessMode: Int? = null
     private var savedScreenOffTimeout: Int? = null
+    private var savedFrontlight: Map<String, Int>? = null
 
     fun dim() {
         if (isDimmed) return
@@ -100,13 +104,23 @@ class BrightnessController(
                 )
             }
 
-            // Wake the screen (it may be off from the 2s timeout)
+            // Wake the screen (it may be off from the 2s timeout or deep Doze)
             if (!powerManager.isInteractive) {
+                // Use PowerManager wake lock — more reliable than exec in Doze
+                @Suppress("DEPRECATION")
                 try {
-                    Runtime.getRuntime().exec(arrayOf("input", "keyevent", "KEYCODE_WAKEUP"))
-                    Log.d(TAG, "Sent KEYCODE_WAKEUP to wake LCD")
+                    powerManager.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "AgentDeck:ScreenWake"
+                    ).acquire(3_000L)
+                    Log.d(TAG, "Acquired SCREEN_BRIGHT wake lock to wake LCD")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to send KEYCODE_WAKEUP: ${e.message}")
+                    Log.w(TAG, "Wake lock failed, trying keyevent fallback: ${e.message}")
+                    try {
+                        Runtime.getRuntime().exec(arrayOf("input", "keyevent", "KEYCODE_WAKEUP"))
+                    } catch (e2: Exception) {
+                        Log.w(TAG, "KEYCODE_WAKEUP also failed: ${e2.message}")
+                    }
                 }
             }
 
@@ -131,41 +145,30 @@ class BrightnessController(
     }
 
     private fun dimEink() {
-        try {
-            savedScreenOffTimeout = Settings.System.getInt(
-                contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 60_000
-            )
-            Settings.System.putInt(
-                contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, EINK_SLEEP_TIMEOUT_MS
-            )
-            Log.i(TAG, "E-ink timeout: ${savedScreenOffTimeout}ms → ${EINK_SLEEP_TIMEOUT_MS}ms")
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Cannot set screen_off_timeout: ${e.message}")
-            savedScreenOffTimeout = null
+        // Save current frontlight values and turn off
+        val saved = mutableMapOf<String, Int>()
+        for (path in FRONTLIGHT_PATHS) {
+            try {
+                val current = java.io.File(path).readText().trim().toIntOrNull() ?: continue
+                saved[path] = current
+                java.io.File(path).writeText("0")
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot write $path: ${e.message}")
+            }
         }
+        savedFrontlight = saved.ifEmpty { null }
+        Log.i(TAG, "E-ink dim: frontlight ${saved.entries.joinToString { "${it.key.substringAfterLast('/')}=${it.value}→0" }}")
     }
 
     private fun restoreEink() {
-        savedScreenOffTimeout?.let { saved ->
+        savedFrontlight?.forEach { (path, value) ->
             try {
-                Settings.System.putInt(
-                    contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, Int.MAX_VALUE
-                )
-                Log.i(TAG, "E-ink timeout restored to max")
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Cannot restore screen_off_timeout: ${e.message}")
-            }
-        }
-        savedScreenOffTimeout = null
-
-        // Wake the screen
-        if (!powerManager.isInteractive) {
-            try {
-                Runtime.getRuntime().exec(arrayOf("input", "keyevent", "KEYCODE_WAKEUP"))
-                Log.d(TAG, "Sent KEYCODE_WAKEUP to wake e-ink screen")
+                java.io.File(path).writeText(value.toString())
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to send KEYCODE_WAKEUP: ${e.message}")
+                Log.w(TAG, "Cannot restore $path: ${e.message}")
             }
         }
+        Log.i(TAG, "E-ink restored: frontlight ${savedFrontlight?.entries?.joinToString { "${it.key.substringAfterLast('/')}=${it.value}" } ?: "none"}")
+        savedFrontlight = null
     }
 }

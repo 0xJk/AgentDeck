@@ -249,6 +249,7 @@ class MonitorService : Service() {
             }
         }
         // Re-apply stay_on if another app or system reset it
+        // (keep device awake even when dimmed — frontlight off ≠ sleep)
         try {
             val current = Settings.Global.getInt(
                 contentResolver, Settings.Global.STAY_ON_WHILE_PLUGGED_IN, 0

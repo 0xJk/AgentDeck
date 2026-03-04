@@ -26,6 +26,7 @@ import {
   type PluginCommand,
   type ModelCatalogEntry,
 } from './types.js';
+import { DisplayMonitor } from './display-monitor.js';
 import { enableDebugLog, debug } from './logger.js';
 
 function log(msg: string): void {
@@ -64,10 +65,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   let cachedGatewayAvailable = false;
   let cachedModelCatalog: ModelCatalogEntry[] | null = null;
 
-  // Core components (no PTY, no voice, no display)
+  // Core components (no PTY, no voice)
   const usageTracker = new UsageTracker();
   const stateMachine = new StateMachine(usageTracker);
   const ollamaProbe = new OllamaProbe();
+  const displayMonitor = new DisplayMonitor();
 
   // Gateway adapter (dynamically created when Gateway is detected)
   let gatewayAdapter: OpenClawAdapter | null = null;
@@ -177,6 +179,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // Debounce tracker for sessions_list on state_changed
   let lastSessionsListBroadcast = 0;
 
+  // Display monitor → WS broadcast
+  displayMonitor.start();
+  displayMonitor.on('display_state_changed', (displayOn: boolean) => {
+    const evt: BridgeEvent = { type: 'display_state', displayOn };
+    wsServer.broadcast(evt);
+  });
+
   // Wire StateMachine → WS broadcast
   stateMachine.on('state_changed', (snapshot: StateSnapshot) => {
     const gwAlive = gatewayAdapter?.isAlive() ?? false;
@@ -279,6 +288,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       sessionId,
     };
     wsServer.sendTo(ws, connEvt);
+
+    // Display state
+    wsServer.sendTo(ws, { type: 'display_state', displayOn: displayMonitor.isDisplayOn() } as BridgeEvent);
 
     // Sessions list
     buildEnrichedSessionsList(sessionId, snapshot.state).then((sessions) => {
@@ -497,6 +509,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     clearInterval(ollamaInterval);
     clearInterval(gatewayInterval);
     clearInterval(sessionsListInterval);
+    displayMonitor.stop();
     deregisterSession(sessionId);
     mdnsCleanup();
 
