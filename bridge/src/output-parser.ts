@@ -58,6 +58,11 @@ const MODE_DEFAULT = /\?\s*for\s*shortcuts/;
 // ANSI stripping can remove inter-word spaces (e.g. "Opus4.6·ClaudeMax")
 const MODEL_INFO = /((?:Opus|Sonnet|Haiku)\s*[\d.]+|Claude\s*[\d.]+\s*(?:Opus|Sonnet|Haiku))(?:\s*(?:\([^)]+\))?\s*[·•]\s*(.+))?/i;
 
+// Effort level: "/model" UI shows "High effort ← → to adjust" during selection
+// and "with high effort" in the confirmation line. Levels: high, medium, low.
+// Also handle ANSI-stripped compact forms and the legacy "Effort: high" pattern.
+const EFFORT_LEVEL = /\b(high|medium|low)\s+effort\b/i;
+
 const SPINNER_DEBOUNCE_MS = 2000;
 const IDLE_DEBOUNCE_MS = 300;
 const OPTION_DEBOUNCE_MS = 150;
@@ -127,6 +132,7 @@ export class OutputParser extends EventEmitter {
   private optionTimer: ReturnType<typeof setTimeout> | null = null;
   private projectName: string | null = null;
   private modelName: string | null = null;
+  private effortLevel: string | null = null;
   // Don't trigger spinner until we've seen the first idle prompt
   // This prevents Claude's startup banner (which contains ✻) from falsely triggering PROCESSING
   private seenFirstIdle = false;
@@ -352,6 +358,7 @@ export class OutputParser extends EventEmitter {
     // like "Opus 4.6" match MODEL_INFO and overwrite the real model name
     if (!OPTION_NUMBERED.test(chunk)) {
       this.parseModelInfo(chunk);
+      this.parseEffortLevel(chunk);
     }
     this.parseUserPrompt(chunk);
     this.parseUsageInfo(chunk);
@@ -699,6 +706,18 @@ export class OutputParser extends EventEmitter {
         this.modelName = newModel;
         debug('Parser', `model_info: ${this.modelName}${plan ? ` (${plan})` : ''}`);
         this.emit('model_info', { model: this.modelName, plan: plan || null });
+      }
+    }
+  }
+
+  private parseEffortLevel(chunk: string): void {
+    const match = chunk.match(EFFORT_LEVEL);
+    if (match && match[1]) {
+      const level = match[1].toLowerCase();
+      if (level !== this.effortLevel) {
+        this.effortLevel = level;
+        debug('Parser', `effort_level: ${level}`);
+        this.emit('effort_level', { level });
       }
     }
   }
@@ -1093,6 +1112,7 @@ export class OutputParser extends EventEmitter {
 
   getProjectName(): string | null { return this.projectName; }
   getModelName(): string | null { return this.modelName; }
+  getEffortLevel(): string | null { return this.effortLevel; }
 
   reset(): void {
     this.buffer = '';
@@ -1102,6 +1122,7 @@ export class OutputParser extends EventEmitter {
     this.pendingModeSwitch = false;
     this.projectName = null;
     this.modelName = null;
+    this.effortLevel = null;
     this.lastSuggestedPrompt = null;
     this.lastNavigableEmit = false;
     this.lastCursorIndex = 0;

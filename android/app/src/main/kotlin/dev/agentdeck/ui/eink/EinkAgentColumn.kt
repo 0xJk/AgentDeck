@@ -36,6 +36,7 @@ fun EinkAgentPanel(
         val projectName: String,
         val agentType: String?,
         val modelName: String?,
+        val effortLevel: String?,
         val agentState: AgentState,
     )
 
@@ -47,6 +48,7 @@ fun EinkAgentPanel(
             projectName = state.projectName ?: "Agent",
             agentType = state.agentType,
             modelName = state.modelName,
+            effortLevel = state.effortLevel,
             agentState = state.agentState,
         )
     }
@@ -59,6 +61,7 @@ fun EinkAgentPanel(
             projectName = session.projectName ?: "Agent",
             agentType = session.agentType,
             modelName = null,
+            effortLevel = null,
             agentState = mapSessionState(session),
         )
     }
@@ -100,6 +103,7 @@ fun EinkAgentPanel(
             EinkAgentBlock(
                 displayName = displayName,
                 modelName = entry.modelName,
+                effortLevel = entry.effortLevel,
                 agentState = entry.agentState,
             )
         }
@@ -133,12 +137,18 @@ fun EinkAgentPanel(
 internal fun EinkAgentBlock(
     displayName: String,
     modelName: String?,
+    effortLevel: String? = null,
     agentState: AgentState,
 ) {
-    // Model + state merged into one line: "  opus-4 · ◉ PROC" or "  ◉ PROC"
+    // Model + effort + state merged into one line: "  opus-4 · high · ◉ PROC" or "  ◉ PROC"
     val stateMarker = compactStateMarker(agentState)
-    val subLine = if (modelName != null) {
-        "  $modelName \u00B7 $stateMarker"
+    val modelEffort = when {
+        modelName != null && effortLevel != null && effortLevel != "medium" -> "$modelName \u00B7 $effortLevel"
+        modelName != null -> modelName
+        else -> null
+    }
+    val subLine = if (modelEffort != null) {
+        "  $modelEffort \u00B7 $stateMarker"
     } else {
         "  $stateMarker"
     }

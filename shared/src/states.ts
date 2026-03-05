@@ -74,6 +74,7 @@ export interface StateSnapshot {
   cursorIndex: number;
   projectName: string | null;
   modelName: string | null;
+  effortLevel: string | null;
   billingType: import('./protocol.js').BillingType;
   sessionDurationSec: number;
   inputTokens: number;

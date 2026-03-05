@@ -39,6 +39,7 @@ fun SessionListPanel(
     projectName: String?,
     agentType: String?,
     modelName: String?,
+    effortLevel: String? = null,
     agentState: AgentState,
     sessionId: String?,
     siblingSessions: List<SessionInfo>,
@@ -51,6 +52,7 @@ fun SessionListPanel(
         val projectName: String,
         val agentType: String?,
         val modelName: String?,
+        val effortLevel: String?,
         val agentState: AgentState,
         val isPrimary: Boolean,
     )
@@ -63,6 +65,7 @@ fun SessionListPanel(
             projectName = projectName ?: "Agent",
             agentType = agentType,
             modelName = modelName,
+            effortLevel = effortLevel,
             agentState = agentState,
             isPrimary = true,
         )
@@ -76,6 +79,7 @@ fun SessionListPanel(
             projectName = session.projectName ?: "Agent",
             agentType = session.agentType,
             modelName = null,
+            effortLevel = null,
             agentState = mapSessionState(session),
             isPrimary = false,
         )
@@ -113,8 +117,14 @@ fun SessionListPanel(
         entries.forEach { entry ->
             val icon = agentIcon(entry.agentType)
             val stateMarker = compactStateMarker(entry.agentState)
-            val subLine = if (entry.modelName != null) {
-                "${entry.modelName} \u00B7 $stateMarker"
+            val modelEffort = when {
+                entry.modelName != null && entry.effortLevel != null && entry.effortLevel != "medium" ->
+                    "${entry.modelName} \u00B7 ${entry.effortLevel}"
+                entry.modelName != null -> entry.modelName
+                else -> null
+            }
+            val subLine = if (modelEffort != null) {
+                "$modelEffort \u00B7 $stateMarker"
             } else {
                 stateMarker
             }

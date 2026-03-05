@@ -126,6 +126,7 @@ let currentTool: string | undefined;
 let currentToolInput: string | undefined;
 let currentProjectName: string | undefined;
 let currentModelName: string | undefined;
+let currentEffortLevel: string | undefined;
 let currentBillingType: BillingType = 'unknown';
 let currentOptions: import('@agentdeck/shared').PromptOption[] = [];
 let currentQuestion: string | undefined;
@@ -192,6 +193,7 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   currentToolInput = ev.toolInput;
   if (ev.projectName) currentProjectName = ev.projectName;
   if (ev.modelName) currentModelName = ev.modelName;
+  if (ev.effortLevel !== undefined) currentEffortLevel = ev.effortLevel;
   if (ev.billingType) currentBillingType = ev.billingType;
   if (ev.gatewayAvailable !== undefined) {
     connMgr.setBridgeGatewayAvailable(ev.gatewayAvailable);
@@ -397,7 +399,7 @@ function broadcastStateUpdate(): void {
     overrideUsageButton(null);
     setUsageState(currentState);
     updateModeButton(currentState, currentMode, caps);
-    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType);
+    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, currentEffortLevel);
     updateResponseState(currentState, currentMode as any, currentOptions, undefined, agentType, currentNavigable, caps);
 
     // Stop slot: may show 4th option or MORE button

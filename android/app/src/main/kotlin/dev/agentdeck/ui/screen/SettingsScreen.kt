@@ -1,16 +1,16 @@
 package dev.agentdeck.ui.screen
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +27,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.agentdeck.data.DisplayPreferences
@@ -35,6 +36,7 @@ import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.ui.common.ConnectionPanel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 @Composable
@@ -64,156 +66,198 @@ fun SettingsScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(
-            text = "Settings",
-            style = MaterialTheme.typography.headlineMedium,
-        )
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-        // Connection
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    if (isLandscape) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Connection",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                ConnectionPanel(
-                    connectionStatus = connectionStatus,
-                    currentUrl = currentUrl,
-                    lastError = lastError,
-                    discoveredBridges = discoveredBridges,
-                    onConnectToBridge = { bridge ->
-                        connection.connect(bridge.wsUrl())
-                    },
-                    onConnectLocalhost = {
-                        connection.connect("ws://127.0.0.1:9120")
-                    },
-                    onConnectManualUrl = { url -> connection.connect(url) },
-                    onDisconnect = { connection.disconnect() },
-                )
-            }
-        }
-
-        // Background monitoring
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Display",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+            // Left: Connection
+            Card(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "Keep Dashboard Active",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Switch(
-                        checked = keepAwake,
-                        onCheckedChange = {
-                            coroutineScope.launch { displayPrefs.setKeepAwake(it) }
-                        },
-                    )
-                }
-                Text(
-                    text = "Prevents screen sleep and maintains connection in background",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "Sync with Host Display",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Switch(
-                        checked = displaySyncEnabled,
-                        onCheckedChange = {
-                            coroutineScope.launch { displayPrefs.setDisplaySyncEnabled(it) }
-                        },
-                    )
-                }
-                Text(
-                    text = "Dim display when host monitor sleeps, restore on wake",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                if (displaySyncEnabled) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "Idle Timeout: ${idleTimeoutMinutes} min",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Slider(
-                        value = idleTimeoutMinutes.toFloat(),
-                        onValueChange = { value ->
-                            coroutineScope.launch { displayPrefs.setIdleTimeoutMinutes(value.toInt()) }
-                        },
-                        valueRange = 1f..30f,
-                        steps = 28,
-                    )
-                    Text(
-                        text = "Dim display after this period when bridge is disconnected",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "Connection",
+                        style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ConnectionPanel(
+                        connectionStatus = connectionStatus,
+                        currentUrl = currentUrl,
+                        lastError = lastError,
+                        discoveredBridges = discoveredBridges,
+                        onConnectToBridge = { bridge -> connection.connect(bridge.wsUrl()) },
+                        onConnectLocalhost = { connection.connect("ws://127.0.0.1:9120") },
+                        onConnectManualUrl = { url -> connection.connect(url) },
+                        onDisconnect = { connection.disconnect() },
+                    )
                 }
             }
-        }
 
-        // About
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            // Right: Settings + About
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
                 Text(
-                    text = "About",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "Settings",
+                    style = MaterialTheme.typography.headlineMedium,
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                DisplaySettingsCard(keepAwake, displaySyncEnabled, idleTimeoutMinutes, coroutineScope, displayPrefs)
+                Spacer(modifier = Modifier.weight(1f))
+                AboutFooter()
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Settings",
+                style = MaterialTheme.typography.headlineMedium,
+            )
+
+            // Connection
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Connection",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ConnectionPanel(
+                        connectionStatus = connectionStatus,
+                        currentUrl = currentUrl,
+                        lastError = lastError,
+                        discoveredBridges = discoveredBridges,
+                        onConnectToBridge = { bridge -> connection.connect(bridge.wsUrl()) },
+                        onConnectLocalhost = { connection.connect("ws://127.0.0.1:9120") },
+                        onConnectManualUrl = { url -> connection.connect(url) },
+                        onDisconnect = { connection.disconnect() },
+                    )
+                }
+            }
+
+            DisplaySettingsCard(keepAwake, displaySyncEnabled, idleTimeoutMinutes, coroutineScope, displayPrefs)
+
+            Spacer(modifier = Modifier.weight(1f))
+            AboutFooter()
+        }
+    }
+}
+
+@Composable
+private fun DisplaySettingsCard(
+    keepAwake: Boolean,
+    displaySyncEnabled: Boolean,
+    idleTimeoutMinutes: Int,
+    coroutineScope: CoroutineScope,
+    displayPrefs: DisplayPreferences,
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Display",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    text = "AgentDeck Android",
+                    text = "Keep Dashboard Active",
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                Switch(
+                    checked = keepAwake,
+                    onCheckedChange = {
+                        coroutineScope.launch { displayPrefs.setKeepAwake(it) }
+                    },
+                )
+            }
+            Text(
+                text = "Prevents screen sleep and maintains connection in background",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    text = "v0.1.0",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "Sync with Host Display",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Switch(
+                    checked = displaySyncEnabled,
+                    onCheckedChange = {
+                        coroutineScope.launch { displayPrefs.setDisplaySyncEnabled(it) }
+                    },
+                )
+            }
+            Text(
+                text = "Dim display when host monitor sleeps, restore on wake",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            if (displaySyncEnabled) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Idle Timeout: ${idleTimeoutMinutes} min",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Slider(
+                    value = idleTimeoutMinutes.toFloat(),
+                    onValueChange = { value ->
+                        coroutineScope.launch { displayPrefs.setIdleTimeoutMinutes(value.toInt()) }
+                    },
+                    valueRange = 1f..30f,
+                    steps = 28,
                 )
                 Text(
-                    text = "Monitoring dashboard for AI coding agents",
+                    text = "Dim display after this period when bridge is disconnected",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
         }
     }
+}
+
+@Composable
+private fun AboutFooter() {
+    Text(
+        text = "AgentDeck Android \u00B7 v0.1.0 \u00B7 Monitoring dashboard for AI coding agents",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }

@@ -2831,4 +2831,102 @@ describe('OutputParser', () => {
       expect(idleEvents).toHaveLength(1);
     });
   });
+
+  // === Effort Level Parsing ===
+
+  describe('effort level parsing', () => {
+    // Real PTY patterns from Claude Code /model UI:
+    // During selection: "▌ High effort ← → to adjust"
+    // Confirmation: "with high effort"
+    // Model info line: "Opus 4.6 with high effort · Claude Max"
+
+    it('detects "High effort" selection pattern', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('▌ High effort ← → to adjust\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'high' });
+    });
+
+    it('detects "Medium effort" selection pattern', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('▌▌ Medium effort (default) ← → to adjust\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'medium' });
+    });
+
+    it('detects "Low effort" selection pattern', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('▌ Low effort ← → to adjust\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'low' });
+    });
+
+    it('detects "with high effort" confirmation line', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('Set model to Default (Opus 4.6) with high effort\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'high' });
+    });
+
+    it('detects effort in model info line', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('Opus 4.6 with high effort · Claude Max\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'high' });
+    });
+
+    it('caches effort level — no re-emit on same value', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('High effort ← → to adjust\n');
+      p.feed('High effort ← → to adjust\n');
+      expect(events).toHaveLength(1);
+    });
+
+    it('emits on effort level change', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('High effort ← → to adjust\n');
+      p.feed('Low effort ← → to adjust\n');
+      expect(events).toHaveLength(2);
+      expect(events[1]).toEqual({ level: 'low' });
+    });
+
+    it('resets effort level on reset()', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('High effort ← → to adjust\n');
+      p.reset();
+      p.feed('High effort ← → to adjust\n');
+      expect(events).toHaveLength(2);
+    });
+
+    it('does not match "effort" in unrelated context', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('▌▌▌ effort ← → to adjust\n');
+      // The initial indicator line has no level word before "effort"
+      expect(events).toHaveLength(0);
+    });
+
+    it('does not match effort inside numbered option lines', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('  1. High effort quality\n');
+      vi.advanceTimersByTime(200);
+      expect(events).toHaveLength(0);
+    });
+
+    it('getter returns current effort level', () => {
+      const p = createParser();
+      expect(p.getEffortLevel()).toBeNull();
+      p.feed('Low effort ← → to adjust\n');
+      expect(p.getEffortLevel()).toBe('low');
+    });
+  });
 });

@@ -425,6 +425,7 @@ private fun MonitorHUD(
             projectName = dashState.projectName,
             agentType = dashState.agentType,
             modelName = dashState.modelName,
+            effortLevel = dashState.effortLevel,
             agentState = dashState.agentState,
             sessionId = dashState.sessionId,
             siblingSessions = dashState.siblingSessions,

@@ -63,6 +63,7 @@ export class StateMachine extends EventEmitter {
   private optimisticCursorTime = 0;
   private projectName: string | null = null;
   private modelName: string | null = null;
+  private effortLevel: string | null = null;
   private remoteUrl: string | null = null;
   private billingType: BillingType = 'unknown';
   private suggestedPrompt: string | null = null;
@@ -310,6 +311,16 @@ export class StateMachine extends EventEmitter {
         break;
       }
 
+      case 'effort_level': {
+        const level = data?.level as string | undefined;
+        if (level) {
+          this.effortLevel = level;
+          debug('SM', `effortLevel: ${level}`);
+          this.emitSnapshot();
+        }
+        break;
+      }
+
       case 'remote_url': {
         const url = data?.url as string | undefined;
         if (url) {
@@ -510,6 +521,7 @@ export class StateMachine extends EventEmitter {
       cursorIndex: this.cursorIndex,
       projectName: this.projectName,
       modelName: this.modelName,
+      effortLevel: this.effortLevel,
       billingType: this.billingType,
       sessionDurationSec: usage.sessionDurationSec,
       inputTokens: usage.inputTokens,

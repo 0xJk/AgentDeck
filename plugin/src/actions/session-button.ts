@@ -44,6 +44,7 @@ let currentProjectName: string | undefined;
 let currentTool: string | undefined;
 let currentModel: string | undefined;
 let currentAgentType: AgentType | null = null;
+let currentEffortLevel: string | undefined;
 let currentSessionIndex = 0;
 let sessions: SessionEntry[] = [];
 let keyDownTime = 0;
@@ -155,6 +156,7 @@ export function updateSessionButton(
   tool?: string,
   model?: string,
   agentType?: AgentType | null,
+  effortLevel?: string,
 ): void {
   const wasConnected = currentState !== State.DISCONNECTED;
   const wasIdle = currentState === State.IDLE;
@@ -167,6 +169,7 @@ export function updateSessionButton(
   }
   if (model) currentModel = model;
   if (agentType !== undefined) currentAgentType = agentType;
+  if (effortLevel !== undefined) currentEffortLevel = effortLevel;
 
   // CC connected — clear NO SESSION mode
   if (showingCcNoSession && agentType === 'claude-code') {
@@ -437,7 +440,9 @@ function renderSessionSvg(): string {
         nameLines = splitProjectName(name, 14); // re-split with wider limit
       }
       const total = sessions.length;
-      const modelLine = currentModel ? truncate(currentModel, 12) : '';
+      const modelLine = currentModel
+        ? truncate(currentEffortLevel && currentEffortLevel !== 'medium' ? `${currentModel} · ${currentEffortLevel}` : currentModel, 14)
+        : '';
       const modelFs = 20;
 
       // Build text elements for auto-centering
