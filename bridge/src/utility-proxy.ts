@@ -85,7 +85,7 @@ export class UtilityProxy {
     const step = Math.round(delta * 6.25);
     const newVol = Math.max(0, Math.min(100, this.cachedVolume + step));
     try {
-      execSync(`osascript -e 'set volume output volume ${newVol}'`, { timeout: 2000 });
+      execSync(`osascript -e 'set volume output volume ${newVol}'`, { timeout: 2000, stdio: 'pipe' });
       this.cachedVolume = newVol;
       if (newVol > 0) this.cachedMuted = false;
       debug('Utility', `Volume → ${newVol}%`);
@@ -97,7 +97,7 @@ export class UtilityProxy {
   toggleMute(): void {
     try {
       const script = `osascript -e 'set volume with output muted:${this.cachedMuted ? 'false' : 'true'}'`;
-      execSync(script, { timeout: 2000 });
+      execSync(script, { timeout: 2000, stdio: 'pipe' });
       this.cachedMuted = !this.cachedMuted;
       debug('Utility', `Mute → ${this.cachedMuted}`);
     } catch (err) {
@@ -112,7 +112,7 @@ export class UtilityProxy {
         tell application "System Events"
           key code ${delta > 0 ? 144 : 145}
         end tell'`;
-      execSync(script, { timeout: 2000 });
+      execSync(script, { timeout: 2000, stdio: 'pipe' });
       // Approximate new brightness
       this.cachedBrightness = Math.max(0, Math.min(100, this.cachedBrightness + Math.round(delta * 6.25)));
       debug('Utility', `Brightness → ~${this.cachedBrightness}%`);
@@ -123,7 +123,7 @@ export class UtilityProxy {
 
   mediaPlayPause(): void {
     try {
-      execSync(`osascript -e 'tell application "System Events" to key code 16 using {command down}'`, { timeout: 2000 });
+      execSync(`osascript -e 'tell application "System Events" to key code 16 using {command down}'`, { timeout: 2000, stdio: 'pipe' });
       debug('Utility', 'Media: play/pause');
     } catch (err) {
       debug('Utility', `mediaPlayPause error: ${err}`);
@@ -132,7 +132,7 @@ export class UtilityProxy {
 
   mediaNext(): void {
     try {
-      execSync(`osascript -e 'tell application "System Events" to key code 124 using {command down}'`, { timeout: 2000 });
+      execSync(`osascript -e 'tell application "System Events" to key code 124 using {command down}'`, { timeout: 2000, stdio: 'pipe' });
       debug('Utility', 'Media: next');
     } catch (err) {
       debug('Utility', `mediaNext error: ${err}`);
@@ -141,7 +141,7 @@ export class UtilityProxy {
 
   mediaPrev(): void {
     try {
-      execSync(`osascript -e 'tell application "System Events" to key code 123 using {command down}'`, { timeout: 2000 });
+      execSync(`osascript -e 'tell application "System Events" to key code 123 using {command down}'`, { timeout: 2000, stdio: 'pipe' });
       debug('Utility', 'Media: prev');
     } catch (err) {
       debug('Utility', `mediaPrev error: ${err}`);
@@ -151,13 +151,13 @@ export class UtilityProxy {
   private poll(): void {
     // Poll volume
     try {
-      const vol = execSync(`osascript -e 'output volume of (get volume settings)'`, { timeout: 2000, encoding: 'utf8' }).trim();
+      const vol = execSync(`osascript -e 'output volume of (get volume settings)'`, { timeout: 2000, encoding: 'utf8', stdio: 'pipe' }).trim();
       this.cachedVolume = parseInt(vol, 10) || 0;
     } catch { /* ignore */ }
 
     // Poll mute
     try {
-      const muted = execSync(`osascript -e 'output muted of (get volume settings)'`, { timeout: 2000, encoding: 'utf8' }).trim();
+      const muted = execSync(`osascript -e 'output muted of (get volume settings)'`, { timeout: 2000, encoding: 'utf8', stdio: 'pipe' }).trim();
       this.cachedMuted = muted === 'true';
     } catch { /* ignore */ }
 
@@ -165,7 +165,7 @@ export class UtilityProxy {
     try {
       const br = execSync(
         `osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode'`,
-        { timeout: 2000, encoding: 'utf8' },
+        { timeout: 2000, encoding: 'utf8', stdio: 'pipe' },
       ).trim();
       // brightness is harder to read reliably; keep cached estimate
     } catch { /* ignore */ }
