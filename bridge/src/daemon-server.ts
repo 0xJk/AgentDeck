@@ -31,6 +31,7 @@ import {
 import { DisplayMonitor } from './display-monitor.js';
 import { BridgeTimelineStore } from './timeline-store.js';
 import { BridgeLogStream } from './log-stream.js';
+import { setupAdbReverse, cleanupAdbReverse } from './adb-reverse.js';
 import { enableDebugLog, debug } from './logger.js';
 
 function log(msg: string): void {
@@ -272,6 +273,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // WebSocket server
   const wsServer = new WsServer(httpServer);
   log(`[agentdeck] WebSocket server ready on port ${port}`);
+
+  // Set up adb reverse for USB-connected Android devices
+  setupAdbReverse(port);
 
   // Wire log stream → timeline store → WS broadcast
   bridgeLogStream.on('entry', (entry) => {
@@ -705,6 +709,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     bridgeLogStream.stop();
     displayMonitor.stop();
     deregisterSession(sessionId);
+    cleanupAdbReverse(port);
     mdnsCleanup();
 
     if (gatewayAdapter) {
