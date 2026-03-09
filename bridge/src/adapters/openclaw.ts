@@ -6,6 +6,7 @@ import { homedir } from 'os';
 import { createPublicKey, createPrivateKey, sign as cryptoSign, randomUUID } from 'crypto';
 import WebSocket from 'ws';
 import { debug } from '../logger.js';
+import { summarizeResponse, extractTopicHint } from '../timeline-summarizer.js';
 import type {
   AgentAdapter,
   AgentCapabilities,
@@ -124,6 +125,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   private chatToolCount = 0;
   private chatToolNames: string[] = [];
   private lastPrompt: string | null = null;
+  private accumulatedResponse = '';
 
   // Device identity (loaded once on start)
   private deviceIdentity: DeviceIdentity | null = null;
@@ -257,6 +259,23 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
       case 'send_prompt': {
         debug('adapter:openclaw', `send_prompt: "${cmd.text.slice(0, 60)}"`);
         this.lastPrompt = cmd.text;
+
+        // Optimistic: immediate timeline + PROCESSING state (no waiting for delta)
+        if (!this.chatStarted) {
+          this.chatStarted = true;
+          this.chatStartTime = Date.now();
+          this.chatToolCount = 0;
+          this.chatToolNames = [];
+          const prompt = cmd.text;
+          const promptRaw = prompt.length > 500 ? prompt.slice(0, 497) + '...' : prompt;
+          const promptDetail = prompt.length > 100 ? (prompt.length > 1000 ? prompt.slice(0, 997) + '...' : prompt) : undefined;
+          this.emitTimelineEntry({
+            ts: Date.now(), type: 'chat_start', raw: promptRaw,
+            ...(promptDetail ? { detail: promptDetail } : {}),
+          });
+          this.emitAdapterEvent({ source: 'parser', event: 'spinner_start' });
+        }
+
         if (this.currentSessionKey) {
           this.rpcCall('chat.send', {
             sessionKey: this.currentSessionKey,
@@ -615,21 +634,37 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
         const runId = payload.runId as string;
         const sessionKey = payload.sessionKey as string;
 
+        // Debug: log payload structure for diagnostic (delta/final only)
+        if (state === 'delta' || state === 'final') {
+          const keys = Object.keys(payload).join(',');
+          debug('adapter:openclaw', `Chat ${state} keys=[${keys}]`);
+          if (state === 'delta') {
+            // Log first delta fully for prompt discovery, then just keys
+            if (!this.chatStarted) {
+              debug('adapter:openclaw', `First delta payload: ${JSON.stringify(payload).slice(0, 800)}`);
+            }
+          } else {
+            debug('adapter:openclaw', `Final payload: ${JSON.stringify(payload).slice(0, 800)}`);
+          }
+        }
+
         // Track active run and session
         if (runId) this.currentRunId = runId;
         if (sessionKey) this.currentSessionKey = sessionKey;
 
         switch (state) {
           case 'delta': {
-            // Capture Gateway-initiated prompt from delta payload
-            const deltaPrompt = payload.prompt as string | undefined;
-            if (deltaPrompt && !this.lastPrompt) this.lastPrompt = deltaPrompt;
+            // Extract text from Gateway message structure:
+            // payload.message = { role: "assistant", content: [{ type: "text", text: "..." }] }
+            const deltaText = this.extractMessageText(payload);
 
             if (!this.chatStarted) {
+              // Non-optimistic path: gateway-initiated chat (cron, web, etc.)
               this.chatStarted = true;
               this.chatStartTime = Date.now();
               this.chatToolCount = 0;
               this.chatToolNames = [];
+              this.accumulatedResponse = deltaText || '';
               const prompt = this.lastPrompt || 'Prompt sent';
               const promptRaw = prompt.length > 500 ? prompt.slice(0, 497) + '...' : prompt;
               const promptDetail = prompt.length > 100 ? (prompt.length > 1000 ? prompt.slice(0, 997) + '...' : prompt) : undefined;
@@ -637,47 +672,79 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
                 ts: Date.now(), type: 'chat_start', raw: promptRaw,
                 ...(promptDetail ? { detail: promptDetail } : {}),
               });
+            } else {
+              // Gateway always sends cumulative content — replace, never append
+              if (deltaText) {
+                this.accumulatedResponse = deltaText;
+              }
+
+              // Early topic extraction — upsert chat_start with topic hint
+              if (this.accumulatedResponse.length > 20 && this.accumulatedResponse.length < 200) {
+                const topicHint = extractTopicHint(this.accumulatedResponse);
+                if (topicHint && (!this.lastPrompt || this.lastPrompt === 'Prompt sent')) {
+                  this.emitTimelineUpsert({
+                    ts: this.chatStartTime, type: 'chat_start',
+                    raw: topicHint,
+                  });
+                }
+              }
             }
-          }
+
             this.emitAdapterEvent({
               source: 'parser',
               event: 'spinner_start',
               data: { runId, sessionKey },
             });
             break;
+          }
 
           case 'final': {
             const duration = this.chatStarted ? Math.round((Date.now() - this.chatStartTime) / 1000) : 0;
             const toolSummary = this.buildToolSummary();
-            const promptSnippet = this.lastPrompt
-              ? (this.lastPrompt.length > 60 ? this.lastPrompt.slice(0, 57) + '...' : this.lastPrompt)
-              : '';
+
+            // Extract response content for detail + LLM summarization
+            const finalText = this.extractMessageText(payload);
+            const responseContent = (finalText && finalText.length > 10 ? finalText : undefined)
+              || (this.accumulatedResponse.length > 10 ? this.accumulatedResponse : undefined);
+
+            // Build response detail (folded into chat_end instead of separate chat_response)
+            const responseDetail = responseContent && responseContent.length > 10
+              ? (responseContent.length > 1000 ? responseContent.slice(0, 997) + '...' : responseContent)
+              : undefined;
+
+            // Emit chat_end with heuristic summary, then async LLM enrichment
             const parts = ['Completed'];
             if (duration > 0) parts.push(`${duration}s`);
             if (toolSummary) parts.push(toolSummary);
-            if (promptSnippet) parts.push(promptSnippet);
-            const chatEndDetail = this.lastPrompt && this.lastPrompt.length > 60
-              ? (this.lastPrompt.length > 1000 ? this.lastPrompt.slice(0, 997) + '...' : this.lastPrompt)
-              : undefined;
+            const chatEndTs = Date.now();
             this.emitTimelineEntry({
-              ts: Date.now(), type: 'chat_end', raw: parts.join(' \u00b7 '),
-              ...(chatEndDetail ? { detail: chatEndDetail } : {}),
+              ts: chatEndTs, type: 'chat_end', raw: parts.join(' \u00b7 '),
+              ...(responseDetail ? { detail: responseDetail } : {}),
             });
 
-            // Emit chat_response if content is available
-            const content = payload.content as string | undefined;
-            if (content && content.length > 10) {
-              const contentRaw = content.length > 500 ? content.slice(0, 497) + '...' : content;
-              const contentDetail = content.length > 100 ? (content.length > 1000 ? content.slice(0, 997) + '...' : content) : undefined;
-              this.emitTimelineEntry({
-                ts: Date.now(), type: 'chat_response',
-                raw: contentRaw,
-                ...(contentDetail ? { detail: contentDetail } : {}),
-              });
+            // Async LLM summarization — fire-and-forget, upsert chat_end when ready
+            if (responseContent && responseContent.length > 30) {
+              const savedToolSummary = toolSummary;
+              const savedDuration = duration;
+              summarizeResponse(responseContent).then((summary) => {
+                if (summary) {
+                  const enrichedParts = [summary];
+                  if (savedDuration > 0) enrichedParts.push(`${savedDuration}s`);
+                  if (savedToolSummary) enrichedParts.push(savedToolSummary);
+                  debug('adapter:openclaw', `LLM summary: ${summary}`);
+                  // Upsert chat_end with LLM summary replacing "Completed"
+                  this.emitTimelineUpsert({
+                    ts: chatEndTs, type: 'chat_end',
+                    raw: enrichedParts.join(' \u00b7 '),
+                    ...(responseDetail ? { detail: responseDetail } : {}),
+                  });
+                }
+              }).catch(() => { /* summarization failed — keep heuristic */ });
             }
 
             this.chatStarted = false;
             this.lastPrompt = null;
+            this.accumulatedResponse = '';
             this.currentRunId = null;
             this.emitAdapterEvent({ source: 'parser', event: 'idle' });
             break;
@@ -694,6 +761,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
             });
             this.chatStarted = false;
             this.lastPrompt = null;
+            this.accumulatedResponse = '';
             this.currentRunId = null;
             this.emitAdapterEvent({ source: 'parser', event: 'idle' });
             break;
@@ -706,6 +774,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
             });
             this.chatStarted = false;
             this.lastPrompt = null;
+            this.accumulatedResponse = '';
             this.currentRunId = null;
             debug('adapter:openclaw', `Chat error: ${errMsg}`);
             this.emitAdapterEvent({ source: 'parser', event: 'idle' });
@@ -959,6 +1028,21 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
     }
   }
 
+  /**
+   * Extract text from Gateway chat message structure.
+   * Format: payload.message = { role, content: [{ type: "text", text: "..." }], timestamp }
+   */
+  private extractMessageText(payload: Record<string, unknown>): string | undefined {
+    const msg = payload.message as Record<string, unknown> | undefined;
+    if (!msg) return undefined;
+    const content = msg.content as Array<{ type: string; text: string }> | undefined;
+    if (!content || !Array.isArray(content)) return undefined;
+    const texts = content
+      .filter(c => c.type === 'text' && c.text)
+      .map(c => c.text);
+    return texts.length > 0 ? texts.join('') : undefined;
+  }
+
   /** Build tool count summary like "Read(3), Bash(2)" */
   private buildToolSummary(): string {
     if (this.chatToolNames.length === 0) return '';
@@ -969,6 +1053,11 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   /** Emit a timeline event through the adapter event system */
   private emitTimelineEntry(entry: TimelineEntry): void {
     this.emitAdapterEvent({ source: 'timeline', entry });
+  }
+
+  /** Emit a timeline upsert (update existing entry with same ts+type, or add new) */
+  private emitTimelineUpsert(entry: TimelineEntry): void {
+    this.emitAdapterEvent({ source: 'timeline', entry, upsert: true });
   }
 
   /** Fetch event history from Gateway via RPC (for offline recovery) */

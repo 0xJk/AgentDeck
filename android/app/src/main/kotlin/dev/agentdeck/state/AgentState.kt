@@ -188,6 +188,7 @@ class AgentStateHolder private constructor() {
                     it.copy(
                         bridgeConnected = false,
                         agentState = AgentState.DISCONNECTED,
+                        hostDisplayOn = true,
                     )
                 }
                 SessionMetrics.instance.onDisconnected()

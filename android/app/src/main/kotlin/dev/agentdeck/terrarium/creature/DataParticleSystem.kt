@@ -40,7 +40,7 @@ class DataParticleSystem : Creature {
 
     // --- Neon Tetra ---
 
-    private data class NeonTetra(
+    private class NeonTetra(
         var x: Float, var y: Float,
         var vx: Float, var vy: Float,
         var facingRight: Boolean,  // left/right orientation (horizontal mirror)
@@ -58,7 +58,13 @@ class DataParticleSystem : Creature {
         var bodyPhase: Float,
         var zLayer: Int,           // 0=back (behind creatures), 1=front (in front of creatures)
         var schoolId: Int,         // 0 or 1 — which school this fish belongs to
-    )
+    ) {
+        // Pre-allocated Path objects — reused every frame via reset()
+        val bodyPath = Path()
+        val stripePath = Path()
+        val tailPath = Path()
+        val dorsalPath = Path()
+    }
 
     // --- Food crumbs (data particles scattered by working agents) ---
 
@@ -217,22 +223,23 @@ class DataParticleSystem : Creature {
                 val other = school[j]
                 val dx = other.x - fish.x
                 val dy = other.y - fish.y
-                val dist = sqrt(dx * dx + dy * dy).coerceAtLeast(0.001f)
+                val distSq = dx * dx + dy * dy
 
                 // Separation: all fish (both schools avoid collision)
-                if (dist < TerrariumTiming.SEPARATION_RADIUS) {
+                if (distSq < SEPARATION_RADIUS_SQ) {
+                    val dist = sqrt(distSq).coerceAtLeast(0.001f)
                     sepX -= dx / dist
                     sepY -= dy / dist
                     sepCount++
                 }
                 // Alignment + Cohesion: same school only
                 if (other.schoolId == fish.schoolId) {
-                    if (dist < TerrariumTiming.ALIGNMENT_RADIUS) {
+                    if (distSq < ALIGNMENT_RADIUS_SQ) {
                         aliX += other.vx
                         aliY += other.vy
                         aliCount++
                     }
-                    if (dist < TerrariumTiming.COHESION_RADIUS) {
+                    if (distSq < COHESION_RADIUS_SQ) {
                         cohX += other.x
                         cohY += other.y
                         cohCount++
@@ -536,38 +543,34 @@ class DataParticleSystem : Creature {
             val midWaveY = bodyWave * bodyH + midBendY * 0.3f
 
             // Body — curved fish shape, bends during turns
-            val bodyPath = Path().apply {
-                moveTo(noseX, 0f)
-                // Upper: nose → mid → tail (mid and tail offset by bend)
-                cubicTo(
-                    noseX * 0.5f, -bodyH * 0.5f,
-                    bodyLen * 0.0f + midWaveY, -bodyH + midBendY * 0.5f,
-                    tailBaseX, -bodyH * 0.25f + tailBendY,
-                )
-                // Lower: tail → mid → nose
-                cubicTo(
-                    bodyLen * 0.0f - midWaveY, bodyH + midBendY * 0.5f,
-                    noseX * 0.5f, bodyH * 0.5f,
-                    noseX, 0f,
-                )
-                close()
-            }
+            fish.bodyPath.reset()
+            fish.bodyPath.moveTo(noseX, 0f)
+            fish.bodyPath.cubicTo(
+                noseX * 0.5f, -bodyH * 0.5f,
+                bodyLen * 0.0f + midWaveY, -bodyH + midBendY * 0.5f,
+                tailBaseX, -bodyH * 0.25f + tailBendY,
+            )
+            fish.bodyPath.cubicTo(
+                bodyLen * 0.0f - midWaveY, bodyH + midBendY * 0.5f,
+                noseX * 0.5f, bodyH * 0.5f,
+                noseX, 0f,
+            )
+            fish.bodyPath.close()
             drawPath(
-                path = bodyPath,
+                path = fish.bodyPath,
                 color = TerrariumColors.TetraBody.copy(alpha = fish.alpha * bankAlpha),
             )
 
             // Neon stripe — follows body curve
-            val stripePath = Path().apply {
-                moveTo(noseX * 0.65f, 0f)
-                cubicTo(
-                    bodyLen * 0.1f, midBendY * 0.3f + midWaveY * 0.3f,
-                    -bodyLen * 0.1f, midBendY * 0.6f + midWaveY * 0.2f,
-                    tailBaseX * 0.5f, tailBendY * 0.5f,
-                )
-            }
+            fish.stripePath.reset()
+            fish.stripePath.moveTo(noseX * 0.65f, 0f)
+            fish.stripePath.cubicTo(
+                bodyLen * 0.1f, midBendY * 0.3f + midWaveY * 0.3f,
+                -bodyLen * 0.1f, midBendY * 0.6f + midWaveY * 0.2f,
+                tailBaseX * 0.5f, tailBendY * 0.5f,
+            )
             drawPath(
-                path = stripePath,
+                path = fish.stripePath,
                 color = TerrariumColors.TetraNeon.copy(alpha = fish.alpha * 0.95f * bankAlpha),
                 style = androidx.compose.ui.graphics.drawscope.Stroke(
                     width = size * 0.18f,
@@ -580,41 +583,36 @@ class DataParticleSystem : Creature {
             val tailFinLen = bodyLen * 0.3f
             val forkSpread = bodyH * 1.0f
             val wagY = tailWag * bodyH + tailBendY
-            val tailPath = Path().apply {
-                moveTo(tailBaseX, tailBendY)
-                // Upper fork
-                cubicTo(
-                    tailBaseX - tailFinLen * 0.4f, tailBendY - forkSpread * 0.4f + wagY * 0.3f,
-                    tailBaseX - tailFinLen * 0.8f, tailBendY - forkSpread * 0.8f + wagY * 0.5f,
-                    tailBaseX - tailFinLen, tailBendY - forkSpread + wagY * 0.6f,
-                )
-                // Return
-                lineTo(tailBaseX - tailFinLen * 0.2f, tailBendY + wagY * 0.2f)
-                // Lower fork
-                cubicTo(
-                    tailBaseX - tailFinLen * 0.8f, tailBendY + forkSpread * 0.8f + wagY * 0.5f,
-                    tailBaseX - tailFinLen * 0.4f, tailBendY + forkSpread * 0.4f + wagY * 0.3f,
-                    tailBaseX - tailFinLen, tailBendY + forkSpread + wagY * 0.6f,
-                )
-                lineTo(tailBaseX, tailBendY)
-                close()
-            }
+            fish.tailPath.reset()
+            fish.tailPath.moveTo(tailBaseX, tailBendY)
+            fish.tailPath.cubicTo(
+                tailBaseX - tailFinLen * 0.4f, tailBendY - forkSpread * 0.4f + wagY * 0.3f,
+                tailBaseX - tailFinLen * 0.8f, tailBendY - forkSpread * 0.8f + wagY * 0.5f,
+                tailBaseX - tailFinLen, tailBendY - forkSpread + wagY * 0.6f,
+            )
+            fish.tailPath.lineTo(tailBaseX - tailFinLen * 0.2f, tailBendY + wagY * 0.2f)
+            fish.tailPath.cubicTo(
+                tailBaseX - tailFinLen * 0.8f, tailBendY + forkSpread * 0.8f + wagY * 0.5f,
+                tailBaseX - tailFinLen * 0.4f, tailBendY + forkSpread * 0.4f + wagY * 0.3f,
+                tailBaseX - tailFinLen, tailBendY + forkSpread + wagY * 0.6f,
+            )
+            fish.tailPath.lineTo(tailBaseX, tailBendY)
+            fish.tailPath.close()
             drawPath(
-                path = tailPath,
+                path = fish.tailPath,
                 color = TerrariumColors.TetraFin.copy(alpha = fish.alpha * 0.85f),
             )
 
             // Dorsal fin — on the curved back
-            val dorsalPath = Path().apply {
-                val dmx = bodyLen * 0.05f
-                val dmy = -bodyH * 0.85f + midBendY * 0.4f + midWaveY
-                moveTo(dmx, dmy)
-                lineTo(dmx + bodyLen * 0.1f, dmy - bodyH * 0.45f)
-                lineTo(dmx - bodyLen * 0.15f, dmy + bodyH * 0.05f)
-                close()
-            }
+            fish.dorsalPath.reset()
+            val dmx = bodyLen * 0.05f
+            val dmy = -bodyH * 0.85f + midBendY * 0.4f + midWaveY
+            fish.dorsalPath.moveTo(dmx, dmy)
+            fish.dorsalPath.lineTo(dmx + bodyLen * 0.1f, dmy - bodyH * 0.45f)
+            fish.dorsalPath.lineTo(dmx - bodyLen * 0.15f, dmy + bodyH * 0.05f)
+            fish.dorsalPath.close()
             drawPath(
-                path = dorsalPath,
+                path = fish.dorsalPath,
                 color = TerrariumColors.TetraBody.copy(alpha = fish.alpha * 0.7f),
             )
 
@@ -655,6 +653,11 @@ class DataParticleSystem : Creature {
         private const val FOOD_LIFETIME = 5.0f   // seconds — longer visibility
         private const val FOOD_EAT_RADIUS = 0.03f
         private const val SCHOOL_ATTRACTOR_WEIGHT = 0.4f  // pull toward school center (weaker than food chase)
+
+        // Pre-computed squared radii — avoid sqrt in inner boids loop
+        private const val SEPARATION_RADIUS_SQ = TerrariumTiming.SEPARATION_RADIUS * TerrariumTiming.SEPARATION_RADIUS
+        private const val ALIGNMENT_RADIUS_SQ = TerrariumTiming.ALIGNMENT_RADIUS * TerrariumTiming.ALIGNMENT_RADIUS
+        private const val COHESION_RADIUS_SQ = TerrariumTiming.COHESION_RADIUS * TerrariumTiming.COHESION_RADIUS
 
         private val FOOD_COLORS = arrayOf(
             Color(0xFF00E5FF),   // cyan — tool data

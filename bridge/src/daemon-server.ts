@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'http';
 import { randomUUID } from 'crypto';
+import WebSocket from 'ws';
 import { UsageTracker } from './usage-tracker.js';
 import { StateMachine } from './state-machine.js';
 import { WsServer } from './ws-server.js';
@@ -14,6 +15,7 @@ import { OpenClawAdapter } from './adapters/openclaw.js';
 import {
   register as registerSession,
   deregister as deregisterSession,
+  listActive as listActiveSessions,
   findAvailablePort,
 } from './session-registry.js';
 import {
@@ -27,10 +29,116 @@ import {
   type ModelCatalogEntry,
 } from './types.js';
 import { DisplayMonitor } from './display-monitor.js';
+import { BridgeTimelineStore } from './timeline-store.js';
+import { BridgeLogStream } from './log-stream.js';
 import { enableDebugLog, debug } from './logger.js';
 
 function log(msg: string): void {
   process.stderr.write(msg + '\n');
+}
+
+/** Try to fetch usage via sibling bridge's GET /usage HTTP endpoint */
+async function fetchUsageViaHttp(siblings: { port: number }[]): Promise<ApiUsageData | null> {
+  for (const sibling of siblings) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`http://127.0.0.1:${sibling.port}/usage`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) continue;
+      const data = await res.json() as { status: string; usage: ApiUsageData | null; fetchedAt: number };
+      if (!data.usage) continue;
+
+      // Only accept data fetched within the last 5 minutes
+      const age = Date.now() - data.fetchedAt;
+      if (age > 5 * 60 * 1000) {
+        debug('daemon', `Sibling :${sibling.port} HTTP usage too stale (${Math.round(age / 1000)}s)`);
+        continue;
+      }
+
+      debug('daemon', `Relayed usage via HTTP from :${sibling.port} (age ${Math.round(age / 1000)}s)`);
+      return data.usage;
+    } catch {
+      // Sibling unreachable or /usage not available, try next
+    }
+  }
+  return null;
+}
+
+/** Connect to sibling bridge WS, grab first usage_update event, extract API fields */
+async function fetchUsageViaWs(siblings: { port: number }[]): Promise<ApiUsageData | null> {
+  for (const sibling of siblings) {
+    try {
+      const usage = await new Promise<ApiUsageData | null>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${sibling.port}`);
+        const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+
+        ws.on('message', (raw: Buffer | string) => {
+          try {
+            const evt = JSON.parse(raw.toString());
+            if (evt.type === 'usage_update' && evt.fiveHourPercent != null) {
+              clearTimeout(timer);
+              ws.close();
+              resolve({
+                fiveHourPercent: evt.fiveHourPercent ?? null,
+                fiveHourResetsAt: evt.fiveHourResetsAt ?? null,
+                sevenDayPercent: evt.sevenDayPercent ?? null,
+                sevenDayResetsAt: evt.sevenDayResetsAt ?? null,
+                extraUsageEnabled: evt.extraUsageEnabled ?? false,
+                extraUsageMonthlyLimit: evt.extraUsageMonthlyLimit ?? null,
+                extraUsageUsedCredits: evt.extraUsageUsedCredits ?? null,
+                extraUsageUtilization: evt.extraUsageUtilization ?? null,
+                inferredBillingType: null,
+              });
+            }
+          } catch { /* ignore parse errors */ }
+        });
+        ws.on('error', () => { clearTimeout(timer); reject(new Error('ws error')); });
+        ws.on('close', () => { clearTimeout(timer); reject(new Error('ws closed')); });
+      });
+
+      if (usage) {
+        debug('daemon', `Relayed usage via WS from :${sibling.port}`);
+        return usage;
+      }
+    } catch {
+      // WS connect/timeout failed, try next
+    }
+  }
+  return null;
+}
+
+/**
+ * Relay usage from sibling bridge.
+ * 1. HTTP /usage (fast, needs new bridge code)
+ * 2. WS usage_update (works with any bridge version)
+ * 3. Direct API only if NO siblings exist (single caller = no 429)
+ */
+async function fetchUsageRelayed(selfPort: number): Promise<ApiUsageData | null> {
+  const sessions = listActiveSessions();
+  const siblings = sessions.filter(
+    (s) => s.port !== selfPort && s.agentType !== 'daemon',
+  );
+
+  if (siblings.length > 0) {
+    // Try HTTP first (faster), then WS fallback
+    const httpResult = await fetchUsageViaHttp(siblings);
+    if (httpResult) return httpResult;
+
+    const wsResult = await fetchUsageViaWs(siblings);
+    if (wsResult) return wsResult;
+
+    // Siblings exist but both methods failed — do NOT call API directly (avoid 429)
+    debug('daemon', 'Siblings exist but relay failed — skipping direct API to avoid 429');
+    return null;
+  }
+
+  // No siblings — daemon is sole caller, safe to hit API directly
+  debug('daemon', 'No siblings found, using direct API');
+  return fetchUsageFromApi();
 }
 
 export interface DaemonOptions {
@@ -71,6 +179,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   const stateMachine = new StateMachine(usageTracker);
   const ollamaProbe = new OllamaProbe();
   const displayMonitor = new DisplayMonitor();
+
+  // Timeline components (for Android rich timeline relay)
+  const bridgeTimeline = new BridgeTimelineStore();
+  const bridgeLogStream = new BridgeLogStream();
 
   // Gateway adapter (dynamically created when Gateway is detected)
   let gatewayAdapter: OpenClawAdapter | null = null;
@@ -161,6 +273,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   const wsServer = new WsServer(httpServer);
   log(`[agentdeck] WebSocket server ready on port ${port}`);
 
+  // Wire log stream → timeline store → WS broadcast
+  bridgeLogStream.on('entry', (entry) => {
+    bridgeTimeline.addEntry(entry);
+  });
+  bridgeTimeline.onEntry((entry) => {
+    const evt: BridgeEvent = { type: 'timeline_event', entry };
+    wsServer.broadcast(evt);
+  });
+
   // Auth token + mDNS
   const authToken = getOrCreateToken();
   const wsUrl = getWsUrl(port);
@@ -203,8 +324,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       modelCatalog: cachedModelCatalog ?? undefined,
       pairingUrl: wsUrl,
       ollamaStatus: cachedOllamaStatus ?? undefined,
-      gatewayAvailable: cachedGatewayAvailable || undefined,
-      gatewayHasError: cachedGatewayHasError || undefined,
+      gatewayAvailable: cachedGatewayAvailable,
+      gatewayHasError: cachedGatewayHasError,
     };
     wsServer.broadcast(stateEvent);
 
@@ -249,7 +370,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
     // Daemon-specific commands
     if (cmd.type === 'query_usage') {
-      fetchUsageFromApi().then((apiUsage) => {
+      fetchUsageRelayed(port).then((apiUsage) => {
         if (apiUsage) {
           cachedApiUsage = apiUsage;
           lastApiFetchTime = Date.now();
@@ -281,8 +402,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       modelCatalog: cachedModelCatalog ?? undefined,
       pairingUrl: wsUrl,
       ollamaStatus: cachedOllamaStatus ?? undefined,
-      gatewayAvailable: cachedGatewayAvailable || undefined,
-      gatewayHasError: cachedGatewayHasError || undefined,
+      gatewayAvailable: cachedGatewayAvailable,
+      gatewayHasError: cachedGatewayHasError,
     };
     wsServer.sendTo(ws, stateEvent);
     wsServer.sendTo(ws, buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
@@ -297,6 +418,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // Display state
     wsServer.sendTo(ws, { type: 'display_state', displayOn: displayMonitor.isDisplayOn() } as BridgeEvent);
 
+    // Send timeline history to new client
+    const history = bridgeTimeline.getHistory();
+    if (history.length > 0) {
+      wsServer.sendTo(ws, { type: 'timeline_history', entries: history } as BridgeEvent);
+    }
+
     // Sessions list
     buildEnrichedSessionsList(sessionId, snapshot.state).then((sessions) => {
       wsServer.sendTo(ws, { type: 'sessions_list', sessions } as BridgeEvent);
@@ -306,7 +433,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     const cacheAge = Date.now() - lastApiFetchTime;
     const cacheStale = lastApiFetchTime > 0 && cacheAge > 5 * 60 * 1000;
     if (!cachedApiUsage || cacheStale) {
-      fetchUsageFromApi().then((apiUsage) => {
+      fetchUsageRelayed(port).then((apiUsage) => {
         if (apiUsage) {
           cachedApiUsage = apiUsage;
           lastApiFetchTime = Date.now();
@@ -349,6 +476,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         disconnectGatewayAdapter();
       }
     }
+    // Broadcast availability change to clients (even if adapter state didn't change)
+    if (status.available !== wasAvailable) {
+      stateMachine.emit('state_changed', stateMachine.getSnapshot());
+    }
   }, 5000);
   // Initial probe
   probeGateway().then((status) => {
@@ -359,17 +490,21 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   });
 
   // Gateway health check (30s cadence)
+  function updateGatewayHealth() {
+    checkGatewayHealth().then((hasError) => {
+      const changed = hasError !== cachedGatewayHasError;
+      cachedGatewayHasError = hasError;
+      if (changed) {
+        // Re-broadcast current state with updated gatewayHasError
+        stateMachine.emit('state_changed', stateMachine.getSnapshot());
+      }
+    });
+  }
   const healthInterval = setInterval(() => {
     if (!cachedGatewayAvailable) return;
-    checkGatewayHealth().then((hasError) => {
-      cachedGatewayHasError = hasError;
-    });
+    updateGatewayHealth();
   }, 30_000);
-  setTimeout(() => {
-    checkGatewayHealth().then((hasError) => {
-      cachedGatewayHasError = hasError;
-    });
-  }, 5000);
+  setTimeout(updateGatewayHealth, 5000);
 
   // Usage update (5s tick for session timer)
   const usageInterval = setInterval(() => {
@@ -379,10 +514,28 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
   }, 5000);
 
-  // API usage refresh (60s)
+  // Initial API usage fetch (10s delay — relay from sibling bridge, fallback to direct API)
+  const initialFetchTimer = setTimeout(() => {
+    fetchUsageRelayed(port).then((apiUsage) => {
+      if (apiUsage) {
+        cachedApiUsage = apiUsage;
+        lastApiFetchTime = Date.now();
+        oauthConnected = true;
+        if (apiUsage.inferredBillingType) {
+          stateMachine.inferBillingType(apiUsage.inferredBillingType);
+        }
+        const snapshot = stateMachine.getSnapshot();
+        wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected));
+      } else {
+        oauthConnected = hasOAuthToken();
+      }
+    });
+  }, 10_000);
+
+  // API usage refresh (90s — relay from sibling bridge, fallback to direct API)
   const apiUsageInterval = setInterval(() => {
     if (wsServer.getClientCount() > 0) {
-      fetchUsageFromApi().then((apiUsage) => {
+      fetchUsageRelayed(port).then((apiUsage) => {
         if (apiUsage) {
           cachedApiUsage = apiUsage;
           lastApiFetchTime = Date.now();
@@ -397,7 +550,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         }
       });
     }
-  }, 60_000);
+  }, 90_000);
 
   // Sessions list broadcast (10s)
   const sessionsListInterval = setInterval(() => {
@@ -451,9 +604,27 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         case 'activity':
           stateMachine.onPtyActivity();
           break;
+        case 'timeline': {
+          if (evt.entry) {
+            bridgeTimeline.addEntry(evt.entry);
+            if (evt.entry.type === 'tool_request') {
+              bridgeLogStream.trackToolRequest(evt.entry.raw);
+            }
+          }
+          break;
+        }
+
         case 'connection': {
           const connEvt: BridgeEvent = { type: 'connection', status: evt.status };
           wsServer.broadcast(connEvt);
+
+          // Start/stop log stream on gateway connect/disconnect
+          if (evt.status === 'connected') {
+            bridgeLogStream.start();
+          } else if (evt.status === 'disconnected') {
+            bridgeLogStream.stop();
+          }
+
           if (evt.status === 'connected') {
             log('[agentdeck] OpenClaw Gateway connected');
             // Force full state_update — StateMachine may not transition if already IDLE
@@ -471,6 +642,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
               modelCatalog: cachedModelCatalog ?? undefined,
               pairingUrl: wsUrl,
               ollamaStatus: cachedOllamaStatus ?? undefined,
+              gatewayAvailable: true,
+              gatewayHasError: cachedGatewayHasError,
             } as BridgeEvent);
             wsServer.broadcast(buildUsageEvent(snap, cachedApiUsage, oauthConnected));
           } else {
@@ -523,11 +696,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
     log('[agentdeck] Shutting down...');
     clearInterval(usageInterval);
+    clearTimeout(initialFetchTimer);
     clearInterval(apiUsageInterval);
     clearInterval(ollamaInterval);
     clearInterval(gatewayInterval);
     clearInterval(healthInterval);
     clearInterval(sessionsListInterval);
+    bridgeLogStream.stop();
     displayMonitor.stop();
     deregisterSession(sessionId);
     mdnsCleanup();
@@ -550,6 +725,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   process.on('uncaughtException', (err) => {
+    // mDNS "Service name already in use" is non-critical — don't crash
+    if (err?.message?.includes('already in use on the network')) {
+      log(`[agentdeck] mDNS conflict (ignored): ${err.message}`);
+      return;
+    }
     log(`[agentdeck] Uncaught exception: ${err}`);
     shutdown();
   });

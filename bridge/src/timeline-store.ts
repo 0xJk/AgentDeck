@@ -38,6 +38,20 @@ export class BridgeTimelineStore {
     }
   }
 
+  /** Update existing entry with same ts+type (1s tolerance), or add new */
+  upsertEntry(entry: TimelineEntry): void {
+    const tolerance = 1000;
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      const e = this.entries[i];
+      if (e.type === entry.type && Math.abs(e.ts - entry.ts) < tolerance) {
+        this.entries[i] = { ...e, raw: entry.raw, ...(entry.detail ? { detail: entry.detail } : {}) };
+        for (const cb of this.listeners) cb(this.entries[i]);
+        return;
+      }
+    }
+    this.addEntry(entry);
+  }
+
   onEntry(cb: EntryListener): void {
     this.listeners.push(cb);
   }

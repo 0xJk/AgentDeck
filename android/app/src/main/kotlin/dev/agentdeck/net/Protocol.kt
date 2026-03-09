@@ -211,6 +211,7 @@ fun BridgeTimelineEntry.toTimelineEntry() = dev.agentdeck.state.TimelineEntry(
     summary = raw,
     detail = detail,
     agentType = agentType,
+    status = status,
 )
 
 sealed class BridgeEvent {

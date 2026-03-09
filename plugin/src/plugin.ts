@@ -96,6 +96,7 @@ import {
   initItermDial,
   updateItermDialState,
 } from './actions/iterm-dial.js';
+import { timelineStore } from './timeline-store.js';
 
 // ---- Setup detection ----
 let setupRequired = false;
@@ -328,6 +329,16 @@ connMgr.on('voice_state', (ev: VoiceStateEvent) => {
   if (ev.state === 'idle' && ev.text) {
     setVoiceTranscription(ev.text);
   }
+});
+
+connMgr.on('timeline_event', (ev: { type: 'timeline_event'; entry: import('@agentdeck/shared').TimelineEntry }) => {
+  dlog('Plugin', `timeline_event from bridge: ${ev.entry.type} "${ev.entry.raw.slice(0, 60)}"`);
+  timelineStore.addEntry(ev.entry);
+});
+
+connMgr.on('timeline_history', (ev: { type: 'timeline_history'; entries: import('@agentdeck/shared').TimelineEntry[] }) => {
+  dlog('Plugin', `timeline_history from bridge: ${ev.entries.length} entries`);
+  timelineStore.mergeHistory(ev.entries);
 });
 
 connMgr.on('active_agent_changed', (agentType: string) => {

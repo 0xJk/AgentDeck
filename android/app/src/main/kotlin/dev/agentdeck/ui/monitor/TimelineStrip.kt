@@ -11,13 +11,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.agentdeck.state.GroupedEntry
 import dev.agentdeck.state.TimelineEntry
+import dev.agentdeck.state.groupConsecutive
 import dev.agentdeck.terrarium.TerrariumColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -25,7 +28,7 @@ import java.util.Locale
 
 /**
  * Bottom HUD strip — "TIMELINE"
- * Shows recent events with auto-scroll, type-based color prefix.
+ * Shows recent events with auto-scroll, type icons, grouping, status indicators.
  */
 @Composable
 fun TimelineStrip(
@@ -33,12 +36,13 @@ fun TimelineStrip(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
-    val recentEntries = entries.takeLast(20)
+    val recentEntries = entries.takeLast(30)
+    val grouped = remember(recentEntries) { groupConsecutive(recentEntries) }
 
     // Auto-scroll to bottom on new entries
-    LaunchedEffect(recentEntries.size) {
-        if (recentEntries.isNotEmpty()) {
-            listState.animateScrollToItem(recentEntries.lastIndex)
+    LaunchedEffect(grouped.size) {
+        if (grouped.isNotEmpty()) {
+            listState.animateScrollToItem(grouped.lastIndex)
         }
     }
 
@@ -56,7 +60,7 @@ fun TimelineStrip(
             modifier = Modifier.padding(bottom = 4.dp),
         )
 
-        if (recentEntries.isEmpty()) {
+        if (grouped.isEmpty()) {
             Text(
                 text = "No events yet",
                 color = TerrariumColors.HUDSubtext,
@@ -69,8 +73,8 @@ fun TimelineStrip(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
                 modifier = Modifier.weight(1f, fill = false),
             ) {
-                items(recentEntries) { entry ->
-                    TimelineRow(entry)
+                items(grouped) { group ->
+                    TimelineRow(group)
                 }
             }
         }
@@ -78,12 +82,16 @@ fun TimelineStrip(
 }
 
 @Composable
-private fun TimelineRow(entry: TimelineEntry) {
-    val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+private fun TimelineRow(group: GroupedEntry) {
+    val entry = group.entry
+    val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     val timeStr = timeFormat.format(Date(entry.timestamp))
     val agentTag = agentTag(entry.agentType)
-    val prefix = typePrefix(entry.type)
-    val prefixColor = typeColor(entry.type)
+    val icon = typeIcon(entry.type, entry.status)
+    val iconColor = typeColor(entry.type)
+    val isChatStart = entry.type == "chat_start"
+    val isChatEnd = entry.type == "chat_end"
+    val countSuffix = if (group.count > 1) " (×${group.count})" else ""
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -92,21 +100,22 @@ private fun TimelineRow(entry: TimelineEntry) {
         ) {
             Text(
                 text = timeStr,
-                color = TerrariumColors.HUDSubtext.copy(alpha = 0.6f),
+                color = TerrariumColors.HUDSubtext.copy(alpha = if (isChatEnd) 0.5f else 0.6f),
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
             )
             Text(
-                text = if (agentTag.isNotEmpty()) "$agentTag $prefix" else prefix,
-                color = prefixColor,
+                text = if (agentTag.isNotEmpty()) "$agentTag $icon" else icon,
+                color = iconColor.copy(alpha = if (isChatEnd) 0.7f else 1f),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
             )
             Text(
-                text = entry.summary,
-                color = TerrariumColors.HUDText,
-                fontSize = 10.sp,
+                text = entry.summary + countSuffix,
+                color = if (isChatEnd) TerrariumColors.HUDText.copy(alpha = 0.7f) else TerrariumColors.HUDText,
+                fontSize = if (isChatStart) 11.sp else 10.sp,
+                fontWeight = if (isChatStart) FontWeight.Bold else FontWeight.Normal,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -121,25 +130,31 @@ private fun TimelineRow(entry: TimelineEntry) {
                 fontFamily = FontFamily.Monospace,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 60.dp),
+                modifier = Modifier.padding(start = 68.dp),
             )
         }
     }
 }
 
-private fun typePrefix(type: String): String = when (type) {
-    "tool_request" -> "Tool"
-    "tool_resolved" -> "Tool"
-    "model_call" -> "Model"
-    "model_response" -> "Model"
-    "chat_response" -> "Response"
-    "memory_recall" -> "Memory"
-    "tool_exec" -> "Exec"
-    "chat_start" -> "Chat"
-    "chat_end" -> "Chat"
-    "error" -> "Error"
-    "state_change" -> "State"
-    else -> "?"
+private fun typeIcon(type: String, status: String? = null): String = when (type) {
+    "tool_request" -> when (status) {
+        "approved" -> "✓"
+        "denied" -> "✗"
+        else -> "⚠"
+    }
+    "tool_resolved" -> "✓"
+    "tool_exec" -> "▸"
+    "model_call" -> "◆"
+    "model_response" -> "◇"
+    "chat_start" -> "▶"
+    "chat_end" -> "■"
+    "chat_response" -> "◇"
+    "memory_recall" -> "⦻"
+    "error" -> "✗"
+    "scheduled" -> "⏰"
+    "user_action" -> "☞"
+    "state_change" -> "△"
+    else -> "·"
 }
 
 private fun typeColor(type: String) = when (type) {

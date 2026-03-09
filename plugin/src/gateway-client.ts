@@ -117,6 +117,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
   private chatToolCount = 0;
   private chatToolNames: string[] = [];
   private lastPrompt: string | null = null;
+  private accumulatedResponse = '';
 
   // Model catalog (fetched via CLI)
   private modelCatalog: ModelCatalogEntry[] | null = null;
@@ -131,6 +132,9 @@ export class GatewayClient extends EventEmitter implements AgentLink {
   private lastDeltaTime = 0;
   private static readonly STUCK_TIMEOUT_MS = 120_000; // 2 minutes
 
+  // When bridge is forwarding enriched timeline events, suppress local timeline generation
+  private _receivingBridgeTimeline = false;
+
   // Device identity
   private deviceIdentity: DeviceIdentity | null = null;
   private deviceAuthToken: DeviceAuthToken | null = null;
@@ -143,6 +147,12 @@ export class GatewayClient extends EventEmitter implements AgentLink {
   constructor(gatewayUrl?: string) {
     super();
     this.gatewayUrl = gatewayUrl || `ws://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`;
+  }
+
+  /** When bridge is connected and forwarding enriched timeline, suppress local timeline entries */
+  set receivingBridgeTimeline(v: boolean) {
+    this._receivingBridgeTimeline = v;
+    dlog(TAG, `receivingBridgeTimeline=${v}`);
   }
 
   // ===== AgentLink interface =====
@@ -557,20 +567,49 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             // Track last delta for stuck detection
             this.lastDeltaTime = Date.now();
 
-            // Capture prompt from Gateway-initiated tasks
-            const deltaPrompt = payload.prompt as string | undefined;
-            if (deltaPrompt && !this.lastPrompt) this.lastPrompt = deltaPrompt;
+            // Extract text from Gateway message structure:
+            // payload.message = { role: "assistant", content: [{ type: "text", text: "..." }] }
+            const deltaText = this.extractMessageText(payload);
 
             if (!this.chatStarted) {
               this.chatStarted = true;
               this.chatStartTime = Date.now();
               this.chatToolCount = 0;
               this.chatToolNames = [];
+              this.accumulatedResponse = deltaText || '';
               const prompt = this.lastPrompt
                 ? this.lastPrompt.length > 150 ? this.lastPrompt.slice(0, 147) + '...' : this.lastPrompt
-                : 'Task started';
-              this.addTimelineEntry({ ts: Date.now(), type: 'chat_start', raw: prompt });
+                : 'Prompt sent';
+              const promptDetail = this.lastPrompt && this.lastPrompt.length > 100
+                ? (this.lastPrompt.length > 1000 ? this.lastPrompt.slice(0, 997) + '...' : this.lastPrompt) : undefined;
+              this.addTimelineEntry({
+                ts: Date.now(), type: 'chat_start', raw: prompt,
+                ...(promptDetail ? { detail: promptDetail } : {}),
+              });
               this.startStatusPoll();
+            } else {
+              // Gateway always sends cumulative content — replace, never append
+              if (deltaText) {
+                this.accumulatedResponse = deltaText;
+              }
+
+              // Early topic extraction — upsert chat_start with topic from first response chunk
+              if (this.accumulatedResponse.length > 20 && this.accumulatedResponse.length < 200) {
+                if (!this.lastPrompt || this.lastPrompt === 'Prompt sent') {
+                  const firstLine = this.accumulatedResponse.split('\n')[0].trim();
+                  const topicHint = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+                  const cleaned = topicHint
+                    .replace(/^(완료했습니다\.\s*|네,?\s*|알겠습니다\.\s*|확인했습니다\.\s*)/i, '')
+                    .replace(/^(\*\*|#{1,3}\s*)/g, '')
+                    .trim();
+                  if (cleaned && !this._receivingBridgeTimeline) {
+                    const idx = timelineStore.findLastIndex('chat_start');
+                    if (idx >= 0) {
+                      timelineStore.updateEntryRaw(idx, cleaned);
+                    }
+                  }
+                }
+              }
             }
             this.state = State.PROCESSING;
             this.emitStateUpdate();
@@ -581,28 +620,30 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             this.chatStarted = false;
             this.lastDeltaTime = 0;
             const elapsed = this.chatStartTime > 0 ? Math.round((Date.now() - this.chatStartTime) / 1000) : 0;
+            const toolSummary = this.chatToolNames.length > 0
+              ? this.chatToolNames.join(', ')
+              : (this.chatToolCount > 0 ? `${this.chatToolCount} tool${this.chatToolCount > 1 ? 's' : ''}` : '');
+
+            // Extract response content for detail (folded into chat_end, no separate chat_response)
+            const finalText = this.extractMessageText(payload);
+            const responseContent = (finalText && finalText.length > 10 ? finalText : undefined)
+              || (this.accumulatedResponse.length > 10 ? this.accumulatedResponse : undefined);
+            const responseDetail = responseContent && responseContent.length > 10
+              ? (responseContent.length > 1000 ? responseContent.slice(0, 997) + '...' : responseContent)
+              : undefined;
+
+            // Emit chat_end summary (response content folded into detail)
             const parts: string[] = ['Completed'];
             if (elapsed > 0) parts.push(elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`);
-            if (this.chatToolNames.length > 0) {
-              parts.push(this.chatToolNames.join(', '));
-            } else if (this.chatToolCount > 0) {
-              parts.push(`${this.chatToolCount} tool${this.chatToolCount > 1 ? 's' : ''}`);
-            }
-            // Append prompt snippet for context
-            if (this.lastPrompt) {
-              const promptSnippet = this.lastPrompt.length > 80
-                ? this.lastPrompt.slice(0, 77) + '...'
-                : this.lastPrompt;
-              parts.push(promptSnippet);
-            }
-            this.addTimelineEntry({ ts: Date.now(), type: 'chat_end', raw: parts.join(' · ') });
-
-            // Attempt post-enrichment from history (async, best-effort)
-            const enrichStartTime = this.chatStartTime;
-            this.enrichTimelineFromHistory(enrichStartTime);
+            if (toolSummary) parts.push(toolSummary);
+            this.addTimelineEntry({
+              ts: Date.now(), type: 'chat_end', raw: parts.join(' · '),
+              ...(responseDetail ? { detail: responseDetail } : {}),
+            });
 
             this.currentRunId = null;
             this.lastPrompt = null;
+            this.accumulatedResponse = '';
             this.chatToolNames = [];
             this.stopStatusPoll();
             this.state = State.IDLE;
@@ -614,18 +655,14 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             this.chatStarted = false;
             this.lastDeltaTime = 0;
             const elapsed = this.chatStartTime > 0 ? Math.round((Date.now() - this.chatStartTime) / 1000) : 0;
+            const abortToolSummary = this.chatToolNames.length > 0 ? this.chatToolNames.join(', ') : '';
             const abortParts: string[] = ['Aborted'];
             if (elapsed > 0) abortParts.push(`after ${elapsed}s`);
-            if (this.chatToolNames.length > 0) abortParts.push(this.chatToolNames.join(', '));
-            if (this.lastPrompt) {
-              const abortSnippet = this.lastPrompt.length > 80
-                ? this.lastPrompt.slice(0, 77) + '...'
-                : this.lastPrompt;
-              abortParts.push(abortSnippet);
-            }
+            if (abortToolSummary) abortParts.push(abortToolSummary);
             this.addTimelineEntry({ ts: Date.now(), type: 'chat_end', raw: abortParts.join(' · ') });
             this.currentRunId = null;
             this.lastPrompt = null;
+            this.accumulatedResponse = '';
             this.chatToolNames = [];
             this.stopStatusPoll();
             this.state = State.IDLE;
@@ -639,6 +676,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             this.addTimelineEntry({ ts: Date.now(), type: 'error', raw: (payload.errorMessage as string) || 'Error' });
             this.currentRunId = null;
             this.lastPrompt = null;
+            this.accumulatedResponse = '';
             this.chatToolNames = [];
             dlog(TAG, `Chat error: ${payload.errorMessage || 'unknown'}`);
             this.stopStatusPoll();
@@ -1057,126 +1095,23 @@ export class GatewayClient extends EventEmitter implements AgentLink {
   // ===== Private: Timeline =====
 
   /**
-   * Post-enrich the latest chat_end entry with tool details from events.history.
-   * Best-effort — silently ignored if Gateway doesn't support it.
+   * Extract text from Gateway chat message structure.
+   * Format: payload.message = { role, content: [{ type: "text", text: "..." }], timestamp }
    */
-  private async enrichTimelineFromHistory(since: number): Promise<void> {
-    try {
-      const result = await this.rpcCall('events.history', { since });
-      if (!result || typeof result !== 'object') return;
-
-      const resp = result as {
-        events?: Array<{
-          ts: number; type: string; raw?: string; command?: string; tool?: string;
-          content?: string; text?: string; response?: string; message?: string; summary?: string;
-        }>
-      };
-      if (!resp.events || resp.events.length === 0) return;
-
-      // Diagnostic: log event structure for response text discovery
-      const sample = resp.events[0] as Record<string, unknown>;
-      dlog(TAG, `enrichTimeline: ${resp.events.length} events, keys=${Object.keys(sample).join(',')}, types=${resp.events.map(e => e.type).join(',')}`);
-      const withContent = resp.events.find(e => {
-        const a = e as Record<string, unknown>;
-        return a.content || a.text || a.response || a.message || a.summary;
-      });
-      if (withContent) {
-        dlog(TAG, `enrichTimeline: content sample=${JSON.stringify(withContent).slice(0, 300)}`);
-      }
-
-      // Extract tool names from history events
-      const toolNames: string[] = [];
-      const toolCounts = new Map<string, number>();
-      for (const ev of resp.events) {
-        const toolName = ev.tool || (ev.command ? ev.command.split(/[\s(/:]/)[0] : null);
-        if (toolName) {
-          toolCounts.set(toolName, (toolCounts.get(toolName) || 0) + 1);
-          if (!toolNames.includes(toolName)) {
-            toolNames.push(toolName);
-          }
-        }
-      }
-
-      if (toolNames.length === 0) return;
-
-      // Build enriched tool summary: "Read(3), Bash(2), Edit(1)"
-      const toolSummary = toolNames
-        .map((name) => {
-          const count = toolCounts.get(name) || 1;
-          return count > 1 ? `${name}(${count})` : name;
-        })
-        .join(', ');
-
-      // Find the last chat_end entry and update its raw text
-      const idx = timelineStore.findLastIndex('chat_end');
-      if (idx < 0) return;
-
-      const groups = timelineStore.getGroupedDisplay();
-      // Reconstruct: find the grouped entry for this index to get current raw
-      // Simpler: just read the raw from the entry via getGroupedDisplay or direct access
-      // We'll patch the raw by appending/replacing tool info
-      const currentEntry = groups.find(
-        (g) => g.entry.type === 'chat_end' && g.lastTs >= since,
-      );
-      if (!currentEntry) return;
-
-      const currentRaw = currentEntry.entry.raw;
-      // If already has tool info from chatToolNames, replace; otherwise append
-      const parts = currentRaw.split(' · ');
-      // Parts: ["Completed", "42s", maybe tool names, maybe prompt]
-      // Insert tool summary after the time part (index 1 or 2)
-      const enrichedParts: string[] = [];
-      let toolInserted = false;
-      for (const part of parts) {
-        // Skip any existing weak tool info (e.g. "2 tools")
-        if (/^\d+ tools?$/.test(part)) {
-          enrichedParts.push(toolSummary);
-          toolInserted = true;
-        } else {
-          enrichedParts.push(part);
-        }
-      }
-      if (!toolInserted) {
-        // Insert after time (position 2) or after "Completed" (position 1)
-        const insertIdx = enrichedParts.length >= 2 ? 2 : 1;
-        enrichedParts.splice(insertIdx, 0, toolSummary);
-      }
-
-      const newRaw = enrichedParts.join(' · ');
-      if (newRaw !== currentRaw) {
-        timelineStore.updateEntryRaw(idx, newRaw);
-        dlog(TAG, `Timeline enriched: ${newRaw}`);
-      }
-
-      // Extract response text snippet from history events
-      let responseSnippet: string | null = null;
-      for (const ev of resp.events) {
-        const a = ev as Record<string, unknown>;
-        const text = (a.content ?? a.text ?? a.response ?? a.message ?? a.summary) as string | undefined;
-        if (text && typeof text === 'string' && text.length > 5 && ev.type !== 'tool_request') {
-          responseSnippet = text.length > 200 ? text.slice(0, 197) + '...' : text;
-          break;
-        }
-      }
-      if (responseSnippet) {
-        // Dedup: skip if a recent chat_response already exists (e.g. from log-stream or prior enrichment)
-        const lastResponseIdx = timelineStore.findLastIndex('chat_response');
-        const lastResponseTs = lastResponseIdx >= 0 ? timelineStore.getGroupedDisplay()
-          .find(g => g.entry.type === 'chat_response')?.lastTs ?? 0 : 0;
-        if (lastResponseTs === 0 || Date.now() - lastResponseTs > 5_000) {
-          this.addTimelineEntry({
-            ts: Date.now() - 1,  // just before chat_end
-            type: 'chat_response',
-            raw: responseSnippet,
-          });
-        }
-      }
-    } catch {
-      // Gateway doesn't support events.history — silently ignore
-    }
+  private extractMessageText(payload: Record<string, unknown>): string | undefined {
+    const msg = payload.message as Record<string, unknown> | undefined;
+    if (!msg) return undefined;
+    const content = msg.content as Array<{ type: string; text: string }> | undefined;
+    if (!content || !Array.isArray(content)) return undefined;
+    const texts = content
+      .filter(c => c.type === 'text' && c.text)
+      .map(c => c.text);
+    return texts.length > 0 ? texts.join('') : undefined;
   }
 
   private addTimelineEntry(entry: TimelineEntry): void {
+    // When bridge is forwarding enriched timeline, suppress local entries to avoid duplicates
+    if (this._receivingBridgeTimeline) return;
     timelineStore.addEntry(entry);
   }
 

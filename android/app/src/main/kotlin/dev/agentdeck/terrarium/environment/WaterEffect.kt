@@ -24,6 +24,8 @@ class WaterEffect {
 
     private var envState by mutableStateOf(EnvironmentVisualState.CALM)
     private var time by mutableFloatStateOf(0f)
+    // Pre-allocated Path objects for caustic lines — 2 families × LINE_COUNT each
+    private val causticPaths = Array(LINE_COUNT * 2) { Path() }
     fun setState(state: EnvironmentVisualState) {
         envState = state
     }
@@ -46,8 +48,8 @@ class WaterEffect {
         }
 
         // Draw two overlapping caustic layers with different phases
-        drawCausticLayer(scope, w, h, alpha, phase = 0f)
-        drawCausticLayer(scope, w, h, alpha * 0.6f, phase = PI.toFloat() * 0.7f)
+        drawCausticLayer(scope, w, h, alpha, phase = 0f, familyOffset = 0)
+        drawCausticLayer(scope, w, h, alpha * 0.6f, phase = PI.toFloat() * 0.7f, familyOffset = LINE_COUNT)
     }
 
     /**
@@ -57,6 +59,7 @@ class WaterEffect {
      */
     private fun drawCausticLayer(
         scope: DrawScope, w: Float, h: Float, alpha: Float, phase: Float,
+        familyOffset: Int,
     ) {
         val twoPi = 2f * PI.toFloat()
         val spacing = w / LINE_COUNT
@@ -80,7 +83,7 @@ class WaterEffect {
         for (i in 0 until LINE_COUNT) {
             val lineOffset = (i - LINE_COUNT / 2) * spacing
             val linePhase = phase + i * 0.7f
-            val path = Path()
+            val path = causticPaths[familyOffset + i].also { it.reset() }
             var t = -extent
             var first = true
             while (t <= w + extent) {
@@ -102,7 +105,7 @@ class WaterEffect {
         for (i in 0 until LINE_COUNT) {
             val lineOffset = (i - LINE_COUNT / 2) * spacing * 1.2f
             val linePhase = phase + i * 0.9f + 2.0f
-            val path = Path()
+            val path = causticPaths[familyOffset + i].also { it.reset() }
             var t = -extent
             var first = true
             while (t <= diag + extent) {

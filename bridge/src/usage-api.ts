@@ -49,15 +49,28 @@ export async function fetchUsageFromApi(): Promise<ApiUsageData | null> {
   }
 
   try {
-    const res = await fetch(USAGE_API_URL, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'anthropic-beta': 'oauth-2025-04-20',
-        'Accept': 'application/json',
-      },
+    const headers = {
+      'Authorization': `Bearer ${token}`,
+      'anthropic-beta': 'oauth-2025-04-20',
+      'Accept': 'application/json',
+    };
+
+    let res = await fetch(USAGE_API_URL, {
+      method: 'GET', headers,
       signal: AbortSignal.timeout(10000),
     });
+
+    // Rate limited — retry once after Retry-After (min 30s, max 60s)
+    if (res.status === 429) {
+      const raw = parseInt(res.headers.get('retry-after') || '', 10);
+      const retryAfter = Math.max(isNaN(raw) ? 30 : raw, 30);
+      debug('UsageAPI', `Rate limited (429), retrying in ${retryAfter}s...`);
+      await new Promise(r => setTimeout(r, Math.min(retryAfter, 60) * 1000));
+      res = await fetch(USAGE_API_URL, {
+        method: 'GET', headers,
+        signal: AbortSignal.timeout(10000),
+      });
+    }
 
     if (!res.ok) {
       debug('UsageAPI', `API returned ${res.status}: ${res.statusText}`);

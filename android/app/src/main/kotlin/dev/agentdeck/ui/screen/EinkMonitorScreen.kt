@@ -213,8 +213,14 @@ fun EinkMonitorScreen(
 
                     HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-                    // Context + Status row (only when active)
-                    if (isActive) {
+                    // Context + Status row
+                    // Show split layout only when there's context to display
+                    val hasContext = isActive && (
+                        state.currentTool != null ||
+                        state.options.isNotEmpty() ||
+                        timelineEntries.any { it.type == "tool_request" }
+                    )
+                    if (hasContext) {
                         EinkRefreshZone(
                             mode = RefreshMode.A2,
                             debounceMs = 200,
@@ -239,12 +245,12 @@ fun EinkMonitorScreen(
                             }
                         }
                     } else {
-                        // IDLE: status row
+                        // No context or IDLE: status full-width (13%)
                         EinkRefreshZone(
-                            mode = RefreshMode.DU,
-                            debounceMs = 2000,
+                            mode = if (isActive) RefreshMode.A2 else RefreshMode.DU,
+                            debounceMs = if (isActive) 200 else 2000,
                             triggerKey = listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.modelCatalog?.size),
-                            modifier = Modifier.weight(0.12f).fillMaxWidth(),
+                            modifier = Modifier.weight(0.13f).fillMaxWidth(),
                         ) {
                             EinkStatusCompact(state = state)
                         }
@@ -257,7 +263,7 @@ fun EinkMonitorScreen(
                         mode = RefreshMode.A2,
                         debounceMs = 300,
                         triggerKey = timelineEntries.size,
-                        modifier = Modifier.weight(0.38f).fillMaxWidth(),
+                        modifier = Modifier.weight(0.37f).fillMaxWidth(),
                     ) {
                         EinkEventLog(entries = timelineEntries)
                     }

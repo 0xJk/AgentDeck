@@ -52,14 +52,14 @@ fun TankStatusPanel(
     Column(
         modifier = modifier
             .background(TerrariumColors.HUDBg, RoundedCornerShape(8.dp))
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         // Header
         Text(
             text = "\u223F TANK STATUS",
             color = TerrariumColors.HUDSubtext,
-            fontSize = 11.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
         )
@@ -130,7 +130,7 @@ private fun WaterGauge(
         Text(
             text = label,
             color = TerrariumColors.HUDSubtext,
-            fontSize = 10.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
         )
@@ -138,7 +138,7 @@ private fun WaterGauge(
         // Gauge body — glass container with water fill
         Box(
             modifier = Modifier
-                .size(width = 56.dp, height = 56.dp)
+                .size(width = 76.dp, height = 76.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(Color(0x20FFFFFF)),
             contentAlignment = Alignment.Center,
@@ -156,7 +156,7 @@ private fun WaterGauge(
             Text(
                 text = "${pct.toInt()}%",
                 color = TerrariumColors.HUDText,
-                fontSize = 13.sp,
+                fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
                 textAlign = TextAlign.Center,
@@ -168,7 +168,7 @@ private fun WaterGauge(
             Text(
                 text = "\u27F2 $resetTime",
                 color = TerrariumColors.HUDSubtext.copy(alpha = 0.7f),
-                fontSize = 9.sp,
+                fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
             )
         }
@@ -189,7 +189,7 @@ private fun ModelInfoSection(
         Text(
             text = "MODEL",
             color = TerrariumColors.HUDSubtext,
-            fontSize = 10.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
         )
@@ -199,7 +199,7 @@ private fun ModelInfoSection(
             Text(
                 text = modelName,
                 color = TerrariumColors.HUDText,
-                fontSize = 12.sp,
+                fontSize = 13.sp,
                 fontFamily = FontFamily.Monospace,
             )
         }
@@ -212,7 +212,7 @@ private fun ModelInfoSection(
             Text(
                 text = otherModels.joinToString(" \u00B7 "),
                 color = TerrariumColors.HUDSubtext,
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
             )
         }
@@ -230,7 +230,7 @@ private fun OllamaInfoSection(ollamaStatus: OllamaStatus?) {
         Text(
             text = "OLLAMA",
             color = TerrariumColors.HUDSubtext,
-            fontSize = 10.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
         )
@@ -247,14 +247,14 @@ private fun OllamaInfoSection(ollamaStatus: OllamaStatus?) {
             ) {
                 Spacer(
                     modifier = Modifier
-                        .size(5.dp)
+                        .size(6.dp)
                         .clip(CircleShape)
                         .background(TerrariumColors.LEDGreen),
                 )
                 Text(
                     text = "${model.name}$vramText",
                     color = TerrariumColors.HUDText,
-                    fontSize = 10.sp,
+                    fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                 )
             }
@@ -299,14 +299,14 @@ private fun ConnectionDots(
                     // LED dot
                     Spacer(
                         modifier = Modifier
-                            .size(6.dp)
+                            .size(7.dp)
                             .clip(CircleShape)
                             .background(color),
                     )
                     Text(
                         text = label,
                         color = TerrariumColors.HUDSubtext,
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                     )
                 }

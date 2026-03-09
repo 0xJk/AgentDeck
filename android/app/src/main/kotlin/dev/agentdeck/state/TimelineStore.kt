@@ -12,7 +12,55 @@ data class TimelineEntry(
     val summary: String,
     val detail: String? = null,
     val agentType: String? = null,
+    val status: String? = null,
 )
+
+data class GroupedEntry(
+    val entry: TimelineEntry,
+    val count: Int = 1,
+    val lastTs: Long = entry.timestamp,
+)
+
+/**
+ * Group consecutive entries of the same type+summary within a time window.
+ * - tool_request: 10s window, group by type only (summary varies)
+ * - chat_end: group by type only, keep latest raw
+ * - others: 60s window, same type+summary
+ */
+fun groupConsecutive(entries: List<TimelineEntry>): List<GroupedEntry> {
+    if (entries.isEmpty()) return emptyList()
+    val result = mutableListOf<GroupedEntry>()
+    for (entry in entries) {
+        val last = result.lastOrNull()
+        if (last != null && canGroup(last, entry)) {
+            result[result.lastIndex] = GroupedEntry(
+                entry = entry, // keep latest entry
+                count = last.count + 1,
+                lastTs = entry.timestamp,
+            )
+        } else {
+            result.add(GroupedEntry(entry))
+        }
+    }
+    return result
+}
+
+private fun canGroup(group: GroupedEntry, entry: TimelineEntry): Boolean {
+    val prev = group.entry
+    if (prev.type != entry.type) return false
+    val window = when (entry.type) {
+        "tool_request" -> 10_000L
+        "chat_end" -> 60_000L
+        else -> 60_000L
+    }
+    if (entry.timestamp - group.lastTs > window) return false
+    // chat_end: group by type only (keep latest summary)
+    if (entry.type == "chat_end") return true
+    // tool_request: group by type only
+    if (entry.type == "tool_request") return true
+    // others: same summary
+    return prev.summary == entry.summary
+}
 
 class TimelineStore private constructor() {
 

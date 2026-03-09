@@ -77,6 +77,8 @@ export interface AdapterConnectionEvent {
 export interface AdapterTimelineEvent {
   source: 'timeline';
   entry: TimelineEntry;
+  /** If true, update existing entry with same ts+type instead of adding new */
+  upsert?: boolean;
 }
 
 export type AdapterEvent =

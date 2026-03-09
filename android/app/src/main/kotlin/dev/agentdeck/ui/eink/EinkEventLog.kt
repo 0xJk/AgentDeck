@@ -10,18 +10,22 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.agentdeck.state.GroupedEntry
 import dev.agentdeck.state.TimelineEntry
+import dev.agentdeck.state.groupConsecutive
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
  * Compact event log for e-ink center column.
- * Shows recent 8 events in "HH:MM [T] summary" monospace format.
+ * Shows recent 14 events with type icons and grouping, "HH:MM ▶ summary" monospace format.
  */
 @Composable
 fun EinkEventLog(
@@ -29,7 +33,8 @@ fun EinkEventLog(
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    val recent = entries.takeLast(8)
+    val recent = entries.takeLast(20)
+    val grouped = remember(recent) { groupConsecutive(recent).takeLast(14) }
 
     // Auto-scroll to bottom when new entries arrive
     LaunchedEffect(entries.size) {
@@ -42,7 +47,7 @@ fun EinkEventLog(
             .padding(8.dp)
             .verticalScroll(scrollState),
     ) {
-        if (recent.isEmpty()) {
+        if (grouped.isEmpty()) {
             Text(
                 text = "No events yet",
                 style = MaterialTheme.typography.bodySmall.copy(
@@ -51,22 +56,41 @@ fun EinkEventLog(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            recent.forEach { entry ->
+            grouped.forEach { group ->
+                val entry = group.entry
                 val time = formatTimeHHMM(entry.timestamp)
                 val agentTag = agentTag(entry.agentType)
-                val typeTag = typeTag(entry.type)
-                val line = "$time $agentTag$typeTag ${entry.summary}"
+                val icon = typeIcon(entry.type, entry.status)
+                val countSuffix = if (group.count > 1) " (×${group.count})" else ""
+                val line = "$time $agentTag$icon ${entry.summary}$countSuffix"
+                val hasDetail = !entry.detail.isNullOrEmpty() && entry.detail != entry.summary
                 Text(
                     text = line,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
                         lineHeight = 17.sp,
+                        fontWeight = if (entry.type == "chat_start") FontWeight.Bold else FontWeight.Normal,
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
+                    maxLines = if (hasDetail) 2 else 1,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (hasDetail) {
+                    Text(
+                        text = "  ${entry.detail}",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            lineHeight = 14.sp,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 4.dp),
+                    )
+                }
             }
         }
     }
@@ -78,18 +102,25 @@ private fun formatTimeHHMM(timestamp: Long): String {
     return timeFormat.format(Date(timestamp))
 }
 
-private fun typeTag(type: String): String = when (type) {
-    "tool_request" -> "Tool"
-    "tool_resolved" -> "Tool"
-    "model_call" -> "Model"
-    "model_response" -> "Model"
-    "chat_response" -> "Response"
-    "chat_start" -> "Chat"
-    "chat_end" -> "Chat"
-    "error" -> "Error"
-    "memory_recall" -> "Memory"
-    "tool_exec" -> "Exec"
-    else -> "State"
+private fun typeIcon(type: String, status: String? = null): String = when (type) {
+    "tool_request" -> when (status) {
+        "approved" -> "✓"
+        "denied" -> "✗"
+        else -> "⚠"
+    }
+    "tool_resolved" -> "✓"
+    "tool_exec" -> "▸"
+    "model_call" -> "◆"
+    "model_response" -> "◇"
+    "chat_start" -> "▶"
+    "chat_end" -> "■"
+    "chat_response" -> "◇"
+    "memory_recall" -> "⦻"
+    "error" -> "✗"
+    "scheduled" -> "⏰"
+    "user_action" -> "☞"
+    "state_change" -> "△"
+    else -> "·"
 }
 
 private fun agentTag(agentType: String?): String = when (agentType) {

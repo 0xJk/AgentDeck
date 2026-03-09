@@ -377,6 +377,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     hookServer = adapter.hookServer;
     hookServer.setMeta({ agentType, projectName });
     hookServer.setVoiceManager(voiceManager);
+    hookServer.onApiUsage(() => ({ usage: cachedApiUsage, fetchedAt: lastApiFetchTime }));
   }
   const broadcastSse = (event: BridgeEvent) => hookServer?.broadcastSse(event);
 
@@ -484,7 +485,11 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
 
       case 'timeline': {
         if (bridgeTimeline) {
-          bridgeTimeline.addEntry(evt.entry);
+          if (evt.upsert) {
+            bridgeTimeline.upsertEntry(evt.entry);
+          } else {
+            bridgeTimeline.addEntry(evt.entry);
+          }
           // Dedup: track tool_request in log stream
           if (evt.entry.type === 'tool_request' && bridgeLogStream) {
             bridgeLogStream.trackToolRequest(evt.entry.raw);
@@ -656,8 +661,8 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       remoteUrl: snapshot.remoteUrl ?? undefined,
       pairingUrl: wsUrl,
       ollamaStatus: cachedOllamaStatus ?? undefined,
-      gatewayAvailable: cachedGatewayAvailable || undefined,
-      gatewayHasError: cachedGatewayHasError || undefined,
+      gatewayAvailable: cachedGatewayAvailable,
+      gatewayHasError: cachedGatewayHasError,
     };
     wsServer.broadcast(stateEvent);
     broadcastSse(stateEvent);
@@ -916,8 +921,8 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       modelCatalog: cachedModelCatalog ?? undefined,
       pairingUrl: wsUrl,
       ollamaStatus: cachedOllamaStatus ?? undefined,
-      gatewayAvailable: cachedGatewayAvailable || undefined,
-      gatewayHasError: cachedGatewayHasError || undefined,
+      gatewayAvailable: cachedGatewayAvailable,
+      gatewayHasError: cachedGatewayHasError,
     };
     wsServer.sendTo(ws, stateEvent);
 

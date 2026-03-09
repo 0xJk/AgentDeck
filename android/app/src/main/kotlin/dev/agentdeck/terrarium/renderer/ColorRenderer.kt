@@ -7,7 +7,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.nativeCanvas
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.terrarium.TerrariumState
 import dev.agentdeck.terrarium.EnvironmentVisualState
@@ -74,9 +73,6 @@ fun ColorTerrariumCanvas(
         // Layer 10: Bubbles (on top of creatures)
         bubbleSystem.draw(this)
 
-        // Layer 10.5: Glass-etched logo (on glass surface, above water contents)
-        drawGlassLogo(w, h)
-
         // Layer 11: Error tint overlay
         if (state.hasError) {
             drawRect(
@@ -85,30 +81,6 @@ fun ColorTerrariumCanvas(
             )
         }
     }
-}
-
-/** Glass-etched "AgentDeck" logo — subtle engraving on the tank glass surface, centered top. */
-private fun DrawScope.drawGlassLogo(w: Float, h: Float) {
-    val canvas = drawContext.canvas.nativeCanvas
-    val fontSize = h * 0.056f
-    val x = w * 0.5f
-    val y = h * 0.06f
-
-    val paint = android.graphics.Paint().apply {
-        isAntiAlias = true
-        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-        textSize = fontSize
-        letterSpacing = 0.08f
-        textAlign = android.graphics.Paint.Align.CENTER
-    }
-
-    // Shadow pass — depth effect (dark offset)
-    paint.color = android.graphics.Color.argb(20, 0, 0, 0) // ~8% black
-    canvas.drawText("AgentDeck", x + 1f, y + 1f, paint)
-
-    // Main pass — etched glass text
-    paint.color = android.graphics.Color.argb(46, 255, 255, 255) // ~18% white
-    canvas.drawText("AgentDeck", x, y, paint)
 }
 
 /** Gradient background — shifts with environment state. */

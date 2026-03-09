@@ -1,6 +1,7 @@
 package dev.agentdeck.service
 
 import android.content.ContentResolver
+import android.content.Context
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
@@ -14,8 +15,10 @@ import android.util.Log
  *
  * E-ink devices: Turns off frontlight via sysfs (/sys/class/backlight/{warm,white}).
  * Screen content remains visible in ambient light; system stays awake.
+ * Saved frontlight values are persisted to disk so they survive app restarts.
  */
 class BrightnessController(
+    context: Context,
     private val contentResolver: ContentResolver,
     private val powerManager: PowerManager,
     private val isEink: Boolean,
@@ -23,17 +26,44 @@ class BrightnessController(
     companion object {
         private const val TAG = "BrightnessController"
         private const val LCD_OFF_TIMEOUT_MS = 2_000
+        private const val PREFS_NAME = "brightness_controller"
+        private const val PREF_DIMMED = "is_dimmed"
+        private const val PREF_FRONTLIGHT_PREFIX = "frontlight_"
         private val FRONTLIGHT_PATHS = listOf(
             "/sys/class/backlight/warm/brightness",
             "/sys/class/backlight/white/brightness",
         )
     }
 
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private var isDimmed = false
     private var savedBrightness: Int? = null
     private var savedBrightnessMode: Int? = null
     private var savedScreenOffTimeout: Int? = null
     private var savedFrontlight: Map<String, Int>? = null
+
+    init {
+        // Recover from crash/restart while dimmed — restore frontlight from disk
+        if (isEink && prefs.getBoolean(PREF_DIMMED, false)) {
+            val saved = mutableMapOf<String, Int>()
+            for (path in FRONTLIGHT_PATHS) {
+                val key = PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/')
+                val value = prefs.getInt(key, -1)
+                if (value >= 0) saved[path] = value
+            }
+            if (saved.isNotEmpty()) {
+                Log.i(TAG, "Recovering frontlight from previous crash: $saved")
+                saved.forEach { (path, value) ->
+                    try {
+                        java.io.File(path).writeText(value.toString())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Cannot recover $path: ${e.message}")
+                    }
+                }
+            }
+            prefs.edit().putBoolean(PREF_DIMMED, false).apply()
+        }
+    }
 
     fun dim() {
         if (isDimmed) return
@@ -150,6 +180,7 @@ class BrightnessController(
         for (path in FRONTLIGHT_PATHS) {
             try {
                 val current = java.io.File(path).readText().trim().toIntOrNull() ?: continue
+                if (current == 0) continue // already off, don't save 0 as restore target
                 saved[path] = current
                 java.io.File(path).writeText("0")
             } catch (e: Exception) {
@@ -157,18 +188,42 @@ class BrightnessController(
             }
         }
         savedFrontlight = saved.ifEmpty { null }
+        // Persist to disk for crash recovery
+        prefs.edit().apply {
+            putBoolean(PREF_DIMMED, true)
+            saved.forEach { (path, value) ->
+                putInt(PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/'), value)
+            }
+        }.apply()
         Log.i(TAG, "E-ink dim: frontlight ${saved.entries.joinToString { "${it.key.substringAfterLast('/')}=${it.value}→0" }}")
     }
 
     private fun restoreEink() {
-        savedFrontlight?.forEach { (path, value) ->
+        val toRestore = savedFrontlight ?: run {
+            // Fallback: load from disk (crash recovery path)
+            val fromDisk = mutableMapOf<String, Int>()
+            for (path in FRONTLIGHT_PATHS) {
+                val key = PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/')
+                val value = prefs.getInt(key, -1)
+                if (value > 0) fromDisk[path] = value
+            }
+            fromDisk.ifEmpty { null }
+        }
+        toRestore?.forEach { (path, value) ->
             try {
                 java.io.File(path).writeText(value.toString())
             } catch (e: Exception) {
                 Log.w(TAG, "Cannot restore $path: ${e.message}")
             }
         }
-        Log.i(TAG, "E-ink restored: frontlight ${savedFrontlight?.entries?.joinToString { "${it.key.substringAfterLast('/')}=${it.value}" } ?: "none"}")
+        // Clear disk state
+        prefs.edit().apply {
+            putBoolean(PREF_DIMMED, false)
+            FRONTLIGHT_PATHS.forEach { path ->
+                remove(PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/'))
+            }
+        }.apply()
+        Log.i(TAG, "E-ink restored: frontlight ${toRestore?.entries?.joinToString { "${it.key.substringAfterLast('/')}=${it.value}" } ?: "none"}")
         savedFrontlight = null
     }
 }

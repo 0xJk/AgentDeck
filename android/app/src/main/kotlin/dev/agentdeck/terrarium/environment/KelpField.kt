@@ -37,6 +37,8 @@ class KelpField {
     )
 
     private var time by mutableFloatStateOf(0f)
+    // Pre-allocated Path objects — one per strand, reused every frame
+    private val strandPaths = Array(strands.size) { Path() }
 
     fun update(dt: Float) {
         time += dt * TerrariumTiming.KELP_SWAY_SPEED
@@ -46,28 +48,25 @@ class KelpField {
         val w = scope.size.width
         val h = scope.size.height
 
-        for (strand in strands) {
-            drawStrand(scope, strand, w, h)
+        for (i in strands.indices) {
+            drawStrand(scope, strands[i], w, h, strandPaths[i])
         }
     }
 
-    private fun drawStrand(scope: DrawScope, strand: KelpStrand, w: Float, h: Float) {
+    private fun drawStrand(scope: DrawScope, strand: KelpStrand, w: Float, h: Float, path: Path) {
         val baseX = strand.baseX * w
         val baseY = h * (1f - TerrariumLayout.SAND_HEIGHT_FRACTION) // sand top line (rock height)
         val topY = baseY - strand.height * h
         val segHeight = (baseY - topY) / strand.segments
 
-        val path = Path().apply {
-            moveTo(baseX, baseY)
-
-            for (i in 0 until strand.segments) {
-                val sway = sin(time + strand.phase + i * 0.8f) * w * 0.015f * (i + 1)
-                val y1 = baseY - (i + 0.5f) * segHeight
-                val y2 = baseY - (i + 1f) * segHeight
-                val cpX = baseX + sway
-
-                quadraticBezierTo(cpX, y1, baseX + sway * 0.6f, y2)
-            }
+        path.reset()
+        path.moveTo(baseX, baseY)
+        for (i in 0 until strand.segments) {
+            val sway = sin(time + strand.phase + i * 0.8f) * w * 0.015f * (i + 1)
+            val y1 = baseY - (i + 0.5f) * segHeight
+            val y2 = baseY - (i + 1f) * segHeight
+            val cpX = baseX + sway
+            path.quadraticBezierTo(cpX, y1, baseX + sway * 0.6f, y2)
         }
 
         // Main stem

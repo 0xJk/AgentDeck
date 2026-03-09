@@ -62,7 +62,7 @@ class MonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        brightnessController = BrightnessController(contentResolver, pm, isEink)
+        brightnessController = BrightnessController(this, contentResolver, pm, isEink)
         displayPrefs = DisplayPreferences(this, isEink)
 
         acquireCpuWakeLock()
@@ -107,6 +107,8 @@ class MonitorService : Service() {
                 }
             } else {
                 // Bridge not connected — use idle timeout fallback
+                // If dimmed from previous bridge-connected sync, restore immediately
+                if (brightnessController.isDimmed()) brightnessController.restore()
                 val isIdle = agentState == AgentState.DISCONNECTED || agentState == AgentState.IDLE
                 if (isIdle) {
                     if (idleTimeoutJob == null) {

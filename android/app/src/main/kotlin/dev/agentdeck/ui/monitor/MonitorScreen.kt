@@ -361,6 +361,10 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
         rockFormation.setState(state.environment)
     }
 
+    // Pre-allocated lists for per-frame position passing (avoids GC pressure)
+    val livePositions = remember { mutableListOf<Pair<Float, Float>>() }
+    val workingPositions = remember { mutableListOf<Pair<Float, Float>>() }
+
     // 60fps animation loop
     var lastFrameTime by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
@@ -378,13 +382,16 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
                 mainCrayfish.update(clampedDt)
                 for (wc in workerCrayfish) wc.update(clampedDt)
                 for (oct in octopuses) oct.update(clampedDt)
-                // Pass live positions + working positions to tetra school
-                dataParticles.setLiveAgentPositions(
-                    octopuses.map { it.currentPosition() }
-                )
-                dataParticles.setWorkingAgentPositions(
-                    octopuses.filter { it.isWorking() }.map { it.currentPosition() }
-                )
+                // Pass live positions + working positions to tetra school (reuse lists)
+                livePositions.clear()
+                workingPositions.clear()
+                for (oct in octopuses) {
+                    val pos = oct.currentPosition()
+                    livePositions.add(pos)
+                    if (oct.isWorking()) workingPositions.add(pos)
+                }
+                dataParticles.setLiveAgentPositions(livePositions)
+                dataParticles.setWorkingAgentPositions(workingPositions)
                 // Pass crayfish position + routing state for food spawning + school attraction
                 dataParticles.setCrayfishState(
                     mainCrayfish.currentPosition(),
@@ -443,7 +450,7 @@ private fun MonitorHUD(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(end = 12.dp, top = 12.dp)
-                .widthIn(max = 220.dp),
+                .widthIn(max = 280.dp),
         )
     }
 }

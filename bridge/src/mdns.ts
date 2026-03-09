@@ -55,6 +55,11 @@ export function advertiseBridge(
       txt,
     });
 
+    // Catch async publish errors (e.g. "Service name already in use") — mDNS is non-critical
+    service.on?.('error', (err: Error) => {
+      debug('mDNS', `Service error (ignored): ${err.message}`);
+    });
+
     debug('mDNS', `Published _agentdeck._tcp on port ${port} (project: ${projectName})`);
 
     return () => {

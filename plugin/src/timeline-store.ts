@@ -47,20 +47,26 @@ const TOOL_GROUP_WINDOW_MS = 10_000;
 const SAVE_DEBOUNCE_MS = 500;
 const TIMELINE_FILE = join(homedir(), '.agentdeck', 'timeline.json');
 
-/** Group consecutive entries with same type + raw text within window (60s default, 10s for tool_request) */
+/** Group consecutive entries with same type + raw text within window (60s default, 10s for tool_request).
+ *  chat_end entries group by type only (ignoring raw) since each has different duration/tools. */
 function groupConsecutive(entries: readonly TimelineEntry[]): GroupedEntry[] {
   const groups: GroupedEntry[] = [];
   for (const entry of entries) {
     const last = groups[groups.length - 1];
     const window = entry.type === 'tool_request' ? TOOL_GROUP_WINDOW_MS : GROUP_WINDOW_MS;
+    const rawMatch = entry.type === 'chat_end' || last?.entry.raw === entry.raw;
     if (
       last &&
       last.entry.type === entry.type &&
-      last.entry.raw === entry.raw &&
+      rawMatch &&
       Math.abs(entry.ts - last.lastTs) < window
     ) {
       last.count++;
       last.lastTs = entry.ts;
+      // For chat_end, keep the latest raw/detail (most enriched version)
+      if (entry.type === 'chat_end') {
+        last.entry = { ...last.entry, raw: entry.raw, ...(entry.detail ? { detail: entry.detail } : {}) };
+      }
     } else {
       groups.push({ entry, count: 1, firstTs: entry.ts, lastTs: entry.ts });
     }

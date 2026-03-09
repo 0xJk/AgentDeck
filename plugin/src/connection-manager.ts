@@ -32,6 +32,8 @@ const FORWARDED_EVENTS = [
   'connection',
   'user_prompt',
   'voice_state',
+  'timeline_event',
+  'timeline_history',
 ] as const;
 
 export class ConnectionManager extends EventEmitter implements AgentLink {
@@ -228,6 +230,9 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
       // Keep Gateway warm in the background for fast switching
       this.maybePreconnectGateway();
 
+      // Bridge provides enriched timeline — suppress gateway's local timeline generation
+      this.gateway.receivingBridgeTimeline = true;
+
       // If user explicitly selected gateway, don't auto-switch
       if (this.userSelection === 'gateway') {
         dlog(TAG, 'User selected gateway — bridge connected but not switching');
@@ -243,6 +248,9 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
 
     this.bridge.on('disconnected', () => {
       dinfo(TAG, 'Bridge disconnected');
+
+      // Bridge no longer provides timeline — resume gateway's local timeline generation
+      this.gateway.receivingBridgeTimeline = false;
 
       if (this.activeLink === this.bridge) {
         this.activeLink = null;

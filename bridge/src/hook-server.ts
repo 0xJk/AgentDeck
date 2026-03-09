@@ -20,6 +20,7 @@ export class HookServer extends EventEmitter {
   private server: Server;
   private diagHandler: ((tail?: number) => unknown) | null = null;
   private voiceManager: VoiceManager | null = null;
+  private apiUsageGetter: (() => { usage: unknown; fetchedAt: number }) | null = null;
 
   // SSE
   private sseClients: SseClient[] = [];
@@ -51,6 +52,11 @@ export class HookServer extends EventEmitter {
   /** Set voice manager for /voice/transcribe endpoint */
   setVoiceManager(vm: VoiceManager): void {
     this.voiceManager = vm;
+  }
+
+  /** Register a getter for cached API usage data (exposed via GET /usage) */
+  onApiUsage(getter: () => { usage: unknown; fetchedAt: number }): void {
+    this.apiUsageGetter = getter;
   }
 
   /** Broadcast a BridgeEvent to all SSE clients */
@@ -100,6 +106,17 @@ export class HookServer extends EventEmitter {
         wsClients: this.meta.clientCount ?? 0,
         sseClients: this.sseClients.length,
       });
+    });
+
+    // Usage data endpoint (local only, no auth — daemon relays from sibling bridges)
+    this.app.get('/usage', (_req, res) => {
+      debug('Hook', 'GET /usage');
+      if (!this.apiUsageGetter) {
+        res.json({ status: 'ok', usage: null, fetchedAt: 0 });
+        return;
+      }
+      const data = this.apiUsageGetter();
+      res.json({ status: 'ok', usage: data.usage, fetchedAt: data.fetchedAt });
     });
 
     // SSE endpoint
