@@ -29,21 +29,21 @@ fun layoutOctopuses(count: Int): List<CreatureSlot> {
             )
         )
         2 -> listOf(
-            CreatureSlot(0.30f, 0.42f, 0.85f),
-            CreatureSlot(0.55f, 0.48f, 0.85f),
+            CreatureSlot(0.25f, 0.42f, 0.85f),
+            CreatureSlot(0.58f, 0.48f, 0.85f),
         )
         3 -> listOf(
-            CreatureSlot(0.30f, 0.38f, 0.75f),
-            CreatureSlot(0.52f, 0.38f, 0.75f),
-            CreatureSlot(0.40f, 0.52f, 0.75f),
+            CreatureSlot(0.24f, 0.36f, 0.75f),
+            CreatureSlot(0.54f, 0.36f, 0.75f),
+            CreatureSlot(0.38f, 0.54f, 0.75f),
         )
         else -> {
             // Grid layout for 4+, shrinking as needed
-            val scale = max(0.5f, 0.75f - (count - 3) * 0.05f)
+            val scale = max(0.45f, 0.75f - (count - 3) * 0.05f)
             val cols = if (count <= 4) 2 else 3
             val rows = (count + cols - 1) / cols
-            val startX = 0.22f
-            val endX = 0.60f
+            val startX = 0.20f
+            val endX = 0.62f
             val startY = 0.32f
             val endY = 0.55f
             val dx = if (cols > 1) (endX - startX) / (cols - 1) else 0f
@@ -94,7 +94,7 @@ fun layoutOctopusesByProject(agents: List<AgentLayoutInfo>): List<CreatureSlot> 
     val areaMaxX = 0.65f
     val areaMinY = 0.30f
     val areaMaxY = 0.58f
-    val clusterRadius = 0.05f
+    val clusterRadius = 0.07f
 
     val result = Array<CreatureSlot?>(agents.size) { null }
     val scale = max(0.50f, 0.85f - (agents.size - 1) * 0.05f)

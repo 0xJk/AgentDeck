@@ -62,10 +62,17 @@ class OctopusCreature(
     private var waypointInterval = TerrariumTiming.WAYPOINT_MIN_INTERVAL +
         kotlin.random.Random.nextFloat() * (TerrariumTiming.WAYPOINT_MAX_INTERVAL - TerrariumTiming.WAYPOINT_MIN_INTERVAL)
     // Per-instance standing Y offset for natural multi-agent depth staggering
-    private val standingJitter = kotlin.random.Random.nextFloat() * 0.04f - 0.02f
+    private val standingJitter = kotlin.random.Random.nextFloat() * 0.06f - 0.03f
+
+    /** Callback invoked when transitioning away from ASKING (bubble pop trigger). */
+    var onAskingExit: ((nx: Float, ny: Float) -> Unit)? = null
 
     fun setState(newState: OctopusVisualState) {
         if (newState != visualState) {
+            // Trigger pop burst when leaving ASKING state
+            if (visualState == OctopusVisualState.ASKING) {
+                onAskingExit?.invoke(currentX, currentY)
+            }
             visualState = newState
             transitionProgress = 0f
         }
@@ -109,14 +116,14 @@ class OctopusCreature(
             }
             OctopusVisualState.FLOATING -> {
                 // IDLE: stand near bottom with per-instance depth variation
-                val myStandingY = STANDING_Y + standingJitter + (homeX - 0.4f) * 0.12f
+                val myStandingY = STANDING_Y + standingJitter + (homeX - 0.4f) * 0.15f
                 val idleSway = sin(time * 0.3f) * 0.005f
                 currentX += (homeX + idleSway - currentX) * dt * 2f
                 currentY += (myStandingY - currentY) * dt * 2f
             }
             OctopusVisualState.ASKING -> {
                 // Awaiting input: near bottom with per-instance depth variation
-                val myStandingY = STANDING_Y + standingJitter + (homeX - 0.4f) * 0.12f
+                val myStandingY = STANDING_Y + standingJitter + (homeX - 0.4f) * 0.15f
                 val fidgetX = sin(time * 1.2f) * 0.008f
                 currentX += (homeX + fidgetX - currentX) * dt * 2f
                 currentY += (myStandingY - currentY) * dt * 2f
@@ -478,10 +485,10 @@ class OctopusCreature(
     }
 
     companion object {
-        /** Standing position Y — just above the sand line (0.72). */
-        private const val STANDING_Y = 0.66f
+        /** Standing position Y — just above the sand line (0.65). */
+        private const val STANDING_Y = 0.59f
         /** Deep sleeping position Y — lower, partially hidden. */
-        private const val STANDING_Y_DEEP = 0.82f
+        private const val STANDING_Y_DEEP = 0.75f
 
         // Pixel cell types
         private const val EMPTY = 0

@@ -63,6 +63,8 @@ data class TerrariumState(
     val agents: List<AgentCreatureState> = emptyList(),
     /** OpenClaw backend worker count. */
     val workerCrayfishCount: Int = 0,
+    /** Pop burst positions (normalized) — set for 1 frame when ASKING exits. */
+    val popBurstPositions: List<Pair<Float, Float>> = emptyList(),
 )
 
 /** Map DashboardState to visual TerrariumState. */

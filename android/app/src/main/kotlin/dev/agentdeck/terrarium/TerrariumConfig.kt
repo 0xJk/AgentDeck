@@ -62,19 +62,19 @@ object TerrariumColors {
 /** Layout and sizing constants. */
 object TerrariumLayout {
     // Scene proportions (fraction of canvas)
-    const val SAND_HEIGHT_FRACTION = 0.28f
+    const val SAND_HEIGHT_FRACTION = 0.35f
     const val ROCK_HEIGHT_FRACTION = 0.25f
 
     // Octopus sizing (fraction of canvas width)
-    const val OCTOPUS_BODY_RADIUS_FRACTION = 0.07f
+    const val OCTOPUS_BODY_RADIUS_FRACTION = 0.055f
     const val OCTOPUS_CENTER_X_FRACTION = 0.4f
     const val OCTOPUS_CENTER_Y_FRACTION = 0.45f
     // (TENTACLE_LENGTH_FRACTION removed — pixel mascot has no tentacles)
 
     // Crayfish sizing
-    const val CRAYFISH_WIDTH_FRACTION = 0.14f
+    const val CRAYFISH_WIDTH_FRACTION = 0.11f
     const val CRAYFISH_CENTER_X_FRACTION = 0.78f
-    const val CRAYFISH_CENTER_Y_FRACTION = 0.65f
+    const val CRAYFISH_CENTER_Y_FRACTION = 0.58f
 
     // Tetra sizing
     const val TETRA_SIZE_FRACTION = 0.015f
@@ -84,13 +84,13 @@ object TerrariumLayout {
     const val SWIM_MIN_X = 0.20f   // clear of left HUD panel (~19%)
     const val SWIM_MAX_X = 0.68f   // before crayfish area (0.78)
     const val SWIM_MIN_Y = 0.10f   // below surface (0.05) margin
-    const val SWIM_MAX_Y = 0.68f   // above sand (0.72)
+    const val SWIM_MAX_Y = 0.61f   // above sand (0.65)
 
     // Neon Tetra swim boundaries — full aquarium range
     const val TETRA_SWIM_MIN_X = 0.03f   // near left wall
     const val TETRA_SWIM_MAX_X = 0.92f   // near right wall (seaweed at 0.93)
     const val TETRA_SWIM_MIN_Y = 0.08f   // just below surface (0.05)
-    const val TETRA_SWIM_MAX_Y = 0.68f   // above sand (0.72)
+    const val TETRA_SWIM_MAX_Y = 0.61f   // above sand (0.65)
 }
 
 /** Animation timing constants. */
@@ -133,6 +133,10 @@ object TerrariumTiming {
     const val CAUSTICS_SPEED = 1.5f
     const val KELP_SWAY_SPEED = 1.0f
     const val LED_PULSE_SPEED = 2.0f
+
+    // Creature bubble exhales
+    const val OCTO_BUBBLE_INTERVAL = 2.5f   // seconds between WORKING octopus exhales
+    const val CRAYFISH_BUBBLE_INTERVAL = 1.5f // seconds between ROUTING crayfish exhales
 
     // Transitions
     const val STATE_TRANSITION_MS = 500f

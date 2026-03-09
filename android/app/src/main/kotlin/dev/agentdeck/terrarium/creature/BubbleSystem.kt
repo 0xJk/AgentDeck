@@ -10,6 +10,7 @@ import dev.agentdeck.terrarium.EnvironmentVisualState
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.terrarium.TerrariumTiming
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
@@ -28,6 +29,13 @@ class BubbleSystem : Creature {
         var wobbleAmp: Float,
         var alpha: Float,
         var alive: Boolean = true,
+        // Pop burst fields
+        var popping: Boolean = false,
+        var popProgress: Float = 0f,
+        var popOriginX: Float = 0f,
+        var popOriginY: Float = 0f,
+        var popAngle: Float = 0f,
+        var popDistance: Float = 0f,
     )
 
     private val bubbles = Array(MAX_BUBBLES) {
@@ -62,6 +70,25 @@ class BubbleSystem : Creature {
         // Update existing bubbles
         for (bubble in bubbles) {
             if (!bubble.alive) continue
+
+            if (bubble.popping) {
+                // Pop burst: expand outward from origin, then transition to normal rise
+                bubble.popProgress += dt * POP_SPEED
+                if (bubble.popProgress >= 1f) {
+                    // Transition to normal rising bubble
+                    bubble.popping = false
+                    bubble.speed = TerrariumTiming.BUBBLE_RISE_SPEED * (0.5f + Random.nextFloat() * 0.4f)
+                } else {
+                    // Radial expansion with easing (fast start, slow end)
+                    val ease = 1f - (1f - bubble.popProgress) * (1f - bubble.popProgress)
+                    bubble.x = bubble.popOriginX + cos(bubble.popAngle) * bubble.popDistance * ease
+                    bubble.y = bubble.popOriginY + sin(bubble.popAngle) * bubble.popDistance * ease
+                    // Shrink during pop
+                    bubble.radius = bubble.radius * (1f - bubble.popProgress * 0.3f).coerceAtLeast(0.001f)
+                    bubble.alpha = (1f - bubble.popProgress * 0.4f).coerceAtLeast(0.3f)
+                }
+                continue
+            }
 
             bubble.y -= bubble.speed * dt
             bubble.x += sin(time * TerrariumTiming.BUBBLE_WOBBLE_SPEED + bubble.wobblePhase) *
@@ -129,7 +156,57 @@ class BubbleSystem : Creature {
         bubble.alive = true
     }
 
+    /**
+     * Emit small bubbles from a creature's position.
+     * Creature bubbles are 50% smaller and 70% speed of normal bubbles.
+     */
+    fun emitCreatureBubbles(nx: Float, ny: Float, count: Int) {
+        repeat(count) {
+            val bubble = bubbles[nextSlot]
+            nextSlot = (nextSlot + 1) % MAX_BUBBLES
+
+            bubble.x = nx + (Random.nextFloat() - 0.5f) * 0.02f
+            bubble.y = ny - 0.01f // just above creature
+            bubble.radius = (Random.nextFloat() * 0.003f + 0.001f) // 50% of normal
+            bubble.speed = TerrariumTiming.BUBBLE_RISE_SPEED * (0.7f + Random.nextFloat() * 0.6f) * 0.7f
+            bubble.wobblePhase = Random.nextFloat() * 2f * PI.toFloat()
+            bubble.wobbleAmp = Random.nextFloat() * 0.015f + 0.003f
+            bubble.alpha = 0.8f
+            bubble.alive = true
+        }
+    }
+
+    /**
+     * Emit a radial burst of small bubbles — triggered when leaving ASKING state.
+     * Bubbles expand outward then transition to normal upward drift.
+     */
+    fun emitPopBurst(nx: Float, ny: Float, count: Int = 10) {
+        val angleStep = 2f * PI.toFloat() / count
+        repeat(count) { i ->
+            val bubble = bubbles[nextSlot]
+            nextSlot = (nextSlot + 1) % MAX_BUBBLES
+
+            val angle = angleStep * i + Random.nextFloat() * angleStep * 0.5f
+            bubble.x = nx
+            bubble.y = ny
+            bubble.radius = Random.nextFloat() * 0.004f + 0.002f
+            bubble.speed = 0f // movement handled by pop physics
+            bubble.wobblePhase = Random.nextFloat() * 2f * PI.toFloat()
+            bubble.wobbleAmp = Random.nextFloat() * 0.01f + 0.003f
+            bubble.alpha = 0.9f
+            bubble.alive = true
+            bubble.popping = true
+            bubble.popProgress = 0f
+            bubble.popOriginX = nx
+            bubble.popOriginY = ny
+            bubble.popAngle = angle
+            bubble.popDistance = 0.03f + Random.nextFloat() * 0.04f
+        }
+    }
+
     companion object {
-        private const val MAX_BUBBLES = 50
+        private const val MAX_BUBBLES = 70
+        /** Pop expansion speed — 1/duration in seconds (~400ms). */
+        private const val POP_SPEED = 2.5f
     }
 }

@@ -2,6 +2,7 @@ package dev.agentdeck.terrarium.renderer
 
 import android.graphics.Bitmap
 import android.graphics.DashPathEffect
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
 import android.view.View
@@ -259,10 +260,19 @@ private fun renderEinkFrame(
     paint.color = GRAY_SAND
     canvas.drawRect(0f, height * 0.82f, width.toFloat(), height.toFloat(), paint)
 
+    // Light rays — 2 fixed-position gray gradient rectangles
+    drawEinkLightRays(canvas, paint, width, height, creatureFrame)
+
+    // Water surface line — 2px wave at y=4%
+    drawEinkWaterSurface(canvas, paint, width, height, creatureFrame)
+
     // Environment (4-frame cycle for seaweed sway)
     drawEinkSeaweed(canvas, paint, width, height, creatureFrame)
     drawEinkRocks(canvas, paint, width, height)
     drawEinkGravel(canvas, paint, width, height)
+
+    // Ground cover grass
+    drawEinkGrass(canvas, paint, width, height, creatureFrame)
 
     // Back-layer fish (behind creatures for 3D depth)
     drawEinkDataParticles(canvas, paint, width, height, state.tetra, state.agents.size, state.crayfish, animFrame, layer = 0)
@@ -285,6 +295,23 @@ private fun renderEinkFrame(
             animFrame = creatureFrame,
             displayName = state.agents.getOrNull(0)?.displayName)
     }
+    // Pop burst particles (1-frame effect when leaving ASKING state)
+    if (state.popBurstPositions.isNotEmpty()) {
+        paint.style = Paint.Style.FILL
+        paint.color = GRAY_AIR
+        for ((px, py) in state.popBurstPositions) {
+            val burstCx = width * px
+            val burstCy = height * py
+            val burstR = width * 0.02f
+            for (j in 0 until 6) {
+                val angle = (j.toFloat() / 6f) * 2f * kotlin.math.PI.toFloat()
+                val bx = burstCx + kotlin.math.cos(angle) * burstR
+                val by = burstCy + kotlin.math.sin(angle) * burstR
+                canvas.drawCircle(bx, by, width * 0.003f, paint)
+            }
+        }
+    }
+
     drawEinkCrayfish(canvas, paint, width, height, state.crayfish, creatureFrame)
 
     // Front-layer fish (in front of creatures for 3D depth)
@@ -405,6 +432,97 @@ private fun drawEinkGravel(canvas: android.graphics.Canvas, paint: Paint, w: Int
     canvas.drawOval(RectF(w * 0.20f, bottomY, w * 0.26f, bottomY + h * 0.04f), paint)
     canvas.drawOval(RectF(w * 0.40f, bottomY + 2f, w * 0.45f, bottomY + h * 0.035f), paint)
     canvas.drawOval(RectF(w * 0.60f, bottomY + 1f, w * 0.64f, bottomY + h * 0.03f), paint)
+
+    // Additional ripple strokes for sand texture
+    paint.color = GRAY_GRAVEL
+    paint.style = Paint.Style.STROKE
+    paint.strokeWidth = 0.8f
+    val rippleY1 = bottomY + (h - bottomY) * 0.2f
+    val rippleY2 = bottomY + (h - bottomY) * 0.4f
+    val rippleY3 = bottomY + (h - bottomY) * 0.6f
+    canvas.drawLine(w * 0.08f, rippleY1, w * 0.30f, rippleY1 + 1f, paint)
+    canvas.drawLine(w * 0.35f, rippleY2, w * 0.55f, rippleY2 + 1f, paint)
+    canvas.drawLine(w * 0.60f, rippleY3, w * 0.78f, rippleY3 + 1f, paint)
+    canvas.drawLine(w * 0.15f, rippleY3 + 4f, w * 0.40f, rippleY3 + 5f, paint)
+}
+
+/** E-ink light rays — 2 fixed-position gray gradient rectangles that shift every 8 frames. */
+private fun drawEinkLightRays(canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int, animFrame: Int) {
+    paint.style = Paint.Style.FILL
+    // Alternate between 2 position sets every 8 frames
+    val set = (animFrame / 8) % 2
+    val positions = if (set == 0) floatArrayOf(0.25f, 0.65f) else floatArrayOf(0.35f, 0.78f)
+
+    for (pos in positions) {
+        val cx = w * pos
+        val topW = w * 0.02f
+        val botW = w * 0.06f
+        val rayH = h * 0.45f
+
+        // Simple trapezoid with fading gray
+        paint.color = GRAY_AIR // 0xEE — very light, subtle
+        val path = android.graphics.Path().apply {
+            moveTo(cx - topW, 0f)
+            lineTo(cx + topW, 0f)
+            lineTo(cx + botW, rayH)
+            lineTo(cx - botW, rayH)
+            close()
+        }
+        // Use a shader for gradient effect
+        paint.shader = android.graphics.LinearGradient(
+            cx, 0f, cx, rayH,
+            GRAY_AIR, GRAY_WATER_BG,
+            android.graphics.Shader.TileMode.CLAMP,
+        )
+        canvas.drawPath(path, paint)
+        paint.shader = null
+    }
+}
+
+/** E-ink water surface — 2px wave at y=4%, gray 0xAA. */
+private fun drawEinkWaterSurface(canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int, animFrame: Int) {
+    paint.style = Paint.Style.STROKE
+    paint.strokeWidth = 2.0f
+    paint.color = GRAY_SURFACE_LINE
+
+    val surfaceY = h * 0.04f
+    val phase = animFrame * 0.3f
+    val path = android.graphics.Path().apply {
+        moveTo(0f, surfaceY)
+        var x = 0f
+        while (x <= w) {
+            val y = surfaceY + kotlin.math.sin((x * 0.01f + phase).toDouble()).toFloat() * 3f
+            lineTo(x, y)
+            x += 4f
+        }
+    }
+    canvas.drawPath(path, paint)
+}
+
+/** E-ink ground cover grass — 8-10 short 2px strokes near sand, gray 0x55, static. */
+private fun drawEinkGrass(canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int, animFrame: Int) {
+    paint.style = Paint.Style.STROKE
+    paint.strokeWidth = 2.0f
+    paint.color = GRAY_SEAWEED // 0x22 — dark, visible on sand
+
+    val sandY = h * 0.82f
+    val sway = if (animFrame % 4 < 2) 1f else -1f
+
+    // Left cluster
+    drawGrassStroke(canvas, paint, w * 0.05f, sandY, h * 0.025f, sway * 0.5f)
+    drawGrassStroke(canvas, paint, w * 0.07f, sandY, h * 0.035f, sway)
+    drawGrassStroke(canvas, paint, w * 0.10f, sandY, h * 0.030f, sway * 0.7f)
+    // Center cluster
+    drawGrassStroke(canvas, paint, w * 0.43f, sandY, h * 0.030f, sway * 0.8f)
+    drawGrassStroke(canvas, paint, w * 0.45f, sandY, h * 0.040f, sway)
+    drawGrassStroke(canvas, paint, w * 0.47f, sandY, h * 0.025f, sway * 0.6f)
+    // Right cluster
+    drawGrassStroke(canvas, paint, w * 0.84f, sandY, h * 0.035f, -sway)
+    drawGrassStroke(canvas, paint, w * 0.87f, sandY, h * 0.030f, -sway * 0.8f)
+}
+
+private fun drawGrassStroke(canvas: android.graphics.Canvas, paint: Paint, baseX: Float, baseY: Float, height: Float, sway: Float) {
+    canvas.drawLine(baseX, baseY, baseX + sway, baseY - height, paint)
 }
 
 // --- Creatures ---
@@ -422,7 +540,7 @@ private fun drawEinkOctopus(
 ) {
     val cx = w * centerXFraction
     // Y-position by state — staggered by X position for natural multi-session variety
-    val standingOffset = (centerXFraction - 0.38f) * 0.10f
+    val standingOffset = (centerXFraction - 0.38f) * 0.15f
     val cy = when (state) {
         OctopusVisualState.SLEEPING -> h * (0.78f + standingOffset * 0.5f)
         OctopusVisualState.FLOATING -> h * (0.74f + standingOffset)
@@ -433,7 +551,7 @@ private fun drawEinkOctopus(
     }
 
     // Pixel block grid — 14×5, portrait-rectangle pixels
-    val bodyWidth = w * 0.14f * scaleFactor
+    val bodyWidth = w * 0.11f * scaleFactor
     val pixelW = bodyWidth / EINK_OCTOPUS_COLS
     val pixelH = pixelW * EINK_PIXEL_ASPECT
     val gridW = EINK_OCTOPUS_COLS * pixelW
@@ -557,7 +675,12 @@ private fun drawEinkOctopus(
         }
     }
 
-    // ASKING: speech bubble with "?"
+    // Name tag FIRST (behind bubble) — multi-session only
+    if (displayName != null) {
+        drawEinkNameTag(canvas, paint, cx, startY, scaleFactor, displayName, w)
+    }
+
+    // ASKING: speech bubble with "?" — drawn LAST (in front of name tag)
     if (state == OctopusVisualState.ASKING) {
         val bubbleR = gridW * 0.25f * scaleFactor
         val bubbleX = cx + gridW * 0.6f
@@ -579,11 +702,6 @@ private fun drawEinkOctopus(
         paint.textAlign = Paint.Align.CENTER
         canvas.drawText("?", bubbleX, bubbleY + bubbleR * 0.45f, paint)
         paint.textAlign = Paint.Align.LEFT
-    }
-
-    // Name tag (multi-session only)
-    if (displayName != null) {
-        drawEinkNameTag(canvas, paint, cx, startY, scaleFactor, displayName, w)
     }
 }
 
@@ -698,7 +816,7 @@ private fun drawEinkCrayfish(
         else -> 0f
     }
     val cy = baseY + bobOffset
-    val bodyWidth = w * 0.14f
+    val bodyWidth = w * 0.11f
 
     if (state == CrayfishVisualState.DORMANT) {
         // Only show antenna tips above rocks
@@ -1211,4 +1329,5 @@ private const val GRAY_FISH_STRIPE = 0xFFBBBBBB.toInt() // level 11 — fish neo
 private const val GRAY_BUBBLE     = 0xFFAAAAAA.toInt()  // level 10 — bubbles
 private const val GRAY_SAND       = 0xFFCCCCCC.toInt()  // level 12 — sand floor (subtle against water)
 private const val GRAY_AIR        = 0xFFEEEEEE.toInt()  // level 14 — air above surface
+private const val GRAY_SURFACE_LINE = 0xFFAAAAAA.toInt() // level 10 — water surface line
 

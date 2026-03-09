@@ -5,15 +5,22 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -21,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.derivedStateOf
@@ -52,8 +60,12 @@ import dev.agentdeck.terrarium.creature.CrayfishCreature
 import dev.agentdeck.terrarium.creature.DataParticleSystem
 import dev.agentdeck.terrarium.creature.OctopusCreature
 import dev.agentdeck.terrarium.environment.KelpField
+import dev.agentdeck.terrarium.environment.LightRaySystem
+import dev.agentdeck.terrarium.environment.PlanktonSystem
 import dev.agentdeck.terrarium.environment.RockFormation
+import dev.agentdeck.terrarium.environment.SandDisturbance
 import dev.agentdeck.terrarium.environment.WaterEffect
+import dev.agentdeck.terrarium.environment.WaterSurface
 import dev.agentdeck.terrarium.AgentLayoutInfo
 import dev.agentdeck.terrarium.layoutOctopuses
 import dev.agentdeck.terrarium.layoutOctopusesByProject
@@ -104,6 +116,8 @@ fun MonitorScreen(
     val showDisconnected = connectionStatus != ConnectionStatus.CONNECTED &&
         dashState.agentState == AgentState.DISCONNECTED
 
+    var showSettingsDialog by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -139,6 +153,28 @@ fun MonitorScreen(
                     .padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
+
+        // Gear icon — always visible (both connected & disconnected)
+        IconButton(
+            onClick = { showSettingsDialog = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Settings,
+                contentDescription = "Settings",
+                tint = Color.White.copy(alpha = 0.6f),
+            )
+        }
+    }
+
+    if (showSettingsDialog) {
+        TabletSettingsDialog(
+            connection = connection,
+            displayPrefs = displayPrefs,
+            onDismiss = { showSettingsDialog = false },
+        )
     }
 }
 
@@ -268,7 +304,7 @@ private fun ConnectionOverlay(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "Manual URL entry available in Settings tab",
+                text = "Tap gear icon for manual URL entry",
                 style = MaterialTheme.typography.bodySmall,
                 color = AgentDeckColors.SlateText.copy(alpha = 0.7f),
                 textAlign = TextAlign.Center,
@@ -287,6 +323,10 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
     val waterEffect = remember { WaterEffect() }
     val rockFormation = remember { RockFormation() }
     val kelpField = remember { KelpField() }
+    val lightRaySystem = remember { LightRaySystem() }
+    val planktonSystem = remember { PlanktonSystem() }
+    val waterSurface = remember { WaterSurface() }
+    val sandDisturbance = remember { SandDisturbance() }
     val dataParticles = remember { DataParticleSystem() }
     val bubbleSystem = remember { BubbleSystem() }
 
@@ -312,6 +352,8 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
                     it.setState(agent.visualState)
                     it.setMark(agent.mark)
                 }
+                // Wire pop burst callback
+                it.onAskingExit = { nx, ny -> bubbleSystem.emitPopBurst(nx, ny) }
             })
         }
         // Remove excess
@@ -359,11 +401,20 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
         waterEffect.setState(state.environment)
         bubbleSystem.setState(state.environment)
         rockFormation.setState(state.environment)
+        lightRaySystem.setState(state.environment)
+        planktonSystem.setState(state.environment)
+        waterSurface.setState(state.environment)
+        sandDisturbance.setState(state.environment)
     }
 
     // Pre-allocated lists for per-frame position passing (avoids GC pressure)
     val livePositions = remember { mutableListOf<Pair<Float, Float>>() }
     val workingPositions = remember { mutableListOf<Pair<Float, Float>>() }
+    val allCreaturePositions = remember { mutableListOf<Pair<Float, Float>>() }
+
+    // Creature bubble exhale timers
+    var octoBubbleTimer by remember { mutableFloatStateOf(0f) }
+    var crayfishBubbleTimer by remember { mutableFloatStateOf(0f) }
 
     // 60fps animation loop
     var lastFrameTime by remember { mutableLongStateOf(0L) }
@@ -379,26 +430,55 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
                 waterEffect.update(clampedDt)
                 rockFormation.update(clampedDt)
                 kelpField.update(clampedDt)
+                lightRaySystem.update(clampedDt)
+                planktonSystem.update(clampedDt)
+                waterSurface.update(clampedDt)
                 mainCrayfish.update(clampedDt)
                 for (wc in workerCrayfish) wc.update(clampedDt)
                 for (oct in octopuses) oct.update(clampedDt)
                 // Pass live positions + working positions to tetra school (reuse lists)
                 livePositions.clear()
                 workingPositions.clear()
+                allCreaturePositions.clear()
                 for (oct in octopuses) {
                     val pos = oct.currentPosition()
                     livePositions.add(pos)
                     if (oct.isWorking()) workingPositions.add(pos)
+                    allCreaturePositions.add(pos)
                 }
+                // Add crayfish position for sand disturbance
+                val crayfishPos = mainCrayfish.currentPosition()
+                allCreaturePositions.add(crayfishPos)
+                sandDisturbance.setCreaturePositions(allCreaturePositions)
+                sandDisturbance.update(clampedDt)
+
                 dataParticles.setLiveAgentPositions(livePositions)
                 dataParticles.setWorkingAgentPositions(workingPositions)
                 // Pass crayfish position + routing state for food spawning + school attraction
-                dataParticles.setCrayfishState(
-                    mainCrayfish.currentPosition(),
-                    mainCrayfish.isRouting(),
-                )
+                dataParticles.setCrayfishState(crayfishPos, mainCrayfish.isRouting())
                 dataParticles.update(clampedDt)
                 bubbleSystem.update(clampedDt)
+
+                // Creature bubble exhales
+                octoBubbleTimer += clampedDt
+                crayfishBubbleTimer += clampedDt
+                // WORKING octopuses: 2 bubbles every 2.5s
+                if (octoBubbleTimer >= 2.5f) {
+                    octoBubbleTimer -= 2.5f
+                    for (oct in octopuses) {
+                        if (oct.isWorking()) {
+                            val pos = oct.currentPosition()
+                            bubbleSystem.emitCreatureBubbles(pos.first, pos.second, 2)
+                        }
+                    }
+                }
+                // ROUTING crayfish: 3 bubbles every 1.5s
+                if (crayfishBubbleTimer >= 1.5f) {
+                    crayfishBubbleTimer -= 1.5f
+                    if (mainCrayfish.isRouting()) {
+                        bubbleSystem.emitCreatureBubbles(crayfishPos.first, crayfishPos.second, 3)
+                    }
+                }
             }
         }
     }
@@ -413,6 +493,10 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
         dataParticles = dataParticles,
         octopuses = octopuses,
         bubbleSystem = bubbleSystem,
+        lightRaySystem = lightRaySystem,
+        planktonSystem = planktonSystem,
+        waterSurface = waterSurface,
+        sandDisturbance = sandDisturbance,
         modifier = Modifier.fillMaxSize(),
     )
 }
@@ -426,7 +510,8 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
 private fun MonitorHUD(
     dashState: DashboardState,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    val systemBarsPadding = WindowInsets.systemBars.asPaddingValues()
+    Box(modifier = Modifier.fillMaxSize().padding(top = systemBarsPadding.calculateTopPadding())) {
         // Top-left: Agent list (logo + sessions + mode)
         SessionListPanel(
             projectName = dashState.projectName,
