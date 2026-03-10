@@ -103,7 +103,7 @@ class OctopusCreature(
     override fun update(dt: Float) {
         time += dt
         if (transitionProgress < 1f) {
-            transitionProgress = (transitionProgress + dt * 2f).coerceAtMost(1f)
+            transitionProgress = (transitionProgress + dt * 3f).coerceAtMost(1f)
         }
 
         // Movement: only WORKING swims freely; FLOATING/ASKING stand on bottom
@@ -111,22 +111,23 @@ class OctopusCreature(
             OctopusVisualState.SLEEPING -> {
                 // Sleeping: settle to deep bottom, dim — per-instance variation
                 val myDeepY = STANDING_Y_DEEP + standingJitter * 0.5f
-                currentX += (homeX - currentX) * dt * 2f
-                currentY += (myDeepY - currentY) * dt * 2f
+                currentX += (homeX - currentX) * dt * 4f
+                currentY += (myDeepY - currentY) * dt * 4f
             }
             OctopusVisualState.FLOATING -> {
-                // IDLE: stand near bottom with per-instance depth variation
+                // IDLE: stand near bottom with per-instance depth variation + gentle breath bob
                 val myStandingY = STANDING_Y + standingJitter + (homeX - 0.4f) * 0.15f
+                val breathBob = sin(time * 0.8f) * 0.002f
                 val idleSway = sin(time * 0.3f) * 0.005f
-                currentX += (homeX + idleSway - currentX) * dt * 2f
-                currentY += (myStandingY - currentY) * dt * 2f
+                currentX += (homeX + idleSway - currentX) * dt * 4f
+                currentY += (myStandingY + breathBob - currentY) * dt * 4f
             }
             OctopusVisualState.ASKING -> {
                 // Awaiting input: near bottom with per-instance depth variation
                 val myStandingY = STANDING_Y + standingJitter + (homeX - 0.4f) * 0.15f
                 val fidgetX = sin(time * 1.2f) * 0.008f
-                currentX += (homeX + fidgetX - currentX) * dt * 2f
-                currentY += (myStandingY - currentY) * dt * 2f
+                currentX += (homeX + fidgetX - currentX) * dt * 4f
+                currentY += (myStandingY - currentY) * dt * 4f
             }
             OctopusVisualState.WORKING -> {
                 // WORKING: free swimming with waypoints
@@ -261,13 +262,15 @@ class OctopusCreature(
                     EYE -> {
                         if (visualState == OctopusVisualState.SLEEPING) {
                             scope.drawRect(
-                                color = TerrariumColors.ClaudeEye.copy(alpha = alpha * 0.6f),
+                                color = TerrariumColors.ClaudeEye,
+                                alpha = alpha * 0.6f,
                                 topLeft = Offset(px + gap, py + pixelH * 0.4f),
                                 size = Size(pixelW - gap * 2, pixelH * 0.2f),
                             )
                         } else {
                             scope.drawRect(
-                                color = TerrariumColors.ClaudeEye.copy(alpha = alpha),
+                                color = TerrariumColors.ClaudeEye,
+                                alpha = alpha,
                                 topLeft = Offset(px + gap, py + gap),
                                 size = Size(pixelW - gap * 2, pixelH - gap * 2),
                             )
@@ -277,7 +280,8 @@ class OctopusCreature(
                         // Tentacles: stretch height, stay connected to body (no top gap)
                         val stretch = tentacleOffset(cell == LEFT_LEG, pixelH)
                         scope.drawRect(
-                            color = bodyColor.copy(alpha = alpha),
+                            color = bodyColor,
+                            alpha = alpha,
                             topLeft = Offset(px + gap, py),
                             size = Size(
                                 pixelW - gap * 2,
@@ -287,7 +291,8 @@ class OctopusCreature(
                     }
                     else -> {
                         scope.drawRect(
-                            color = bodyColor.copy(alpha = alpha),
+                            color = bodyColor,
+                            alpha = alpha,
                             topLeft = Offset(px + gap, py + gap),
                             size = Size(pixelW - gap * 2, pixelH - gap * 2),
                         )
@@ -322,7 +327,8 @@ class OctopusCreature(
             val endY = cy + sin(baseAngle) * armLen
 
             scope.drawLine(
-                color = TerrariumColors.ClaudeBody.copy(alpha = alpha * 0.35f),
+                color = TerrariumColors.ClaudeBody,
+                alpha = alpha * 0.35f,
                 start = Offset(cx, cy),
                 end = Offset(endX, endY),
                 strokeWidth = radius * 0.10f,
@@ -330,6 +336,9 @@ class OctopusCreature(
             )
         }
     }
+
+    // Pre-allocated speech bubble tail Path
+    private val bubbleTailPath = Path()
 
     /** Speech bubble with "?" — shown during ASKING state. */
     private fun drawSpeechBubble(scope: DrawScope, cx: Float, cy: Float, bodyRadius: Float) {
@@ -347,26 +356,27 @@ class OctopusCreature(
 
         // Bubble fill
         scope.drawCircle(
-            color = Color.White.copy(alpha = 0.25f),
+            color = Color.White,
+            alpha = 0.25f,
             radius = r,
             center = Offset(bubbleX, bubbleY),
         )
         // Bubble border
         scope.drawCircle(
-            color = TerrariumColors.HUDText.copy(alpha = 0.5f),
+            color = TerrariumColors.HUDText,
+            alpha = 0.5f,
             radius = r,
             center = Offset(bubbleX, bubbleY),
             style = Stroke(width = bodyRadius * 0.04f),
         )
 
         // Tail triangle pointing toward octopus head
-        val tailPath = Path().apply {
-            moveTo(bubbleX - r * 0.3f, bubbleY + r * 0.8f)
-            lineTo(cx + bodyRadius * 0.5f, cy - gridH / 2f)
-            lineTo(bubbleX - r * 0.05f, bubbleY + r * 0.95f)
-            close()
-        }
-        scope.drawPath(tailPath, color = Color.White.copy(alpha = 0.25f))
+        bubbleTailPath.reset()
+        bubbleTailPath.moveTo(bubbleX - r * 0.3f, bubbleY + r * 0.8f)
+        bubbleTailPath.lineTo(cx + bodyRadius * 0.5f, cy - gridH / 2f)
+        bubbleTailPath.lineTo(bubbleX - r * 0.05f, bubbleY + r * 0.95f)
+        bubbleTailPath.close()
+        scope.drawPath(bubbleTailPath, color = Color.White, alpha = 0.25f)
 
         // "?" text via nativeCanvas
         val canvas = scope.drawContext.canvas.nativeCanvas
@@ -377,6 +387,13 @@ class OctopusCreature(
         )
     }
 
+    // Cached name tag layout to avoid per-frame measureText calls
+    private var cachedNameLayout: CachedNameLayout? = null
+    private data class CachedNameLayout(
+        val name: String, val fontSize: Float, val bodyRadius: Float,
+        val lines: List<String>, val lineHeight: Float, val hatHeight: Float,
+    )
+
     /** Name tag hat above the octopus — only shown in multi-session mode. */
     private fun drawNameTag(scope: DrawScope, cx: Float, cy: Float, bodyRadius: Float, name: String) {
         val pixelW = bodyRadius * 2f / GRID_COLS
@@ -386,33 +403,51 @@ class OctopusCreature(
         val hatWidth = bodyRadius * 1.8f
         val baseFontSize = bodyRadius * 0.5f
 
-        // 3-tier adaptive font: 60% → 45% → 35%
-        val tiers = floatArrayOf(0.60f, 0.45f, 0.35f)
-        val canvas = scope.drawContext.canvas.nativeCanvas
-        val maxTextWidth = hatWidth * 0.9f
-        var chosenSize = baseFontSize * tiers[0]
-        var lines = listOf(name)
+        // Use cached layout if name and bodyRadius haven't changed
+        val cached = cachedNameLayout
+        val chosenSize: Float
+        val lines: List<String>
+        val lineHeight: Float
+        val hatHeight: Float
 
-        for (tier in tiers) {
-            chosenSize = baseFontSize * tier
-            nameTagPaint.textSize = chosenSize
-            val textWidth = nameTagPaint.measureText(name)
-            if (textWidth <= maxTextWidth) {
-                lines = listOf(name)
-                break
+        if (cached != null && cached.name == name && cached.bodyRadius == bodyRadius) {
+            chosenSize = cached.fontSize
+            lines = cached.lines
+            lineHeight = cached.lineHeight
+            hatHeight = cached.hatHeight
+        } else {
+            // 3-tier adaptive font: 60% → 45% → 35%
+            val tiers = floatArrayOf(0.60f, 0.45f, 0.35f)
+            val maxTextWidth = hatWidth * 0.9f
+            var cs = baseFontSize * tiers[0]
+            var ls = listOf(name)
+
+            for (tier in tiers) {
+                cs = baseFontSize * tier
+                nameTagPaint.textSize = cs
+                val textWidth = nameTagPaint.measureText(name)
+                if (textWidth <= maxTextWidth) {
+                    ls = listOf(name)
+                    break
+                }
+                if (tier == tiers.last()) {
+                    ls = wrapToTwoLines(name, nameTagPaint, maxTextWidth)
+                }
             }
-            if (tier == tiers.last()) {
-                // Smallest tier still too wide — wrap to 2 lines
-                lines = wrapToTwoLines(name, nameTagPaint, maxTextWidth)
-            }
+
+            chosenSize = cs
+            lines = ls
+            lineHeight = cs * 1.3f
+            hatHeight = if (ls.size == 1) bodyRadius * 0.5f else lineHeight * ls.size + cs * 0.3f
+            cachedNameLayout = CachedNameLayout(name, cs, bodyRadius, ls, lineHeight, hatHeight)
         }
 
-        val lineHeight = chosenSize * 1.3f
-        val hatHeight = if (lines.size == 1) bodyRadius * 0.5f else lineHeight * lines.size + chosenSize * 0.3f
+        val canvas = scope.drawContext.canvas.nativeCanvas
 
         // Hat background
         scope.drawRoundRect(
-            color = TerrariumColors.ClaudeBody.copy(alpha = 0.6f),
+            color = TerrariumColors.ClaudeBody,
+            alpha = 0.6f,
             topLeft = Offset(cx - hatWidth / 2, hatY - hatHeight),
             size = Size(hatWidth, hatHeight),
             cornerRadius = CornerRadius(4f, 4f),

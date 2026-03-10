@@ -226,10 +226,11 @@ class DataParticleSystem : Creature {
                 val distSq = dx * dx + dy * dy
 
                 // Separation: all fish (both schools avoid collision)
+                // Use inverse-distSq instead of sqrt — stronger repulsion when closer
                 if (distSq < SEPARATION_RADIUS_SQ) {
-                    val dist = sqrt(distSq).coerceAtLeast(0.001f)
-                    sepX -= dx / dist
-                    sepY -= dy / dist
+                    val invDist = 1f / (distSq + 0.0001f)
+                    sepX -= dx * invDist
+                    sepY -= dy * invDist
                     sepCount++
                 }
                 // Alignment + Cohesion: same school only
@@ -426,27 +427,31 @@ class DataParticleSystem : Creature {
             val cy = f.y * h
             // Wide outer glow
             scope.drawCircle(
-                color = f.color.copy(alpha = f.alpha * 0.15f),
+                color = f.color,
+                alpha = f.alpha * 0.15f,
                 radius = radius * 4.5f,
                 center = Offset(cx, cy),
                 blendMode = BlendMode.Screen,
             )
             // Inner glow
             scope.drawCircle(
-                color = f.color.copy(alpha = f.alpha * 0.35f),
+                color = f.color,
+                alpha = f.alpha * 0.35f,
                 radius = radius * 2.2f,
                 center = Offset(cx, cy),
                 blendMode = BlendMode.Screen,
             )
             // Core
             scope.drawCircle(
-                color = f.color.copy(alpha = f.alpha),
+                color = f.color,
+                alpha = f.alpha,
                 radius = radius,
                 center = Offset(cx, cy),
             )
             // Bright center
             scope.drawCircle(
-                color = Color.White.copy(alpha = f.alpha * 0.7f),
+                color = Color.White,
+                alpha = f.alpha * 0.7f,
                 radius = radius * 0.35f,
                 center = Offset(cx, cy),
             )
@@ -558,7 +563,8 @@ class DataParticleSystem : Creature {
             fish.bodyPath.close()
             drawPath(
                 path = fish.bodyPath,
-                color = TerrariumColors.TetraBody.copy(alpha = fish.alpha * bankAlpha),
+                color = TerrariumColors.TetraBody,
+                alpha = fish.alpha * bankAlpha,
             )
 
             // Neon stripe — follows body curve
@@ -571,7 +577,8 @@ class DataParticleSystem : Creature {
             )
             drawPath(
                 path = fish.stripePath,
-                color = TerrariumColors.TetraNeon.copy(alpha = fish.alpha * 0.95f * bankAlpha),
+                color = TerrariumColors.TetraNeon,
+                alpha = fish.alpha * 0.95f * bankAlpha,
                 style = androidx.compose.ui.graphics.drawscope.Stroke(
                     width = size * 0.18f,
                     cap = StrokeCap.Round,
@@ -600,7 +607,8 @@ class DataParticleSystem : Creature {
             fish.tailPath.close()
             drawPath(
                 path = fish.tailPath,
-                color = TerrariumColors.TetraFin.copy(alpha = fish.alpha * 0.85f),
+                color = TerrariumColors.TetraFin,
+                alpha = fish.alpha * 0.85f,
             )
 
             // Dorsal fin — on the curved back
@@ -613,12 +621,14 @@ class DataParticleSystem : Creature {
             fish.dorsalPath.close()
             drawPath(
                 path = fish.dorsalPath,
-                color = TerrariumColors.TetraBody.copy(alpha = fish.alpha * 0.7f),
+                color = TerrariumColors.TetraBody,
+                alpha = fish.alpha * 0.7f,
             )
 
             // Eye
             drawCircle(
-                color = TerrariumColors.TetraNeon.copy(alpha = fish.alpha * 0.8f),
+                color = TerrariumColors.TetraNeon,
+                alpha = fish.alpha * 0.8f,
                 radius = size * 0.08f,
                 center = Offset(noseX * 0.5f, -bodyH * 0.15f),
             )

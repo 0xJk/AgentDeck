@@ -115,9 +115,9 @@ object TerrariumTiming {
 
     // Octopus swimming
     const val SWIM_SPEED = 0.03f           // canvas fraction/sec
-    const val SWIM_LERP_RATE = 1.5f        // target convergence speed
-    const val WAYPOINT_MIN_INTERVAL = 3.0f // seconds
-    const val WAYPOINT_MAX_INTERVAL = 5.0f
+    const val SWIM_LERP_RATE = 3.0f         // target convergence speed
+    const val WAYPOINT_MIN_INTERVAL = 1.5f // seconds
+    const val WAYPOINT_MAX_INTERVAL = 3.0f
 
     // Neon Tetra tail
     const val TETRA_TAIL_SPEED = 8.0f

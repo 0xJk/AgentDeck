@@ -28,6 +28,9 @@ class RockFormation {
     private var time by mutableFloatStateOf(0f)
     // Pre-allocated ripple paths (12 sine-wave ripples)
     private val ripplePaths = Array(12) { Path() }
+    // Pre-allocated rock paths (6 rocks)
+    private val rockPaths = Array(6) { Path() }
+    private var rockPathIdx = 0
 
     fun setState(state: EnvironmentVisualState) {
         envState = state
@@ -104,6 +107,7 @@ class RockFormation {
 
     private fun drawRocks(scope: DrawScope, w: Float, h: Float) {
         val bottomY = h * (1f - TerrariumLayout.SAND_HEIGHT_FRACTION)
+        rockPathIdx = 0
 
         // Large rock cluster (right side, where crayfish sits)
         drawRock(scope, w * 0.7f, bottomY, w * 0.15f, w * 0.08f, TerrariumColors.RockMid)
@@ -119,21 +123,21 @@ class RockFormation {
     }
 
     private fun drawRock(scope: DrawScope, cx: Float, baseY: Float, rw: Float, rh: Float, color: Color) {
-        val path = Path().apply {
-            moveTo(cx - rw * 0.5f, baseY)
-            cubicTo(
-                cx - rw * 0.4f, baseY - rh * 0.8f,
-                cx + rw * 0.4f, baseY - rh * 1.1f,
-                cx + rw * 0.5f, baseY,
-            )
-            close()
-        }
+        val path = rockPaths[rockPathIdx++].also { it.reset() }
+        path.moveTo(cx - rw * 0.5f, baseY)
+        path.cubicTo(
+            cx - rw * 0.4f, baseY - rh * 0.8f,
+            cx + rw * 0.4f, baseY - rh * 1.1f,
+            cx + rw * 0.5f, baseY,
+        )
+        path.close()
         scope.drawPath(path = path, color = color)
 
         // Highlight edge
         scope.drawPath(
             path = path,
-            color = Color.White.copy(alpha = 0.05f),
+            color = Color.White,
+            alpha = 0.05f,
             style = Stroke(width = 1f),
         )
     }

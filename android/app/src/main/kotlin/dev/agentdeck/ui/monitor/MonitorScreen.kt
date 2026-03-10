@@ -91,24 +91,24 @@ fun MonitorScreen(
     val connectionStatus by connection.status.collectAsState()
     val currentUrl by connection.url.collectAsState()
     val lastError by connection.lastError.collectAsState()
+    val isReconnecting by connection.isReconnecting.collectAsState()
+    val reconnectAttempt by connection.reconnectAttempt.collectAsState()
 
-    // mDNS discovery — active while disconnected
+    // mDNS discovery — active while not connected (including reconnect)
     val context = LocalContext.current
     val discovery = remember { BridgeDiscovery(context) }
     var discoveredBridges by remember { mutableStateOf<List<DiscoveredBridge>>(emptyList()) }
 
     LaunchedEffect(connectionStatus, currentUrl) {
         when {
-            connectionStatus == ConnectionStatus.DISCONNECTED && currentUrl == null -> {
-                discovery.discover().collect { bridges ->
-                    discoveredBridges = bridges
-                }
-            }
             connectionStatus == ConnectionStatus.CONNECTED -> {
                 discoveredBridges = emptyList()
             }
             else -> {
-                discoveredBridges = emptyList()
+                // DISCONNECTED or CONNECTING — run mDNS to show WiFi alternatives
+                discovery.discover().collect { bridges ->
+                    discoveredBridges = bridges
+                }
             }
         }
     }
@@ -132,11 +132,17 @@ fun MonitorScreen(
                 connectionStatus = connectionStatus,
                 discoveredBridges = discoveredBridges,
                 lastError = lastError,
+                isReconnecting = isReconnecting,
+                reconnectAttempt = reconnectAttempt,
+                reconnectUrl = currentUrl,
                 onConnectToBridge = { bridge ->
                     connection.connect(bridge.wsUrl())
                 },
                 onConnectLocalhost = {
                     connection.connect("ws://127.0.0.1:9120")
+                },
+                onStopReconnecting = {
+                    connection.disconnect()
                 },
             )
         } else {
@@ -186,8 +192,12 @@ private fun ConnectionOverlay(
     connectionStatus: ConnectionStatus,
     discoveredBridges: List<DiscoveredBridge>,
     lastError: String?,
+    isReconnecting: Boolean,
+    reconnectAttempt: Int,
+    reconnectUrl: String?,
     onConnectToBridge: (DiscoveredBridge) -> Unit,
     onConnectLocalhost: () -> Unit,
+    onStopReconnecting: () -> Unit,
 ) {
     // Semi-transparent dark scrim
     Box(
@@ -208,22 +218,49 @@ private fun ConnectionOverlay(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = when (connectionStatus) {
-                    ConnectionStatus.DISCONNECTED -> "Not Connected"
-                    ConnectionStatus.CONNECTING -> "Connecting..."
-                    ConnectionStatus.CONNECTED -> "Connected"
+                text = when {
+                    isReconnecting -> "Reconnecting..."
+                    connectionStatus == ConnectionStatus.DISCONNECTED -> "Not Connected"
+                    connectionStatus == ConnectionStatus.CONNECTING -> "Connecting..."
+                    else -> "Connected"
                 },
                 style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                 color = AgentDeckColors.WhiteText,
                 textAlign = TextAlign.Center,
             )
 
-            Text(
-                text = "Connect to an AgentDeck bridge to start monitoring",
-                style = MaterialTheme.typography.bodyMedium,
-                color = AgentDeckColors.SlateText,
-                textAlign = TextAlign.Center,
-            )
+            if (isReconnecting && reconnectUrl != null) {
+                Text(
+                    text = reconnectUrl,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = AgentDeckColors.SlateText,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = "Attempt #$reconnectAttempt",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AgentDeckColors.Amber,
+                )
+
+                // Stop reconnecting button
+                OutlinedButton(
+                    onClick = onStopReconnecting,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text(
+                        text = "Stop Reconnecting",
+                        color = AgentDeckColors.SlateText,
+                    )
+                }
+            } else if (!isReconnecting) {
+                Text(
+                    text = "Connect to an AgentDeck bridge to start monitoring",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = AgentDeckColors.SlateText,
+                    textAlign = TextAlign.Center,
+                )
+            }
 
             // Error message
             if (lastError != null && connectionStatus == ConnectionStatus.DISCONNECTED) {
@@ -235,7 +272,7 @@ private fun ConnectionOverlay(
                 )
             }
 
-            if (connectionStatus == ConnectionStatus.CONNECTING) {
+            if (connectionStatus == ConnectionStatus.CONNECTING && !isReconnecting) {
                 Text(
                     text = "Trying to reach bridge...",
                     style = MaterialTheme.typography.bodyMedium,
@@ -243,36 +280,14 @@ private fun ConnectionOverlay(
                 )
             }
 
-            if (connectionStatus == ConnectionStatus.DISCONNECTED) {
+            // Show connection options when not actively connecting (or when reconnecting with alternatives)
+            if (connectionStatus == ConnectionStatus.DISCONNECTED || isReconnecting) {
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // USB quick-connect
-                Button(
-                    onClick = onConnectLocalhost,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = AgentDeckColors.Blue),
-                    shape = RoundedCornerShape(8.dp),
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    ) {
-                        Text(
-                            text = "USB Connect",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        )
-                        Text(
-                            text = "127.0.0.1:9120",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            color = Color.White.copy(alpha = 0.7f),
-                        )
-                    }
-                }
-
-                // mDNS discovered bridges
+                // mDNS discovered bridges (show first — WiFi alternatives are primary action during reconnect)
                 if (discoveredBridges.isNotEmpty()) {
                     Text(
-                        text = "Discovered",
+                        text = if (isReconnecting) "Or connect via WiFi:" else "Discovered",
                         style = MaterialTheme.typography.labelMedium,
                         color = AgentDeckColors.SlateText,
                     )
@@ -292,12 +307,37 @@ private fun ConnectionOverlay(
                             }
                         }
                     }
-                } else {
+                } else if (!isReconnecting) {
                     Text(
                         text = "Searching for bridges on network...",
                         style = MaterialTheme.typography.bodySmall,
                         color = AgentDeckColors.SlateText,
                     )
+                }
+
+                // USB quick-connect (show below WiFi options during reconnect)
+                if (!isReconnecting) {
+                    Button(
+                        onClick = onConnectLocalhost,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = AgentDeckColors.Blue),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = "USB Connect",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            )
+                            Text(
+                                text = "127.0.0.1:9120",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = Color.White.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
                 }
             }
 

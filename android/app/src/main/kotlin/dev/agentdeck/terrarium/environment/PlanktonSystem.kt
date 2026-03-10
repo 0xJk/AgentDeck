@@ -117,7 +117,8 @@ class PlanktonSystem : Creature {
             if (p.zLayer != zLayer) continue
 
             scope.drawCircle(
-                color = tintColor.copy(alpha = p.alpha),
+                color = tintColor,
+                alpha = p.alpha,
                 radius = p.size * w,
                 center = Offset(p.x * w, p.y * h),
             )

@@ -25,7 +25,8 @@ class WaterEffect {
     private var envState by mutableStateOf(EnvironmentVisualState.CALM)
     private var time by mutableFloatStateOf(0f)
     // Pre-allocated Path objects for caustic lines — 2 families × LINE_COUNT each
-    private val causticPaths = Array(LINE_COUNT * 2) { Path() }
+    // Note: sized for max LINE_COUNT (allocated once, not re-created on constant change)
+    private val causticPaths = Array(16) { Path() }
     fun setState(state: EnvironmentVisualState) {
         envState = state
     }
@@ -67,12 +68,14 @@ class WaterEffect {
         val waveLen2 = w * 0.32f
         val amp = spacing * 0.35f
         val strokeW = w * 0.008f
-        val color = TerrariumColors.CausticsLight.copy(alpha = alpha)
+        val color = TerrariumColors.CausticsLight
         val stroke = Stroke(width = strokeW, cap = StrokeCap.Round)
+        // BlendMode.Plus (additive) avoids GPU framebuffer read-back needed by Overlay
+        val reducedAlpha = alpha * 0.85f  // compensate for additive blend visual difference
 
         val freq1 = twoPi / waveLen1
         val freq2 = twoPi / waveLen2
-        val step = 4f
+        val step = 6f  // fewer lineTo segments per path (-33% GPU load)
 
         // Family 1: near-horizontal lines (~10° tilt), slow undulation
         val angle1 = 10f * PI.toFloat() / 180f
@@ -93,7 +96,7 @@ class WaterEffect {
                 if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
                 t += step
             }
-            scope.drawPath(path, color, blendMode = BlendMode.Overlay, style = stroke)
+            scope.drawPath(path, color, alpha = reducedAlpha, blendMode = BlendMode.Plus, style = stroke)
         }
 
         // Family 2: ~60° angled lines, slightly different frequency
@@ -115,11 +118,11 @@ class WaterEffect {
                 if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
                 t += step
             }
-            scope.drawPath(path, color, blendMode = BlendMode.Overlay, style = stroke)
+            scope.drawPath(path, color, alpha = reducedAlpha, blendMode = BlendMode.Plus, style = stroke)
         }
     }
 
     companion object {
-        private const val LINE_COUNT = 12
+        private const val LINE_COUNT = 8
     }
 }

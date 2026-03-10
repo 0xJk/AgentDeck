@@ -28,8 +28,8 @@ import dev.agentdeck.terrarium.TerrariumState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
-/** E-ink animation frame interval (ms). 600ms for snappier movement. */
-private const val EINK_ANIM_FRAME_MS = 600L
+/** E-ink animation frame interval (ms). 400ms for smoother movement (~2.5fps). */
+private const val EINK_ANIM_FRAME_MS = 400L
 
 /** Total animation cycle frames — fish patrol uses the full range, creatures use % 4. */
 private const val EINK_ANIM_CYCLE = 32
@@ -281,7 +281,9 @@ private fun renderEinkFrame(
     if (state.agents.isEmpty()) {
         // No agents — skip octopus drawing
     } else if (state.agents.size > 1) {
-        val slots = dev.agentdeck.terrarium.layoutOctopuses(state.agents.size)
+        val slots = dev.agentdeck.terrarium.layoutOctopusesByProject(
+            state.agents.map { dev.agentdeck.terrarium.AgentLayoutInfo(it.sessionId, it.displayName) }
+        )
         for (i in state.agents.indices) {
             val slot = slots.getOrElse(i) { slots.last() }
             drawEinkOctopus(canvas, paint, width, height,
@@ -540,7 +542,8 @@ private fun drawEinkOctopus(
 ) {
     val cx = w * centerXFraction
     // Y-position by state — staggered by X position for natural multi-session variety
-    val standingOffset = (centerXFraction - 0.38f) * 0.15f
+    // Stronger multiplier (0.25) ensures visible separation on small e-ink screens
+    val standingOffset = (centerXFraction - 0.38f) * 0.25f
     val cy = when (state) {
         OctopusVisualState.SLEEPING -> h * (0.78f + standingOffset * 0.5f)
         OctopusVisualState.FLOATING -> h * (0.74f + standingOffset)
@@ -948,8 +951,8 @@ private fun drawEinkCrayfish(
  * STREAMING: school centers pull 30% toward WORKING octopus + data particles orbit.
  * HOVERING: 7 fish gather near options area, 3 drift at distance.
  */
-private const val EINK_FISH_COUNT = 10
-private const val EINK_FISH_PER_SCHOOL = 5
+private const val EINK_FISH_COUNT = 12
+private const val EINK_FISH_PER_SCHOOL = 6
 
 private fun drawEinkDataParticles(
     canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int,
@@ -967,46 +970,66 @@ private fun drawEinkDataParticles(
     val frame = animFrame.toFloat()
 
     if (state == TetraVisualState.STREAMING || state == TetraVisualState.CIRCLING) {
-        // School center elliptical orbits
-        val angA = frame * 0.14
-        val angB = frame * 0.11
-        var cxA = 0.30f + 0.22f * kotlin.math.cos(angA).toFloat()
-        var cyA = 0.38f + 0.18f * kotlin.math.sin(angA * 1.3).toFloat()
-        var cxB = 0.60f + 0.22f * kotlin.math.cos(angB).toFloat()
-        var cyB = 0.42f + 0.18f * kotlin.math.sin(angB * 1.3).toFloat()
+        // Lissajous school center paths (matching tablet DataParticleSystem)
+        // Different sin/cos periods create ~20-30 frame meeting/separation cycles
+        val time = frame * 0.08f  // slower time scale for e-ink frame steps
+        val streaming = state == TetraVisualState.STREAMING
+        val ampScale = if (streaming) 0.4f else 1.0f
+        // STREAMING: collapse two school base positions closer together (0.42/0.48 vs 0.35/0.55)
+        val baseXA = if (streaming) 0.42f else 0.35f
+        val baseXB = if (streaming) 0.48f else 0.55f
+        val baseYA = if (streaming) 0.38f else 0.35f
+        val baseYB = if (streaming) 0.38f else 0.40f
+        var cxA = baseXA + 0.18f * ampScale * kotlin.math.sin(time * 0.15f).toFloat()
+        var cyA = baseYA + 0.12f * ampScale * kotlin.math.sin(time * 0.21f).toFloat()
+        var cxB = baseXB + 0.18f * ampScale * kotlin.math.cos(time * 0.13f).toFloat()
+        var cyB = baseYB + 0.12f * ampScale * kotlin.math.cos(time * 0.18f).toFloat()
 
-        // School velocity direction for heading
-        val vxA = -kotlin.math.sin(angA).toFloat()
-        val vxB = -kotlin.math.sin(angB).toFloat()
+        // School velocity direction for heading (derivative of position)
+        val vxA = kotlin.math.cos(time * 0.15f).toFloat()
+        val vxB = -kotlin.math.sin(time * 0.13f).toFloat()
 
         // STREAMING: pull toward active agent (octopus or crayfish)
         if (state == TetraVisualState.STREAMING) {
             val pullX: Float
             val pullY: Float
             if (agentCount > 0 && slots.isNotEmpty()) {
-                // Pull toward working octopus
                 pullX = slots[0].centerXFraction
                 pullY = slots[0].centerYFraction +
                     0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat()
             } else if (crayfishRouting) {
-                // No octopuses — pull toward routing crayfish
-                pullX = 0.75f  // crayfish e-ink X
-                pullY = 0.55f  // crayfish ROUTING Y
+                pullX = 0.75f
+                pullY = 0.55f
             } else {
                 pullX = Float.NaN
                 pullY = Float.NaN
             }
             if (!pullX.isNaN()) {
-                val pull = 0.30f
+                val pull = 0.80f  // near-total convergence — both schools merge at agent
                 cxA += (pullX - cxA) * pull; cyA += (pullY - cyA) * pull
                 cxB += (pullX - cxB) * pull; cyB += (pullY - cyB) * pull
             }
         }
 
+        // CIRCLING: weak pull toward agents (tablet has orbit force even when idle)
+        if (state == TetraVisualState.CIRCLING && agentCount > 0 && slots.isNotEmpty()) {
+            val pull = 0.15f
+            val pullX = slots[0].centerXFraction
+            val pullY = slots[0].centerYFraction
+            cxA += (pullX - cxA) * pull; cyA += (pullY - cyA) * pull
+            cxB += (pullX - cxB) * pull; cyB += (pullY - cyB) * pull
+        }
+
+        // Crayfish routing: pull school centers toward crayfish (matching tablet behavior)
+        if (crayfishRouting) {
+            val pull = 0.30f
+            cxA += (0.75f - cxA) * pull; cyA += (0.55f - cyA) * pull
+            cxB += (0.75f - cxB) * pull; cyB += (0.55f - cyB) * pull
+        }
+
         val spacing = w * 0.032f
 
         for (i in 0 until EINK_FISH_COUNT) {
-            // Depth: last fish of each school (4, 9) = back layer
             val fishLayer = if (i % EINK_FISH_PER_SCHOOL == EINK_FISH_PER_SCHOOL - 1) 0 else 1
             if (layer != -1 && fishLayer != layer) continue
             val depthScale = if (fishLayer == 0) 0.80f else 1.0f
@@ -1016,16 +1039,21 @@ private fun drawEinkDataParticles(
             val baseY = if (schoolA) h * cyA else h * cyB
 
             val localIdx = i % EINK_FISH_PER_SCHOOL
-            val fishAng = frame * (0.18 + localIdx * 0.05) + localIdx * 1.26
-            val dx = kotlin.math.cos(fishAng).toFloat() * spacing * (0.6f + localIdx * 0.15f)
-            val dy = kotlin.math.sin(fishAng * 0.7).toFloat() * spacing * 0.5f
+            // Per-fish wander (individual phase offsets for natural variation)
+            val wanderSeed = localIdx * 1.47f + (if (schoolA) 0f else 2.3f)
+            val fishAng = time * (0.6f + localIdx * 0.15f) + wanderSeed
+            val wanderScale = if (state == TetraVisualState.STREAMING) 0.5f else 1.0f
+            val wanderRadius = spacing * (0.5f + localIdx * 0.2f) * wanderScale
+            val dx = kotlin.math.cos(fishAng.toDouble()).toFloat() * wanderRadius
+            val dy = kotlin.math.sin(fishAng.toDouble() * 0.7).toFloat() * wanderRadius * 0.6f
 
             val fx = (baseX + dx).coerceIn(w * 0.05f, w * 0.95f)
             val fy = (baseY + dy).coerceIn(h * 0.10f, h * 0.72f)
 
-            val fishVx = -kotlin.math.sin(fishAng).toFloat()
+            // Heading from school movement + individual wander velocity
+            val fishVx = -kotlin.math.sin(fishAng.toDouble()).toFloat()
             val schoolVx = if (schoolA) vxA else vxB
-            val heading = if (fishVx + schoolVx * 0.5f >= 0f) 0f else 180f
+            val heading = if (fishVx * 0.4f + schoolVx * 0.6f >= 0f) 0f else 180f
             val tailPhase = (animFrame + localIdx * 2) % 4
 
             drawEinkFish(canvas, paint, fx, fy, fishSize * depthScale, heading, tailPhase)
@@ -1076,8 +1104,9 @@ private fun drawEinkDataParticles(
             paint.pathEffect = null
         }
     } else if (state == TetraVisualState.HOVERING) {
-        val driftAng = frame * 0.12
-        val nearX = w * 0.45f + w * 0.012f * kotlin.math.cos(driftAng).toFloat()
+        // HOVERING: fish gather near option area (matching tablet behavior)
+        val time = frame * 0.08f
+        val nearX = w * 0.45f + w * 0.012f * kotlin.math.cos(time * 0.3).toFloat()
         val nearY = h * 0.35f
 
         for (i in 0 until EINK_FISH_COUNT) {
@@ -1087,17 +1116,18 @@ private fun drawEinkDataParticles(
 
             val isNear = i < 7  // 7 gather, 3 drift
             val localIdx = i % EINK_FISH_PER_SCHOOL
+            val wanderSeed = localIdx * 1.47f + i * 0.83f
             val bx: Float; val by: Float; val vx: Float
             if (isNear) {
-                val ang = frame * (0.12 + localIdx * 0.03) + localIdx * 1.1
-                bx = nearX + kotlin.math.cos(ang).toFloat() * w * 0.04f
-                by = nearY + kotlin.math.sin(ang * 0.8).toFloat() * h * 0.03f
-                vx = -kotlin.math.sin(ang).toFloat()
+                val ang = time * (0.4f + localIdx * 0.1f) + wanderSeed
+                bx = nearX + kotlin.math.cos(ang.toDouble()).toFloat() * w * 0.04f
+                by = nearY + kotlin.math.sin(ang.toDouble() * 0.8).toFloat() * h * 0.03f
+                vx = -kotlin.math.sin(ang.toDouble()).toFloat()
             } else {
-                val ang = frame * (0.08 + i * 0.02) + i * 2.1
-                bx = w * 0.50f + kotlin.math.cos(ang).toFloat() * w * 0.10f
-                by = h * 0.45f + kotlin.math.sin(ang * 0.7).toFloat() * h * 0.06f
-                vx = -kotlin.math.sin(ang).toFloat()
+                val ang = time * (0.3f + i * 0.07f) + wanderSeed
+                bx = w * 0.50f + kotlin.math.cos(ang.toDouble()).toFloat() * w * 0.10f
+                by = h * 0.45f + kotlin.math.sin(ang.toDouble() * 0.7).toFloat() * h * 0.06f
+                vx = -kotlin.math.sin(ang.toDouble()).toFloat()
             }
 
             val fx = bx.coerceIn(w * 0.05f, w * 0.95f)
