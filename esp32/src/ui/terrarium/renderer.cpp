@@ -6,6 +6,7 @@
 #include "octopus.h"
 #include "crayfish.h"
 #include "tetra.h"
+#include "particles.h"
 #include "bubbles.h"
 #include "../../state/agent_state.h"
 #include "../theme.h"
@@ -161,6 +162,7 @@ void init(lv_obj_t* parent) {
     Kelp::init();
     Octopus::init();
     Crayfish::init();
+    Particles::init();
     Tetra::init();
     Bubbles::init();
 
@@ -209,18 +211,22 @@ void render(float dt) {
         Octopus::render(canvas_buf, SCREEN_W, SCREEN_H, totalTime, cState, i, octCount);
     }
 
-    // 8. Neon tetra school
+    // 8. Data particles (food crumbs from working agents)
+    Particles::update(dt, totalTime, cState, octCount, cfState, showCrayfish);
+    Particles::render(canvas_buf, SCREEN_W, SCREEN_H, totalTime);
+
+    // 9. Neon tetra school (chases food particles)
     Tetra::update(dt, totalTime, tState, cState, octCount);
     Tetra::render(canvas_buf, SCREEN_W, SCREEN_H);
 
-    // 9. Floating particles (plankton/dust)
+    // 10. Floating particles (plankton/dust)
     Water::renderParticles(canvas_buf, SCREEN_W, SCREEN_H, totalTime);
 
-    // 10. Bubbles
+    // 11. Bubbles
     Bubbles::update(dt, totalTime, cState);
     Bubbles::render(canvas_buf, SCREEN_W, SCREEN_H);
 
-    // 11. Water surface waves + sparkles
+    // 12. Water surface waves + sparkles
     Water::renderSurface(canvas_buf, SCREEN_W, SCREEN_H, totalTime);
 
     // Invalidate LVGL canvas to trigger flush

@@ -95,17 +95,23 @@ static void handleUsageUpdate(JsonObject& obj) {
         ? obj["estimatedCostUsd"].as<float>() : -1.0f;
     g_state.usageStale = obj["usageStale"] | false;
 
-    // Reset times: clear when absent (don't keep stale strings)
-    if (obj["fiveHourResetsAt"].is<const char*>())
-        strncpy(g_state.fiveHourReset, obj["fiveHourResetsAt"].as<const char*>(),
-                sizeof(g_state.fiveHourReset) - 1);
-    else
-        g_state.fiveHourReset[0] = '\0';
-    if (obj["sevenDayResetsAt"].is<const char*>())
-        strncpy(g_state.sevenDayReset, obj["sevenDayResetsAt"].as<const char*>(),
-                sizeof(g_state.sevenDayReset) - 1);
-    else
-        g_state.sevenDayReset[0] = '\0';
+    // Reset times: accept pre-formatted "Xh Ym" from relay, or raw ISO fallback
+    auto storeResetTime = [](JsonObject& obj, const char* key, char* out, size_t outLen) {
+        if (!obj[key].is<const char*>()) { out[0] = '\0'; return; }
+        const char* val = obj[key].as<const char*>();
+        // Already formatted (starts with digit, no 'T' separator) — store directly
+        // ISO 8601 starts like "2026-..." — skip those (ESP32 has no accurate clock)
+        if (val[0] >= '0' && val[0] <= '9' && strchr(val, 'T') == nullptr) {
+            strncpy(out, val, outLen - 1);
+            out[outLen - 1] = '\0';
+        } else {
+            // Raw ISO — can't compute relative time without NTP, show nothing
+            out[0] = '\0';
+        }
+    };
+
+    storeResetTime(obj, "fiveHourResetsAt", g_state.fiveHourReset, sizeof(g_state.fiveHourReset));
+    storeResetTime(obj, "sevenDayResetsAt", g_state.sevenDayReset, sizeof(g_state.sevenDayReset));
 
     unlockState();
 }

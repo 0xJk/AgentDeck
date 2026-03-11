@@ -1,4 +1,5 @@
 #include "tetra.h"
+#include "particles.h"
 #include "draw.h"
 #include "../theme.h"
 #include "config.h"
@@ -72,18 +73,41 @@ void update(float dt, float time, TetraState tState, CreatureState octState, uin
             }
         }
 
-        // School attractor
-        if (tState != TetraState::STREAMING) {
+        // Food pursuit — chase nearest data particle
+        float foodX, foodY, foodDist;
+        bool hasFood = Particles::nearestFood(f.x, f.y, foodX, foodY, foodDist);
+
+        if (hasFood && tState == TetraState::STREAMING) {
+            // Aggressive pursuit during STREAMING
+            float dx = foodX - f.x;
+            float dy = foodY - f.y;
+            float d = foodDist + 0.001f;
+            ax += dx / d * 1.0f;
+            ay += dy / d * 0.4f;  // horizontal preference
+
+            // Eat when close
+            if (foodDist < 0.03f) {
+                Particles::eatNear(f.x, f.y, 0.03f);
+            }
+        } else if (hasFood && tState == TetraState::CIRCLING) {
+            // Moderate pursuit during CIRCLING
+            float dx = foodX - f.x;
+            float dy = foodY - f.y;
+            float d = foodDist + 0.001f;
+            ax += dx / d * 0.5f;
+            ay += dy / d * 0.2f;
+
+            if (foodDist < 0.03f) {
+                Particles::eatNear(f.x, f.y, 0.03f);
+            }
+
+            // Still attract to school center
             ax += (schoolCenterX - f.x) * SCHOOL_ATTRACTOR_W;
             ay += (schoolCenterY - f.y) * SCHOOL_ATTRACTOR_W;
-        }
-
-        // Agent attraction when STREAMING
-        if (tState == TetraState::STREAMING && octCount > 0) {
-            float agentX = Layout::OctHomeX;
-            float agentY = Layout::OctWorkingY;
-            ax += (agentX - f.x) * 0.3f;
-            ay += (agentY - f.y) * 0.3f;
+        } else {
+            // No food — school attractor only
+            ax += (schoolCenterX - f.x) * SCHOOL_ATTRACTOR_W;
+            ay += (schoolCenterY - f.y) * SCHOOL_ATTRACTOR_W;
         }
 
         // Boundary avoidance (soft walls)

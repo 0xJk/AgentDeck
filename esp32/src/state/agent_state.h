@@ -162,6 +162,16 @@ struct DashboardState {
                 tetraState = TetraState::HOVERING;
                 break;
         }
+
+        // Derive crayfish state from gateway when no sessions_list received
+        if (crayfishCount == 0) {
+            if (gatewayAvailable) {
+                crayfishState = gatewayHasError
+                    ? CrayfishState::SICK : CrayfishState::SITTING;
+            } else {
+                crayfishState = CrayfishState::DORMANT;
+            }
+        }
     }
 
     // Add timeline entry (ring buffer)

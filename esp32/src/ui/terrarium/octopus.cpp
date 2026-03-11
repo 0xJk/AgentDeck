@@ -162,24 +162,6 @@ void render(uint16_t* buf, int w, int h, float time,
         }
     }
 
-    // Starburst for WORKING state
-    if (state == CreatureState::WORKING) {
-        static const float starLengths[] = {1.0f, 0.75f, 0.95f, 0.70f, 1.0f,
-                                              0.80f, 0.90f, 0.72f, 0.98f, 0.78f};
-        float rotation = t * 0.5f;
-        float pulse = fastSin(t * 3.0f) * 0.15f + 0.85f;
-        float starRadius = bodyRadius * 1.5f;
-        uint8_t starAlpha = (uint8_t)(255 * 0.7f * bodyAlpha * 0.35f);
-
-        for (int i = 0; i < 10; i++) {
-            float angle = rotation + i * (2 * M_PI / 10);
-            float len = starRadius * starLengths[i] * pulse;
-            int ex = cx + (int)(fastCos(angle) * len);
-            int ey = cy + (int)(fastSin(angle) * len);
-            Draw::line(cx, cy, ex, ey, Theme::ClaudeBodyLight, starAlpha);
-        }
-    }
-
     // Speech bubble for ASKING state
     if (state == CreatureState::ASKING) {
         float bubblePulse = fastSin(t * 2.5f) * 0.08f + 1.0f;

@@ -158,8 +158,8 @@ void init(lv_obj_t* parent) {
     lv_obj_set_style_bg_opa(panelRight, LV_OPA_50, 0);
     lv_obj_set_style_border_width(panelRight, 0, 0);
     lv_obj_set_style_radius(panelRight, 8, 0);
-    lv_obj_set_style_pad_top(panelRight, 4, 0);
-    lv_obj_set_style_pad_bottom(panelRight, 2, 0);
+    lv_obj_set_style_pad_top(panelRight, 3, 0);
+    lv_obj_set_style_pad_bottom(panelRight, 0, 0);
     lv_obj_set_style_pad_left(panelRight, 8, 0);
     lv_obj_set_style_pad_right(panelRight, 8, 0);
     lv_obj_set_style_pad_row(panelRight, 1, 0);
@@ -180,6 +180,7 @@ void init(lv_obj_t* parent) {
     lv_obj_set_style_border_width(gaugeRow, 0, 0);
     lv_obj_set_style_pad_all(gaugeRow, 0, 0);
     lv_obj_set_style_pad_column(gaugeRow, GAUGE_GAP, 0);
+    lv_obj_set_style_pad_row(gaugeRow, 0, 0);
     lv_obj_clear_flag(gaugeRow, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(gaugeRow, LV_FLEX_FLOW_ROW);
 
@@ -187,11 +188,12 @@ void init(lv_obj_t* parent) {
     createGauge(gaugeRow, gauge5hBox, gauge5hFill, gauge5hPct, gauge5hPeriod, gauge5hReset, "5h");
     createGauge(gaugeRow, gauge7dBox, gauge7dFill, gauge7dPct, gauge7dPeriod, gauge7dReset, "7d");
 
-    // Stale indicator (only shown when data is stale)
+    // Stale indicator (only shown when data is stale, hidden by default)
     lblStale = lv_label_create(panelRight);
     lv_obj_set_style_text_color(lblStale, lv_color_hex(Theme::StatusAmber), 0);
     lv_obj_set_style_text_font(lblStale, &lv_font_montserrat_10, 0);
     lv_label_set_text(lblStale, "");
+    lv_obj_add_flag(lblStale, LV_OBJ_FLAG_HIDDEN);
 }
 
 // Helper: status color for AgentState
@@ -357,7 +359,14 @@ void update() {
     updateGauge(gauge7dFill, gauge7dPct, gauge7dReset, p7d, reset7d, usageStale);
 
     // Stale indicator (shown only when we have data but it's stale)
-    lv_label_set_text(lblStale, (usageStale && (p5h >= 0.0f || p7d >= 0.0f)) ? "! stale" : "");
+    bool showStale = usageStale && (p5h >= 0.0f || p7d >= 0.0f);
+    if (showStale) {
+        lv_label_set_text(lblStale, "! stale");
+        lv_obj_clear_flag(lblStale, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_label_set_text(lblStale, "");
+        lv_obj_add_flag(lblStale, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void setVisible(bool v) {
