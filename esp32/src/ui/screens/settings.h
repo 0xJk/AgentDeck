@@ -4,9 +4,7 @@
 
 namespace Screens {
 
-/**
- * Create settings screen (WiFi reset, brightness, manual IP).
- */
 lv_obj_t* settingsCreate();
+void settingsUpdate();
 
 }  // namespace Screens

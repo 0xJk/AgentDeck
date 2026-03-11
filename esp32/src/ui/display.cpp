@@ -1,6 +1,7 @@
 #include "display.h"
 #include "config.h"
 #include "../boards/board_config.h"
+#include "fonts/font_noto_kr_12.h"
 
 #include <lvgl.h>
 #include <LovyanGFX.hpp>
@@ -313,6 +314,9 @@ void displayInit() {
 
     lv_init();
 
+    // Set Korean font as fallback for montserrat_12 (used in HUD, timeline, name tags)
+    const_cast<lv_font_t&>(lv_font_montserrat_12).fallback = &font_noto_kr_12;
+
     disp = lv_display_create(SCREEN_W, SCREEN_H);
     lv_display_set_flush_cb(disp, disp_flush);
 
@@ -367,6 +371,12 @@ void displayInit() {
 
 lv_display_t* getDisplay() {
     return disp;
+}
+
+void setBrightness(int level) {
+    if (level < 0) level = 0;
+    if (level > 255) level = 255;
+    tft.setBrightness(level);
 }
 
 void lvglTick() {

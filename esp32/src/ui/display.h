@@ -16,6 +16,11 @@ void displayInit();
 lv_display_t* getDisplay();
 
 /**
+ * Set display backlight brightness (0-255).
+ */
+void setBrightness(int level);
+
+/**
  * LVGL tick handler — call from timer ISR or task.
  */
 void lvglTick();

@@ -79,27 +79,33 @@ static void handleStateUpdate(JsonObject& obj) {
 static void handleUsageUpdate(JsonObject& obj) {
     lockState();
 
-    if (obj["fiveHourPercent"].is<float>())
-        g_state.fiveHourPercent = obj["fiveHourPercent"].as<float>();
-    if (obj["sevenDayPercent"].is<float>())
-        g_state.sevenDayPercent = obj["sevenDayPercent"].as<float>();
+    // Percent fields: use -1.0f sentinel for "no data" (0 is a valid value).
+    // When bridge omits the field (stale TTL expired), clear to sentinel
+    // instead of keeping the old sticky value.
+    g_state.fiveHourPercent = obj["fiveHourPercent"].is<float>()
+        ? obj["fiveHourPercent"].as<float>() : -1.0f;
+    g_state.sevenDayPercent = obj["sevenDayPercent"].is<float>()
+        ? obj["sevenDayPercent"].as<float>() : -1.0f;
 
     g_state.inputTokens = obj["inputTokens"] | g_state.inputTokens;
     g_state.outputTokens = obj["outputTokens"] | g_state.outputTokens;
     g_state.toolCalls = obj["toolCalls"] | g_state.toolCalls;
     g_state.sessionDurationSec = obj["sessionDurationSec"] | g_state.sessionDurationSec;
-    if (obj["estimatedCostUsd"].is<float>())
-        g_state.estimatedCostUsd = obj["estimatedCostUsd"].as<float>();
+    g_state.estimatedCostUsd = obj["estimatedCostUsd"].is<float>()
+        ? obj["estimatedCostUsd"].as<float>() : -1.0f;
     g_state.usageStale = obj["usageStale"] | false;
 
-    // Parse reset times (ISO strings → human-readable)
-    // For now, store raw; formatting done at render time
+    // Reset times: clear when absent (don't keep stale strings)
     if (obj["fiveHourResetsAt"].is<const char*>())
         strncpy(g_state.fiveHourReset, obj["fiveHourResetsAt"].as<const char*>(),
                 sizeof(g_state.fiveHourReset) - 1);
+    else
+        g_state.fiveHourReset[0] = '\0';
     if (obj["sevenDayResetsAt"].is<const char*>())
         strncpy(g_state.sevenDayReset, obj["sevenDayResetsAt"].as<const char*>(),
                 sizeof(g_state.sevenDayReset) - 1);
+    else
+        g_state.sevenDayReset[0] = '\0';
 
     unlockState();
 }
@@ -135,6 +141,25 @@ static void handleSessionsList(JsonObject& obj) {
             } else if (strcmp(g_state.sessions[i].agentType, "daemon") != 0) {
                 g_state.octopusCount++;
             }
+        }
+    }
+
+    // Populate sessionNames for octopus name tags
+    uint8_t nameIdx = 0;
+    for (uint8_t i = 0; i < g_state.sessionCount && nameIdx < 3; i++) {
+        if (g_state.sessions[i].alive &&
+            strcmp(g_state.sessions[i].agentType, "openclaw") != 0 &&
+            strcmp(g_state.sessions[i].agentType, "daemon") != 0) {
+            const char* name = g_state.sessions[i].projectName;
+            if (name[0]) {
+                strncpy(g_state.sessionNames[nameIdx], name,
+                        sizeof(g_state.sessionNames[nameIdx]) - 1);
+                g_state.sessionNames[nameIdx][sizeof(g_state.sessionNames[nameIdx]) - 1] = '\0';
+            } else {
+                snprintf(g_state.sessionNames[nameIdx],
+                         sizeof(g_state.sessionNames[nameIdx]), "Session %d", nameIdx + 1);
+            }
+            nameIdx++;
         }
     }
 

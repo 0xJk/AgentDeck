@@ -134,6 +134,10 @@ struct DashboardState {
         tetraState = TetraState::HOVERING;
         hudVisible = true;
         timelineView = false;
+        // Sentinel -1.0f = "no data" (0 is a valid usage value)
+        fiveHourPercent = -1.0f;
+        sevenDayPercent = -1.0f;
+        estimatedCostUsd = -1.0f;
     }
 
     // Derive creature states from agent state

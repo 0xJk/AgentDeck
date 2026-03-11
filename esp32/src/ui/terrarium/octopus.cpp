@@ -213,9 +213,10 @@ void render(uint16_t* buf, int w, int h, float time,
     unlockState();
 
     // Name tag — LVGL text rendering directly on canvas
-    int nameLen = strlen(name);
-    // ~7px per char at montserrat_12
-    int textW = nameLen * 7 + 12;
+    // Use LVGL's text width calculation (handles Korean + Latin mixed text)
+    lv_point_t txtSize;
+    lv_text_get_size(&txtSize, name, &lv_font_montserrat_12, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int textW = txtSize.x + 12;
     int tagH = 16;
     int tagX = cx - textW / 2;
     int tagY = startY - tagH - 4;

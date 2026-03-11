@@ -220,9 +220,19 @@ static uint32_t gaugeColor(float pct) {
     return Theme::StatusGreen;
 }
 
-// Update a water-fill gauge
+// Update a water-fill gauge. pct < 0 means "no data" (sentinel).
 static void updateGauge(lv_obj_t* fill, lv_obj_t* pctLabel, lv_obj_t* resetLabel,
-                        float pct, const char* resetStr) {
+                        float pct, const char* resetStr, bool stale) {
+    if (pct < 0.0f) {
+        // No data — empty gauge, "--" text
+        lv_obj_set_height(fill, 0);
+        lv_obj_align(fill, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_bg_color(fill, lv_color_hex(Theme::HUDDim), 0);
+        lv_label_set_text(pctLabel, "--");
+        lv_label_set_text(resetLabel, "");
+        return;
+    }
+
     // Fill height proportional to percentage (inside border)
     int fillH = (int)(GAUGE_INNER * pct / 100.0f);
     if (fillH < 0) fillH = 0;
@@ -234,9 +244,12 @@ static void updateGauge(lv_obj_t* fill, lv_obj_t* pctLabel, lv_obj_t* resetLabel
     uint32_t color = gaugeColor(pct);
     lv_obj_set_style_bg_color(fill, lv_color_hex(color), 0);
 
-    // Percentage text
-    char pctBuf[8];
-    snprintf(pctBuf, sizeof(pctBuf), "%d%%", (int)pct);
+    // Percentage text (append "!" when stale, matching Android behavior)
+    char pctBuf[12];
+    if (stale)
+        snprintf(pctBuf, sizeof(pctBuf), "%d%%!", (int)pct);
+    else
+        snprintf(pctBuf, sizeof(pctBuf), "%d%%", (int)pct);
     lv_label_set_text(pctLabel, pctBuf);
 
     // Reset time below gauge
@@ -339,11 +352,11 @@ void update() {
     lv_label_set_text(lblSessions, buf);
 
     // === Right panel: water-fill gauges ===
-    updateGauge(gauge5hFill, gauge5hPct, gauge5hReset, p5h, reset5h);
-    updateGauge(gauge7dFill, gauge7dPct, gauge7dReset, p7d, reset7d);
+    updateGauge(gauge5hFill, gauge5hPct, gauge5hReset, p5h, reset5h, usageStale);
+    updateGauge(gauge7dFill, gauge7dPct, gauge7dReset, p7d, reset7d, usageStale);
 
-    // Stale indicator
-    lv_label_set_text(lblStale, usageStale ? "! stale" : "");
+    // Stale indicator (shown only when we have data but it's stale)
+    lv_label_set_text(lblStale, (usageStale && (p5h >= 0.0f || p7d >= 0.0f)) ? "! stale" : "");
 }
 
 void setVisible(bool v) {
