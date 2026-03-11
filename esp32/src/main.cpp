@@ -17,7 +17,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-#include <esp_sleep.h>
+// Deep sleep removed — backlight-off power save instead (deep sleep needs physical reset)
 
 #include "config.h"
 #include "state/agent_state.h"
@@ -222,13 +222,21 @@ static void uiTask(void* param) {
         // LVGL timer handler
         lv_timer_handler();
 
-        // Deep sleep: 5 minutes disconnected after first connection
+        // Power save: backlight off after 5 minutes disconnected (not deep sleep —
+        // deep sleep requires physical reset button to wake, which is impractical).
+        // Backlight restores automatically when connection resumes.
+        static bool backlightOff = false;
         if (everConnected && !connected &&
             (now - lastConnectedMs > DEEP_SLEEP_TIMEOUT_MS)) {
-            Serial.println("[Power] Deep sleep — disconnected 5 min");
-            UI::setBrightness(0);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            esp_deep_sleep_start();  // Wakes on reset/USB
+            if (!backlightOff) {
+                Serial.println("[Power] Backlight off — disconnected 5 min");
+                UI::setBrightness(0);
+                backlightOff = true;
+            }
+        } else if (backlightOff && connected) {
+            Serial.println("[Power] Backlight restored — reconnected");
+            UI::setBrightness(255);
+            backlightOff = false;
         }
 
         // ~5ms yield for smooth animation
