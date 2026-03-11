@@ -204,13 +204,17 @@ void render(uint16_t* buf, int w, int h, float time,
     }
 
     // Name tag with text (always shown)
-    // Read session name from state
+    // Read session name from state — prefer sessionNames, fall back to projectName
     lockState();
-    char name[32] = "claude";
+    char name[32] = "";
     if (idx < g_state.octopusCount && g_state.sessionNames[idx][0]) {
         strncpy(name, g_state.sessionNames[idx], sizeof(name) - 1);
-        name[sizeof(name) - 1] = '\0';
+    } else if (g_state.projectName[0]) {
+        strncpy(name, g_state.projectName, sizeof(name) - 1);
+    } else {
+        strncpy(name, "claude", sizeof(name) - 1);
     }
+    name[sizeof(name) - 1] = '\0';
     unlockState();
 
     // Name tag — LVGL text rendering directly on canvas
