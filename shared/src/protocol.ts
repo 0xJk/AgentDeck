@@ -313,6 +313,21 @@ export interface HookEvent {
 
 // ===== Constants =====
 
+/** Events forwarded to display-only devices (Pixoo64) */
+export const DISPLAY_FORWARDED_EVENTS = new Set([
+  'state_update',
+  'usage_update',
+  'sessions_list',
+  'connection',
+]);
+
+/** Events forwarded to serial devices (ESP32) — display events + timeline */
+export const SERIAL_FORWARDED_EVENTS = new Set([
+  ...DISPLAY_FORWARDED_EVENTS,
+  'timeline_event',
+  'timeline_history',
+]);
+
 export const BRIDGE_WS_PORT = 9120;
 export const BRIDGE_HTTP_PORT = 9120; // Same port, different path
 export const RECONNECT_INTERVAL_MS = 3000;

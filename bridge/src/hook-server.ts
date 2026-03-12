@@ -21,6 +21,7 @@ export class HookServer extends EventEmitter {
   private diagHandler: ((tail?: number) => unknown) | null = null;
   private voiceManager: VoiceManager | null = null;
   private apiUsageGetter: (() => { usage: unknown; fetchedAt: number }) | null = null;
+  private deviceInfoGetter: (() => unknown) | null = null;
 
   // SSE
   private sseClients: SseClient[] = [];
@@ -57,6 +58,11 @@ export class HookServer extends EventEmitter {
   /** Register a getter for cached API usage data (exposed via GET /usage) */
   onApiUsage(getter: () => { usage: unknown; fetchedAt: number }): void {
     this.apiUsageGetter = getter;
+  }
+
+  /** Register a getter for connected device info (exposed via GET /devices) */
+  setDeviceInfoGetter(getter: () => unknown): void {
+    this.deviceInfoGetter = getter;
   }
 
   /** Broadcast a BridgeEvent to all SSE clients */
@@ -117,6 +123,12 @@ export class HookServer extends EventEmitter {
       }
       const data = this.apiUsageGetter();
       res.json({ status: 'ok', usage: data.usage, fetchedAt: data.fetchedAt });
+    });
+
+    // Device info endpoint (no auth — local diagnostics)
+    this.app.get('/devices', (_req, res) => {
+      debug('Hook', 'GET /devices');
+      res.json(this.deviceInfoGetter ? this.deviceInfoGetter() : { devices: [] });
     });
 
     // SSE endpoint

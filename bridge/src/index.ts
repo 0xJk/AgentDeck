@@ -55,7 +55,9 @@ import { getOrCreateToken, getWsUrl } from './auth.js';
 import { buildEnrichedSessionsList } from './session-aggregator.js';
 import type { HookServer } from './hook-server.js';
 import { setupAdbReverse, cleanupAdbReverse, startAdbReversePolling } from './adb-reverse.js';
-import { startESP32Serial, broadcastESP32, stopESP32Serial, setESP32StateProvider } from './esp32-serial.js';
+import { startESP32Serial, broadcastESP32, stopESP32Serial, setESP32StateProvider, esp32ConnectionCount, getESP32Ports } from './esp32-serial.js';
+import { startPixooBridge, broadcastPixoo, stopPixooBridge, getPixooDeviceDetails } from './pixoo/pixoo-bridge.js';
+import { getAdbDeviceCount } from './adb-reverse.js';
 
 // Load prompt templates
 interface PromptTemplate {
@@ -163,6 +165,67 @@ program
   });
 
 program
+  .command('devices')
+  .description('Show connected devices (WebSocket, ESP32, Pixoo, ADB)')
+  .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
+  .action(async (opts) => {
+    const port = parseInt(opts.port, 10);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/devices`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      const data = await res.json() as { devices: Array<{ type: string; count?: number; ports?: string[]; details?: Array<{ ip: string; name: string; backedOff: boolean; failures: number; nextProbeMs: number; lastPushAgo: number }> }> };
+      const lines: string[] = ['Connected devices:'];
+      let total = 0;
+
+      for (const d of data.devices) {
+        if (d.type === 'websocket' && d.count) {
+          lines.push(`  WebSocket    ${d.count} client${d.count !== 1 ? 's' : ''}`);
+          total += d.count;
+        } else if (d.type === 'esp32' && d.count) {
+          const portInfo = d.ports?.length ? ` (${d.ports.join(', ')})` : '';
+          lines.push(`  ESP32        ${d.count} serial${portInfo}`);
+          total += d.count;
+        } else if (d.type === 'pixoo' && d.details) {
+          for (const px of d.details) {
+            if (px.backedOff) {
+              const mins = Math.ceil(px.nextProbeMs / 60_000);
+              lines.push(`  Pixoo64      ${px.ip} (${px.name}) \u26A0 backed off (next probe ${mins}m)`);
+            } else {
+              const ago = px.lastPushAgo >= 0 ? `${Math.round(px.lastPushAgo / 1000)}s ago` : 'no push yet';
+              lines.push(`  Pixoo64      ${px.ip} (${px.name}) \u2713 ${ago}`);
+            }
+            total++;
+          }
+        } else if (d.type === 'adb' && d.count) {
+          lines.push(`  ADB          ${d.count} USB device${d.count !== 1 ? 's' : ''}`);
+          total += d.count;
+        }
+      }
+
+      if (total === 0) {
+        log('No devices connected.');
+      } else {
+        lines.push('');
+        lines.push(`Total: ${total} device connection${total !== 1 ? 's' : ''}`);
+        log(lines.join('\n'));
+      }
+    } catch {
+      // Bridge not running — show configured Pixoo devices as fallback
+      const { loadPixooDevices } = await import('./pixoo/pixoo-settings.js');
+      const pixoo = loadPixooDevices();
+      if (pixoo.length > 0) {
+        log('Bridge is not running.\nConfigured Pixoo devices:');
+        for (const d of pixoo) {
+          log(`  ${d.ip} (${d.name || 'Pixoo64'})`);
+        }
+      } else {
+        log('Bridge is not running.');
+      }
+    }
+  });
+
+program
   .command('qr')
   .description('Show pairing URL and QR code for remote clients')
   .option('-p, --port <port>', 'Bridge server port (auto-detects from running sessions)')
@@ -237,6 +300,169 @@ program
       log('Bridge is not running. Cannot generate live diagnostic dump.');
       process.exit(1);
     }
+  });
+
+// ===== Pixoo64 device management =====
+const pixoo = program.command('pixoo').description('Manage Pixoo64 LED matrix devices');
+
+pixoo
+  .command('scan')
+  .description('Discover Pixoo devices on LAN via Divoom cloud API')
+  .action(async () => {
+    const { discoverDevices, getDeviceConfig } = await import('./pixoo/pixoo-client.js');
+    const { loadPixooDevices, savePixooDevices } = await import('./pixoo/pixoo-settings.js');
+
+    log('Scanning for Pixoo devices...');
+    const found = await discoverDevices();
+    if (found.length === 0) {
+      log('No devices found. Ensure your Pixoo is on the same LAN and powered on.');
+      return;
+    }
+
+    // Verify connectivity for each device
+    const verified: Array<{ name: string; ip: string; ok: boolean }> = [];
+    for (const d of found) {
+      const config = await getDeviceConfig(d.ip);
+      verified.push({ ...d, ok: config !== null });
+    }
+
+    log(`\nFound ${verified.length} device(s):`);
+    for (const d of verified) {
+      log(`  ${d.name} (${d.ip}) ${d.ok ? '✓ reachable' : '✗ unreachable'}`);
+    }
+
+    const reachable = verified.filter(d => d.ok);
+    if (reachable.length === 0) {
+      log('\nNo reachable devices to save.');
+      return;
+    }
+
+    // Interactive confirmation
+    const readline = await import('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    const answer = await new Promise<string>(resolve => {
+      rl.question(`\nSave ${reachable.length} device(s) to settings? (Y/n) `, resolve);
+    });
+    rl.close();
+
+    if (answer.toLowerCase() === 'n') {
+      log('Cancelled.');
+      return;
+    }
+
+    const existing = loadPixooDevices();
+    const existingIps = new Set(existing.map(d => d.ip));
+    const newDevices = reachable
+      .filter(d => !existingIps.has(d.ip))
+      .map(d => ({ ip: d.ip, name: d.name }));
+
+    if (newDevices.length === 0) {
+      log('All discovered devices already in settings.');
+      return;
+    }
+
+    savePixooDevices([...existing, ...newDevices]);
+    log(`Added ${newDevices.length} device(s) to ~/.agentdeck/settings.json`);
+  });
+
+pixoo
+  .command('add <ip>')
+  .description('Manually add a Pixoo device by IP')
+  .option('-n, --name <name>', 'Device name', 'Pixoo64')
+  .option('-b, --brightness <value>', 'Brightness 0-100')
+  .action(async (ip: string, opts) => {
+    const { getDeviceConfig } = await import('./pixoo/pixoo-client.js');
+    const { addDevice } = await import('./pixoo/pixoo-settings.js');
+
+    log(`Testing connection to ${ip}...`);
+    const config = await getDeviceConfig(ip);
+    if (!config) {
+      log(`Cannot reach device at ${ip}. Adding anyway.`);
+    } else {
+      log(`Device reachable ✓`);
+    }
+
+    const device: { ip: string; name?: string; brightness?: number } = { ip, name: opts.name };
+    if (opts.brightness) device.brightness = Math.max(0, Math.min(100, parseInt(opts.brightness, 10)));
+
+    if (addDevice(device)) {
+      log(`Added ${device.name} (${ip}) to settings.`);
+    } else {
+      log(`Device ${ip} already exists in settings.`);
+    }
+  });
+
+pixoo
+  .command('list')
+  .description('List configured Pixoo devices')
+  .action(async () => {
+    const { loadPixooDevices } = await import('./pixoo/pixoo-settings.js');
+    const devices = loadPixooDevices();
+    if (devices.length === 0) {
+      log('No Pixoo devices configured. Run `sdc pixoo scan` or `sdc pixoo add <ip>`.');
+      return;
+    }
+    log(`${devices.length} device(s):`);
+    for (const d of devices) {
+      const parts = [d.name || 'Pixoo', `(${d.ip})`];
+      if (d.brightness !== undefined) parts.push(`brightness=${d.brightness}`);
+      log(`  ${parts.join(' ')}`);
+    }
+  });
+
+pixoo
+  .command('remove <ip>')
+  .description('Remove a Pixoo device by IP')
+  .action(async (ip: string) => {
+    const { removeDevice } = await import('./pixoo/pixoo-settings.js');
+    if (removeDevice(ip)) {
+      log(`Removed ${ip} from settings.`);
+    } else {
+      log(`Device ${ip} not found in settings.`);
+    }
+  });
+
+pixoo
+  .command('test [ip]')
+  .description('Send a test frame to a Pixoo device')
+  .action(async (ip?: string) => {
+    const { loadPixooDevices } = await import('./pixoo/pixoo-settings.js');
+    const { pushFrame, setBrightness } = await import('./pixoo/pixoo-client.js');
+
+    let targetIp = ip;
+    if (!targetIp) {
+      const devices = loadPixooDevices();
+      if (devices.length === 0) {
+        log('No device specified and none configured. Use `sdc pixoo test <ip>` or add a device first.');
+        return;
+      }
+      targetIp = devices[0].ip;
+      log(`Using first configured device: ${targetIp}`);
+    }
+
+    // Generate a colorful test pattern (diagonal rainbow stripes)
+    const buf = new Uint8Array(64 * 64 * 3);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const i = (y * 64 + x) * 3;
+        const hue = ((x + y) * 4) % 256;
+        // Simple HSV→RGB with S=V=1
+        const region = Math.floor(hue / 43);
+        const remainder = (hue - region * 43) * 6;
+        const q = 255 - remainder;
+        const t = remainder;
+        if (region === 0) { buf[i] = 255; buf[i+1] = t; buf[i+2] = 0; }
+        else if (region === 1) { buf[i] = q; buf[i+1] = 255; buf[i+2] = 0; }
+        else if (region === 2) { buf[i] = 0; buf[i+1] = 255; buf[i+2] = t; }
+        else if (region === 3) { buf[i] = 0; buf[i+1] = q; buf[i+2] = 255; }
+        else if (region === 4) { buf[i] = t; buf[i+1] = 0; buf[i+2] = 255; }
+        else { buf[i] = 255; buf[i+1] = 0; buf[i+2] = q; }
+      }
+    }
+
+    await setBrightness(targetIp, 60);
+    const ok = await pushFrame(targetIp, buf);
+    log(ok ? `Test frame sent to ${targetIp} ✓` : `Failed to send frame to ${targetIp}`);
   });
 
 program.parse();
@@ -391,10 +617,32 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   startESP32Serial();
   setESP32StateProvider(() => lastStateEvent);
 
+  // 2g. Start Pixoo64 LED matrix bridge (HTTP push)
+  const pixooSettingsPath = join(homedir(), '.agentdeck', 'settings.json');
+  let pixooDevices: Array<{ ip: string; name?: string; brightness?: number }> | undefined;
+  try {
+    if (existsSync(pixooSettingsPath)) {
+      const settings = JSON.parse(readFileSync(pixooSettingsPath, 'utf-8'));
+      pixooDevices = settings.pixooDevices;
+    }
+  } catch { /* ignore malformed settings */ }
+  startPixooBridge(pixooDevices);
+
   // 3. Attach WebSocket server to adapter's HTTP server
   const wsServer = new WsServer(adapter.getHttpServer());
   wsServer.onBroadcast(broadcastESP32);
+  wsServer.onBroadcast(broadcastPixoo);
   log(`[sdc] WebSocket server ready on port ${port}`);
+
+  // 3+. Device info getter for GET /devices endpoint
+  hookServer?.setDeviceInfoGetter(() => ({
+    devices: [
+      { type: 'websocket', count: wsServer.getClientCount() },
+      { type: 'esp32', count: esp32ConnectionCount(), ports: getESP32Ports() },
+      { type: 'pixoo', details: getPixooDeviceDetails() },
+      { type: 'adb', count: getAdbDeviceCount() },
+    ],
+  }));
 
   // 3a. Display state broadcast (after wsServer is ready)
   displayMonitor.on('display_state_changed', (displayOn: boolean) => {
@@ -639,7 +887,9 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
 
   // 4b. Handle adapter exit (agent process died)
   adapter.on('exit', (_code: number, _signal: number) => {
-    shutdown();
+    log('[sdc] Agent process exited');
+    // Don't shutdown — bridge stays alive for session info/devices/reconnection
+    // State machine already handles DISCONNECTED via adapter's 'connection' event
   });
 
   // Debounce tracker for sessions_list on state_changed
@@ -672,7 +922,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
             const snap = stateMachine.getSnapshot();
             wsServer.broadcast(buildUsageEvent(snap, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
           }
-        });
+        }).catch(() => {});
       }
     }
 
@@ -729,7 +979,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
       lastSessionsListBroadcast = now;
       buildSessionsList().then((sessions) => {
         wsServer.broadcast({ type: 'sessions_list', sessions } as BridgeEvent);
-      });
+      }).catch(() => {});
     }
 
     // Also send separate prompt_options for backward compatibility
@@ -879,7 +1129,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
           }
           const snapshot = stateMachine.getSnapshot();
           wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
-        });
+        }).catch(() => {});
         break;
       }
     }
@@ -1007,7 +1257,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
         type: 'sessions_list',
         sessions,
       } as BridgeEvent);
-    });
+    }).catch(() => {});
 
     // Send current display state
     wsServer.sendTo(ws, { type: 'display_state', displayOn: displayMonitor.isDisplayOn() } as BridgeEvent);
@@ -1052,7 +1302,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
           oauthConnected = hasOAuthToken();
           if (cachedApiUsage) apiUsageStale = true;
         }
-      });
+      }).catch(() => {});
     }
   });
 
@@ -1099,7 +1349,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
           oauthConnected = hasOAuthToken();
           if (cachedApiUsage) apiUsageStale = true;
         }
-      });
+      }).catch(() => {});
     }
   }, 45_000);
 
@@ -1107,23 +1357,25 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   const ollamaInterval = setInterval(() => {
     ollamaProbe.getStatus().then((status) => {
       cachedOllamaStatus = status;
-    });
+    }).catch(() => {});
   }, 5000);
   // Initial probe
   ollamaProbe.getStatus().then((status) => {
     cachedOllamaStatus = status;
-  });
+  }).catch(() => {});
 
   // 9b3. Periodic Gateway probe (OpenClaw availability)
   const gatewayInterval = setInterval(() => {
     probeGateway().then((status) => {
       cachedGatewayAvailable = status.available;
-    });
+    }).catch(() => {});
   }, 800);
   // Initial probe
   probeGateway().then((status) => {
     cachedGatewayAvailable = status.available;
-  });
+    // Broadcast gateway availability to already-connected clients
+    stateMachine.emit('state_changed', stateMachine.getSnapshot());
+  }).catch(() => {});
 
   // 9b4. Periodic Gateway health check (doctor warnings/errors, 30s cadence)
   function updateGatewayHealth() {
@@ -1134,7 +1386,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
         // Re-broadcast current state with updated gatewayHasError
         stateMachine.emit('state_changed', stateMachine.getSnapshot());
       }
-    });
+    }).catch(() => {});
   }
   const healthInterval = setInterval(() => {
     if (!cachedGatewayAvailable) return; // skip if gateway is down
@@ -1156,7 +1408,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
           type: 'sessions_list',
           sessions,
         } as BridgeEvent);
-      });
+      }).catch(() => {});
     }
   }, 10_000);
 
@@ -1522,6 +1774,7 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
     stopAdbPolling();
     cleanupAdbReverse(port);
     stopESP32Serial();
+    stopPixooBridge();
 
     // Adapter handles killing the agent process and closing its HTTP server
     adapter.shutdown().then(() => {
@@ -1542,7 +1795,8 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   });
   process.on('unhandledRejection', (reason) => {
     log(`[sdc] Unhandled rejection: ${reason}`);
-    shutdown();
+    debug('Bridge', `Unhandled rejection stack: ${reason instanceof Error ? reason.stack : reason}`);
+    // Don't shutdown — unhandled rejections are non-fatal
   });
 }
 

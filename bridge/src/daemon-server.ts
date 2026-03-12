@@ -5,6 +5,7 @@ import { UsageTracker } from './usage-tracker.js';
 import { StateMachine } from './state-machine.js';
 import { WsServer } from './ws-server.js';
 import { OllamaProbe, type OllamaStatus } from './ollama-probe.js';
+import { buildUsageEvent } from './usage-event.js';
 import { probeGateway, checkGatewayHealth } from './gateway-probe.js';
 import { fetchUsageFromApi, hasOAuthToken, type ApiUsageData } from './usage-api.js';
 import { advertiseBridge } from './mdns.js';
@@ -360,7 +361,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       });
     }
 
-    const usageEvt = buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, apiUsageStale);
+    const usageEvt = buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale);
     wsServer.broadcast(usageEvt);
   });
 
@@ -404,7 +405,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           if (cachedApiUsage) apiUsageStale = true;
         }
         const snapshot = stateMachine.getSnapshot();
-        wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, apiUsageStale));
+        wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
       });
     }
   });
@@ -431,7 +432,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       gatewayHasError: cachedGatewayHasError,
     };
     wsServer.sendTo(ws, stateEvent);
-    wsServer.sendTo(ws, buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, apiUsageStale));
+    wsServer.sendTo(ws, buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
 
     const connEvt: BridgeEvent = {
       type: 'connection',
@@ -468,7 +469,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             stateMachine.inferBillingType(result.usage.inferredBillingType);
           }
           const snap2 = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snap2, cachedApiUsage, oauthConnected, apiUsageStale));
+          wsServer.broadcast(buildUsageEvent(snap2, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
         } else {
           oauthConnected = hasOAuthToken();
           if (cachedApiUsage) apiUsageStale = true;
@@ -514,6 +515,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     if (status.available) {
       connectGatewayAdapter();
     }
+    // Broadcast gateway availability to already-connected clients
+    stateMachine.emit('state_changed', stateMachine.getSnapshot());
   });
 
   // Gateway health check (30s cadence)
@@ -543,7 +546,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         apiUsageStale = false;
       }
       const snapshot = stateMachine.getSnapshot();
-      wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, apiUsageStale));
+      wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
     }
   }, 5000);
 
@@ -559,7 +562,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           stateMachine.inferBillingType(result.usage.inferredBillingType);
         }
         const snapshot = stateMachine.getSnapshot();
-        wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, apiUsageStale));
+        wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
       } else {
         oauthConnected = hasOAuthToken();
         if (cachedApiUsage) apiUsageStale = true;
@@ -580,7 +583,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             stateMachine.inferBillingType(result.usage.inferredBillingType);
           }
           const snapshot = stateMachine.getSnapshot();
-          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, apiUsageStale));
+          wsServer.broadcast(buildUsageEvent(snapshot, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
         } else {
           oauthConnected = hasOAuthToken();
           if (cachedApiUsage) apiUsageStale = true;
@@ -668,6 +671,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
           if (evt.status === 'connected') {
             log('[agentdeck] OpenClaw Gateway connected');
+            // Transition to IDLE if still DISCONNECTED (daemon has no PTY to trigger this)
+            if (stateMachine.getSnapshot().state === 'disconnected') {
+              stateMachine.handleHookEvent('SessionStart', {});
+            }
             // Force full state_update — StateMachine may not transition if already IDLE
             const snap = stateMachine.getSnapshot();
             wsServer.broadcast({
@@ -686,7 +693,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
               gatewayAvailable: true,
               gatewayHasError: cachedGatewayHasError,
             } as BridgeEvent);
-            wsServer.broadcast(buildUsageEvent(snap, cachedApiUsage, oauthConnected, apiUsageStale));
+            wsServer.broadcast(buildUsageEvent(snap, cachedApiUsage, oauthConnected, cachedOllamaStatus, apiUsageStale));
           } else {
             log('[agentdeck] OpenClaw Gateway disconnected');
           }
@@ -707,6 +714,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }).catch((err) => {
       log(`[agentdeck] Failed to connect to Gateway: ${err}`);
       gatewayConnecting = false;
+      // Adapter failed but gateway is still available — broadcast SITTING (not DORMANT)
+      stateMachine.emit('state_changed', stateMachine.getSnapshot());
     });
   }
 
@@ -783,28 +792,4 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   log(`[agentdeck] Daemon running. Gateway probe active.`);
 }
 
-function buildUsageEvent(snapshot: StateSnapshot, apiUsage?: ApiUsageData | null, oauthStatus?: boolean, stale?: boolean): BridgeEvent {
-  return {
-    type: 'usage_update',
-    sessionDurationSec: snapshot.sessionDurationSec,
-    inputTokens: snapshot.inputTokens,
-    outputTokens: snapshot.outputTokens,
-    toolCalls: snapshot.toolCalls,
-    estimatedCostUsd: snapshot.estimatedCostUsd ?? undefined,
-    sessionPercent: snapshot.sessionPercent ?? undefined,
-    costSpent: snapshot.costSpent ?? undefined,
-    costLimit: snapshot.costLimit ?? undefined,
-    resetTime: snapshot.resetTime ?? undefined,
-    resetDate: snapshot.resetDate ?? undefined,
-    fiveHourPercent: apiUsage?.fiveHourPercent ?? undefined,
-    fiveHourResetsAt: apiUsage?.fiveHourResetsAt ?? undefined,
-    sevenDayPercent: apiUsage?.sevenDayPercent ?? undefined,
-    sevenDayResetsAt: apiUsage?.sevenDayResetsAt ?? undefined,
-    extraUsageEnabled: apiUsage?.extraUsageEnabled ?? undefined,
-    extraUsageMonthlyLimit: apiUsage?.extraUsageMonthlyLimit ?? undefined,
-    extraUsageUsedCredits: apiUsage?.extraUsageUsedCredits ?? undefined,
-    extraUsageUtilization: apiUsage?.extraUsageUtilization ?? undefined,
-    oauthConnected: oauthStatus,
-    usageStale: stale || undefined,
-  };
-}
+// buildUsageEvent is imported from ./usage-event.js
