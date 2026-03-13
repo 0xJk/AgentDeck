@@ -92,9 +92,8 @@ export async function pushFrame(ip: string, buffer: Uint8Array): Promise<boolean
     return false;
   }
 
-  const picId = frameCounter++;
-
-  // Reset PicID counter to prevent device lockup
+  // Reset + PicID 0 every time — ensures device replaces current image
+  frameCounter++;
   if (frameCounter >= PIC_ID_RESET_INTERVAL) {
     await resetPicId(ip);
     frameCounter = 0;
@@ -106,8 +105,8 @@ export async function pushFrame(ip: string, buffer: Uint8Array): Promise<boolean
     PicNum: 1,
     PicWidth: 64,
     PicOffset: 0,
-    PicID: picId,
-    PicSpeed: 1000,
+    PicID: 0,
+    PicSpeed: 100,
     PicData: base64,
   });
 }
@@ -188,6 +187,12 @@ export async function setBrightness(ip: string, value: number): Promise<boolean>
 /** Reset the PicID counter to prevent device lockup. */
 export async function resetPicId(ip: string): Promise<boolean> {
   return postCommand(ip, { Command: 'Draw/ResetHttpGifId' });
+}
+
+/** Switch device to the custom channel that shows SendHttpGif content. */
+export async function switchToCustomChannel(ip: string): Promise<boolean> {
+  // SelectIndex: 0=Faces, 1=Cloud, 2=Visualizer, 3=Custom
+  return postCommand(ip, { Command: 'Channel/SetIndex', SelectIndex: 3 });
 }
 
 /**

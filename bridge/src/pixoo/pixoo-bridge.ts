@@ -5,9 +5,8 @@
  * hook, renders 64×64 frames, and pushes to Pixoo64 devices via HTTP.
  *
  * Key behaviors:
- * - Debounce: minimum 800ms between pushes (device ~1fps limit)
- * - Heartbeat: re-push current frame every 10s (device power recovery)
- * - IDLE animation: upload 4-frame GIF loop, device loops internally (zero HTTP)
+ * - Animation loop: continuous 1.2s frame push (real-time animation on device)
+ * - Event-driven: state/usage changes trigger immediate frame push (debounced 800ms)
  * - Multi-device: all configured devices receive simultaneous pushes
  */
 
@@ -15,8 +14,8 @@ import { State } from '../types.js';
 import type { BridgeEvent, StateUpdateEvent, UsageEvent } from '../types.js';
 import type { SessionInfo, SessionsListEvent } from '@agentdeck/shared/protocol';
 import { DISPLAY_FORWARDED_EVENTS } from '@agentdeck/shared/protocol';
-import { pushFrame, pushAnimation, setBrightness, clearText, sendScrollText, getDeviceBackoffStatus } from './pixoo-client.js';
-import { renderFrame, renderIdleAnimation } from './pixoo-renderer.js';
+import { pushFrame, setBrightness, clearText, getDeviceBackoffStatus, switchToCustomChannel } from './pixoo-client.js';
+import { renderFrame } from './pixoo-renderer.js';
 import { debug } from '../logger.js';
 
 const TAG = 'Pixoo';
@@ -32,31 +31,24 @@ export interface PixooDevice {
 // ===== Internal State =====
 
 let devices: PixooDevice[] = [];
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let animTimer: ReturnType<typeof setInterval> | null = null;
 let lastPushTime = 0;
 let pendingPush: ReturnType<typeof setTimeout> | null = null;
-let isIdleAnimationActive = false;
+let pushing = false; // guard against overlapping pushes
 
-// Cached latest events for heartbeat re-rendering
+// Cached latest events
 let lastStateEvent: StateUpdateEvent | null = null;
 let lastUsageEvent: UsageEvent | null = null;
 let lastSessions: SessionInfo[] | null = null;
-let lastFrame: Uint8Array | null = null;
 
-const DEBOUNCE_MS = 800;     // Minimum interval between pushes (~1fps)
-const HEARTBEAT_MS = 10000;  // Re-push every 10s
-const IDLE_ANIM_SPEED = 600; // ms per frame (4 frames × 600ms = 2.4s loop)
+const DEBOUNCE_MS = 800;      // Min interval between event-driven pushes
+const ANIM_INTERVAL_MS = 1200; // Continuous animation frame interval (~0.83fps)
 const DEFAULT_BRIGHTNESS = 40;
 
-// Events to forward — shared constant from @agentdeck/shared
 const FORWARDED_EVENTS = DISPLAY_FORWARDED_EVENTS;
 
 // ===== Public API =====
 
-/**
- * Start the Pixoo bridge with configured devices.
- * Non-blocking: initial brightness set runs in background.
- */
 export function startPixooBridge(pixooDevices?: PixooDevice[]): void {
   if (!pixooDevices || pixooDevices.length === 0) {
     debug(TAG, 'No Pixoo devices configured, skipping');
@@ -66,25 +58,22 @@ export function startPixooBridge(pixooDevices?: PixooDevice[]): void {
   devices = pixooDevices;
   debug(TAG, `Starting with ${devices.length} device(s): ${devices.map(d => d.name || d.ip).join(', ')}`);
 
-  // Set initial brightness (fire-and-forget)
+  // Switch to custom channel + set brightness (fire-and-forget)
   for (const dev of devices) {
+    switchToCustomChannel(dev.ip).catch(() => {});
     setBrightness(dev.ip, dev.brightness ?? DEFAULT_BRIGHTNESS).catch(() => {});
   }
 
-  // Heartbeat: re-push current frame to handle device power recovery
-  heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+  // Continuous animation loop — push a new frame every 1.2s
+  animTimer = setInterval(animTick, ANIM_INTERVAL_MS);
 
   debug(TAG, 'Bridge started');
 }
 
-/**
- * Broadcast hook — called by wsServer.onBroadcast() for every BridgeEvent.
- */
 export function broadcastPixoo(event: BridgeEvent): void {
   if (devices.length === 0) return;
   if (!FORWARDED_EVENTS.has(event.type)) return;
 
-  // Update cached state
   switch (event.type) {
     case 'state_update':
       lastStateEvent = event as StateUpdateEvent;
@@ -96,7 +85,6 @@ export function broadcastPixoo(event: BridgeEvent): void {
       lastSessions = (event as SessionsListEvent).sessions;
       break;
     case 'connection':
-      // On disconnect, clear display
       if ((event as any).status === 'disconnected') {
         lastStateEvent = null;
         lastUsageEvent = null;
@@ -104,21 +92,22 @@ export function broadcastPixoo(event: BridgeEvent): void {
       break;
   }
 
-  schedulePush();
+  // State changes trigger immediate push (debounced)
+  if (event.type === 'state_update' || event.type === 'connection') {
+    schedulePush();
+  }
 }
 
-/** Stop the Pixoo bridge. */
 export function stopPixooBridge(): void {
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
+  if (animTimer) {
+    clearInterval(animTimer);
+    animTimer = null;
   }
   if (pendingPush) {
     clearTimeout(pendingPush);
     pendingPush = null;
   }
 
-  // Clear displays (fire-and-forget)
   for (const dev of devices) {
     clearText(dev.ip).catch(() => {});
   }
@@ -127,16 +116,13 @@ export function stopPixooBridge(): void {
   lastStateEvent = null;
   lastUsageEvent = null;
   lastSessions = null;
-  lastFrame = null;
   debug(TAG, 'Bridge stopped');
 }
 
-/** Get number of configured Pixoo devices. */
 export function pixooDeviceCount(): number {
   return devices.length;
 }
 
-/** Get detailed status of all configured Pixoo devices (for /devices endpoint). */
 export function getPixooDeviceDetails(): Array<{
   ip: string;
   name: string;
@@ -160,105 +146,41 @@ export function getPixooDeviceDetails(): Array<{
 
 // ===== Internal =====
 
+/** Event-driven push (debounced). */
 function schedulePush(): void {
-  const now = Date.now();
-  const elapsed = now - lastPushTime;
-
+  const elapsed = Date.now() - lastPushTime;
   if (elapsed >= DEBOUNCE_MS) {
-    // Can push immediately
     doPush();
   } else if (!pendingPush) {
-    // Schedule push after remaining debounce period
-    const delay = DEBOUNCE_MS - elapsed;
     pendingPush = setTimeout(() => {
       pendingPush = null;
       doPush();
-    }, delay);
+    }, DEBOUNCE_MS - elapsed);
   }
-  // If pendingPush already set, it will pick up latest cached state
 }
 
+/** Animation timer tick — continuous frame push for live animation. */
+function animTick(): void {
+  if (devices.length === 0) return;
+  // Skip if a recent event-driven push already covered this interval
+  const elapsed = Date.now() - lastPushTime;
+  if (elapsed < ANIM_INTERVAL_MS * 0.7) return;
+  doPush();
+}
+
+/** Render and push a single frame to all devices. */
 function doPush(): void {
+  if (pushing) return; // prevent overlapping async pushes
+  pushing = true;
   lastPushTime = Date.now();
 
-  const state = lastStateEvent?.state ?? State.IDLE;
-
-  // IDLE → upload animation loop (device handles looping, no ongoing HTTP)
-  if (state === State.IDLE && !isIdleAnimationActive) {
-    pushIdleAnimation();
-    return;
-  }
-
-  // Non-IDLE → single frame push (overrides any running animation)
-  if (state !== State.IDLE) {
-    isIdleAnimationActive = false;
-  }
-
   const frame = renderFrame(lastStateEvent, lastUsageEvent, lastSessions);
-  lastFrame = frame;
+  debug(TAG, `push ${frame.length}B to ${devices.length} dev(s)`);
 
-  for (const dev of devices) {
-    pushFrame(dev.ip, frame).catch(() => {});
-  }
-
-  // Project name as scrolling text overlay (device font handles CJK)
-  updateProjectNameOverlay();
-}
-
-function pushIdleAnimation(): void {
-  isIdleAnimationActive = true;
-
-  const frames = renderIdleAnimation(lastStateEvent, lastUsageEvent, lastSessions);
-  lastFrame = frames[0]; // Cache first frame for heartbeat fallback
-
-  for (const dev of devices) {
-    pushAnimation(dev.ip, frames, IDLE_ANIM_SPEED).catch((err) => {
-      debug(TAG, `Animation push failed for ${dev.name || dev.ip}: ${err.message}`);
-    });
-  }
-}
-
-function sendHeartbeat(): void {
-  if (devices.length === 0) return;
-
-  if (isIdleAnimationActive) {
-    // Device is looping animation — no need to re-push
-    return;
-  }
-
-  // Re-render and push current state
-  if (lastStateEvent || lastUsageEvent) {
-    const frame = renderFrame(lastStateEvent, lastUsageEvent, lastSessions);
-    lastFrame = frame;
-    for (const dev of devices) {
-      pushFrame(dev.ip, frame).catch(() => {});
-    }
-  } else if (lastFrame) {
-    // No state yet, re-push last known frame
-    for (const dev of devices) {
-      pushFrame(dev.ip, lastFrame).catch(() => {});
-    }
-  }
-}
-
-let lastProjectName: string | null = null;
-
-function updateProjectNameOverlay(): void {
-  const projectName = lastStateEvent?.projectName;
-  if (projectName === lastProjectName) return;
-  lastProjectName = projectName ?? null;
-
-  if (!projectName) {
-    for (const dev of devices) {
-      clearText(dev.ip).catch(() => {});
-    }
-    return;
-  }
-
-  // Only use scroll text for longer names that won't fit in bitmap font
-  if (projectName.length > 14) {
-    for (const dev of devices) {
-      sendScrollText(dev.ip, 0, projectName, '#94a3b8', 40).catch(() => {});
-    }
-  }
+  const promises = devices.map(dev =>
+    pushFrame(dev.ip, frame).then(ok => {
+      if (!ok) debug(TAG, `push FAILED to ${dev.ip}`);
+    }).catch(() => {})
+  );
+  Promise.all(promises).then(() => { pushing = false; });
 }

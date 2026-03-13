@@ -25,6 +25,7 @@ export class HookServer extends EventEmitter {
 
   // SSE
   private sseClients: SseClient[] = [];
+  private sseHeartbeats: Map<number, ReturnType<typeof setInterval>> = new Map();
   private sseIdCounter = 0;
   private lastStateEvent: BridgeEvent | null = null;
   private lastUsageEvent: BridgeEvent | null = null;
@@ -161,9 +162,11 @@ export class HookServer extends EventEmitter {
       const heartbeat = setInterval(() => {
         try { res.write(':heartbeat\n\n'); } catch { /* client gone */ }
       }, 30_000);
+      this.sseHeartbeats.set(id, heartbeat);
 
       req.on('close', () => {
         clearInterval(heartbeat);
+        this.sseHeartbeats.delete(id);
         this.sseClients = this.sseClients.filter((c) => c.id !== id);
         debug('SSE', `Client disconnected, ${this.sseClients.length} remaining`);
       });
@@ -273,6 +276,12 @@ export class HookServer extends EventEmitter {
   }
 
   async close(): Promise<void> {
+    // Clear all SSE heartbeat intervals
+    for (const interval of this.sseHeartbeats.values()) {
+      clearInterval(interval);
+    }
+    this.sseHeartbeats.clear();
+
     // Close all SSE connections
     for (const client of this.sseClients) {
       try { client.res.end(); } catch { /* ignore */ }

@@ -34,6 +34,8 @@ import { DisplayMonitor } from './display-monitor.js';
 import { BridgeTimelineStore } from './timeline-store.js';
 import { BridgeLogStream } from './log-stream.js';
 import { setupAdbReverse, cleanupAdbReverse } from './adb-reverse.js';
+import { startPixooBridge, broadcastPixoo, stopPixooBridge } from './pixoo/pixoo-bridge.js';
+import { loadPixooDevices } from './pixoo/pixoo-settings.js';
 import { enableDebugLog, debug } from './logger.js';
 
 function log(msg: string): void {
@@ -292,6 +294,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // WebSocket server
   const wsServer = new WsServer(httpServer);
   log(`[agentdeck] WebSocket server ready on port ${port}`);
+
+  // Pixoo64 LED matrix bridge
+  const pixooDevices = loadPixooDevices();
+  startPixooBridge(pixooDevices);
+  wsServer.onBroadcast(broadcastPixoo);
 
   // Set up adb reverse for USB-connected Android devices
   setupAdbReverse(port);
@@ -754,6 +761,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     clearInterval(sessionsListInterval);
     bridgeLogStream.stop();
     displayMonitor.stop();
+    stopPixooBridge();
     deregisterSession(sessionId);
     cleanupAdbReverse(port);
     mdnsCleanup();

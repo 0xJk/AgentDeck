@@ -888,8 +888,12 @@ async function startBridge(port: number, command: string, agentType: AgentType, 
   // 4b. Handle adapter exit (agent process died)
   adapter.on('exit', (_code: number, _signal: number) => {
     log('[sdc] Agent process exited');
-    // Don't shutdown — bridge stays alive for session info/devices/reconnection
-    // State machine already handles DISCONNECTED via adapter's 'connection' event
+    // If agent never reached IDLE (e.g., trust prompt rejection), shut down
+    if (previousBridgeState === State.IDLE && stateMachine.getSnapshot().state === State.DISCONNECTED) {
+      log('[sdc] Agent exited before initialization — shutting down');
+      shutdown();
+    }
+    // Otherwise bridge stays alive for session info/devices/reconnection
   });
 
   // Debounce tracker for sessions_list on state_changed
