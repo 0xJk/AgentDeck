@@ -4,7 +4,8 @@ import { Command } from 'commander';
 import { writeFileSync, unlinkSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
+import { fileURLToPath } from 'url';
 import { BRIDGE_WS_PORT } from './types.js';
 
 function log(msg: string): void {
@@ -39,6 +40,7 @@ function buildPlist(): string {
     <string>${bin}</string>
     <string>daemon</string>
     <string>start</string>
+    <string>--foreground</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -58,6 +60,21 @@ function buildPlist(): string {
   </dict>
 </dict>
 </plist>`;
+}
+
+// ===== Helpers =====
+
+async function stopDaemon(port: number): Promise<void> {
+  const { listActive } = await import('./session-registry.js');
+  const sessions = listActive();
+  const d = sessions.find(s => s.agentType === 'daemon');
+  const targetPort = d?.port ?? port;
+  try {
+    await fetch(`http://127.0.0.1:${targetPort}/shutdown`, { method: 'POST' });
+    log('Shutdown signal sent');
+  } catch {
+    log('Daemon is not running');
+  }
 }
 
 // ===== Program =====
@@ -141,6 +158,7 @@ daemon
   .description('Start monitoring daemon (WS + mDNS + Gateway proxy)')
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .option('-d, --debug', 'Enable debug logging')
+  .option('-f, --foreground', 'Run in foreground (default: background fork)')
   .action(async (opts) => {
     const { findExistingDaemon } = await import('./session-registry.js');
     const existing = findExistingDaemon();
@@ -148,6 +166,23 @@ daemon
       log(`Daemon already running on port ${existing.port} (PID ${existing.pid}). Use 'agentdeck daemon stop' first.`);
       process.exit(0);
     }
+
+    // Background fork unless --foreground
+    if (!opts.foreground) {
+      const scriptPath = fileURLToPath(import.meta.url);
+      const args = [scriptPath, 'daemon', 'start', '--foreground'];
+      if (opts.port !== String(BRIDGE_WS_PORT)) args.push('-p', opts.port);
+      if (opts.debug) args.push('-d');
+
+      const child = spawn(process.execPath, args, {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      log(`Daemon started (PID ${child.pid})`);
+      process.exit(0);
+    }
+
     const { startDaemon } = await import('./daemon-server.js');
     await startDaemon({
       port: parseInt(opts.port, 10),
@@ -160,17 +195,31 @@ daemon
   .description('Stop the daemon')
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .action(async (opts) => {
-    const port = parseInt(opts.port, 10);
-    const { listActive } = await import('./session-registry.js');
-    const sessions = listActive();
-    const d = sessions.find(s => s.agentType === 'daemon');
-    const targetPort = d?.port ?? port;
-    try {
-      await fetch(`http://127.0.0.1:${targetPort}/shutdown`, { method: 'POST' });
-      log('Shutdown signal sent');
-    } catch {
-      log('Daemon is not running');
-    }
+    await stopDaemon(parseInt(opts.port, 10));
+  });
+
+daemon
+  .command('restart')
+  .description('Stop and restart the daemon')
+  .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
+  .option('-d, --debug', 'Enable debug logging')
+  .action(async (opts) => {
+    await stopDaemon(parseInt(opts.port, 10));
+    // Wait for port release + session cleanup
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    const scriptPath = fileURLToPath(import.meta.url);
+    const args = [scriptPath, 'daemon', 'start', '--foreground'];
+    if (opts.port !== String(BRIDGE_WS_PORT)) args.push('-p', opts.port);
+    if (opts.debug) args.push('-d');
+
+    const child = spawn(process.execPath, args, {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    log(`Daemon restarted (PID ${child.pid})`);
+    process.exit(0);
   });
 
 daemon
@@ -616,10 +665,11 @@ program
 
 program
   .command('start', { hidden: true })
-  .description('(legacy) Start daemon — use `agentdeck daemon start`')
+  .description('(legacy) Start daemon in foreground — use `agentdeck daemon start`')
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .option('-d, --debug', 'Enable debug logging')
   .action(async (opts) => {
+    // Legacy: runs foreground (LaunchAgent plist compatibility)
     const { findExistingDaemon } = await import('./session-registry.js');
     const existing = findExistingDaemon();
     if (existing) {

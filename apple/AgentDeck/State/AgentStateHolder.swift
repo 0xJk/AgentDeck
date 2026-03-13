@@ -16,12 +16,124 @@ final class AgentStateHolder: @unchecked Sendable {
     let discovery = BridgeDiscovery()
     let timelineStore = TimelineStore()
 
+    #if os(macOS)
+    let localDiscovery = LocalSessionDiscovery()
+    #endif
+
+    // MARK: - URL Persistence
+
+    private static let lastBridgeUrlKey = "lastBridgeUrl"
+
+    private var savedUrl: String? {
+        get { UserDefaults.standard.string(forKey: Self.lastBridgeUrlKey) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: Self.lastBridgeUrlKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.lastBridgeUrlKey)
+            }
+        }
+    }
+
+    // MARK: - Connection Waterfall State
+
+    private(set) var isAutoConnecting = false
+    private var waterfallStage: WaterfallStage = .idle
+
+    private enum WaterfallStage {
+        case idle
+        case localSession    // macOS: reading sessions.json
+        case savedUrl        // trying last known URL
+        case mdns            // mDNS discovery
+    }
+
     // MARK: - Init
 
     init() {
         connection.onEvent = { [weak self] event in
             self?.handleEvent(event)
         }
+        connection.onReconnectExhausted = { [weak self] in
+            guard let self else { return }
+            self.savedUrl = nil
+            self.waterfallStage = .idle
+            self.startConnectionWaterfall()
+        }
+
+        #if os(macOS)
+        // On each reconnect attempt, check sessions.json for a local bridge.
+        // If found, abort stale-URL reconnect and connect locally instead.
+        connection.onReconnectAttempt = { [weak self] in
+            guard let self else { return false }
+            let bridges = self.localDiscovery.readSessionsNow()
+            if let bridge = bridges.first {
+                DispatchQueue.main.async {
+                    self.savedUrl = nil
+                    self.waterfallStage = .idle
+                    self.connectTo(bridge)
+                }
+                return true  // abort reconnect
+            }
+            return false
+        }
+        #endif
+    }
+
+    // MARK: - Connection Waterfall
+
+    func startConnectionWaterfall() {
+        guard waterfallStage == .idle else { return }
+        isAutoConnecting = true
+
+        #if os(macOS)
+        // Stage 1: Check sessions.json (macOS only)
+        waterfallStage = .localSession
+        localDiscovery.startPolling()
+
+        // Give local discovery a moment to scan
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.waterfallStage == .localSession else { return }
+
+            if let bridge = self.localDiscovery.sessions.first {
+                self.connectTo(bridge)
+                return
+            }
+
+            // Stage 2: Try saved URL
+            self.trySavedUrl()
+        }
+        #else
+        // iOS: skip local session, go to saved URL
+        trySavedUrl()
+        #endif
+    }
+
+    private func trySavedUrl() {
+        if let url = savedUrl {
+            waterfallStage = .savedUrl
+            connectTo(url: url)
+
+            // Timeout: if not connected within 3 seconds, fall through to mDNS
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, self.waterfallStage == .savedUrl else { return }
+                if !self.state.bridgeConnected {
+                    self.connection.disconnect(reconnect: false)
+                    self.startMdnsDiscovery()
+                }
+            }
+        } else {
+            startMdnsDiscovery()
+        }
+    }
+
+    private func startMdnsDiscovery() {
+        waterfallStage = .mdns
+        discovery.startSearching()
+
+        #if os(macOS)
+        // Keep local discovery running alongside mDNS on macOS
+        localDiscovery.startPolling()
+        #endif
     }
 
     // MARK: - Event Handler
@@ -145,6 +257,13 @@ final class AgentStateHolder: @unchecked Sendable {
         case "connected":
             state.bridgeConnected = true
             state.sessionId = e.sessionId
+            isAutoConnecting = false
+            waterfallStage = .idle
+
+            // Save successful URL for next launch
+            if let url = connection.url {
+                savedUrl = url
+            }
         case "disconnected":
             resetToDisconnected()
         default:
@@ -184,5 +303,7 @@ final class AgentStateHolder: @unchecked Sendable {
     func disconnectBridge() {
         connection.disconnect()
         resetToDisconnected()
+        savedUrl = nil  // Clear saved URL on explicit disconnect
+        waterfallStage = .idle
     }
 }

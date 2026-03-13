@@ -10,7 +10,7 @@ final class BridgeConnection: @unchecked Sendable {
 
     private static let initialBackoffMs = 1000
     private static let maxBackoffMs = 8000
-    private static let maxLocalhostAttempts = 5
+    private static let maxReconnectAttempts = 10
     private static let pingIntervalSec: TimeInterval = 30
     private static let readTimeoutSec: TimeInterval = 45
 
@@ -26,6 +26,13 @@ final class BridgeConnection: @unchecked Sendable {
 
     var onEvent: ((BridgeEvent) -> Void)?
 
+    /// Called when reconnect gives up — state holder can restart discovery
+    var onReconnectExhausted: (() -> Void)?
+
+    /// Called before each reconnect attempt — return true to abort reconnect
+    /// and let the caller take over (e.g. switch to a local session).
+    var onReconnectAttempt: (() -> Bool)?
+
     // MARK: - Private
 
     private var webSocket: URLSessionWebSocketTask?
@@ -35,6 +42,7 @@ final class BridgeConnection: @unchecked Sendable {
     private var pingTimer: Timer?
     private var reconnectWork: DispatchWorkItem?
     private let queue = DispatchQueue(label: "dev.agentdeck.bridge", qos: .userInitiated)
+    private var hasReceivedMessage = false
 
     enum ConnectionStatus: Sendable {
         case disconnected
@@ -63,6 +71,7 @@ final class BridgeConnection: @unchecked Sendable {
             self.status = .connecting
             self.lastError = nil
             self.shouldReconnect = true
+            self.hasReceivedMessage = false
         }
 
         let session = URLSession(configuration: .default)
@@ -75,13 +84,7 @@ final class BridgeConnection: @unchecked Sendable {
         self.webSocket = task
         task.resume()
 
-        DispatchQueue.main.async {
-            self.status = .connected
-            self.backoffMs = Self.initialBackoffMs
-            self.reconnectAttempt = 0
-            self.isReconnecting = false
-        }
-
+        // Don't set .connected here — wait for first message in receiveLoop
         startPingTimer()
         receiveLoop()
     }
@@ -136,6 +139,17 @@ final class BridgeConnection: @unchecked Sendable {
 
             switch result {
             case .success(let message):
+                // First successful message = connection confirmed
+                if !self.hasReceivedMessage {
+                    self.hasReceivedMessage = true
+                    DispatchQueue.main.async {
+                        self.status = .connected
+                        self.backoffMs = Self.initialBackoffMs
+                        self.reconnectAttempt = 0
+                        self.isReconnecting = false
+                    }
+                }
+
                 switch message {
                 case .string(let text):
                     if let event = BridgeEventParser.parse(text) {
@@ -193,6 +207,9 @@ final class BridgeConnection: @unchecked Sendable {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
 
+        let wasConnected = hasReceivedMessage
+        hasReceivedMessage = false
+
         // Check for auth rejection (4001)
         if let urlError = error as? URLError,
            urlError.code == .userAuthenticationRequired {
@@ -212,14 +229,19 @@ final class BridgeConnection: @unchecked Sendable {
             return
         }
 
-        // Localhost failsafe: give up after N attempts
+        // Give up after max attempts (fewer for localhost since local discovery will re-find it)
         let isLocalhost = urlString.contains("127.0.0.1") || urlString.contains("localhost")
-        if isLocalhost && reconnectAttempt >= Self.maxLocalhostAttempts {
+        let maxAttempts = isLocalhost ? 5 : Self.maxReconnectAttempts
+        if reconnectAttempt >= maxAttempts {
             DispatchQueue.main.async {
                 self.status = .disconnected
                 self.url = nil
                 self.isReconnecting = false
-                self.lastError = "Localhost connection failed — switching to mDNS discovery"
+                self.shouldReconnect = false
+                self.lastError = wasConnected
+                    ? "Bridge disconnected — searching for bridges..."
+                    : "Connection failed — searching for bridges..."
+                self.onReconnectExhausted?()
             }
             return
         }
@@ -228,6 +250,15 @@ final class BridgeConnection: @unchecked Sendable {
             self.status = .disconnected
             self.isReconnecting = true
             self.reconnectAttempt += 1
+        }
+
+        // Let caller short-circuit reconnect (e.g. macOS local session found)
+        if let check = onReconnectAttempt, check() {
+            DispatchQueue.main.async {
+                self.isReconnecting = false
+                self.shouldReconnect = false
+            }
+            return
         }
 
         let delay = Double(backoffMs) / 1000.0
