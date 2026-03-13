@@ -35,7 +35,11 @@ bool mdnsPoll(BridgeInfo& out) {
 
     // Pick first available service
     for (int i = 0; i < n; i++) {
-        IPAddress ip = MDNS.IP(i);
+#if defined(BOARD_ROUND_AMOLED) || defined(BOARD_IPS_35)
+        IPAddress ip = MDNS.address(i);  // ESP-IDF 5.x
+#else
+        IPAddress ip = MDNS.IP(i);       // ESP-IDF 4.4
+#endif
         uint16_t port = MDNS.port(i);
         if (port == 0) continue;
 

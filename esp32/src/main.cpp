@@ -143,7 +143,13 @@ static void uiTask(void* param) {
     Serial.println("[UI] Screens created, entering main loop");
 
     uint32_t lastFrameMs = millis();
+    uint32_t splashStartMs = millis();
+    uint32_t lastDisconnectSplashMs = 0;
     bool wasTimelineView = false;
+    bool everConnected = false;
+    constexpr uint32_t SPLASH_AUTO_MS = 3000;       // Boot splash → aquarium after 3s
+    constexpr uint32_t RECONNECT_INTERVAL_MS = 30000; // Show reconnecting every 30s
+    constexpr uint32_t RECONNECT_SHOW_MS = 3000;     // Show reconnecting for 3s
 
     while (true) {
         uint32_t now = millis();
@@ -161,12 +167,20 @@ static void uiTask(void* param) {
         bool wantTimeline = g_state.timelineView;
         unlockState();
 
+        if (connected) everConnected = true;
+
         // Screen transitions
-        if (currentView == VIEW_SPLASH && connected) {
-            lv_screen_load_anim(scrAquarium, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
-            currentView = VIEW_AQUARIUM;
-        } else if (currentView == VIEW_SPLASH && !connected) {
-            if (Net::wifiConnected()) {
+        if (currentView == VIEW_SPLASH) {
+            if (connected) {
+                // Connected — go to aquarium immediately
+                lv_screen_load_anim(scrAquarium, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
+                currentView = VIEW_AQUARIUM;
+            } else if (now - splashStartMs > SPLASH_AUTO_MS) {
+                // Not connected but splash timeout — show aquarium in demo mode
+                lv_screen_load_anim(scrAquarium, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
+                currentView = VIEW_AQUARIUM;
+                lastDisconnectSplashMs = now;  // Reset interval timer
+            } else if (Net::wifiConnected()) {
                 Screens::splashSetStatus("Searching for bridge...");
             }
         }
@@ -181,11 +195,14 @@ static void uiTask(void* param) {
         }
         wasTimelineView = wantTimeline;
 
-        // Disconnect → splash (only if was previously connected)
-        if (!connected && currentView != VIEW_SPLASH && currentView != VIEW_SETTINGS) {
-            lv_screen_load_anim(scrSplash, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
+        // Periodic reconnecting reminder while disconnected
+        if (!connected && currentView == VIEW_AQUARIUM
+            && now - lastDisconnectSplashMs > RECONNECT_INTERVAL_MS) {
+            lv_screen_load_anim(scrSplash, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, false);
             currentView = VIEW_SPLASH;
-            Screens::splashSetStatus("Reconnecting...");
+            Screens::splashSetStatus(everConnected ? "Reconnecting..." : "Connecting...");
+            splashStartMs = now;
+            lastDisconnectSplashMs = now;
         }
 
         // Update current view
