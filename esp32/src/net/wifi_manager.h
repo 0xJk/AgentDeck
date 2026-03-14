@@ -21,6 +21,14 @@ void wifiLoop();
 bool wifiConnected();
 
 /**
+ * Connect to a specific WiFi network using provided credentials.
+ * Saves credentials to WiFiManager for future auto-connect.
+ * Blocks up to 10 seconds waiting for connection.
+ * Returns true on success.
+ */
+bool wifiConnectWith(const char* ssid, const char* password);
+
+/**
  * Reset saved WiFi credentials and restart AP portal.
  */
 void wifiReset();

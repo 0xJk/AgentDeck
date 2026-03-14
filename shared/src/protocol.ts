@@ -168,6 +168,8 @@ export interface UsageEvent {
   ollamaStatus?: OllamaStatus;
   // True when displaying cached data after a fetch failure
   usageStale?: boolean;
+  // OAuth token status: valid/expired/missing/unknown
+  tokenStatus?: 'valid' | 'expired' | 'missing' | 'unknown';
 }
 
 export interface ConnectionEvent {
@@ -219,6 +221,47 @@ export interface TimelineHistoryMsg {
   type: 'timeline_history';
   entries: TimelineEntry[];
 }
+
+// ===== WiFi Provisioning (Bridge → ESP32 Serial) =====
+
+export interface WifiProvisionMessage {
+  type: 'wifi_provision';
+  ssid: string;
+  password: string;
+  bridgeIp: string;
+  bridgePort: number;
+  authToken: string;
+}
+
+// ===== ESP32 Serial → Bridge =====
+
+export interface DeviceInfoMessage {
+  type: 'device_info';
+  board: string;         // "86box" | "round_amoled" | "ips_35"
+  version: string;       // firmware version
+  wifiConfigured: boolean;
+  wifiConnected: boolean;
+  ip?: string;
+}
+
+export interface WifiProvisionAckMessage {
+  type: 'wifi_provision_ack';
+  success: boolean;
+  ip?: string;           // assigned IP on success
+  error?: string;        // reason on failure
+}
+
+export interface WifiStatusMessage {
+  type: 'wifi_status';
+  connected: boolean;
+  ssid?: string;
+  ip?: string;
+}
+
+export type ESP32ToHostMessage =
+  | DeviceInfoMessage
+  | WifiProvisionAckMessage
+  | WifiStatusMessage;
 
 export type BridgeEvent =
   | StateUpdateEvent

@@ -1,7 +1,10 @@
 #include "protocol.h"
+#include "wifi_manager.h"
 #include "../state/agent_state.h"
+#include "config.h"
 #include <ArduinoJson.h>
 #include <Arduino.h>
+#include <WiFi.h>
 
 // Reusable JSON document — sized for typical bridge messages
 static JsonDocument doc;
@@ -301,6 +304,69 @@ static void handleTimelineHistory(JsonObject& obj) {
     unlockState();
 }
 
+static void handleWifiProvision(JsonObject& obj) {
+    const char* ssid = obj["ssid"] | "";
+    const char* password = obj["password"] | "";
+    const char* bridgeIp = obj["bridgeIp"] | "";
+    uint16_t bridgePort = obj["bridgePort"] | BRIDGE_DEFAULT_PORT;
+    const char* authToken = obj["authToken"] | "";
+
+    if (ssid[0] == '\0' || password[0] == '\0') {
+        Serial.println("[Provision] Missing SSID or password");
+        Serial.println("{\"type\":\"wifi_provision_ack\",\"success\":false,\"error\":\"missing credentials\"}");
+        return;
+    }
+
+    Serial.printf("[Provision] Received WiFi credentials: SSID=%s\n", ssid);
+
+    // Store bridge endpoint for direct WebSocket connection after WiFi connects
+    lockState();
+    strncpy(g_state.bridgeIp, bridgeIp, sizeof(g_state.bridgeIp) - 1);
+    g_state.bridgePort = bridgePort;
+    strncpy(g_state.authToken, authToken, sizeof(g_state.authToken) - 1);
+    unlockState();
+
+    // Connect WiFi using provisioned credentials
+    bool ok = Net::wifiConnectWith(ssid, password);
+
+    // Build ack response with ArduinoJson for safe serialization
+    JsonDocument resp;
+    resp["type"] = "wifi_provision_ack";
+    resp["success"] = ok;
+    if (ok) {
+        resp["ip"] = Net::wifiLocalIP();
+    } else {
+        resp["error"] = "connection failed";
+    }
+    char buf[256];
+    serializeJson(resp, buf, sizeof(buf));
+    Serial.println(buf);
+}
+
+static void sendDeviceInfo() {
+    JsonDocument resp;
+    resp["type"] = "device_info";
+
+    #if IS_ROUND
+    resp["board"] = "round_amoled";
+    #elif defined(IS_86BOX)
+    resp["board"] = "86box";
+    #else
+    resp["board"] = "ips_35";
+    #endif
+
+    resp["version"] = "0.1.0";
+    resp["wifiConfigured"] = (WiFi.SSID().length() > 0);
+    resp["wifiConnected"] = Net::wifiConnected();
+    if (Net::wifiConnected()) {
+        resp["ip"] = Net::wifiLocalIP();
+    }
+
+    char buf[256];
+    serializeJson(resp, buf, sizeof(buf));
+    Serial.println(buf);
+}
+
 namespace Protocol {
 
 void parseMessage(const char* json, size_t length) {
@@ -324,6 +390,10 @@ void parseMessage(const char* json, size_t length) {
         handleTimelineEvent(obj);
     } else if (strcmp(type, "timeline_history") == 0) {
         handleTimelineHistory(obj);
+    } else if (strcmp(type, "wifi_provision") == 0) {
+        handleWifiProvision(obj);
+    } else if (strcmp(type, "device_info_request") == 0) {
+        sendDeviceInfo();
     } else if (strcmp(type, "connection") == 0) {
         // Connection status is handled by WS event callbacks
     }

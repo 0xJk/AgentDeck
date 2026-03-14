@@ -1,7 +1,11 @@
 #include "serial_client.h"
 #include "protocol.h"
+#include "wifi_manager.h"
 #include "../state/agent_state.h"
+#include "../ui/screens/splash.h"
 #include <Arduino.h>
+#include <WiFi.h>
+#include <ArduinoJson.h>
 
 // Line buffer for incoming serial JSON
 static constexpr int SERIAL_BUF_SIZE = 4096;
@@ -13,12 +17,40 @@ static constexpr uint32_t SERIAL_TIMEOUT_MS = 10000;  // 10s
 static uint32_t lastSerialJsonMs = 0;
 static bool hasReceivedJson = false;
 
+// Device info sent flag — send once on first serial activity
+static bool deviceInfoSent = false;
+
 namespace Net {
+
+static void sendDeviceInfoSerial() {
+    JsonDocument resp;
+    resp["type"] = "device_info";
+
+    #if IS_ROUND
+    resp["board"] = "round_amoled";
+    #elif defined(IS_86BOX)
+    resp["board"] = "86box";
+    #else
+    resp["board"] = "ips_35";
+    #endif
+
+    resp["version"] = "0.1.0";
+    resp["wifiConfigured"] = (WiFi.SSID().length() > 0);
+    resp["wifiConnected"] = wifiConnected();
+    if (wifiConnected()) {
+        resp["ip"] = wifiLocalIP();
+    }
+
+    char buf[256];
+    serializeJson(resp, buf, sizeof(buf));
+    Serial.println(buf);
+}
 
 void serialInit() {
     // Serial is already initialized in setup() at 115200
     serialBufPos = 0;
     hasReceivedJson = false;
+    deviceInfoSent = false;
     Serial.println("[Serial] JSON listener ready");
 }
 
@@ -43,6 +75,12 @@ void serialLoop() {
                         g_state.wsConnected = true;  // Reuse connection flag
                         unlockState();
                     }
+
+                    // Send device info on first bridge JSON contact
+                    if (!deviceInfoSent) {
+                        deviceInfoSent = true;
+                        sendDeviceInfoSerial();
+                    }
                 }
 
                 serialBufPos = 0;
@@ -60,6 +98,7 @@ void serialLoop() {
     // Detect serial disconnect (no JSON for timeout period)
     if (hasReceivedJson && (millis() - lastSerialJsonMs > SERIAL_TIMEOUT_MS)) {
         hasReceivedJson = false;
+        deviceInfoSent = false;  // Re-send device info on reconnect
         Serial.println("[Serial] Bridge timeout — no JSON received");
 
         lockState();

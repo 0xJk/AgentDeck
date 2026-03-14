@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, networkInterfaces } from 'os';
 import { getLanIp } from '@agentdeck/shared';
 import { debug } from './logger.js';
 
@@ -42,13 +42,19 @@ export function getOrCreateToken(): string {
   return token;
 }
 
-/** Check if a connection originates from localhost. */
+/** Check if a connection originates from this machine (localhost or own LAN IPs). */
 export function isLocalConnection(ip: string): boolean {
-  return (
-    ip === '127.0.0.1' ||
-    ip === '::1' ||
-    ip === '::ffff:127.0.0.1'
-  );
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return true;
+
+  // Check if ip matches any of this machine's network interfaces
+  const nets = networkInterfaces();
+  for (const addrs of Object.values(nets)) {
+    if (!addrs) continue;
+    for (const a of addrs) {
+      if (a.address === ip || `::ffff:${a.address}` === ip) return true;
+    }
+  }
+  return false;
 }
 
 /** Validate a token string against the stored token. */

@@ -41,6 +41,9 @@ let lastStateEvent: StateUpdateEvent | null = null;
 let lastUsageEvent: UsageEvent | null = null;
 let lastSessions: SessionInfo[] | null = null;
 
+// Last rendered frame (cached for live preview)
+let lastRenderedFrame: Uint8Array | null = null;
+
 const DEBOUNCE_MS = 800;      // Min interval between event-driven pushes
 const ANIM_INTERVAL_MS = 1200; // Continuous animation frame interval (~0.83fps)
 const DEFAULT_BRIGHTNESS = 40;
@@ -116,6 +119,7 @@ export function stopPixooBridge(): void {
   lastStateEvent = null;
   lastUsageEvent = null;
   lastSessions = null;
+  lastRenderedFrame = null;
   debug(TAG, 'Bridge stopped');
 }
 
@@ -168,6 +172,22 @@ function animTick(): void {
   doPush();
 }
 
+/**
+ * Render a fresh frame using current cached state.
+ * Used by the live preview endpoint when no Pixoo device is connected.
+ */
+export function renderPreviewFrame(): Uint8Array {
+  return renderFrame(lastStateEvent, lastUsageEvent, lastSessions);
+}
+
+/**
+ * Get the last frame pushed to Pixoo devices, or render one on-demand.
+ * Returns 64×64×3 RGB buffer (12,288 bytes).
+ */
+export function getLastFrame(): Uint8Array | null {
+  return lastRenderedFrame;
+}
+
 /** Render and push a single frame to all devices. */
 function doPush(): void {
   if (pushing) return; // prevent overlapping async pushes
@@ -175,6 +195,7 @@ function doPush(): void {
   lastPushTime = Date.now();
 
   const frame = renderFrame(lastStateEvent, lastUsageEvent, lastSessions);
+  lastRenderedFrame = frame;
   debug(TAG, `push ${frame.length}B to ${devices.length} dev(s)`);
 
   const promises = devices.map(dev =>

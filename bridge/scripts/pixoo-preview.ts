@@ -14,12 +14,15 @@
  *   --frames N                         Number of frames (default: 16)
  *   --open                             Open strip image in Preview
  *   --gateway                          Show crayfish (gateway available)
+ *   --camera wide|octopus|crayfish|school|surface   Lock to a camera zone
+ *   --zoom 1.0~3.0                     Override zoom level
+ *   --transition                       Render full zone transition sequence
  */
 
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
-import { renderFrame } from '../src/pixoo/pixoo-renderer.js';
+import { renderFrame, setZone, setOverride, resetDirector, ZONES } from '../src/pixoo/pixoo-renderer.js';
 import { State, PermissionMode } from '../src/types.js';
 import type { StateUpdateEvent, UsageEvent } from '../src/types.js';
 import type { SessionInfo } from '@agentdeck/shared/protocol';
@@ -50,9 +53,16 @@ const stateMap: Record<string, State> = {
 const stateName = getArg('state', 'idle');
 const state = stateMap[stateName] ?? State.IDLE;
 const usagePct = parseInt(getArg('usage', '30'), 10);
-const frameCount = parseInt(getArg('frames', '16'), 10);
 const shouldOpen = hasFlag('open');
 const hasGateway = hasFlag('gateway');
+const transitionMode = hasFlag('transition');
+
+// Camera flags
+const cameraZone = getArg('camera', '');
+const zoomOverride = parseFloat(getArg('zoom', '0'));
+
+// Frame count: more for transitions
+let frameCount = parseInt(getArg('frames', transitionMode ? '40' : '16'), 10);
 
 const W = 64;
 const SCALE = 8;
@@ -91,7 +101,25 @@ if (hasGateway) {
   sessions.push({ id: 'oc-1', port: 18789, projectName: 'preview', agentType: 'openclaw', alive: true, state: 'processing' });
 }
 
-// ===== PPM writer (P6 binary, no deps) =====
+// ===== Camera setup =====
+
+resetDirector();
+
+if (cameraZone && ZONES[cameraZone]) {
+  console.log(`Camera zone: ${cameraZone} (zoom ${ZONES[cameraZone].zoom})`);
+  setZone(cameraZone);
+} else if (zoomOverride > 0) {
+  console.log(`Camera zoom override: ${zoomOverride}`);
+  setOverride({ cx: 0.5, cy: 0.5, zoom: zoomOverride });
+}
+
+if (zoomOverride > 0 && cameraZone) {
+  // Combine zone position with custom zoom
+  const zone = ZONES[cameraZone];
+  setOverride({ cx: zone.cx, cy: zone.cy, zoom: zoomOverride });
+}
+
+// ===== PPM writer =====
 
 function writePPM(path: string, width: number, height: number, rgb: Uint8Array): void {
   const header = `P6\n${width} ${height}\n255\n`;
@@ -102,7 +130,6 @@ function writePPM(path: string, width: number, height: number, rgb: Uint8Array):
   writeFileSync(path, out);
 }
 
-/** Nearest-neighbor upscale an RGB buffer */
 function upscale(src: Uint8Array, srcW: number, srcH: number, scale: number): Uint8Array {
   const dstW = srcW * scale;
   const dstH = srcH * scale;
@@ -121,7 +148,6 @@ function upscale(src: Uint8Array, srcW: number, srcH: number, scale: number): Ui
   return dst;
 }
 
-/** Compose multiple upscaled frames into a horizontal strip */
 function makeStrip(frames: Uint8Array[], frameW: number, frameH: number): Uint8Array {
   const totalW = frameW * frames.length;
   const strip = new Uint8Array(totalW * frameH * 3);
@@ -141,7 +167,6 @@ function makeStrip(frames: Uint8Array[], frameW: number, frameH: number): Uint8A
   return strip;
 }
 
-/** Count differing pixels between two raw RGB buffers */
 function pixelDiff(a: Uint8Array, b: Uint8Array): number {
   let count = 0;
   const pixels = a.length / 3;
@@ -156,28 +181,30 @@ function pixelDiff(a: Uint8Array, b: Uint8Array): number {
 
 // ===== Render frames =====
 
-console.log(`Pixoo64 Preview — state=${stateName} usage=${usagePct}% frames=${frameCount} gateway=${hasGateway}`);
+const modeInfo = cameraZone ? ` camera=${cameraZone}` : zoomOverride > 0 ? ` zoom=${zoomOverride}` : '';
+const transInfo = transitionMode ? ' transition=true' : '';
+console.log(`Pixoo64 Preview — state=${stateName} usage=${usagePct}% frames=${frameCount} gateway=${hasGateway}${modeInfo}${transInfo}`);
 console.log(`Output: ${outDir}/\n`);
 
 const rawFrames: Uint8Array[] = [];
 const upscaledFrames: Uint8Array[] = [];
 
 for (let i = 0; i < frameCount; i++) {
+  // For transition mode, let the director cycle naturally (no zone override per frame)
   const raw = renderFrame(stateEvent, usageEvent, sessions);
   rawFrames.push(raw);
 
   const big = upscale(raw, W, W, SCALE);
   upscaledFrames.push(big);
 
-  // Save individual frame as PPM, convert to PNG with sips
   const ppmPath = join(outDir, `frame-${String(i).padStart(2, '0')}.ppm`);
   const pngPath = join(outDir, `frame-${String(i).padStart(2, '0')}.png`);
   writePPM(ppmPath, BIG, BIG, big);
   try {
     execSync(`sips -s format png "${ppmPath}" --out "${pngPath}" 2>/dev/null`, { stdio: 'pipe' });
-    rmSync(ppmPath); // clean up PPM
+    rmSync(ppmPath);
   } catch {
-    // sips failed — keep PPM as fallback
+    // keep PPM as fallback
   }
 }
 
@@ -214,12 +241,8 @@ try {
   console.log(`\nStrip (PPM): ${stripPpmPath} (${BIG * frameCount}×${BIG})`);
 }
 
-// ===== Individual frame listing =====
-
 const ext = existsSync(join(outDir, 'frame-00.png')) ? 'png' : 'ppm';
 console.log(`Frames: ${outDir}/frame-00.${ext} ... frame-${String(frameCount - 1).padStart(2, '0')}.${ext}`);
-
-// ===== Open =====
 
 if (shouldOpen) {
   const target = existsSync(stripPngPath) ? stripPngPath : stripPpmPath;

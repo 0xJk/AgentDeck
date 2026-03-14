@@ -151,17 +151,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   // ===== HTTP server =====
   const httpServer = createServer((req, res) => {
-    const remoteIp = req.socket.remoteAddress || '';
-    if (!isLocalConnection(remoteIp)) {
-      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-      const token = url.searchParams.get('token') || '';
-      if (!validateToken(token)) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Unauthorized' }));
-        return;
-      }
-    }
-
+    // Health check is public (no auth) — used by iOS/Android for pairing token discovery
     if (req.method === 'GET' && req.url === '/health') {
       const snap = core.stateMachine.getSnapshot();
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -169,6 +159,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         status: 'ok', mode: 'daemon', state: snap.state,
         gateway: gatewayAdapter?.isAlive() ? 'connected' : 'disconnected',
         uptime: process.uptime(), port,
+        pairingToken: core.authToken,
       }));
       return;
     }

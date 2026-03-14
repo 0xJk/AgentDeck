@@ -49,7 +49,7 @@ export function advertiseBridge(
     }
 
     const service = instance.publish({
-      name: `AgentDeck-${projectName}`,
+      name: `AgentDeck-${projectName}-${port}`,
       type: 'agentdeck',
       port,
       txt,

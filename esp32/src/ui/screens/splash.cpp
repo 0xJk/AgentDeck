@@ -5,6 +5,7 @@
 static lv_obj_t* screen = nullptr;
 static lv_obj_t* lblTitle = nullptr;
 static lv_obj_t* lblStatus = nullptr;
+static lv_obj_t* lblWifiStatus = nullptr;
 static lv_obj_t* spinner = nullptr;
 
 namespace Screens {
@@ -34,12 +35,25 @@ lv_obj_t* splashCreate() {
     lv_label_set_text(lblStatus, "Connecting...");
     lv_obj_align(lblStatus, LV_ALIGN_CENTER, 0, 50);
 
+    // WiFi provisioning sub-status (below main status)
+    lblWifiStatus = lv_label_create(screen);
+    lv_obj_set_style_text_color(lblWifiStatus, lv_color_hex(Theme::HUDDim), 0);
+    lv_obj_set_style_text_font(lblWifiStatus, &lv_font_montserrat_10, 0);
+    lv_label_set_text(lblWifiStatus, "");
+    lv_obj_align(lblWifiStatus, LV_ALIGN_CENTER, 0, 68);
+
     return screen;
 }
 
 void splashSetStatus(const char* text) {
     if (lblStatus) {
         lv_label_set_text(lblStatus, text);
+    }
+}
+
+void splashSetWifiStatus(const char* text) {
+    if (lblWifiStatus) {
+        lv_label_set_text(lblWifiStatus, text);
     }
 }
 

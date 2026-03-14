@@ -58,6 +58,37 @@ bool wifiConnected() {
     return WiFi.isConnected();
 }
 
+bool wifiConnectWith(const char* ssid, const char* password) {
+    Serial.printf("[WiFi] Connecting to %s...\n", ssid);
+
+    // Disconnect from current network (if any)
+    WiFi.disconnect(false);
+    delay(100);
+
+    WiFi.begin(ssid, password);
+
+    // Wait up to 10 seconds for connection
+    uint32_t start = millis();
+    while (!WiFi.isConnected() && (millis() - start < 10000)) {
+        delay(250);
+    }
+
+    if (WiFi.isConnected()) {
+        IPAddress ip = WiFi.localIP();
+        snprintf(ipBuf, sizeof(ipBuf), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+        Serial.printf("[WiFi] Connected via provision: %s\n", ipBuf);
+        // Start NTP
+        configTzTime("UTC", "pool.ntp.org", "time.google.com");
+        Serial.println("[WiFi] NTP sync started (UTC)");
+        wifiWasConnected = true;
+        portalActive = false;
+        return true;
+    }
+
+    Serial.printf("[WiFi] Failed to connect to %s\n", ssid);
+    return false;
+}
+
 void wifiReset() {
     wm.resetSettings();
     ESP.restart();
