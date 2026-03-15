@@ -4,7 +4,7 @@ Stream Deck+ controller for Claude Code CLI — a bidirectional local control sy
 
 ## Architecture
 
-- **bridge/** — Node.js server: BridgeCore (shared infra), PtyAdapter hierarchy, device modules, output parser, hook HTTP server, state machine, WebSocket server, voice (whisper.cpp), usage API client, mDNS discovery, auth token, SSE broadcast
+- **bridge/** — Node.js server: BridgeCore (shared infra), PtyAdapter hierarchy, device modules, output parser, hook HTTP server, state machine, WebSocket server, voice (whisper.cpp), usage API client, mDNS discovery, auth token, SSE broadcast, TUI dashboard (`tui/`)
 - **plugin/** — Stream Deck SDK v2 plugin: actions for buttons/encoders, bridge WebSocket client
 - **shared/** — TypeScript types shared between bridge and plugin (protocol, states, timeline, adapter interfaces)
 - **hooks/** — Claude Code hook installer for `~/.claude/settings.local.json`
