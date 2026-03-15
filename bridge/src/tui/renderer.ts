@@ -149,9 +149,12 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
     lines.push(`    ${col}${icon} ${sessState.toUpperCase().replace(/_/g, ' ')}${RESET}`);
   };
 
-  // When connected to daemon: sessions list has all real sessions
-  // When connected to session bridge: sessions has siblings only — add self first
-  if (state.agentType === 'daemon') {
+  // Daemon mode: sessions list already contains all agents (including virtual OpenClaw).
+  // Also applies when daemon relays OpenClaw (agentType='openclaw' but sessions has the entry).
+  // Session bridge mode: sessions has siblings only — prepend self.
+  const isDaemonLike = state.agentType === 'daemon' ||
+    (state.agentType && state.sessions.some(s => s.agentType === state.agentType));
+  if (isDaemonLike) {
     for (const sess of state.sessions) {
       renderSession(sess.projectName || 'unknown', undefined,
         sess.state || 'idle', sess.agentType as string | undefined);
@@ -453,7 +456,9 @@ function renderStandardLayout(
 
 function renderAgentCompactLines(state: DashboardState, width: number): string[] {
   const lines: string[] = [];
-  if (state.agentType === 'daemon') {
+  const isDaemonLikeCompact = state.agentType === 'daemon' ||
+    (state.agentType && state.sessions.some(s => s.agentType === state.agentType));
+  if (isDaemonLikeCompact) {
     for (const s of state.sessions) {
       const st = s.state || 'idle';
       const col = stateColor(st);

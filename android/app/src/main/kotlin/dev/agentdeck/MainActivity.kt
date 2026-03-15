@@ -29,8 +29,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import dev.agentdeck.net.BridgeDiscovery
+import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.service.MonitorService
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -138,14 +140,26 @@ fun TabletDashboard(
         if (connection.status.value != ConnectionStatus.CONNECTED) {
             Log.i(TAG, "Saved URL failed, trying mDNS discovery...")
             val discovery = BridgeDiscovery(context)
-            discovery.discover().collect { bridges ->
-                if (bridges.isNotEmpty() && connection.status.value != ConnectionStatus.CONNECTED) {
-                    // Prefer daemon bridge for consistent state (daemon aggregates all sessions)
-                    val bridge = bridges.firstOrNull { it.agentType == "daemon" }
-                        ?: bridges.first()
-                    Log.i(TAG, "mDNS auto-connect: ${bridge.name} (agent=${bridge.agentType}) at ${bridge.wsUrl()}")
-                    connection.connect(bridge.wsUrl())
+            // Phase 1: collect bridges, connect immediately if daemon found
+            var bestBridges = emptyList<DiscoveredBridge>()
+            val foundDaemon = withTimeoutOrNull(4000) {
+                discovery.discover().collect { bridges ->
+                    bestBridges = bridges
+                    val daemon = bridges.firstOrNull { it.agentType == "daemon" }
+                    if (daemon != null) {
+                        Log.i(TAG, "mDNS auto-connect (daemon): ${daemon.name} at ${daemon.wsUrl()}")
+                        connection.connect(daemon.wsUrl())
+                        return@collect
+                    }
                 }
+                true
+            }
+            // Phase 2: no daemon found within 4s — fall back to any bridge
+            if (foundDaemon == null && bestBridges.isNotEmpty() &&
+                connection.status.value != ConnectionStatus.CONNECTED) {
+                val bridge = bestBridges.first()
+                Log.i(TAG, "mDNS auto-connect (fallback): ${bridge.name} (agent=${bridge.agentType}) at ${bridge.wsUrl()}")
+                connection.connect(bridge.wsUrl())
             }
         }
     }

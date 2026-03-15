@@ -42,6 +42,7 @@ AgentDeck is a physical control surface for AI coding agents. It started with an
 - [Quick Start](#quick-start)
 - [Manual Build & Install](#manual-build--install)
 - [Usage](#usage)
+  - [CLI Reference](#cli-reference)
 - [Stream Deck+ Layout (v3)](#stream-deck-layout-v3)
 - [Android Dashboard](#android-dashboard)
 - [Apple Dashboard](#apple-dashboard)
@@ -236,21 +237,58 @@ This starts the bridge on port 9120 (HTTP + WebSocket), spawns Claude Code insid
 
 > **Security:** The bridge binds to `0.0.0.0` for LAN access (multi-surface monitoring). Local connections bypass authentication. Remote connections require the auth token from `~/.agentdeck/auth-token`.
 
-### CLI Commands
+### CLI Reference
 
-```bash
-agentdeck status             # check bridge/session state
-agentdeck stop               # end session
-agentdeck claude -p 9200     # custom port
-agentdeck claude -c 'claude --model opus'  # custom Claude command
-agentdeck monitor            # hook-only bridge (no PTY)
-agentdeck daemon start       # start monitoring daemon
-agentdeck dashboard          # TUI monitoring dashboard (alias: dash)
-agentdeck devices            # show connected devices
-agentdeck qr                 # show pairing QR code
-```
+`agentdeck` and `sdc` are aliases — both work identically.
 
-`sdc` is an alias for `agentdeck` — both work identically.
+#### Sessions
+
+| Command | Description |
+|---------|-------------|
+| `agentdeck claude` | Start Claude Code session (PTY + bridge) |
+| `agentdeck monitor` | Hook-only bridge (no PTY — run `claude` separately) |
+
+**Flags:** `-p <port>`, `-c <command>`, `-d` (debug), `--no-update-check`
+**Module flags:** `--local` (all off), `--no-mdns`, `--no-adb`, `--no-serial`, `--no-pixoo`
+
+#### Daemon
+
+| Command | Description |
+|---------|-------------|
+| `agentdeck daemon start` | Start monitoring daemon |
+| `agentdeck daemon stop` | Stop daemon |
+| `agentdeck daemon restart` | Restart daemon |
+| `agentdeck daemon status` | Show daemon status |
+| `agentdeck daemon install` | Register macOS LaunchAgent (auto-start) |
+| `agentdeck daemon uninstall` | Remove LaunchAgent |
+
+#### Session Management
+
+| Command | Description |
+|---------|-------------|
+| `agentdeck status` | All sessions + daemon status |
+| `agentdeck stop [session]` | Stop a session (`-a` for all) |
+| `agentdeck attach [session]` | Attach terminal to session |
+
+#### Monitoring
+
+| Command | Description |
+|---------|-------------|
+| `agentdeck dashboard` | TUI monitoring dashboard (alias: `dash`) |
+| `agentdeck devices` | Connected devices (WS, ESP32, Pixoo, ADB) |
+| `agentdeck qr` | Pairing QR code + URL |
+| `agentdeck diag` | Diagnostic dump (`-a` for AI analysis) |
+
+#### Device Setup
+
+| Command | Description |
+|---------|-------------|
+| `agentdeck pixoo scan` | Discover Pixoo devices on LAN |
+| `agentdeck pixoo add <ip>` | Add a Pixoo device |
+| `agentdeck pixoo list` | List configured devices |
+| `agentdeck pixoo remove <ip>` | Remove a device |
+| `agentdeck pixoo test [ip]` | Send test pattern |
+| `agentdeck wifi-setup` | ESP32 WiFi provisioning (serial) |
 
 ---
 
@@ -432,11 +470,7 @@ Compact WiFi-connected displays for always-on agent monitoring.
 
 ### Setup
 
-```bash
-agentdeck wifi-setup    # Serial WiFi provisioning (connects ESP32 to your network)
-```
-
-Once provisioned, the ESP32 connects to the bridge over WiFi WebSocket and displays a compact terrarium with agent status. PlatformIO firmware in `esp32/`.
+Run `agentdeck wifi-setup` to provision WiFi over serial (see [CLI Reference](#cli-reference)). Once provisioned, the ESP32 connects to the bridge over WiFi WebSocket and displays a compact terrarium with agent status. PlatformIO firmware in `esp32/`.
 
 ---
 
@@ -450,15 +484,7 @@ Once provisioned, the ESP32 connects to the bridge over WiFi WebSocket and displ
 
 The Pixoo module renders dot-art creatures, water zone colors reflecting agent state, and a compact usage HUD — all pushed over HTTP to the device's local API.
 
-### CLI
-
-```bash
-agentdeck pixoo scan     # Discover Pixoo devices on LAN
-agentdeck pixoo add      # Add a discovered device
-agentdeck pixoo list     # List configured devices
-agentdeck pixoo remove   # Remove a device
-agentdeck pixoo test     # Send test pattern
-```
+Manage devices with `agentdeck pixoo {scan|add|list|remove|test}` — see [CLI Reference](#cli-reference).
 
 > **Note:** The Pixoo's built-in HTTP server can crash under frequent requests. AgentDeck throttles updates automatically. Use `--no-pixoo` to disable if needed.
 

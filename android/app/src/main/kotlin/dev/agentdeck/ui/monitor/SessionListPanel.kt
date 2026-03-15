@@ -60,8 +60,12 @@ fun SessionListPanel(
 
     val entries = mutableListOf<SessionEntry>()
 
-    // Primary agent — skip if daemon (not a coding agent; openclaw shows as 🦞)
-    if (agentType != "daemon") {
+    // Daemon-like detection: skip primary if daemon, or if sessions already
+    // contains an entry with the same agentType (daemon relaying OpenClaw
+    // sets agentType='openclaw' but sessions_list already has the virtual entry)
+    val isDaemonLike = agentType == "daemon" ||
+        siblingSessions.any { it.agentType == agentType }
+    if (!isDaemonLike) {
         entries += SessionEntry(
             projectName = projectName ?: "Agent",
             agentType = agentType,
@@ -72,12 +76,10 @@ fun SessionListPanel(
         )
     }
 
-    // Siblings (skip self, daemon, and virtual gateway duplicate)
+    // Siblings (skip self and daemon)
     siblingSessions.forEach { session ->
         if (session.id == sessionId) return@forEach
         if (session.agentType == "daemon") return@forEach
-        // Skip when primary already represents this agent type
-        if (session.agentType == agentType && entries.any { it.agentType == session.agentType }) return@forEach
         entries += SessionEntry(
             projectName = session.projectName ?: "Agent",
             agentType = session.agentType,

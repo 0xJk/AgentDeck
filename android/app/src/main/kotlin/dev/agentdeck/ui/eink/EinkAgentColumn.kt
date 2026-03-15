@@ -44,8 +44,11 @@ fun EinkAgentPanel(
 
     val entries = mutableListOf<AgentEntry>()
 
-    // Primary agent — skip if daemon (not a coding agent; openclaw shows as 🦞)
-    if (state.agentType != "daemon") {
+    // Daemon-like: skip primary if daemon, or if sessions already contains
+    // an entry with the same agentType (daemon relaying OpenClaw)
+    val isDaemonLike = state.agentType == "daemon" ||
+        state.siblingSessions.any { it.agentType == state.agentType }
+    if (!isDaemonLike) {
         entries += AgentEntry(
             projectName = state.projectName ?: "Agent",
             agentType = state.agentType,
@@ -55,11 +58,10 @@ fun EinkAgentPanel(
         )
     }
 
-    // Siblings (skip self, daemon, and virtual gateway duplicate)
+    // Siblings (skip self and daemon)
     state.siblingSessions.forEach { session ->
         if (session.id == state.sessionId) return@forEach
         if (session.agentType == "daemon") return@forEach
-        if (session.agentType == state.agentType && entries.any { it.agentType == session.agentType }) return@forEach
         entries += AgentEntry(
             projectName = session.projectName ?: "Agent",
             agentType = session.agentType,

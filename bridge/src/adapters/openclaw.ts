@@ -846,6 +846,17 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
         break;
       }
 
+      // ===== Gateway health =====
+      case 'health': {
+        const ok = payload.ok as boolean;
+        this.emitAdapterEvent({
+          source: 'metadata',
+          event: 'gateway_health',
+          data: { ok, payload },
+        });
+        break;
+      }
+
       // ===== Presence / keepalive =====
       case 'presence':
       case 'tick':

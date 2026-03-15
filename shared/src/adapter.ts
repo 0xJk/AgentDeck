@@ -58,7 +58,7 @@ export interface AdapterParserEvent {
 /** Metadata update (cursor, usage, user prompt, model catalog — no state transition) */
 export interface AdapterMetadataEvent {
   source: 'metadata';
-  event: 'cursor_update' | 'usage_info' | 'user_prompt' | 'model_catalog';
+  event: 'cursor_update' | 'usage_info' | 'user_prompt' | 'model_catalog' | 'gateway_health';
   data: Record<string, unknown>;
 }
 

@@ -93,8 +93,15 @@ struct SessionListPanel: View {
     private func buildEntries() -> [SessionEntry] {
         var entries: [SessionEntry] = []
 
-        // Primary (skip daemon)
-        if stateHolder.state.agentType != "daemon" {
+        // Daemon-like detection: skip primary if daemon, or if sessions already
+        // contains an entry with the same agentType (daemon relaying OpenClaw
+        // sets agentType='openclaw' but sessions_list already has the virtual entry)
+        let isDaemonLike = stateHolder.state.agentType == "daemon" ||
+            stateHolder.state.siblingSessions.contains(where: {
+                $0.agentType == stateHolder.state.agentType
+            })
+
+        if !isDaemonLike {
             entries.append(SessionEntry(
                 projectName: stateHolder.state.projectName ?? "Agent",
                 agentType: stateHolder.state.agentType,
@@ -105,14 +112,10 @@ struct SessionListPanel: View {
             ))
         }
 
-        // Siblings (skip self, daemon, and virtual gateway duplicate)
-        // When daemon broadcasts agentType=openclaw as primary, it also injects
-        // a virtual "openclaw-gateway" sibling — skip it to avoid showing OpenClaw twice
+        // Siblings (skip self and daemon)
         for sibling in stateHolder.state.siblingSessions {
             if sibling.id == stateHolder.state.sessionId { continue }
             if sibling.agentType == "daemon" { continue }
-            if sibling.id == "openclaw-gateway" &&
-               entries.contains(where: { $0.agentType == "openclaw" }) { continue }
             entries.append(SessionEntry(
                 projectName: sibling.projectName ?? "Agent",
                 agentType: sibling.agentType,

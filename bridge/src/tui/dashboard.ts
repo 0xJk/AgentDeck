@@ -109,13 +109,15 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
     const { cols, rows } = screen;
 
     // Update terrarium creatures from state
-    // When connected to daemon: state.sessions has all real sessions (daemon excluded)
-    // When connected to session bridge: state.sessions has only siblings — must add self
+    // Daemon-like: sessions list already contains all agents. Just pass through.
+    // Session bridge: sessions has siblings only — prepend self.
     const octSessions: Array<{ id?: string; state: string; name?: string; agentType?: string }> = state.sessions
       .map(s => ({ id: s.id, state: s.state || 'idle', name: s.projectName, agentType: s.agentType as string | undefined }));
 
-    if (state.agentType !== 'daemon' && state.state && state.state !== 'disconnected') {
-      // Add self (primary) if not already present in siblings list
+    const isDaemonLikeRender = state.agentType === 'daemon' ||
+      (state.agentType && state.sessions.some(s => s.agentType === state.agentType));
+    if (!isDaemonLikeRender && state.state && state.state !== 'disconnected') {
+      // Session bridge mode: add self if not already present
       const selfInList = octSessions.some(s => s.name === state.projectName && s.agentType === (state.agentType ?? undefined));
       if (!selfInList) {
         octSessions.unshift({ id: 'primary', state: state.state, name: state.projectName ?? undefined, agentType: state.agentType ?? undefined });

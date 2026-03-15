@@ -344,6 +344,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
                 agentType: 'openclaw', modelCatalog: core.cachedModelCatalog,
               } as BridgeEvent);
             }
+          } else if (evt.event === 'gateway_health') {
+            // Use real-time health event from Gateway WS instead of polling `openclaw doctor`
+            const hasError = !(evt.data?.ok as boolean);
+            const changed = hasError !== core.cachedGatewayHasError;
+            core.cachedGatewayHasError = hasError;
+            if (changed) {
+              core.stateMachine.emit('state_changed', core.stateMachine.getSnapshot());
+            }
           }
           break;
         case 'activity':
@@ -357,7 +365,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           }
           break;
         case 'connection': {
-          core.broadcast({ type: 'connection', status: evt.status } as BridgeEvent);
+          // Do NOT forward gateway adapter connection events as bridge connection
+          // events — WS clients would interpret them as their own bridge disconnect
+          // and show "disconnected" UI. Gateway status is conveyed via state_update
+          // (agentType/gatewayAvailable) and sessions_list.
           if (evt.status === 'connected') {
             bridgeLogStream.start();
             log('[agentdeck] OpenClaw Gateway connected');
@@ -374,9 +385,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             lastStateEvent = gwStateEvent;
             core.wsServer.broadcast(gwStateEvent);
             core.broadcastUsage();
+            core.broadcastSessionsList().catch(() => {});
           } else {
             bridgeLogStream.stop();
             log('[agentdeck] OpenClaw Gateway disconnected');
+            core.broadcastSessionsList().catch(() => {});
           }
           break;
         }
@@ -403,7 +416,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     gatewayAdapter = null;
     core.cachedModelCatalog = null;
     if (wasAlive) core.stateMachine.handleHookEvent('SessionEnd', {});
-    core.broadcast({ type: 'connection', status: 'disconnected' } as BridgeEvent);
+    // Do NOT broadcast connection:disconnected — that would make WS clients
+    // think they lost their bridge connection. State change to 'daemon' agentType
+    // and updated sessions_list convey the gateway loss.
+    core.broadcastSessionsList().catch(() => {});
   }
 
   // ===== State changed → broadcast =====
@@ -447,7 +463,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     core.sendInitialState(ws, {
       agentType: gwAlive ? 'openclaw' : 'daemon' as any,
       agentCapabilities: gwAlive ? OPENCLAW_CAPABILITIES : undefined,
-      isAlive: gwAlive,
+      isAlive: true,  // WS client IS connected to daemon — gateway status conveyed via state_update
     });
 
     // Fetch usage on connect if stale
