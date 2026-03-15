@@ -27,6 +27,7 @@ AgentDeck turns your Elgato Stream Deck+ into a physical control surface for AI 
 | **Hardware** | Elgato Stream Deck+ (8 keys, 4 encoders, LCD touch strip) |
 | **Terminal** | iTerm2 (required for session management and voice paste) |
 | **Android** | *(Optional)* Android 10+ tablet or e-ink reader for remote dashboard |
+| **TUI** | *(Optional)* Any terminal with truecolor support for `agentdeck dashboard` |
 
 ---
 
@@ -39,6 +40,7 @@ AgentDeck turns your Elgato Stream Deck+ into a physical control surface for AI 
 - [Usage](#usage)
 - [Stream Deck+ Layout (v3)](#stream-deck-layout-v3)
 - [Android Dashboard](#android-dashboard)
+- [TUI Dashboard](#tui-dashboard)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
@@ -91,6 +93,9 @@ The bridge stays transparent: if it's off, Claude Code works exactly as before.
 | **Stream Deck+** | Primary — 8 keys, 4 encoders, LCD touch strip |
 | **Android Tablet** | Color terrarium + HUD overlay (60fps) |
 | **Android E-ink** | B&W aquarium + partial refresh (A2/DU/FULL) |
+| **Pixoo64** | 64×64 LED pixel art terrarium — creature close-up, water zone colors, usage HUD |
+| **ESP32** | Round AMOLED / IPS LCD — compact terrarium + status display |
+| **TUI (Terminal)** | Unicode braille terrarium + ANSI dashboard — SSH/remote friendly |
 
 ### Architecture
 
@@ -99,8 +104,11 @@ Stream Deck Plugin ◄──── WebSocket ────► Bridge Server (Node
                                           ├── PTY Manager → claude CLI
 User's Terminal ◄──── stdio proxy ──────► ├── Output Parser → State Machine
 Claude Code Hooks ──── HTTP POST ──────► ├── Hook Server + SSE
-                                          ├── WS Server → Plugin / Android
-Android Dashboard ◄── WebSocket + mDNS ► └── Voice (whisper.cpp)
+                                          ├── WS Server → Plugin / Android / TUI
+Android Dashboard ◄── WebSocket + mDNS ► ├── Voice (whisper.cpp)
+Pixoo64 LED       ◄── HTTP push ────────► ├── Pixoo Module (pixel art renderer)
+ESP32 Display     ◄── WebSocket ────────► ├── Serial Module (UART/WiFi)
+TUI Dashboard     ◄── WebSocket ────────► └── (agentdeck dashboard)
 ```
 
 The bridge spawns Claude Code in a PTY, parses output + hook events into a state machine, and broadcasts state to all connected surfaces over WebSocket. Local clients are auto-trusted; LAN clients authenticate with a token from `~/.agentdeck/auth-token`. Both Stream Deck and Android can monitor and control the agent independently or simultaneously.
@@ -216,6 +224,7 @@ agentdeck claude -p 9200     # custom port
 agentdeck claude -c 'claude --model opus'  # custom Claude command
 agentdeck monitor            # hook-only bridge (no PTY)
 agentdeck daemon start       # start monitoring daemon
+agentdeck dashboard          # TUI monitoring dashboard (alias: dash)
 agentdeck devices            # show connected devices
 agentdeck qr                 # show pairing QR code
 ```
@@ -343,6 +352,7 @@ AgentDeck/
 ├── hooks/         # Claude Code hook installer
 ├── setup/         # npm setup package (@agentdeck/setup)
 ├── android/       # Jetpack Compose dashboard (e-ink + tablet, terrarium, deck mirror)
+├── esp32/         # ESP32 firmware (round AMOLED / IPS LCD, PlatformIO)
 ├── config/        # Prompt templates + default settings
 ├── scripts/       # Install, uninstall, package, icon generation
 └── docs/          # Documentation (voice, layout, android, protocol)
