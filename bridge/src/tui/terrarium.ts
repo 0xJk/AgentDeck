@@ -6,6 +6,7 @@
  * - AWAITING: octopus mid-water with "?" bubble
  * - Crayfish: larger than octopus, right side, heartbeat(sitting)/active(routing)
  * - Tetra: 2 schools (5 each), Lissajous centers, boids cohesion
+ * - Scaling: small (default) / large (2×) based on terminal size
  */
 
 import { fg, bg, RESET, DIM, colors } from './ansi.js';
@@ -42,9 +43,32 @@ function gridToBraille(grid: boolean[][], width: number, height: number): string
   return result;
 }
 
-// ===== Octopus Sprite (14×5 pixel → 7×2 braille) =====
+// ===== Sprite Scaling =====
 
-const OCTOPUS_GRID: number[][] = [
+type SpriteScale = 'small' | 'large' | 'xlarge';
+
+function getSpriteScale(width: number, height: number): SpriteScale {
+  if (width >= 160 && height >= 35) return 'xlarge';
+  if (width >= 100 && height >= 20) return 'large';
+  return 'small';
+}
+
+function scaleGridN(grid: number[][], n: number): number[][] {
+  const scaled: number[][] = [];
+  for (const row of grid) {
+    const scaledRow: number[] = [];
+    for (const cell of row) {
+      for (let i = 0; i < n; i++) scaledRow.push(cell);
+    }
+    for (let i = 0; i < n; i++) scaled.push([...scaledRow]);
+  }
+  return scaled;
+}
+
+// ===== Octopus Sprite =====
+// Small: 14×5 pixel → 7×2 braille, Large: 28×10 → 14×3 braille
+
+const OCTOPUS_GRID_SMALL: number[][] = [
   [0,0,0,0,1,1,1,1,1,1,0,0,0,0],
   [0,0,0,1,1,2,1,1,2,1,1,0,0,0],
   [0,0,3,1,1,1,1,1,1,1,1,4,0,0],
@@ -53,6 +77,7 @@ const OCTOPUS_GRID: number[][] = [
 ];
 
 export interface OctopusInstance {
+  id: string;   // unique session identifier
   x: number;
   y: number;
   homeX: number;
@@ -61,13 +86,17 @@ export interface OctopusInstance {
   phaseOffset: number;
 }
 
-function renderOctopus(inst: OctopusInstance, frame: number): { braille: string[]; color: string } {
+function renderOctopus(inst: OctopusInstance, frame: number, scale: SpriteScale): { braille: string[]; color: string } {
   const f = frame + inst.phaseOffset;
+  const srcGrid = scale === 'xlarge' ? OCTOPUS_GRID_XLARGE :
+                  scale === 'large' ? OCTOPUS_GRID_LARGE : OCTOPUS_GRID_SMALL;
+  const gh = srcGrid.length;
+  const gw = srcGrid[0].length;
   const grid: boolean[][] = [];
-  for (let y = 0; y < 5; y++) {
+  for (let y = 0; y < gh; y++) {
     grid[y] = [];
-    for (let x = 0; x < 14; x++) {
-      const cell = OCTOPUS_GRID[y][x];
+    for (let x = 0; x < gw; x++) {
+      const cell = srcGrid[y][x];
       if (cell === 0) {
         grid[y][x] = false;
       } else if (cell === 2) {
@@ -87,14 +116,15 @@ function renderOctopus(inst: OctopusInstance, frame: number): { braille: string[
       }
     }
   }
-  const braille = gridToBraille(grid, 14, 5);
+  const braille = gridToBraille(grid, gw, gh);
   const color = inst.state === 'disconnected' ? DIM + colors.octopus : colors.octopus;
   return { braille, color };
 }
 
-// ===== Crayfish Sprite (16×8 pixel → 8×2 braille — larger than octopus) =====
+// ===== Crayfish Sprite =====
+// Small: 16×8 pixel → 8×2 braille, Large: 32×16 → 16×4 braille
 
-const CRAYFISH_GRID: number[][] = [
+const CRAYFISH_GRID_SMALL: number[][] = [
   [0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0], // antennae
   [0,0,1,1,0,0,0,0,0,0,1,1,0,0,0,0], // antenna stems
   [0,1,1,0,0,0,0,0,0,0,0,1,1,0,0,0], // claws open
@@ -105,38 +135,53 @@ const CRAYFISH_GRID: number[][] = [
   [0,0,1,0,0,0,1,1,0,0,0,1,0,0,0,0], // tail legs
 ];
 
+// Pre-compute scaled grids (2× and 3× each axis)
+const OCTOPUS_GRID_LARGE = scaleGridN(OCTOPUS_GRID_SMALL, 2);
+const OCTOPUS_GRID_XLARGE = scaleGridN(OCTOPUS_GRID_SMALL, 3);
+const CRAYFISH_GRID_LARGE = scaleGridN(CRAYFISH_GRID_SMALL, 2);
+const CRAYFISH_GRID_XLARGE = scaleGridN(CRAYFISH_GRID_SMALL, 3);
+
 interface CrayfishState {
   visible: boolean;
   routing: boolean;
   x: number;
   y: number;
+  name?: string;
 }
 
-function renderCrayfish(state: CrayfishState, frame: number): { braille: string[]; color: string } {
+function renderCrayfish(state: CrayfishState, frame: number, scale: SpriteScale): { braille: string[]; color: string } {
+  const srcGrid = scale === 'xlarge' ? CRAYFISH_GRID_XLARGE :
+                  scale === 'large' ? CRAYFISH_GRID_LARGE : CRAYFISH_GRID_SMALL;
+  const gh = srcGrid.length;
+  const gw = srcGrid[0].length;
   const grid: boolean[][] = [];
-  for (let y = 0; y < 8; y++) {
+  for (let y = 0; y < gh; y++) {
     grid[y] = [];
-    for (let x = 0; x < 16; x++) {
-      const cell = CRAYFISH_GRID[y][x];
+    for (let x = 0; x < gw; x++) {
+      const cell = srcGrid[y][x];
       if (!cell) { grid[y][x] = false; continue; }
-      // Antennae wiggle (rows 0-1)
-      if (y <= 1 && (x === 3 || x === 10)) {
-        grid[y][x] = state.routing || Math.sin(frame * 0.1 + x) > -0.3;
+      // Map back to original row/col for animation logic
+      const sf = scale === 'xlarge' ? 3 : scale === 'large' ? 2 : 1;
+      const origY = Math.floor(y / sf);
+      const origX = Math.floor(x / sf);
+      // Antennae wiggle (original rows 0-1)
+      if (origY <= 1 && (origX === 3 || origX === 10)) {
+        grid[y][x] = state.routing || Math.sin(frame * 0.1 + origX) > -0.3;
       }
-      // Claw clap when routing (row 2)
-      else if (y === 2 && (x === 1 || x === 12)) {
+      // Claw clap when routing (original row 2)
+      else if (origY === 2 && (origX === 1 || origX === 12)) {
         grid[y][x] = !state.routing || (frame % 20 > 5);
       }
-      // Leg movement (rows 6-7)
-      else if (y >= 6) {
-        const legPhase = x * 0.5;
+      // Leg movement (original rows 6-7)
+      else if (origY >= 6) {
+        const legPhase = origX * 0.5;
         grid[y][x] = Math.sin(frame * 0.08 + legPhase) > -0.5;
       } else {
         grid[y][x] = true;
       }
     }
   }
-  const braille = gridToBraille(grid, 16, 8);
+  const braille = gridToBraille(grid, gw, gh);
   let color: string;
   if (state.routing) {
     color = colors.crayfish;
@@ -246,8 +291,14 @@ export function updateTerrarium(ctx: TerrariumContext, frame: number): void {
     }
   }
 
+  // Attract target: processing octopus > routing crayfish > none
   const activeOct = ctx.octopi.find(o => o.state === 'processing');
-  const attractTarget = activeOct ? { x: activeOct.x, y: activeOct.y } : undefined;
+  let attractTarget: { x: number; y: number } | undefined;
+  if (activeOct) {
+    attractTarget = { x: activeOct.x, y: activeOct.y };
+  } else if (ctx.crayfish.visible && ctx.crayfish.routing) {
+    attractTarget = { x: ctx.crayfish.x, y: ctx.crayfish.y };
+  }
   for (let i = 0; i < ctx.schools.length; i++) {
     updateSchool(ctx.schools[i], frame, i, attractTarget);
   }
@@ -272,26 +323,41 @@ export function updateTerrarium(ctx: TerrariumContext, frame: number): void {
 
 export function setOctopi(
   ctx: TerrariumContext,
-  sessions: Array<{ state: string; name?: string; agentType?: string }>,
+  sessions: Array<{ id?: string; state: string; name?: string; agentType?: string }>,
 ): void {
   const octSessions = sessions.filter(s =>
     (s.agentType as string) !== 'daemon' && (s.agentType as string) !== 'openclaw'
   );
   const count = octSessions.length;
+  // Count name occurrences to number duplicates
+  const nameCounts = new Map<string, number>();
+  for (const s of octSessions) {
+    const n = s.name || '';
+    nameCounts.set(n, (nameCounts.get(n) || 0) + 1);
+  }
+  const nameSeq = new Map<string, number>();
   const newOctopi: OctopusInstance[] = [];
   for (let i = 0; i < count; i++) {
     const s = octSessions[i];
+    const sid = s.id || `oct-${i}`;
+    const baseName = s.name || '';
+    const seq = (nameSeq.get(baseName) || 0) + 1;
+    nameSeq.set(baseName, seq);
+    const displayName = (nameCounts.get(baseName) || 0) > 1
+      ? `${baseName} #${seq}` : baseName;
     const homeX = count === 1 ? 0.28 : 0.12 + (i * 0.40) / Math.max(1, count - 1);
-    const existing = ctx.octopi.find(o => o.name === s.name);
+    const existing = ctx.octopi.find(o => o.id === sid);
     if (existing) {
       existing.state = s.state;
+      existing.name = displayName || undefined;
       existing.homeX = homeX;
       existing.x = homeX;
       newOctopi.push(existing);
     } else {
       newOctopi.push({
+        id: sid,
         x: homeX, y: 0.88, homeX,
-        state: s.state, name: s.name,
+        state: s.state, name: displayName || undefined,
         phaseOffset: Math.floor(Math.random() * 40),
       });
     }
@@ -299,9 +365,10 @@ export function setOctopi(
   ctx.octopi = newOctopi;
 }
 
-export function setCrayfish(ctx: TerrariumContext, visible: boolean, routing: boolean): void {
+export function setCrayfish(ctx: TerrariumContext, visible: boolean, routing: boolean, name?: string): void {
   ctx.crayfish.visible = visible;
   ctx.crayfish.routing = routing;
+  if (name !== undefined) ctx.crayfish.name = name;
 }
 
 // ===== Render Frame =====
@@ -310,6 +377,8 @@ export function renderTerrariumFrame(
   ctx: TerrariumContext, width: number, height: number, frame: number,
 ): string[] {
   if (height < 3 || width < 20) return [];
+  const scale = getSpriteScale(width, height);
+  const scaleFactor = scale === 'xlarge' ? 3 : scale === 'large' ? 2 : 1;
   const lines: string[] = [];
   const sandRow = height - 2; // sand starts at this row
 
@@ -363,28 +432,35 @@ export function renderTerrariumFrame(
       }
     }
 
-    // Fish
+    // Fish (scale-aware: small=3, large=5, xlarge=7 chars)
     for (const school of ctx.schools) {
       for (const f of school.fish) {
         const fx = Math.floor(f.x * width);
         const fy = Math.floor(f.y * height);
-        if (fy === row && fx >= 1 && fx < width - 2) {
-          const fishStr = f.vx > 0 ? '><>' : '<><';
-          for (let c = 0; c < 3; c++) {
+        const fishStrs = scale === 'xlarge'
+          ? (f.vx > 0 ? '>>><>>>' : '<<<><<<')
+          : scale === 'large'
+          ? (f.vx > 0 ? '>><>>' : '<<><>')
+          : (f.vx > 0 ? '><>' : '<><');
+        const fishLen = fishStrs.length;
+        const midIdx = Math.floor(fishLen / 2);
+        if (fy === row && fx >= 1 && fx < width - fishLen + 1) {
+          for (let c = 0; c < fishLen; c++) {
             if (fx + c < width) {
-              chars[fx + c] = fishStr[c];
-              charColors[fx + c] = c === 1 ? colors.tetraStripe : colors.tetraNeon;
+              chars[fx + c] = fishStrs[c];
+              charColors[fx + c] = c === midIdx ? colors.tetraStripe : colors.tetraNeon;
             }
           }
         }
       }
     }
 
-    // Octopi (braille — 7 chars wide × 2 rows tall)
+    // Octopi (scale-aware braille)
     for (const oct of ctx.octopi) {
-      const { braille, color } = renderOctopus(oct, frame);
-      const ox = Math.floor(oct.x * width) - 3;
-      const oy = Math.floor(oct.y * height) - 1;
+      const { braille, color } = renderOctopus(oct, frame, scale);
+      const octHalfW = Math.floor(braille[0]?.length / 2) || 3;
+      const ox = Math.floor(oct.x * width) - octHalfW;
+      const oy = Math.floor(oct.y * height) - Math.floor(braille.length / 2);
       for (let br = 0; br < braille.length; br++) {
         if (oy + br === row) {
           for (let bc = 0; bc < braille[br].length; bc++) {
@@ -396,7 +472,7 @@ export function renderTerrariumFrame(
           }
         }
       }
-      // Name tag
+      // Name tag — directly above braille sprite
       if (oct.name && oy - 1 === row) {
         const name = oct.name.length > 12 ? oct.name.slice(0, 11) + '\u2026' : oct.name;
         const nx = Math.floor(oct.x * width) - Math.floor(name.length / 2);
@@ -405,14 +481,14 @@ export function renderTerrariumFrame(
           if (px >= 0 && px < width) { chars[px] = name[nc]; charColors[px] = fg(180, 180, 180); }
         }
       }
-      // "?" bubble
+      // "?" bubble — same row as name tag, offset right
       if (oct.state.startsWith('awaiting') && oy - 1 === row) {
-        const qx = Math.floor(oct.x * width) + 5;
+        const qx = Math.floor(oct.x * width) + octHalfW + 2;
         if (qx >= 0 && qx < width) { chars[qx] = '?'; charColors[qx] = fg(255, 255, 100); }
       }
       // Starburst particles
       if (oct.state === 'processing') {
-        const burstR = 2 + (frame % 8) * 0.3;
+        const burstR = (2 + (frame % 8) * 0.3) * (scaleFactor * 0.75);
         for (let p = 0; p < 6; p++) {
           const angle = (p / 6) * Math.PI * 2 + frame * 0.15;
           const px = Math.floor(oct.x * width + Math.cos(angle) * burstR);
@@ -424,11 +500,12 @@ export function renderTerrariumFrame(
       }
     }
 
-    // Crayfish (braille — 8 chars wide × 2 rows tall, larger than octopus)
+    // Crayfish (scale-aware braille)
     if (ctx.crayfish.visible) {
-      const { braille, color } = renderCrayfish(ctx.crayfish, frame);
-      const cx = Math.floor(ctx.crayfish.x * width) - 4;
-      const cy = Math.floor(ctx.crayfish.y * height) - 1;
+      const { braille, color } = renderCrayfish(ctx.crayfish, frame, scale);
+      const cfHalfW = Math.floor(braille[0]?.length / 2) || 4;
+      const cx = Math.floor(ctx.crayfish.x * width) - cfHalfW;
+      const cy = Math.floor(ctx.crayfish.y * height) - Math.floor(braille.length / 2);
       for (let br = 0; br < braille.length; br++) {
         if (cy + br === row) {
           for (let bc = 0; bc < braille[br].length; bc++) {
@@ -437,6 +514,57 @@ export function renderTerrariumFrame(
               chars[px] = braille[br][bc];
               charColors[px] = color;
             }
+          }
+        }
+      }
+      // Crayfish name tag — directly above braille sprite
+      const cfName = ctx.crayfish.name || 'OpenClaw';
+      if (cy - 1 === row) {
+        const nx = Math.floor(ctx.crayfish.x * width) - Math.floor(cfName.length / 2);
+        for (let nc = 0; nc < cfName.length; nc++) {
+          const px = nx + nc;
+          if (px >= 0 && px < width) { chars[px] = cfName[nc]; charColors[px] = fg(180, 180, 180); }
+        }
+      }
+
+      // Signal wave rings + orbiting dots when ROUTING
+      if (ctx.crayfish.routing) {
+        const cfCenterX = ctx.crayfish.x * width;
+        const cfCenterY = ctx.crayfish.y * height;
+        const waveScale = scaleFactor * 0.75;
+        const waveChars = ['\u25E6', '\u00B7', '\u2219']; // ◦ · ∙
+
+        // 3 concentric signal wave rings, expanding outward
+        for (let ring = 0; ring < 3; ring++) {
+          const ringPhase = (frame * 0.12 + ring * 2.1) % 6;
+          const radius = (2 + ringPhase) * waveScale;
+          // Semi-circle (upper half — signals radiate upward/outward)
+          for (let p = 0; p < 8; p++) {
+            const angle = (p / 8) * Math.PI + Math.PI; // upper semicircle
+            const px = Math.floor(cfCenterX + Math.cos(angle) * radius);
+            const py = Math.floor(cfCenterY + Math.sin(angle) * radius * 0.5);
+            if (py === row && px >= 0 && px < width && chars[px] === ' ') {
+              chars[px] = waveChars[ring];
+              // Fade opacity with distance
+              const fade = Math.max(0, 1 - ringPhase / 6);
+              const r = Math.floor(255 * fade);
+              const g = Math.floor(107 * fade);
+              const b = Math.floor(107 * fade);
+              charColors[px] = fg(Math.max(r, 60), Math.max(g, 30), Math.max(b, 30));
+            }
+          }
+        }
+
+        // 4 orbiting signal dots (cyan ✦ — contrasts with octopus gold ✧)
+        for (let d = 0; d < 4; d++) {
+          const orbitAngle = (d / 4) * Math.PI * 2 + frame * 0.2;
+          const orbitRx = (3.5 + Math.sin(frame * 0.08) * 0.5) * waveScale;
+          const orbitRy = (1.8 + Math.cos(frame * 0.08) * 0.3) * waveScale;
+          const px = Math.floor(cfCenterX + Math.cos(orbitAngle) * orbitRx);
+          const py = Math.floor(cfCenterY + Math.sin(orbitAngle) * orbitRy);
+          if (py === row && px >= 0 && px < width && chars[px] === ' ') {
+            chars[px] = '\u2726'; // ✦
+            charColors[px] = colors.tetraNeon;
           }
         }
       }

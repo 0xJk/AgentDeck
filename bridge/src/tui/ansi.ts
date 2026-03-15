@@ -81,6 +81,7 @@ export const colors = {
   sand: fg(194, 168, 120),       // #c2a878
   seaweed: fg(34, 139, 34),      // forestgreen
   bubble: fg(135, 206, 250),     // lightskyblue
+  crayfishGlow: fg(255, 107, 107), // #FF6B6B - signal wave color
 };
 
 // ===== State to color mapping =====

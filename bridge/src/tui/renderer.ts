@@ -13,7 +13,7 @@ import {
   colors, box, hLine, sgr, stateColor, stateIcon,
   truncText, padRight, visLen,
 } from './ansi.js';
-import { blockGauge, resetTimeStr, formatUptime, formatTokens, activityDensityBar } from './gauge.js';
+import { blockGauge, resetTimeStr, formatUptime, formatTokens } from './gauge.js';
 import type { DashboardState, LayoutMode } from './dashboard.js';
 import type { TimelineEntry, TimelineEntryType } from '@agentdeck/shared';
 
@@ -149,14 +149,30 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
     lines.push(`    ${col}${icon} ${sessState.toUpperCase().replace(/_/g, ' ')}${RESET}`);
   };
 
-  if (state.sessions.length === 0 && state.state) {
-    renderSession(state.projectName || 'unknown', state.modelName ?? undefined,
-      state.state, state.agentType ?? undefined);
-  } else {
+  // When connected to daemon: sessions list has all real sessions
+  // When connected to session bridge: sessions has siblings only — add self first
+  if (state.agentType === 'daemon') {
     for (const sess of state.sessions) {
       renderSession(sess.projectName || 'unknown', undefined,
         sess.state || 'idle', sess.agentType as string | undefined);
     }
+  } else if (state.state) {
+    // Self (primary session)
+    renderSession(state.projectName || 'unknown', state.modelName ?? undefined,
+      state.state, state.agentType ?? undefined);
+    // Siblings (other sessions)
+    for (const sess of state.sessions) {
+      renderSession(sess.projectName || 'unknown', undefined,
+        sess.state || 'idle', sess.agentType as string | undefined);
+    }
+  }
+
+  // Virtual OpenClaw entry when gateway detected but not in sessions list
+  const hasOcSession = state.sessions.some(s =>
+    s.agentType === 'openclaw' || (s.agentType as string) === 'gateway'
+  );
+  if (state.gatewayAvailable && !hasOcSession) {
+    renderSession('OpenClaw', undefined, state.crayfishRouting ? 'processing' : 'idle', 'openclaw');
   }
 
   lines.push('');
@@ -258,10 +274,6 @@ function renderTimelineLines(
     const raw = truncText(e.raw, width - 10);
     const pending = e.status === 'pending' ? `${colors.dim} [PENDING]${RESET}` : '';
     lines.push(` ${colors.dim}${timeStr}${RESET} ${typeColor(e.type)}${typeIcon(e.type)}${RESET} ${raw}${pending}`);
-  }
-  if (width > 30) {
-    const barWidth = Math.min(width - 10, 50);
-    lines.push(` ${activityDensityBar(entries.map(e => e.ts), barWidth)} ${colors.dim}activity${RESET}`);
   }
   return lines;
 }
@@ -441,19 +453,37 @@ function renderStandardLayout(
 
 function renderAgentCompactLines(state: DashboardState, width: number): string[] {
   const lines: string[] = [];
-  if (state.sessions.length === 0 && state.state) {
-    const col = stateColor(state.state);
-    const proj = truncText(state.projectName || '?', width - 20);
-    const model = state.modelName ? ` \u00B7 ${state.modelName}` : '';
-    const emoji = creatureEmoji(state.agentType ?? undefined);
-    lines.push(` ${emoji} ${proj}${colors.dim}${model}${RESET} ${col}${stateIcon(state.state)}${state.state.toUpperCase().replace(/_/g, ' ')}${RESET}`);
-  } else {
+  if (state.agentType === 'daemon') {
     for (const s of state.sessions) {
       const st = s.state || 'idle';
       const col = stateColor(st);
       const emoji = creatureEmoji(s.agentType as string | undefined);
       lines.push(` ${emoji} ${truncText(s.projectName || '?', width - 18)} ${col}${stateIcon(st)}${st.toUpperCase().replace(/_/g, ' ').slice(0, 8)}${RESET}`);
     }
+  } else if (state.state) {
+    // Self first
+    const col = stateColor(state.state);
+    const proj = truncText(state.projectName || '?', width - 20);
+    const model = state.modelName ? ` \u00B7 ${state.modelName}` : '';
+    const emoji = creatureEmoji(state.agentType ?? undefined);
+    lines.push(` ${emoji} ${proj}${colors.dim}${model}${RESET} ${col}${stateIcon(state.state)}${state.state.toUpperCase().replace(/_/g, ' ')}${RESET}`);
+    // Siblings
+    for (const s of state.sessions) {
+      const st = s.state || 'idle';
+      const sCol = stateColor(st);
+      const sEmoji = creatureEmoji(s.agentType as string | undefined);
+      lines.push(` ${sEmoji} ${truncText(s.projectName || '?', width - 18)} ${sCol}${stateIcon(st)}${st.toUpperCase().replace(/_/g, ' ').slice(0, 8)}${RESET}`);
+    }
+  }
+  // Virtual OpenClaw entry
+  const hasOcCompact = state.sessions.some(s =>
+    s.agentType === 'openclaw' || (s.agentType as string) === 'gateway'
+  );
+  if (state.gatewayAvailable && !hasOcCompact) {
+    const ocState = state.crayfishRouting ? 'processing' : 'idle';
+    const ocCol = stateColor(ocState);
+    const ocEmoji = creatureEmoji('openclaw');
+    lines.push(` ${ocEmoji} OpenClaw ${ocCol}${stateIcon(ocState)}${ocState.toUpperCase()}${RESET}`);
   }
   if (state.usage) {
     const u = state.usage;

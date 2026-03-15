@@ -108,12 +108,18 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
   function render(): void {
     const { cols, rows } = screen;
 
-    // Update terrarium creatures from state (pass agentType for filtering)
-    const octSessions: Array<{ state: string; name?: string; agentType?: string }> = state.sessions
-      .map(s => ({ state: s.state || 'idle', name: s.projectName, agentType: s.agentType as string | undefined }));
+    // Update terrarium creatures from state
+    // When connected to daemon: state.sessions has all real sessions (daemon excluded)
+    // When connected to session bridge: state.sessions has only siblings — must add self
+    const octSessions: Array<{ id?: string; state: string; name?: string; agentType?: string }> = state.sessions
+      .map(s => ({ id: s.id, state: s.state || 'idle', name: s.projectName, agentType: s.agentType as string | undefined }));
 
-    if (octSessions.length === 0 && state.state !== 'disconnected') {
-      octSessions.push({ state: state.state, name: state.projectName ?? undefined, agentType: state.agentType ?? undefined });
+    if (state.agentType !== 'daemon' && state.state && state.state !== 'disconnected') {
+      // Add self (primary) if not already present in siblings list
+      const selfInList = octSessions.some(s => s.name === state.projectName && s.agentType === (state.agentType ?? undefined));
+      if (!selfInList) {
+        octSessions.unshift({ id: 'primary', state: state.state, name: state.projectName ?? undefined, agentType: state.agentType ?? undefined });
+      }
     }
     setOctopi(terrCtx, octSessions);
 
@@ -121,7 +127,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
     const ocSibling = state.sessions.find(s =>
       s.agentType === 'openclaw' || (s as any).agentType === 'gateway'
     );
-    setCrayfish(terrCtx, state.gatewayAvailable || !!ocSibling, state.crayfishRouting);
+    setCrayfish(terrCtx, state.gatewayAvailable || !!ocSibling, state.crayfishRouting, ocSibling?.projectName);
 
     // Render terrarium
     const layout = getLayout(cols, rows);
