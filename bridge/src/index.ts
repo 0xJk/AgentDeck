@@ -677,6 +677,19 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   core.startGatewayHealthCheck();
   core.startSessionsListPolling();
 
+  // Inject virtual OpenClaw session when Gateway is detected (same as daemon-server.ts)
+  core.setSessionsEnricher((sessions) => {
+    if (!core.cachedGatewayAvailable) return sessions;
+    if (sessions.some(s => s.agentType === 'openclaw')) return sessions;
+    return [...sessions, {
+      id: 'openclaw-gateway',
+      port: 18789,
+      projectName: 'OpenClaw',
+      agentType: 'openclaw' as const,
+      alive: true,
+    }];
+  });
+
   // ===== Encoder state computation =====
   function computeEncoderState(): EncoderStateEvent {
     const snapshot = core.stateMachine.getSnapshot();

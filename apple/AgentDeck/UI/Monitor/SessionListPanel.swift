@@ -47,18 +47,6 @@ struct SessionListPanel: View {
 
             Spacer().frame(height: 4)
 
-            // Permission mode badge (non-default only)
-            if stateHolder.state.permissionMode != .default {
-                Text("mode:\(stateHolder.state.permissionMode.rawValue)")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(TerrariumHUD.subtext)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(TerrariumHUD.bg, in: RoundedRectangle(cornerRadius: 4))
-            }
-
-            Spacer().frame(height: 2)
-
             // Build unified entry list
             let entries = buildEntries()
             let nameCounts = Dictionary(grouping: entries, by: { "\($0.projectName)|\($0.agentType ?? "")" })

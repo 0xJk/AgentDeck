@@ -38,10 +38,6 @@ struct MonitorScreen: View {
                             .frame(height: geo.size.height * sandFraction)
                     }
 
-                    // Options overlay (when awaiting)
-                    if stateHolder.state.state.isAwaiting {
-                        optionsOverlay
-                    }
                 }
 
                 // Layer 3: Settings gear + rotation toggle (always visible)
@@ -109,50 +105,4 @@ struct MonitorScreen: View {
         terrariumState = stateHolder.state.toTerrariumState(previous: terrariumState)
     }
 
-    // MARK: - Options Overlay
-
-    private var optionsOverlay: some View {
-        VStack {
-            Spacer()
-
-            VStack(spacing: 8) {
-                if let question = stateHolder.state.question {
-                    Text(question)
-                        .font(.subheadline)
-                        .foregroundStyle(.white)
-                }
-
-                ForEach(stateHolder.state.options) { option in
-                    Button {
-                        stateHolder.sendCommand(.selectOption(index: option.index))
-                    } label: {
-                        HStack {
-                            Text(option.label)
-                                .foregroundStyle(.white)
-                            Spacer()
-                            if option.recommended == true {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                    .font(.caption)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            option.selected == true
-                                ? Color.blue.opacity(0.3)
-                                : Color.white.opacity(0.1),
-                            in: RoundedRectangle(cornerRadius: 6)
-                        )
-                    }
-                }
-            }
-            .padding()
-            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
-            .padding()
-
-            Spacer()
-                .frame(height: 60)
-        }
-    }
 }

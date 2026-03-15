@@ -144,9 +144,9 @@ final class BridgeDiscovery: @unchecked Sendable {
 
                 if token == nil {
                     // Fetch token from bridge /health endpoint
-                    self?.fetchTokenFromBridge(host: resolvedHost, port: port) { fetchedToken in
+                    self?.fetchTokenFromBridge(host: resolvedHost, port: port) { [weak self] fetchedToken in
                         print("[Discovery] resolved \(name) to \(resolvedHost):\(port) token=\(fetchedToken != nil ? "fetched" : "nil")")
-                        DispatchQueue.main.async { [weak self] in
+    DispatchQueue.main.async {
                             guard let self else { return }
                             let bridge = DiscoveredBridge(
                                 name: name,
