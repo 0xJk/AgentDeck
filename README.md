@@ -342,6 +342,63 @@ See **[Android Reference](docs/android.md)** for device support, build/signing i
 
 ---
 
+## TUI Dashboard
+
+Monitor your agents directly in the terminal — no additional hardware or apps required.
+
+```bash
+agentdeck dashboard     # or: agentdeck dash
+```
+
+The TUI dashboard connects to a running Bridge or Daemon as a WebSocket client (same protocol as the Android app) and renders a real-time monitoring interface using raw ANSI escape codes. Zero additional dependencies.
+
+```
+┌─ AGENTS ──────────────┬─ TERRARIUM ● ──────────────────────────────────────────┐
+│                        │  ∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈~∿∿≈  │
+│ ▄▀▀▄ ▄▀▀▀ █▀▀▀ ...    │     °       ><>    ><>              °                 │
+│ █▀▀█ █ ▀█ █▀▀  ...    │       ⣿⣿⡇              ><>     ·          ⣿⣿⣿⣿⣿     │
+│ ▀  ▀  ▀▀  ▀▀▀▀ ...    │      ⣿⣿⣿⣿   °               ><>       ⣿⣿⣿⣿⣿⣿⣿⣿    │
+│  █▀▀▄ █▀▀▀ ...         │     ⣿⣿⣿⣿⣿⣿       ·                  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿  │
+│  █  █ █▀▀  ...         │  ╱│  ╲│╱  │╲  ░░▒░░░░▒▒░░░░░░░▒░░░░░░░▒▒░░░░▒░░░░  │
+│  ▀▀▀  ▀▀▀▀ ...         ├───────────────────────┬──────────────────────────────┤
+│                        │ LIMITS                 │ MODELS                       │
+│ 🐙 my-project          │ 5h [██████░░░░] 62%    │ ● opus-4                     │
+│    ● PROCESSING        │    ↻1h23m              │ Ollama:                      │
+│                        │ 7d [████░░░░░░] 41%    │   qwen2.5:7b 4.5G            │
+│ Tokens: 42k/18k       │    ↻2d5h               │                              │
+│ Cost: $0.47            ├───────────────────────┴──────────────────────────────┤
+│ Up: 1h32m              │ TIMELINE                                             │
+│                        │ 10:32 ▶ Fix the header component                     │
+│                        │ 10:32 ◆ Read Header.tsx                              │
+│                        │ 10:33 ◆ Edit Header.tsx                              │
+│                        │ 10:33 ■ Completed · opus-4                           │
+│                        │ ░░░░░▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ activity  │
+└────────────────────────┴──────────────────────────────────────────────────────┘
+ q quit
+```
+
+### Features
+
+- **Terrarium animation** — Unicode Braille octopus (🐙), crayfish (🦞), neon tetra schools swimming in a truecolor water gradient. Creatures reflect agent state: idle = resting on floor, processing = swimming with starburst particles, awaiting = mid-water with "?" bubble
+- **Pixel font logo** — "AGENT DECK" rendered in half-block characters (▀▄█)
+- **Adaptive layout** — wide (120+ cols, left/right split), standard (80-119, top/bottom), narrow (60-79, text only). Terrarium hidden when terminal is too small
+- **Status panel** — LIMITS (rate limit gauges) │ MODELS (OAuth + Ollama) — matching the E-ink layout
+- **Timeline** — tool calls, state transitions, activity density bar. Generated locally from `state_update` events
+- **Auto-discovery** — finds the running Daemon (preferred) or first active session automatically
+- **Auto-reconnect** — 3-second reconnect on disconnect, `[STALE]` indicator for cached data
+- **Non-TTY mode** — when piped, outputs a JSON snapshot instead of the TUI
+
+### When to Use
+
+| Scenario | Recommended surface |
+|----------|-------------------|
+| Primary control | Stream Deck+ (hardware buttons + encoders) |
+| Secondary monitor | Android tablet/e-ink (always-on display) |
+| SSH / remote server | **TUI Dashboard** (no hardware needed) |
+| Quick status check | **TUI Dashboard** or `agentdeck status` |
+
+---
+
 ## Project Structure
 
 ```
