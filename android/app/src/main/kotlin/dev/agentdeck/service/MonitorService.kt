@@ -88,9 +88,14 @@ class MonitorService : Service() {
     private fun handleDisplaySync(hostDisplayOn: Boolean, bridgeConnected: Boolean, agentState: AgentState) {
         serviceScope.launch {
             val syncEnabled = displayPrefs.displaySyncEnabledFlow.first()
+            Log.d(TAG, "handleDisplaySync: hostDisplayOn=$hostDisplayOn, bridgeConnected=$bridgeConnected, agentState=$agentState, syncEnabled=$syncEnabled, isDimmed=${brightnessController.isDimmed()}, canWrite=${brightnessController.canWriteSettings()}")
+
             if (!syncEnabled) {
                 // Sync disabled — restore if we dimmed, cancel any idle timeout
-                if (brightnessController.isDimmed()) brightnessController.restore()
+                if (brightnessController.isDimmed()) {
+                    Log.d(TAG, "Sync disabled — restoring brightness")
+                    brightnessController.restore()
+                }
                 idleTimeoutJob?.cancel()
                 idleTimeoutJob = null
                 return@launch
@@ -101,20 +106,29 @@ class MonitorService : Service() {
                 idleTimeoutJob?.cancel()
                 idleTimeoutJob = null
                 if (!hostDisplayOn) {
+                    Log.i(TAG, "Host display off — dimming")
                     brightnessController.dim()
                 } else {
+                    if (brightnessController.isDimmed()) {
+                        Log.i(TAG, "Host display on — restoring brightness")
+                    }
                     brightnessController.restore()
                 }
             } else {
                 // Bridge not connected — use idle timeout fallback
                 // If dimmed from previous bridge-connected sync, restore immediately
-                if (brightnessController.isDimmed()) brightnessController.restore()
+                if (brightnessController.isDimmed()) {
+                    Log.d(TAG, "Bridge disconnected while dimmed — restoring brightness")
+                    brightnessController.restore()
+                }
                 val isIdle = agentState == AgentState.DISCONNECTED || agentState == AgentState.IDLE
                 if (isIdle) {
                     if (idleTimeoutJob == null) {
                         val timeoutMinutes = displayPrefs.idleTimeoutMinutesFlow.first()
+                        Log.d(TAG, "Starting idle timeout: ${timeoutMinutes}m")
                         idleTimeoutJob = serviceScope.launch {
                             delay(timeoutMinutes * 60_000L)
+                            Log.i(TAG, "Idle timeout reached — dimming")
                             brightnessController.dim()
                         }
                     }

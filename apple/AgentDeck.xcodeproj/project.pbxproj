@@ -91,6 +91,7 @@
 		DB3357B8FB7E0377BC728BB6 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5200B4548DFE9F98AEE8D504 /* ContentView.swift */; };
 		DBDF1CEA6BCF9332097D55A1 /* ConnectionOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5A10C1FD79BB64BD2BB8D5 /* ConnectionOverlay.swift */; };
 		DBE7242898F7F03CB3463B6D /* TimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7847FA7381FB8075331B0F12 /* TimelineTests.swift */; };
+		DE4EAAFB33A3C05AF2103EE1 /* DisplaySyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9B2A8E8FD57B53093141E6 /* DisplaySyncService.swift */; };
 		DCD31A20E9139F8661F0E321 /* TimelineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95824B0CF6571507DBAF27C5 /* TimelineStore.swift */; };
 		DCDA12FC8E9B9961BA2D8182 /* MonitorScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7B4E454713DFE2DECC4D154 /* MonitorScreen.swift */; };
 		DF804392C56333041A3C2784 /* StatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E6BEE1A730418C1EBDC048 /* StatusBadge.swift */; };
@@ -98,6 +99,7 @@
 		E5B1774D921E5B4C508D73A0 /* AgentStateHolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92F84E0AB4261F8308A45186 /* AgentStateHolder.swift */; };
 		E940E2714946D07856C8FB37 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5200B4548DFE9F98AEE8D504 /* ContentView.swift */; };
 		EA32929C78C6088451DDF476 /* TimelineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95824B0CF6571507DBAF27C5 /* TimelineStore.swift */; };
+		73AEA18BB2EF40B36B3FE8C1 /* DisplaySyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9B2A8E8FD57B53093141E6 /* DisplaySyncService.swift */; };
 		EBFF02B51A6DD408055A8955 /* SessionMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 558D3003B87503877CD1177F /* SessionMetrics.swift */; };
 /* End PBXBuildFile section */
 
@@ -137,6 +139,7 @@
 		92F84E0AB4261F8308A45186 /* AgentStateHolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStateHolder.swift; sourceTree = "<group>"; };
 		93F845B5C2D610A38007523C /* AgentDeck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentDeck.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95824B0CF6571507DBAF27C5 /* TimelineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineStore.swift; sourceTree = "<group>"; };
+		AE9B2A8E8FD57B53093141E6 /* DisplaySyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplaySyncService.swift; sourceTree = "<group>"; };
 		960777CE6214381ADD730F6D /* AgentDeck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentDeck.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		979988BB4CB2A4B5948FD360 /* Adapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Adapter.swift; sourceTree = "<group>"; };
 		AA00010000000000AA000001 /* TerrariumState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerrariumState.swift; sourceTree = "<group>"; };
@@ -219,6 +222,7 @@
 				4004E2612F668B2E00811251 /* StateTimelineGenerator.swift */,
 				92F84E0AB4261F8308A45186 /* AgentStateHolder.swift */,
 				558D3003B87503877CD1177F /* SessionMetrics.swift */,
+				AE9B2A8E8FD57B53093141E6 /* DisplaySyncService.swift */,
 				95824B0CF6571507DBAF27C5 /* TimelineStore.swift */,
 			);
 			path = State;
@@ -565,6 +569,7 @@
 				D53BC123AAE467EB342A5041 /* SettingsScreen.swift in Sources */,
 				DF804392C56333041A3C2784 /* StatusBadge.swift in Sources */,
 				9ED5461741C1FC0A6ADC249F /* Timeline.swift in Sources */,
+				DE4EAAFB33A3C05AF2103EE1 /* DisplaySyncService.swift in Sources */,
 				DCD31A20E9139F8661F0E321 /* TimelineStore.swift in Sources */,
 				59639A63610FCE07B0AFA654 /* VoiceRecorder.swift in Sources */,
 			);
@@ -615,6 +620,7 @@
 				38E9C043A76BB267FCACB4B7 /* SettingsScreen.swift in Sources */,
 				67FA80518E8F347B39576FCC /* StatusBadge.swift in Sources */,
 				9E30D4D0BEE3CB402E8741D8 /* Timeline.swift in Sources */,
+				73AEA18BB2EF40B36B3FE8C1 /* DisplaySyncService.swift in Sources */,
 				EA32929C78C6088451DDF476 /* TimelineStore.swift in Sources */,
 				6517B9BB944ABB74DCC81642 /* VoiceRecorder.swift in Sources */,
 			);

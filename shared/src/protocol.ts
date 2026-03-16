@@ -130,6 +130,12 @@ export interface StateUpdateEvent {
   gatewayAvailable?: boolean;
   /** OpenClaw Gateway has doctor warnings/errors */
   gatewayHasError?: boolean;
+  /** Voice assistant pipeline state (wake word → STT → LLM → TTS) */
+  voiceAssistantState?: VoiceAssistantState;
+  /** Transcribed user speech (processing/speaking) */
+  voiceAssistantText?: string;
+  /** LLM response text (speaking) */
+  voiceAssistantResponseText?: string;
 }
 
 export interface PromptOptionsEvent {
@@ -188,6 +194,31 @@ export interface VoiceStateEvent {
   state: 'idle' | 'recording' | 'transcribing' | 'error';
   text?: string;
   error?: string;
+}
+
+// ===== Voice Assistant (Wake Word) =====
+
+export type VoiceAssistantState =
+  | 'idle'        // listening for wake word
+  | 'listening'   // wake word detected, recording user speech
+  | 'processing'  // STT + LLM in progress
+  | 'speaking'    // TTS playback
+  | 'disabled';   // wake word listener off
+
+export interface VoiceAssistantStateEvent {
+  type: 'voice_assistant_state';
+  state: VoiceAssistantState;
+  deviceId?: string;
+  /** Transcribed user speech */
+  text?: string;
+  /** LLM response text */
+  responseText?: string;
+}
+
+export interface WakeWordDetectedEvent {
+  type: 'wake_word_detected';
+  deviceId: string;
+  timestamp: number;
 }
 
 export interface DisplayStateEvent {
@@ -270,6 +301,8 @@ export type BridgeEvent =
   | ConnectionEvent
   | UserPromptEvent
   | VoiceStateEvent
+  | VoiceAssistantStateEvent
+  | WakeWordDetectedEvent
   | DisplayStateEvent
   | SessionsListEvent
   | EncoderStateEvent
@@ -362,6 +395,7 @@ export const DISPLAY_FORWARDED_EVENTS = new Set([
   'usage_update',
   'sessions_list',
   'connection',
+  'display_state',
 ]);
 
 /** Events forwarded to serial devices (ESP32) — display events + timeline */

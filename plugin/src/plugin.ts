@@ -351,6 +351,39 @@ connMgr.on('timeline_history', (ev: { type: 'timeline_history'; entries: import(
   timelineStore.mergeHistory(ev.entries);
 });
 
+// ---- Display sleep/wake dimming ----
+let displayDimmed = false;
+
+const BLACK_BUTTON_SVG = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144"><rect width="144" height="144" fill="#000"/></svg>'
+);
+const BLACK_LCD_SVG = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#000"/></svg>'
+);
+
+function dimAllActions(): void {
+  for (const [actionId, entry] of appearedActions.entries()) {
+    const act = streamDeck.actions.getActionById(actionId);
+    if (!act) continue;
+    if (entry.controller === 'Encoder') {
+      void (act as any).setFeedback({ canvas: BLACK_LCD_SVG }).catch(() => {});
+    } else {
+      void act.setImage(BLACK_BUTTON_SVG).catch(() => {});
+    }
+  }
+}
+
+connMgr.on('display_state', (ev: { type: 'display_state'; displayOn: boolean }) => {
+  dinfo('Plugin', `display_state: displayOn=${ev.displayOn}`);
+  if (!ev.displayOn && !displayDimmed) {
+    displayDimmed = true;
+    dimAllActions();
+  } else if (ev.displayOn && displayDimmed) {
+    displayDimmed = false;
+    broadcastStateUpdate(); // Re-render everything
+  }
+});
+
 connMgr.on('active_agent_changed', (agentType: string) => {
   dinfo('Plugin', `active_agent_changed: ${agentType}`);
   const caps = proxiedAgentType === 'openclaw' ? OPENCLAW_CAPABILITIES : connMgr.getCapabilities();
@@ -391,6 +424,9 @@ function isInteractiveState(state: State): boolean {
 }
 
 function broadcastStateUpdate(): void {
+  // Skip rendering while display is dimmed (Mac display asleep)
+  if (displayDimmed) return;
+
   // Auto-exit expanded mode on non-interactive state transitions
   if (expandedMode && !isInteractiveState(currentState)) {
     expandedMode = false;

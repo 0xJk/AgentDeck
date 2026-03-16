@@ -27,15 +27,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.ui.common.ConnectionPanel
+import dev.agentdeck.util.EinkDetector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -228,6 +233,37 @@ internal fun DisplaySettingsCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // WRITE_SETTINGS permission warning (LCD tablets only)
+            if (displaySyncEnabled && !EinkDetector.isEinkDevice()) {
+                val context = LocalContext.current
+                val canWrite = remember { mutableStateOf(Settings.System.canWrite(context)) }
+                if (!canWrite.value) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "⚠ Requires 'Modify system settings' permission",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFFFA726),
+                            modifier = Modifier.weight(1f),
+                        )
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            },
+                        ) {
+                            Text("Grant", color = Color(0xFF3B82F6))
+                        }
+                    }
+                }
+            }
 
             if (displaySyncEnabled) {
                 Spacer(modifier = Modifier.height(12.dp))

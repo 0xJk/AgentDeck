@@ -38,6 +38,9 @@ let lastStateEvent: StateUpdateEvent | null = null;
 let lastUsageEvent: UsageEvent | null = null;
 let lastSessions: SessionInfo[] | null = null;
 
+// Display sleep state — when Mac display is off, dim Pixoo and pause stream
+let displayDimmed = false;
+
 // Frame listeners for SSE streaming
 let frameListeners: Array<(frame: Uint8Array) => void> = [];
 let previewTimer: ReturnType<typeof setInterval> | null = null;
@@ -121,6 +124,36 @@ export function broadcastPixoo(event: BridgeEvent): void {
         lastUsageEvent = null;
       }
       break;
+    case 'display_state': {
+      const displayOn = (event as any).displayOn as boolean;
+      if (!displayOn && !displayDimmed) {
+        // Mac display off → dim Pixoo and pause stream
+        displayDimmed = true;
+        for (const dev of devices) {
+          setBrightness(dev.ip, 0).catch(() => {});
+        }
+        if (streamTimer) {
+          clearInterval(streamTimer);
+          streamTimer = null;
+        }
+        debug(TAG, 'Display sleep — brightness 0, stream paused');
+      } else if (displayOn && displayDimmed) {
+        // Mac display on → restore brightness and resume stream
+        displayDimmed = false;
+        for (const dev of devices) {
+          setBrightness(dev.ip, dev.brightness ?? DEFAULT_BRIGHTNESS).catch(() => {});
+        }
+        // Resume stream after brief delay (let brightness restore first)
+        setTimeout(() => {
+          if (!displayDimmed && !streamTimer && devices.length > 0) {
+            streamTimer = setInterval(doStreamPush, HTTP_STREAM_INTERVAL_MS);
+            doStreamPush(); // Immediate first frame
+          }
+        }, 100);
+        debug(TAG, 'Display wake — brightness restored, stream resumed');
+      }
+      break;
+    }
   }
 
   // Immediate push on major disconnections to feel snappy
@@ -145,6 +178,7 @@ export function stopPixooBridge(): void {
   lastStateEvent = null;
   lastUsageEvent = null;
   lastSessions = null;
+  displayDimmed = false;
   broadcastFn = null;
   frameListeners = [];
   debug(TAG, 'Bridge stopped');
@@ -213,6 +247,7 @@ export function getPixooDeviceDetails(): Array<{
 function doStreamPush(): void {
   if (devices.length === 0) return;
   if (pushing) return;
+  if (displayDimmed) return;
 
   const elapsed = Date.now() - lastPushTime;
   if (elapsed < HTTP_STREAM_INTERVAL_MS * 0.8) return;

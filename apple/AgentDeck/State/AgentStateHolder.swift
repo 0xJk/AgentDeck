@@ -15,6 +15,7 @@ final class AgentStateHolder: @unchecked Sendable {
     let connection = BridgeConnection()
     let discovery = BridgeDiscovery()
     let timelineStore = TimelineStore()
+    let displaySync = DisplaySyncService()
     private(set) var timelineGenerator: StateTimelineGenerator!
 
     /// Bump to trigger SwiftUI re-render for nested timelineStore changes
@@ -48,6 +49,11 @@ final class AgentStateHolder: @unchecked Sendable {
     private(set) var isAutoConnecting = false
     private var waterfallStage: WaterfallStage = .idle
 
+    /// Bridges that failed to connect — skip them until browseResults refresh
+    private var failedBridgeIds: Set<String> = []
+    /// Track last browseResults count to detect mDNS refresh and clear blacklist
+    private var lastBrowseCount: Int = 0
+
     private enum WaterfallStage {
         case idle
         case localSession    // macOS: reading sessions.json
@@ -72,6 +78,12 @@ final class AgentStateHolder: @unchecked Sendable {
         }
         connection.onReconnectExhausted = { [weak self] in
             guard let self else { return }
+            // Blacklist the failed bridge so we skip it in auto-connect
+            if let url = self.connection.url,
+               let bridge = self.discovery.bridges.first(where: { $0.wsUrl == url }) {
+                self.failedBridgeIds.insert(bridge.id)
+                print("[Waterfall] blacklisted bridge \(bridge.id) after reconnect exhausted")
+            }
             self.savedUrl = nil
             self.waterfallStage = .idle
             self.startConnectionWaterfall()
@@ -95,9 +107,10 @@ final class AgentStateHolder: @unchecked Sendable {
             }
             #endif
 
-            // All platforms: check mDNS discovered bridges
-            let bridge = self.discovery.bridges.first(where: { $0.agentType == "daemon" })
-                ?? self.discovery.bridges.first
+            // All platforms: check mDNS discovered bridges (skip blacklisted)
+            let candidates = self.discovery.bridges.filter { !self.failedBridgeIds.contains($0.id) }
+            let bridge = candidates.first(where: { $0.agentType == "daemon" })
+                ?? candidates.first
             if let bridge, bridge.wsUrl != self.connection.url {
                 DispatchQueue.main.async {
                     self.savedUrl = nil
@@ -128,6 +141,11 @@ final class AgentStateHolder: @unchecked Sendable {
         }
         backgroundEnteredAt = nil
         print("[Lifecycle] foreground return, suspend=\(String(format: "%.1f", suspendDuration))s, connected=\(state.bridgeConnected)")
+
+        // Sync display brightness on foreground return
+        #if os(iOS)
+        displaySync.handleForegroundReturn(hostDisplayOn: state.hostDisplayOn)
+        #endif
 
         if !state.bridgeConnected {
             // Not connected — restart discovery
@@ -260,7 +278,17 @@ final class AgentStateHolder: @unchecked Sendable {
                 return
             }
 
-            print("[AutoConnect] poll: bridges=\(self.discovery.bridges.count), searching=\(self.discovery.isSearching)")
+            // Clear blacklist when browseResults change (stale mDNS entries removed)
+            let currentBrowseCount = self.discovery.bridges.count
+            if currentBrowseCount != self.lastBrowseCount {
+                if !self.failedBridgeIds.isEmpty {
+                    print("[AutoConnect] browseResults changed (\(self.lastBrowseCount)→\(currentBrowseCount)), clearing \(self.failedBridgeIds.count) failed bridges")
+                    self.failedBridgeIds.removeAll()
+                }
+                self.lastBrowseCount = currentBrowseCount
+            }
+
+            print("[AutoConnect] poll: bridges=\(self.discovery.bridges.count), failed=\(self.failedBridgeIds.count), searching=\(self.discovery.isSearching)")
 
             #if os(macOS)
             // Prefer local sessions on macOS
@@ -273,9 +301,12 @@ final class AgentStateHolder: @unchecked Sendable {
             }
             #endif
 
+            // Filter out bridges that previously failed to connect (ghost mDNS entries)
+            let candidates = self.discovery.bridges.filter { !self.failedBridgeIds.contains($0.id) }
+
             // Prefer daemon bridge for consistent state (daemon aggregates all sessions)
-            let bridge = self.discovery.bridges.first(where: { $0.agentType == "daemon" })
-                ?? self.discovery.bridges.first
+            let bridge = candidates.first(where: { $0.agentType == "daemon" })
+                ?? candidates.first
             if let bridge {
                 print("[AutoConnect] connecting to bridge: \(bridge.wsUrl) (agent=\(bridge.agentType ?? "?"))")
                 timer.invalidate()
@@ -311,6 +342,7 @@ final class AgentStateHolder: @unchecked Sendable {
             state.voiceError = e.error
         case .displayState(let e):
             state.hostDisplayOn = e.displayOn
+            displaySync.handleDisplayState(displayOn: e.displayOn, isAppActive: true)
         case .sessionsList(let e):
             state.siblingSessions = e.sessions
         case .promptOptions(let e):
@@ -450,6 +482,9 @@ final class AgentStateHolder: @unchecked Sendable {
         state.state = .disconnected
         state.sessionId = nil
         state.hostDisplayOn = true
+        #if os(iOS)
+        displaySync.restoreOnDisconnect()
+        #endif
         state.currentTool = nil
         state.toolInput = nil
         state.toolProgress = nil

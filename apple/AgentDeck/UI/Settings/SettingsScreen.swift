@@ -42,6 +42,11 @@ struct SettingsScreen: View {
                         discoveryContent
                     }
 
+                    // Display Card
+                    settingsCard(title: "Display") {
+                        displayContent
+                    }
+
                     // About Card
                     settingsCard(title: "About") {
                         aboutContent
@@ -91,6 +96,11 @@ struct SettingsScreen: View {
                     .padding(8)
             }
 
+            GroupBox("Display") {
+                displayContent
+                    .padding(8)
+            }
+
             GroupBox("About") {
                 aboutContent
                     .padding(8)
@@ -99,7 +109,7 @@ struct SettingsScreen: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 420, height: 400)
+        .frame(width: 420, height: 440)
     }
 
     // MARK: - Settings Card (Android Card style)
@@ -259,6 +269,46 @@ struct SettingsScreen: View {
                 }
             }
             #endif
+        }
+    }
+
+    // MARK: - Display Content
+
+    private var displayContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            #if os(iOS)
+            Toggle(isOn: Bindable(stateHolder.displaySync).enabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sync Display Sleep")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white)
+                    Text("Dim screen when host Mac display sleeps")
+                        .font(.system(size: 11))
+                        .foregroundStyle(TerrariumHUD.subtext)
+                }
+            }
+            .tint(Color(red: 0.231, green: 0.51, blue: 0.965))
+            #else
+            HStack {
+                Text("Sync Display Sleep")
+                    .font(.system(size: 13))
+                Spacer()
+                Text("N/A on macOS")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            #endif
+
+            // Status indicator
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(stateHolder.state.hostDisplayOn
+                          ? Color.green : Color.orange)
+                    .frame(width: 6, height: 6)
+                Text(stateHolder.state.hostDisplayOn ? "Host display on" : "Host display off")
+                    .font(.system(size: 11))
+                    .foregroundStyle(TerrariumHUD.subtext)
+            }
         }
     }
 

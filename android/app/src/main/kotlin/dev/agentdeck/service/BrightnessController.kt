@@ -18,7 +18,7 @@ import android.util.Log
  * Saved frontlight values are persisted to disk so they survive app restarts.
  */
 class BrightnessController(
-    context: Context,
+    private val context: Context,
     private val contentResolver: ContentResolver,
     private val powerManager: PowerManager,
     private val isEink: Boolean,
@@ -65,8 +65,19 @@ class BrightnessController(
         }
     }
 
+    /** Check if the app has WRITE_SETTINGS permission (required for LCD brightness control). */
+    fun canWriteSettings(): Boolean = isEink || Settings.System.canWrite(context)
+
     fun dim() {
         if (isDimmed) return
+
+        if (!isEink && !Settings.System.canWrite(context)) {
+            Log.w(TAG, "Cannot dim LCD — WRITE_SETTINGS permission not granted. " +
+                "Grant via: Settings > Apps > AgentDeck > Modify system settings, " +
+                "or: adb shell appops set ${context.packageName} WRITE_SETTINGS allow")
+            return
+        }
+
         isDimmed = true
 
         if (isEink) {

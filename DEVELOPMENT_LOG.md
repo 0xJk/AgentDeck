@@ -2,6 +2,68 @@
 
 ---
 
+## 2026-03-16 — Display Sleep/Wake 전 기기 밝기 동기화
+
+### 문제
+Mac 모니터 sleep 감지(`DisplayMonitor` → `display_state` 이벤트)가 Android만 처리 중. Pixoo64 LED, Stream Deck+, Apple app도 모니터 꺼짐 시 화면을 끄거나 어둡게 해야 함.
+
+### 해결
+1. **Shared**: `DISPLAY_FORWARDED_EVENTS`에 `display_state` 추가 → ESP32 `SERIAL_FORWARDED_EVENTS`에도 자동 전파
+2. **Pixoo64**: `setBrightness(ip, 0)` + 2FPS 스트림 타이머 정지 (HTTP 요청 절약 → 안정성↑). Wake 시 원래 밝기 복원 + 100ms 후 스트림 재개. `doStreamPush()` guard 추가
+3. **SD+ Plugin**: `FORWARDED_EVENTS`에 추가. `displayDimmed` 플래그 + `dimAllActions()` (전체 버튼/LCD에 검정 SVG). `broadcastStateUpdate()` guard로 dimmed 중 렌더 스킵. Wake 시 `broadcastStateUpdate()` 호출로 전체 재렌더
+4. **Apple iOS**: `DisplaySyncService` — `UIScreen.main.brightness` save/0/restore. 백그라운드 진입 시 pending 큐잉, foreground 복귀 시 적용. Disconnect 시 safety restore. Settings 토글 추가
+5. **ESP32**: 이벤트는 자동 전달되지만 펌웨어 핸들러는 별도 작업
+
+### 교훈 / 핵심 설계 결정
+- **Pixoo 스트림 일시정지**: 밝기 0만으로는 부족 — HTTP push 계속하면 디바이스 부하. `clearInterval` + wake 시 `setInterval` 재시작이 깔끔
+- **SD+ SDK에 `setBrightness` API 없음**: 하드웨어 밝기 제어 불가 → visual dimming (검정 이미지 일괄 설정)으로 대체
+- **iOS 백그라운드 `UIScreen.brightness` 불가**: foreground 복귀 시 queued dim 적용 패턴 필요
+
+---
+
+## 2026-03-16 — mDNS 유령 엔트리 + 클라이언트 재연결 개선
+
+### 문제
+데몬 재시작 후 macOS/Android 태블릿이 자동 재연결 실패:
+1. **유령 mDNS**: 이전 세션(port 9121)의 mDNS 엔트리가 남아 데몬(9120) 대신 죽은 포트로 무한 재시도
+2. **Android 4001 거부 루프**: 데몬 재시작 → 새 auth 토큰 → 저장된 URL의 구 토큰 → 4001 → URL 클리어 → `LaunchedEffect(Unit)` 이미 완료되어 재탐색 미발생
+3. **ForEach 중복 ID**: `GroupedEntry.id = entry.ts` (Double) → 동일 밀리초 이벤트에서 SwiftUI 경고
+
+### 해결
+1. **mDNS 서비스명 단축**: `AgentDeck-${project}-${port}` → `${project}-${port}` (불필요한 접두사 제거)
+2. **macOS 실패 브릿지 블랙리스트**: `failedBridgeIds: Set<String>` — reconnect 소진 시 bridge.id 추가, browseResults 갱신 시 클리어. `startAutoConnectPolling()`과 `onReconnectAttempt` 양쪽에서 필터
+3. **LocalSessionDiscovery 디버그 로깅**: file not found / decode error / session count 로그 추가
+4. **Android 재탐색**: `LaunchedEffect(connectionStatus, currentUrl)` — DISCONNECTED + null URL 시 1초 딜레이 후 mDNS 재탐색
+5. **ForEach ID**: `GroupedEntry.id`를 `"\(ts)-\(type)-\(count)"` String으로 변경, ForEach에서 `\.offset` 사용
+
+### 교훈 / 핵심 설계 결정
+- **mDNS 유령 엔트리는 OS 레벨 문제**: 프로세스 종료 후에도 Bonjour 레코드가 잠시 남을 수 있음. 클라이언트 측에서 실패한 브릿지를 기억하고 스킵하는 방어가 필수
+- **LaunchedEffect(Unit)은 한 번만 실행**: 상태 변경 후 재실행이 필요한 로직은 반응형 key를 사용해야 함
+- **SwiftUI ForEach ID로 Double 사용 금지**: 부동소수점 동등성 문제 + 같은 타임스탬프 충돌 가능성
+
+---
+
+## 2026-03-16 — WS 클라이언트별 OpenClaw 세션 중복/미표시 수정
+
+### 문제
+daemon이 Gateway 연결 시 `agentType: 'openclaw'`로 브로드캐스트. 클라이언트별 다른 증상:
+1. **TUI 중복**: `agentType !== 'daemon'` → session-bridge 분기 → self를 OpenClaw로 렌더 + sessions_list의 virtual OpenClaw = 2개
+2. **macOS 미표시**: Gateway disconnect → daemon이 `connection: disconnected` 포워딩 → macOS가 bridge 끊김으로 오인 → HUD 숨김
+3. **Android 구조적 동일**: dedup으로 가려져 있었지만 같은 패턴
+
+### 해결
+1. **daemon-server.ts**: Gateway adapter `connection` 이벤트를 WS에 포워딩하지 않음. Gateway 상태는 `state_update.gatewayAvailable` + `sessions_list`로 전달
+2. **isDaemonLike 패턴**: `agentType == 'daemon' || sessions.any { it.agentType == agentType }` — TUI(renderer.ts+dashboard.ts), Android(SessionListPanel.kt+EinkAgentColumn.kt), Apple(SessionListPanel.swift) 7곳 통일 적용
+3. **Gateway health**: OpenClaw adapter가 WS `health` 이벤트를 `gateway_health` metadata로 emit (폴링 대체)
+
+### 교훈 / 핵심 설계 결정
+- **daemon의 agentType이 'daemon'이 아닌 경우가 있다**: Gateway 연결 시 'openclaw'으로 변경됨. 모든 "daemon인지 판별" 로직은 `isDaemonLike` 패턴 사용 필수
+- **Gateway adapter의 connection 이벤트는 bridge connection과 의미가 다르다**: 클라이언트는 "자신의 bridge 연결"과 "gateway 연결"을 구분해야 함. 절대 혼동해서 포워딩하면 안 됨
+- **Android mDNS daemon preference**: NSD resolve 순서가 비결정적 — session bridge가 daemon보다 먼저 resolve될 수 있음. 4초 grace period 추가 (`MainActivity.kt`)
+- **실제 디바이스 확인 필수**: WS 프로토콜만 확인하면 부족. Crema(daemon 연결)에서 확인한 후 태블릿(WiFi→session bridge)에서 다른 결과 발견 → 실행 중인 프로세스의 코드 버전 불일치 문제까지 추적
+
+---
+
 ## 2026-03-16 — ESP32 Daemon 상태 매핑 + 멀티 문어 수영
 
 ### 문제
