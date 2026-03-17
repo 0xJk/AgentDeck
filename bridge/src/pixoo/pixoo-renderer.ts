@@ -527,66 +527,86 @@ function gaugeColor(pct: number, animFrame: number): RGB {
   return COLORS.stateProcessing;  // blue
 }
 
-/** Format remaining time from ISO reset timestamp — always show hours AND minutes. */
+/** Format remaining time from ISO reset timestamp. Supports days for 7d reset times. */
 function formatResetTime(resetsAt: string): string {
   const ms = new Date(resetsAt).getTime() - Date.now();
   if (ms <= 0) return '0m';
   const totalMins = Math.max(1, Math.ceil(ms / 60000));
   const hours = Math.floor(totalMins / 60);
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
   const mins = totalMins % 60;
+  if (days > 0 && remHours > 0) return `${days}d${remHours}h`;
+  if (days > 0) return `${days}d`;
   if (hours > 0 && mins > 0) return `${hours}h${mins}`;
   if (hours > 0) return `${hours}h`;
   return `${mins}m`;
 }
 
-/** Draw Usage HUD in screen space (bottom-right, zoom-independent).
- *  Text background itself acts as gauge bar — fills proportionally with gauge color.
+/**
+ * Compact reset time for HUD columns (one unit only — saves pixel space).
+ * topUnit='h': hours only (5h side) — e.g. "4h", "59m"
+ * topUnit='d': days only (7d side) — e.g. "6d", "23h", "59m"
+ */
+function formatResetShort(resetsAt: string | undefined, topUnit: 'h' | 'd'): string {
+  if (!resetsAt) return '';
+  const ms = new Date(resetsAt).getTime() - Date.now();
+  if (ms <= 0) return '';
+  const totalMins = Math.max(1, Math.ceil(ms / 60000));
+  const hours = Math.floor(totalMins / 60);
+  const days = Math.floor(hours / 24);
+  if (topUnit === 'd') {
+    if (days > 0) return `${days}d`;
+    if (hours > 0) return `${hours}h`;
+    return `${totalMins % 60}m`;
+  }
+  // topUnit='h': hours only (skip minutes)
+  if (hours > 0) return `${hours}h`;
+  return `${totalMins % 60}m`;
+}
+
+/** Draw Usage HUD in screen space (bottom right, zoom-independent).
+ *  Single row at rows 57-63:
+ *    - 7d absent: full-width, right-aligned (original behavior)
+ *    - 7d present: left half [0..30]=5h  |  right half [32..63]=7d
  */
 function drawUsageHUD(
   buf: Uint8Array, usageEvent: UsageEvent | null, animFrame: number,
 ): void {
-  // Skip HUD entirely when no usage data available
   if (!usageEvent || usageEvent.fiveHourPercent == null) return;
 
-  const pct = usageEvent.fiveHourPercent;
-  const color = gaugeColor(pct, animFrame);
-
-  // Build text string
-  const pctStr = `${Math.round(pct)}%`;
-  const resetStr = usageEvent.fiveHourResetsAt
-    ? ` ${formatResetTime(usageEvent.fiveHourResetsAt)}`
-    : '';
-  const fullText = pctStr + resetStr;
-
-  // Text position: 3×5 pixel font, right-aligned at x=63, y row
   const textY = 58;
-  const rightX = 63;
-  // Each char = 3px glyph + 1px gap = 4px. Total width = n*4 - 1 (no trailing gap)
-  const textW = fullText.length * 4 - 1;
-  const leftX = rightX - textW;
-
-  // Background area: 1px padding around text
-  const bgLeft = Math.max(0, leftX - 1);
-  const bgRight = 63;
   const bgTop = textY - 1;
-  const bgBot = textY + 5;  // 5px font height
-  const bgW = bgRight - bgLeft + 1;
-  const fillW = Math.round(bgW * Math.max(0, Math.min(100, pct)) / 100);
+  const bgBot = textY + 5;
 
-  // Draw background: gauge fill from left, dark remainder
+  // Full-width dark base — hides sand/terrain at HUD rows regardless of camera zoom
   for (let y = bgTop; y <= bgBot; y++) {
-    for (let x = bgLeft; x <= bgRight; x++) {
-      const rel = x - bgLeft;
-      if (rel < fillW) {
-        blendPixel(buf, x, y, color, 0.3);  // gauge fill
-      } else {
-        blendPixel(buf, x, y, COLORS.black, 0.5);  // dark background
-      }
+    for (let x = 0; x < 64; x++) {
+      blendPixel(buf, x, y, COLORS.black, 0.55);
     }
   }
 
-  // Draw text on top
-  drawText(buf, fullText, rightX, textY, color);
+  /** Render a text zone: right-aligned colored text within [leftX..rightX]. */
+  function renderZone(text: string, pct: number, leftX: number, rightX: number): void {
+    drawText(buf, text, rightX, textY, gaugeColor(pct, animFrame));
+  }
+
+  const pct5 = usageEvent.fiveHourPercent;
+
+  if (usageEvent.sevenDayPercent == null) {
+    // Single full-width zone
+    const reset5 = usageEvent.fiveHourResetsAt
+      ? ` ${formatResetTime(usageEvent.fiveHourResetsAt)}` : '';
+    renderZone(`${Math.round(pct5)}%${reset5}`, pct5, 0, 63);
+    return;
+  }
+
+  // Two-column layout: [5h | 7d]
+  const pct7 = usageEvent.sevenDayPercent;
+  const r5 = formatResetShort(usageEvent.fiveHourResetsAt, 'h');
+  const r7 = formatResetShort(usageEvent.sevenDayResetsAt, 'd');
+  renderZone(`${Math.round(pct5)}%${r5 ? ' ' + r5 : ''}`, pct5, 0, 30);
+  renderZone(`${Math.round(pct7)}%${r7 ? ' ' + r7 : ''}`, pct7, 32, 63);
 }
 
 /**

@@ -4,7 +4,7 @@
  * Real-time continuous streaming approach:
  *   - The device cannot handle real-time HTTP single-frame pushes faster than ~4 FPS.
  *   - Multi-frame loops trigger an unavoidable hardware loading screen.
- *   - Solution: Constantly push `PicNum: 1` with a **static PicId** every 500ms (2 FPS).
+ *   - Solution: Constantly push `PicNum: 1` with a **static PicId** every 333ms (3 FPS).
  *   - The device will smoothly overwrite its buffer without stalling.
  */
 
@@ -46,7 +46,7 @@ let frameListeners: Array<(frame: Uint8Array) => void> = [];
 let previewTimer: ReturnType<typeof setInterval> | null = null;
 let previewFps = 10; // Adjustable 1–10 FPS for /pixoo live preview
 
-const HTTP_STREAM_INTERVAL_MS = 500;     // 2 FPS hardware push (smooth animation, stable on Pixoo64)
+const HTTP_STREAM_INTERVAL_MS = 333;     // 3 FPS hardware push (smooth animation, stable on Pixoo64)
 const CHANNEL_REASSERT_MS = 30_000;     // Re-assert custom channel every 30s (fast recovery after reboots)
 const DEFAULT_BRIGHTNESS = 100;
 
@@ -97,11 +97,11 @@ export function startPixooBridge(pixooDevices?: PixooDevice[]): void {
     debug(TAG, online ? `${name} (${ip}) back online` : `${name} (${ip}) went offline`);
   });
 
-  // Start continuous 2 FPS stream — no repeated channel switches
+  // Start continuous 3 FPS stream — no repeated channel switches
   if (streamTimer) clearInterval(streamTimer);
   streamTimer = setInterval(doStreamPush, HTTP_STREAM_INTERVAL_MS);
 
-  debug(TAG, 'Bridge started (Continuous 2 FPS stream)');
+  debug(TAG, 'Bridge started (Continuous 3 FPS stream)');
 }
 
 export function broadcastPixoo(event: BridgeEvent): void {
@@ -242,7 +242,7 @@ export function getPixooDeviceDetails(): Array<{
 // ===== Internal =====
 
 /**
- * Main Continuous Stream tick: 2 FPS push to all hardware devices (500ms interval).
+ * Main Continuous Stream tick: 3 FPS push to all hardware devices (333ms interval).
  */
 function doStreamPush(): void {
   if (devices.length === 0) return;
