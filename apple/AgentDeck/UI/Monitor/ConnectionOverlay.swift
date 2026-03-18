@@ -85,13 +85,15 @@ struct ConnectionOverlay: View {
                     // Connection options (disconnected or reconnecting with WiFi alternatives)
                     if stateHolder.connection.status == .disconnected || isReconnecting {
 
-                        // mDNS discovered bridges
-                        if !stateHolder.discovery.bridges.isEmpty {
+                        // mDNS discovered bridges — show daemon only
+                        // (session bridges don't serve external clients)
+                        let daemonBridges = stateHolder.discovery.bridges.filter { $0.agentType == "daemon" }
+                        if !daemonBridges.isEmpty {
                             VStack(spacing: 8) {
                                 Text(isReconnecting ? "Or connect via WiFi:" : "Discovered")
                                     .font(.caption.bold())
                                     .foregroundStyle(slateText)
-                                ForEach(stateHolder.discovery.bridges) { bridge in
+                                ForEach(daemonBridges) { bridge in
                                     bridgeRow(bridge, isLocal: false)
                                 }
                             }
