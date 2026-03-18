@@ -26,6 +26,7 @@ import {
   type AgentCapabilities,
   type ModelCatalogEntry,
   type PluginCommand,
+  type VoiceAssistantState,
 } from './types.js';
 
 function log(msg: string): void {
@@ -76,6 +77,11 @@ export class BridgeCore {
   cachedGatewayAvailable = false;
   cachedGatewayHasError = false;
   cachedModelCatalog: ModelCatalogEntry[] | null = null;
+
+  // Voice assistant state (for piggybacking on state_update)
+  cachedVoiceAssistantState: VoiceAssistantState = 'disabled';
+  cachedVoiceAssistantText: string | undefined;
+  cachedVoiceAssistantResponseText: string | undefined;
 
   // Internal lifecycle tracking
   private intervals: ReturnType<typeof setInterval>[] = [];
@@ -201,7 +207,23 @@ export class BridgeCore {
       ollamaStatus: this.cachedOllamaStatus ?? undefined,
       gatewayAvailable: this.cachedGatewayAvailable,
       gatewayHasError: this.cachedGatewayHasError,
+      voiceAssistantState: this.cachedVoiceAssistantState !== 'disabled' ? this.cachedVoiceAssistantState : undefined,
+      voiceAssistantText: this.cachedVoiceAssistantText,
+      voiceAssistantResponseText: this.cachedVoiceAssistantResponseText,
     };
+  }
+
+  /** Update cached voice assistant state and trigger a state broadcast */
+  updateVoiceAssistantState(
+    vaState: VoiceAssistantState,
+    text?: string,
+    responseText?: string,
+  ): void {
+    this.cachedVoiceAssistantState = vaState;
+    this.cachedVoiceAssistantText = text;
+    this.cachedVoiceAssistantResponseText = responseText;
+    // Trigger state_changed so callers rebuild and broadcast state_update
+    this.stateMachine.emit('state_changed', this.stateMachine.getSnapshot());
   }
 
   /** Build and return a usage event */

@@ -130,7 +130,7 @@ export async function startLocalRecording(): Promise<void> {
   ensureInit();
   if (recording) return;
 
-  audioFile = join(tmpdir(), `sdc-voice-local-${Date.now()}.wav`);
+  audioFile = join(tmpdir(), `agentdeck-voice-local-${Date.now()}.wav`);
   recording = true;
 
   try {

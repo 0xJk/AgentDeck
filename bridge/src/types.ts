@@ -40,6 +40,7 @@ export {
   type ConnectionEvent,
   type UserPromptEvent,
   type VoiceStateEvent,
+  type VoiceAssistantState,
   type TimelineEventMsg,
   type TimelineHistoryMsg,
   type BridgeEvent,

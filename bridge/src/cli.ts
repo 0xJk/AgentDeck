@@ -65,10 +65,8 @@ function buildPlist(): string {
 // ===== Helpers =====
 
 async function stopDaemon(port: number): Promise<void> {
-  const { listActive } = await import('./session-registry.js');
-  const sessions = listActive();
-  const d = sessions.find(s => s.agentType === 'daemon');
-  const targetPort = d?.port ?? port;
+  const { findDaemonPort } = await import('./session-registry.js');
+  const targetPort = findDaemonPort() ?? port;
   try {
     await fetch(`http://127.0.0.1:${targetPort}/shutdown`, { method: 'POST' });
     log('Shutdown signal sent');
@@ -100,6 +98,8 @@ program
   .option('--no-adb', 'Disable ADB reverse setup')
   .option('--no-serial', 'Disable ESP32 serial')
   .option('--no-pixoo', 'Disable Pixoo LED matrix')
+  .option('--no-postit', 'Disable terminal tab title/badge updates')
+  .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
   .action(async (opts) => {
     const { startSession } = await import('./index.js');
     await startSession({
@@ -108,6 +108,8 @@ program
       command: opts.command,
       debug: opts.debug,
       noUpdateCheck: opts.updateCheck === false,
+      postit: opts.postit !== false,
+      wakeWord: !!opts.wakeWord,
       modules: opts.local ? { mdns: false, adb: false, serial: false, pixoo: false } : {
         mdns: opts.mdns !== false,
         adb: opts.adb !== false ? 'auto' : false,
@@ -159,8 +161,14 @@ daemon
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .option('-d, --debug', 'Enable debug logging')
   .option('-f, --foreground', 'Run in foreground (default: background fork)')
+  .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
   .action(async (opts) => {
-    const { findExistingDaemon } = await import('./session-registry.js');
+    const { findExistingDaemon, readDaemonInfo } = await import('./session-registry.js');
+    const daemonInfo = readDaemonInfo();
+    if (daemonInfo) {
+      log(`Daemon already running on port ${daemonInfo.port} (PID ${daemonInfo.pid}). Use 'agentdeck daemon stop' first.`);
+      process.exit(0);
+    }
     const existing = findExistingDaemon();
     if (existing) {
       log(`Daemon already running on port ${existing.port} (PID ${existing.pid}). Use 'agentdeck daemon stop' first.`);
@@ -169,14 +177,21 @@ daemon
 
     // Background fork unless --foreground
     if (!opts.foreground) {
+      const { openSync } = await import('fs');
+      const logDir = join(homedir(), '.agentdeck');
       const scriptPath = fileURLToPath(import.meta.url);
       const args = [scriptPath, 'daemon', 'start', '--foreground'];
       if (opts.port !== String(BRIDGE_WS_PORT)) args.push('-p', opts.port);
       if (opts.debug) args.push('-d');
+      if (opts.wakeWord) args.push('--wake-word');
+
+      // Use log files instead of 'ignore' — preserves device access (mic, etc.)
+      const out = openSync(join(logDir, 'daemon-stdout.log'), 'w');
+      const err = openSync(join(logDir, 'daemon-stderr.log'), 'w');
 
       const child = spawn(process.execPath, args, {
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', out, err],
       });
       child.unref();
       log(`Daemon started (PID ${child.pid})`);
@@ -187,6 +202,7 @@ daemon
     await startDaemon({
       port: parseInt(opts.port, 10),
       debug: opts.debug,
+      wakeWord: !!opts.wakeWord,
     });
   });
 

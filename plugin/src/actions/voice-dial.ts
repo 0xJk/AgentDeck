@@ -26,7 +26,11 @@ import {
   renderVoiceTranscribing,
   renderVoiceError,
   renderWideVoiceText,
+  renderVoiceAssistantListening,
+  renderVoiceAssistantProcessing,
+  renderVoiceAssistantSpeaking,
 } from '../renderers/voice-renderer.js';
+import type { VoiceAssistantState } from '@agentdeck/shared';
 
 let bridge: AgentLink;
 let currentState = State.DISCONNECTED;
@@ -42,6 +46,39 @@ let animationTimer: ReturnType<typeof setInterval> | null = null;
 let animationFrame = 0;
 
 const MIN_RECORDING_MS = 500;
+
+// Voice assistant state (wake word pipeline)
+let currentVaState: VoiceAssistantState = 'disabled';
+let currentVaText: string | undefined;
+let vaAnimTimer: ReturnType<typeof setInterval> | null = null;
+let vaAnimFrame = 0;
+
+/** Update voice assistant indicator on the voice dial LCD. */
+export function updateVoiceAssistantIndicator(vaState: VoiceAssistantState, text?: string): void {
+  const wasActive = currentVaState !== 'idle' && currentVaState !== 'disabled';
+  currentVaState = vaState;
+  currentVaText = text;
+
+  const isActive = vaState !== 'idle' && vaState !== 'disabled';
+
+  // Start/stop VA animation
+  if (isActive && !vaAnimTimer) {
+    vaAnimFrame = 0;
+    vaAnimTimer = setInterval(() => {
+      vaAnimFrame++;
+      // Only refresh if VA is still active and not overridden by push-to-talk
+      if (voiceState === 'idle' && !vtActive && !isEncoderTakeoverActive()) {
+        refreshVoiceDials();
+      }
+    }, 80); // ~12fps for smooth pulsing
+  } else if (!isActive && vaAnimTimer) {
+    clearInterval(vaAnimTimer);
+    vaAnimTimer = null;
+    vaAnimFrame = 0;
+  }
+
+  refreshVoiceDials();
+}
 
 // Voice text takeover state
 let vtActive = false;
@@ -302,7 +339,16 @@ function getVoiceFeedback(): Record<string, unknown> {
       svg = renderVoiceError(errorMessage);
       break;
     default:
-      svg = renderVoiceReady();
+      // Voice assistant indicator when push-to-talk is idle
+      if (currentVaState === 'listening') {
+        svg = renderVoiceAssistantListening(vaAnimFrame);
+      } else if (currentVaState === 'processing') {
+        svg = renderVoiceAssistantProcessing(vaAnimFrame, currentVaText);
+      } else if (currentVaState === 'speaking') {
+        svg = renderVoiceAssistantSpeaking(vaAnimFrame);
+      } else {
+        svg = renderVoiceReady();
+      }
       break;
   }
 

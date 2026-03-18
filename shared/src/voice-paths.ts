@@ -44,6 +44,14 @@ export const WHISPER_SERVER_CANDIDATES = [
 /** Whisper-server discovery info file path */
 export const WHISPER_SERVER_INFO_FILE = join(homedir(), '.agentdeck', 'whisper-server.json');
 
+// ===== Porcupine Wake Word =====
+
+/** Directory for custom .ppn wake word model files */
+export const WAKE_WORD_MODEL_DIR = join(homedir(), '.agentdeck', 'wake-word');
+
+/** Picovoice access key file */
+export const PICOVOICE_ACCESS_KEY_FILE = join(homedir(), '.agentdeck', 'picovoice-access-key');
+
 /** OpenClaw binary candidates */
 export const OPENCLAW_CANDIDATES = [
   '/opt/homebrew/bin/openclaw',

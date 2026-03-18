@@ -8,7 +8,7 @@
 import { BridgeCore } from './bridge-core.js';
 import { VoiceManager } from './voice.js';
 import { checkDependencies } from './check-deps.js';
-import { enableDebugLog, debug } from './logger.js';
+import { enableDebugLog, debug, setPtyMode } from './logger.js';
 import { EventJournal } from './event-journal.js';
 import { PtyRingBuffer } from './pty-ringbuffer.js';
 import { createDiagDump } from './diag-analyzer.js';
@@ -17,6 +17,8 @@ import { MonitorAdapter } from './adapters/monitor.js';
 import { UtilityProxy } from './utility-proxy.js';
 import { BridgeLogStream } from './log-stream.js';
 import { extractTopicHint } from './timeline-summarizer.js';
+import { VoiceAssistantManager } from './voice-assistant.js';
+import { TerminalPostit } from './terminal-postit.js';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -81,7 +83,7 @@ function loadTemplates(): PromptTemplate[] {
       try {
         const data = JSON.parse(readFileSync(p, 'utf-8'));
         if (Array.isArray(data?.templates)) {
-          debug('sdc', `Loaded ${data.templates.length} templates from ${p}`);
+          debug('agentdeck', `Loaded ${data.templates.length} templates from ${p}`);
           return data.templates;
         }
       } catch { /* try next */ }
@@ -126,6 +128,8 @@ export interface SessionOptions {
   gatewayUrl?: string;
   debug?: boolean;
   noUpdateCheck?: boolean;
+  wakeWord?: boolean;
+  postit?: boolean;
   modules?: ModuleConfigs;
 }
 
@@ -136,14 +140,14 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 
   if (opts.debug) {
     enableDebugLog();
-    log('[sdc] Debug logging enabled');
+    log('[agentdeck] Debug logging enabled');
   }
 
   // Dependency check (skip for monitor — no PTY needed)
   if (agentType !== 'monitor') {
     const deps = checkDependencies();
     if (!deps.ok) process.exit(1);
-    for (const w of deps.warnings) log(`[sdc] WARNING: ${w}`);
+    for (const w of deps.warnings) log(`[agentdeck] WARNING: ${w}`);
 
     // Version compatibility check
     if (!opts.noUpdateCheck) {
@@ -152,9 +156,9 @@ export async function startSession(opts: SessionOptions): Promise<void> {
         skipCheck: false,
         claudeCodeVersion: deps.claudeCodeVersion,
       });
-      for (const w of versionResult.warnings) log(`[sdc] WARNING: ${w}`);
+      for (const w of versionResult.warnings) log(`[agentdeck] WARNING: ${w}`);
       if (versionResult.restartNeeded) {
-        log('[sdc] AgentDeck updated. Please restart.');
+        log('[agentdeck] AgentDeck updated. Please restart.');
         process.exit(0);
       }
     }
@@ -164,7 +168,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   const requestedPort = opts.port ?? BRIDGE_WS_PORT;
   let port = requestedPort === BRIDGE_WS_PORT ? await findAvailablePort() : requestedPort;
   if (port !== requestedPort) {
-    log(`[sdc] Port ${requestedPort} in use, using ${port}`);
+    log(`[agentdeck] Port ${requestedPort} in use, using ${port}`);
   }
 
   // Auto-migrate hooks (Claude Code mode only)
@@ -184,10 +188,10 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   const sameProject = existingSessions.filter((s) => s.projectName === projectName);
   if (sameProject.length > 0) {
     const ports = sameProject.map((s) => s.port).join(', ');
-    log(`[sdc] \u26A0 Session "${projectName}" already running on port ${ports}. Starting new session on port ${port}.`);
+    log(`[agentdeck] \u26A0 Session "${projectName}" already running on port ${ports}. Starting new session on port ${port}.`);
   }
 
-  log(`[sdc] Starting AgentDeck bridge on port ${port} (agent: ${agentType})...`);
+  log(`[agentdeck] Starting AgentDeck bridge on port ${port} (agent: ${agentType})...`);
 
   // ===== Create adapter =====
   const adapter = createAdapter(agentType, opts.gatewayUrl);
@@ -195,10 +199,15 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   // ===== Start adapter (creates HTTP server, spawns process) =====
   try {
     await adapter.start({ port, command: opts.command, gatewayUrl: opts.gatewayUrl });
-    log(`[sdc] Adapter started: ${adapter.capabilities.displayName}`);
+    log(`[agentdeck] Adapter started: ${adapter.capabilities.displayName}`);
   } catch (err) {
-    log(`[sdc] Failed to start adapter: ${err}`);
+    log(`[agentdeck] Failed to start adapter: ${err}`);
     process.exit(1);
+  }
+
+  // Suppress stderr logging once PTY is active (MonitorAdapter has no PTY)
+  if (!(adapter instanceof MonitorAdapter)) {
+    setPtyMode(true);
   }
 
   // ===== BridgeCore =====
@@ -221,8 +230,61 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 
   // Voice server (non-blocking)
   voiceManager.connectToServer().catch((err) => {
-    debug('sdc', `whisper-server connection failed: ${err}`);
+    debug('agentdeck', `whisper-server connection failed: ${err}`);
   });
+
+  // Voice assistant (wake word → STT → LLM → TTS)
+  let voiceAssistant: VoiceAssistantManager | null = null;
+  if (opts.wakeWord) {
+    voiceAssistant = new VoiceAssistantManager({
+      sendPrompt: (text) => {
+        if (adapter.handleCommand({ type: 'send_prompt', text })) {
+          core.stateMachine.handleUserAction('send_prompt');
+        } else {
+          // Fallback for PTY-based adapters
+          adapter.writeInput(text);
+          setTimeout(() => adapter.writeInput('\r'), 50);
+          core.stateMachine.handleUserAction('send_prompt');
+        }
+      },
+      transcribeFile: (filePath) => voiceManager.transcribeFile(filePath),
+      isPttRecording: () => voiceManager.isRecording(),
+    });
+
+    // Wire state broadcasts
+    voiceAssistant.on('state_change', (info: { state: string; text?: string; responseText?: string }) => {
+      // Broadcast dedicated event (for plugin FORWARDED_EVENTS)
+      core.broadcast({
+        type: 'voice_assistant_state',
+        state: info.state,
+        deviceId: 'mac-builtin',
+        text: info.text,
+        responseText: info.responseText,
+      } as BridgeEvent);
+      // Piggyback on state_update so all clients get it automatically
+      core.updateVoiceAssistantState(
+        info.state as import('@agentdeck/shared').VoiceAssistantState,
+        info.text,
+        info.responseText,
+      );
+    });
+
+    voiceAssistant.on('wake_word_detected', (info: { deviceId: string; timestamp: number }) => {
+      core.broadcast({
+        type: 'wake_word_detected',
+        deviceId: info.deviceId,
+        timestamp: info.timestamp,
+      } as BridgeEvent);
+    });
+
+    // Start (non-blocking)
+    voiceAssistant.start().then((ok) => {
+      if (ok) log('[agentdeck] Wake word voice assistant active ("오픈클로")');
+      else log('[agentdeck] Wake word not available (missing model or access key)');
+    }).catch((err) => {
+      log(`[agentdeck] Wake word start failed: ${err}`);
+    });
+  }
 
   // SSE broadcast (ClaudeCodeAdapter / MonitorAdapter have HookServer)
   let hookServer: HookServer | null = null;
@@ -245,14 +307,19 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   // ===== Display monitor =====
   core.wireDisplayMonitor();
 
+  // ===== Terminal post-it (tab title + badge) =====
+  const postit = opts.postit !== false && adapter.capabilities.hasTerminal
+    ? new TerminalPostit(process.stdout)
+    : null;
+
   // Register process handlers early (before module init) so uncaughtException
   // handler is active before mDNS module starts — suppresses "already in use" errors
-  core.registerProcessHandlers('sdc');
+  core.registerProcessHandlers('agentdeck');
 
   // Override unhandledRejection to not shutdown (index.ts original behavior)
   process.removeAllListeners('unhandledRejection');
   process.on('unhandledRejection', (reason) => {
-    log(`[sdc] Unhandled rejection: ${reason}`);
+    log(`[agentdeck] Unhandled rejection: ${reason}`);
     debug('Bridge', `Unhandled rejection stack: ${reason instanceof Error ? reason.stack : reason}`);
     // Don't shutdown — non-fatal
   });
@@ -313,15 +380,15 @@ export async function startSession(opts: SessionOptions): Promise<void> {
           bridgePort: port,
           authToken: core.authToken,
         });
-        log(`[sdc] WiFi provision sent to ESP32 on ${portPath}`);
+        log(`[agentdeck] WiFi provision sent to ESP32 on ${portPath}`);
       } else if (msg.type === 'wifi_provision_ack') {
-        log(msg.success ? `[sdc] ESP32 WiFi connected: ${msg.ip} \u2713` : `[sdc] ESP32 WiFi failed: ${msg.error || 'unknown'}`);
+        log(msg.success ? `[agentdeck] ESP32 WiFi connected: ${msg.ip} \u2713` : `[agentdeck] ESP32 WiFi failed: ${msg.error || 'unknown'}`);
       }
     });
   }
 
-  log(`[sdc] WebSocket server ready on port ${port}`);
-  log(`[sdc] Auth token ready. Pairing URL: ${core.wsUrl}`);
+  log(`[agentdeck] WebSocket server ready on port ${port}`);
+  log(`[agentdeck] Auth token ready. Pairing URL: ${core.wsUrl}`);
 
   // Device info getter for GET /devices
   hookServer?.setDeviceInfoGetter(() => ({
@@ -346,7 +413,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 
   // Voice errors
   voiceManager.on('error', (err: Error) => {
-    debug('sdc', `Voice error: ${err.message}`);
+    debug('agentdeck', `Voice error: ${err.message}`);
     core.wsServer.broadcast({ type: 'voice_state', state: 'error', error: err.message } as any);
   });
 
@@ -393,7 +460,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
             const models = evt.data?.models as ModelCatalogEntry[] | undefined;
             if (models) {
               core.cachedModelCatalog = models;
-              debug('sdc', `Model catalog updated: ${models.length} models`);
+              debug('agentdeck', `Model catalog updated: ${models.length} models`);
               const snap = core.stateMachine.getSnapshot();
               core.broadcast({
                 type: 'state_update',
@@ -436,7 +503,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 
   // Adapter exit — always shutdown (shutdownInProgress guard prevents double-shutdown)
   adapter.on('exit', () => {
-    log('[sdc] Agent process exited');
+    log('[agentdeck] Agent process exited');
     shutdown();
   });
 
@@ -450,12 +517,32 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 
   // ===== State changed → broadcast =====
   core.stateMachine.on('state_changed', (snapshot: StateSnapshot) => {
-    // PROCESSING→IDLE: fetch fresh usage
+    postit?.update(snapshot);
+    // Voice assistant: reset timeout on any activity during processing
+    if (snapshot.state === State.PROCESSING && voiceAssistant?.getState() === 'processing') {
+      voiceAssistant.resetResponseTimeout();
+    }
+
+    // PROCESSING→IDLE: fetch fresh usage + voice assistant TTS
     const wasActive = previousBridgeState === State.PROCESSING;
     previousBridgeState = snapshot.state;
-    if (wasActive && snapshot.state === State.IDLE && core.wsServer.getClientCount() > 0) {
-      if (Date.now() - core.lastApiFetchTime > 10_000) {
+    if (wasActive && snapshot.state === State.IDLE) {
+      if (core.wsServer.getClientCount() > 0 && Date.now() - core.lastApiFetchTime > 10_000) {
         core.fetchAndUpdateUsage().catch(() => {});
+      }
+
+      // Voice assistant: if processing a wake-word prompt, speak the response
+      if (voiceAssistant?.getState() === 'processing') {
+        const lastEntry = core.bridgeTimeline.getLastEntry('chat_end');
+        const responseText = lastEntry?.detail;
+        if (responseText) {
+          voiceAssistant.handleResponse(responseText).catch((err) => {
+            debug('agentdeck', `Voice assistant TTS error: ${err}`);
+          });
+        } else {
+          // No response text available, return to idle
+          voiceAssistant.handleResponse('완료했습니다.').catch(() => {});
+        }
       }
     }
 
@@ -498,7 +585,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 
   // ===== Commands from WS clients =====
   core.wsServer.onCommand((cmd: PluginCommand) => {
-    debug('sdc', `pluginCmd: ${cmd.type}`);
+    debug('agentdeck', `pluginCmd: ${cmd.type}`);
 
     // Adapter-owned commands
     if (adapter.handleCommand(cmd)) {
@@ -930,13 +1017,15 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     // Hard failsafe — exit no matter what after 3s
     setTimeout(() => process.exit(0), 3000).unref();
 
-    log('[sdc] Shutting down...');
+    log('[agentdeck] Shutting down...');
 
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.pause();
     process.stdin.removeAllListeners();
 
+    postit?.cleanup();
     utilityProxy.cleanup();
+    voiceAssistant?.stop();
     voiceManager.disconnectFromServer();
     bridgeLogStream?.stop();
     journal.close();
@@ -1116,9 +1205,9 @@ function migrateHooksIfNeeded(): void {
 
     if (migrated) {
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-      log('[sdc] Auto-migrated hooks to v2.1 matcher-group format');
+      log('[agentdeck] Auto-migrated hooks to v2.1 matcher-group format');
     }
   } catch (err) {
-    debug('sdc', `Hook migration check failed: ${err}`);
+    debug('agentdeck', `Hook migration check failed: ${err}`);
   }
 }

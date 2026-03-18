@@ -130,7 +130,7 @@ export class VoiceManager extends EventEmitter {
   startRecording(): void {
     if (this.recording) return;
 
-    this.audioFile = join(tmpdir(), `sdc-voice-${Date.now()}.wav`);
+    this.audioFile = join(tmpdir(), `agentdeck-voice-${Date.now()}.wav`);
     this.recording = true;
 
     // rec (sox) — record raw WAV. We request 16kHz mono 16-bit.

@@ -108,6 +108,72 @@ export function renderVoiceDisabled(): string {
   `);
 }
 
+// === Voice Assistant State Renderers ===
+
+/** Voice assistant listening — cyan with pulsing mic */
+export function renderVoiceAssistantListening(frame: number): string {
+  const pulse = 0.6 + 0.4 * Math.sin(frame * 0.15);
+  const barW = 60 + 40 * pulse;
+  const barX = 100 - barW / 2;
+
+  return svgWrap(`
+    <rect width="${W}" height="${H}" fill="#0a2a2e"/>
+    <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="4" fill="none" stroke="#22d3ee" stroke-opacity="${(0.3 + 0.3 * pulse).toFixed(2)}" stroke-width="1"/>
+    <text x="100" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#67e8f9">ASSISTANT</text>
+    <text x="100" y="52" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" fill="#22d3ee" opacity="${pulse.toFixed(2)}">🎤</text>
+    <text x="100" y="74" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#22d3ee">LISTENING</text>
+    <rect x="${barX}" y="90" width="${barW}" height="3" rx="1.5" fill="#22d3ee" opacity="${(0.4 + 0.4 * pulse).toFixed(2)}"/>
+  `);
+}
+
+/** Voice assistant processing — yellow with transcribed text preview */
+export function renderVoiceAssistantProcessing(frame: number, text?: string): string {
+  const dotPhase = Math.floor(frame / 3) % 3;
+  const dots: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const active = i === dotPhase;
+    dots.push(`<circle cx="${85 + i * 15}" cy="52" r="${active ? 4 : 2.5}" fill="#fbbf24" opacity="${active ? '1' : '0.3'}"/>`);
+  }
+
+  const barX = 10 + 90 * (0.5 + 0.5 * Math.sin(frame * 0.08));
+  const preview = text
+    ? escapeXml(text.length > 24 ? text.slice(0, 23) + '\u2026' : text)
+    : '';
+
+  return svgWrap(`
+    <rect width="${W}" height="${H}" fill="#1a1a0a"/>
+    <text x="100" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#fbbf24">ASSISTANT</text>
+    ${preview ? `<text x="100" y="38" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#fbbf24" opacity="0.7">${preview}</text>` : ''}
+    ${dots.join('')}
+    <text x="100" y="74" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#fbbf24">Processing...</text>
+    <rect x="10" y="90" width="180" height="3" rx="1.5" fill="#1e293b"/>
+    <rect x="${barX}" y="90" width="80" height="3" rx="1.5" fill="#fbbf24" opacity="0.7"/>
+  `);
+}
+
+/** Voice assistant speaking — green with pulsing speaker icon */
+export function renderVoiceAssistantSpeaking(frame: number): string {
+  const pulse = 0.6 + 0.4 * Math.sin(frame * 0.12);
+
+  // Sound wave arcs
+  const waves: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const wPulse = 0.3 + 0.7 * Math.sin(frame * 0.15 + i * 1.2);
+    const r = 18 + i * 10;
+    waves.push(`<path d="M${100 + r * 0.5},${48 - r * 0.4} A${r},${r} 0 0 1 ${100 + r * 0.5},${48 + r * 0.4}" fill="none" stroke="#4ade80" stroke-width="2" opacity="${(wPulse * 0.6).toFixed(2)}"/>`);
+  }
+
+  return svgWrap(`
+    <rect width="${W}" height="${H}" fill="#0a2e14"/>
+    <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="4" fill="none" stroke="#4ade80" stroke-opacity="${(0.2 + 0.3 * pulse).toFixed(2)}" stroke-width="1"/>
+    <text x="100" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#4ade80">ASSISTANT</text>
+    <text x="80" y="56" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" fill="#4ade80" opacity="${pulse.toFixed(2)}">🔊</text>
+    ${waves.join('')}
+    <text x="100" y="78" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#4ade80">SPEAKING</text>
+    <rect x="40" y="90" width="120" height="3" rx="1.5" fill="#4ade80" opacity="${(0.3 + 0.4 * pulse).toFixed(2)}"/>
+  `);
+}
+
 function lerpColor(a: number[], b: number[], t: number): string {
   const r = Math.round(a[0] + (b[0] - a[0]) * t);
   const g = Math.round(a[1] + (b[1] - a[1]) * t);

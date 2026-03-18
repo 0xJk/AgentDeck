@@ -1,7 +1,7 @@
 /**
  * Whisper-server singleton manager.
  *
- * Fixed port 9100 — one server shared across all sdc sessions.
+ * Fixed port 9100 — one server shared across all agentdeck sessions.
  * Info file at ~/.agentdeck/whisper-server.json for discovery.
  * Last session to exit kills the server.
  */
