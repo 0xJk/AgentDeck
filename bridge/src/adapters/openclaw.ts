@@ -707,11 +707,11 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
 
             // Extract response content for detail + LLM summarization
             const finalText = this.extractMessageText(payload);
-            const responseContent = (finalText && finalText.length > 10 ? finalText : undefined)
-              || (this.accumulatedResponse.length > 10 ? this.accumulatedResponse : undefined);
+            const responseContent = (finalText || undefined)
+              || (this.accumulatedResponse || undefined);
 
             // Build response detail (folded into chat_end instead of separate chat_response)
-            const responseDetail = responseContent && responseContent.length > 10
+            const responseDetail = responseContent
               ? (responseContent.length > 1000 ? responseContent.slice(0, 997) + '...' : responseContent)
               : undefined;
 
@@ -759,8 +759,10 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
             const abortParts = ['Aborted'];
             if (abortDuration > 0) abortParts.push(`after ${abortDuration}s`);
             if (abortToolSummary) abortParts.push(abortToolSummary);
+            const abortDetail = this.accumulatedResponse || undefined;
             this.emitTimelineEntry({
               ts: Date.now(), type: 'chat_end', raw: abortParts.join(' \u00b7 '),
+              ...(abortDetail ? { detail: abortDetail } : {}),
             });
             this.chatStarted = false;
             this.lastPrompt = null;
