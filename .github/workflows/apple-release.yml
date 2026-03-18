@@ -66,7 +66,6 @@ jobs:
             -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }} \
             MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM=R22679GY5Z
 
       - name: Export iOS IPA
@@ -111,7 +110,6 @@ jobs:
           rm -rf ~/private_keys
 
   build-macos:
-    if: false  # TODO: needs "Mac Installer Distribution" certificate
     runs-on: macos-15
     timeout-minutes: 30
 
@@ -168,7 +166,6 @@ jobs:
             -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }} \
             MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM=R22679GY5Z
 
       - name: Export macOS app
