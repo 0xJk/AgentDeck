@@ -115,6 +115,7 @@ export class HookServer extends EventEmitter {
       debug('Hook', 'GET /health');
       res.json({
         status: 'ok',
+        mode: this.meta.agentType,
         uptime: process.uptime(),
         agentType: this.meta.agentType,
         projectName: this.meta.projectName,
@@ -243,7 +244,7 @@ export class HookServer extends EventEmitter {
         debug('Hook', `POST /voice/transcribe (${body.length} bytes)`);
 
         // Save to temp file
-        const tempFile = join(tmpdir(), `sdc-voice-remote-${Date.now()}.wav`);
+        const tempFile = join(tmpdir(), `agentdeck-voice-remote-${Date.now()}.wav`);
         try {
           writeFileSync(tempFile, body);
           const text = await this.voiceManager.transcribeFile(tempFile);

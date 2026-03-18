@@ -58,6 +58,14 @@ export class BridgeTimelineStore {
     this.addEntry(entry);
   }
 
+  /** Get the most recent entry of a given type */
+  getLastEntry(type: string): TimelineEntry | null {
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      if (this.entries[i].type === type) return this.entries[i];
+    }
+    return null;
+  }
+
   onEntry(cb: EntryListener): void {
     this.listeners.push(cb);
   }

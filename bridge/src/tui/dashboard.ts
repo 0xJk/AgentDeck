@@ -9,14 +9,14 @@ import type {
   SessionsListEvent, SessionInfo, TimelineEventMsg, TimelineHistoryMsg,
 } from '@agentdeck/shared';
 import type { TimelineEntry } from '@agentdeck/shared';
-import { listActive, findExistingDaemon } from '../session-registry.js';
+import { listActive, findDaemonPort } from '../session-registry.js';
 import { Screen } from './screen.js';
 import {
   renderDashboard, getLayout, shouldShowTerrarium, spinner,
 } from './renderer.js';
 import {
   initTerrarium, updateTerrarium, setOctopi, setCrayfish,
-  renderTerrariumFrame,
+  setVoiceAssistantState, renderTerrariumFrame,
 } from './terrarium.js';
 
 // ===== Types =====
@@ -36,6 +36,9 @@ export interface DashboardState {
   agentType: string | null;
   gatewayAvailable: boolean;
   crayfishRouting: boolean;
+  voiceAssistantState: string;
+  voiceAssistantText: string | null;
+  voiceAssistantResponseText: string | null;
 }
 
 export interface DashboardOptions {
@@ -59,9 +62,9 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
   if (opts.port) {
     targetPort = parseInt(opts.port, 10);
   } else {
-    const daemon = findExistingDaemon();
-    if (daemon) {
-      targetPort = daemon.port;
+    const daemonPort = findDaemonPort();
+    if (daemonPort) {
+      targetPort = daemonPort;
     } else {
       const sessions = listActive();
       if (sessions.length === 0) {
@@ -89,6 +92,9 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
     agentType: null,
     gatewayAvailable: false,
     crayfishRouting: false,
+    voiceAssistantState: 'disabled',
+    voiceAssistantText: null,
+    voiceAssistantResponseText: null,
   };
 
   const terrCtx = initTerrarium();
@@ -143,6 +149,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
       const tW = layout === 'wide'
         ? cols - Math.max(20, Math.floor(cols * 0.22)) - 3
         : cols - 2;
+      setVoiceAssistantState(terrCtx, state.voiceAssistantState);
       terrLines = renderTerrariumFrame(terrCtx, tW, tH, frame);
     }
 
@@ -307,6 +314,12 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
         if (e.state === 'processing' && e.agentType === 'openclaw') {
           state.crayfishRouting = true;
         }
+        // Voice assistant state piggybacked on state_update
+        if (e.voiceAssistantState !== undefined) {
+          state.voiceAssistantState = e.voiceAssistantState;
+        }
+        state.voiceAssistantText = e.voiceAssistantText || null;
+        state.voiceAssistantResponseText = e.voiceAssistantResponseText || null;
         break;
       }
       case 'usage_update': {

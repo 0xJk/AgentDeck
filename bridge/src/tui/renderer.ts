@@ -178,6 +178,19 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
     renderSession('OpenClaw', undefined, state.crayfishRouting ? 'processing' : 'idle', 'openclaw');
   }
 
+  // Voice assistant indicator
+  if (state.voiceAssistantState && state.voiceAssistantState !== 'disabled' && state.voiceAssistantState !== 'idle') {
+    lines.push('');
+    if (state.voiceAssistantState === 'listening') {
+      lines.push(` ${colors.idle}\uD83C\uDFA4 Listening...${RESET}`);
+    } else if (state.voiceAssistantState === 'processing') {
+      const text = state.voiceAssistantText ? truncText(state.voiceAssistantText, maxWidth - 6) : '...';
+      lines.push(` ${colors.processing}\uD83C\uDFA4 ${text}${RESET}`);
+    } else if (state.voiceAssistantState === 'speaking') {
+      lines.push(` ${sgr(32)}\uD83D\uDD0A Speaking...${RESET}`);
+    }
+  }
+
   lines.push('');
 
   if (state.usage) {
@@ -489,6 +502,17 @@ function renderAgentCompactLines(state: DashboardState, width: number): string[]
     const ocCol = stateColor(ocState);
     const ocEmoji = creatureEmoji('openclaw');
     lines.push(` ${ocEmoji} OpenClaw ${ocCol}${stateIcon(ocState)}${ocState.toUpperCase()}${RESET}`);
+  }
+  // Voice assistant indicator (compact)
+  if (state.voiceAssistantState && state.voiceAssistantState !== 'disabled' && state.voiceAssistantState !== 'idle') {
+    if (state.voiceAssistantState === 'listening') {
+      lines.push(` ${colors.idle}\uD83C\uDFA4 Listening...${RESET}`);
+    } else if (state.voiceAssistantState === 'processing') {
+      const text = state.voiceAssistantText ? truncText(state.voiceAssistantText, width - 6) : '...';
+      lines.push(` ${colors.processing}\uD83C\uDFA4 ${text}${RESET}`);
+    } else if (state.voiceAssistantState === 'speaking') {
+      lines.push(` ${sgr(32)}\uD83D\uDD0A Speaking...${RESET}`);
+    }
   }
   if (state.usage) {
     const u = state.usage;

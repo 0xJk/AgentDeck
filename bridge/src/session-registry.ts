@@ -1,15 +1,24 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
+import http from 'http';
 import { debug } from './logger.js';
 
 const SESSIONS_DIR = join(homedir(), '.agentdeck');
 const SESSIONS_FILE = join(SESSIONS_DIR, 'sessions.json');
+const DAEMON_FILE = join(SESSIONS_DIR, 'daemon.json');
+export const DAEMON_DEFAULT_PORT = 9120;
 const BASE_PORT = 9120;
 const MAX_PORT = 9139;
+
+export interface DaemonInfo {
+  port: number;
+  pid: number;
+  startedAt: string;
+}
 
 export interface SessionEntry {
   id: string;
@@ -129,4 +138,81 @@ export function detectTmuxSession(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// ===== daemon.json — daemon port discovery =====
+
+/** Write daemon.json so clients can discover the daemon port */
+export function writeDaemonInfo(info: DaemonInfo): void {
+  ensureDir();
+  const tmpFile = join(SESSIONS_DIR, `.daemon.${randomUUID()}.tmp`);
+  writeFileSync(tmpFile, JSON.stringify(info, null, 2), 'utf-8');
+  renameSync(tmpFile, DAEMON_FILE);
+  debug('SessionRegistry', `Wrote daemon.json: port=${info.port} pid=${info.pid}`);
+}
+
+/** Remove daemon.json on shutdown */
+export function removeDaemonInfo(): void {
+  try {
+    unlinkSync(DAEMON_FILE);
+    debug('SessionRegistry', 'Removed daemon.json');
+  } catch {
+    // Already gone — fine
+  }
+}
+
+/** Read daemon.json, validate PID is alive, return info or null */
+export function readDaemonInfo(): DaemonInfo | null {
+  try {
+    const data = readFileSync(DAEMON_FILE, 'utf-8');
+    const info = JSON.parse(data) as DaemonInfo;
+    if (info.pid && isProcessAlive(info.pid)) {
+      return info;
+    }
+    // Stale daemon.json — remove it
+    removeDaemonInfo();
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe a port's /health endpoint to check if a daemon is already running there.
+ * Returns the health JSON if it's a daemon, null otherwise.
+ * Timeout: 2s.
+ */
+export function probeDaemonHealth(port: number): Promise<{ mode?: string; pid?: number } | null> {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 2000 }, (res) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          resolve(json);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+
+/**
+ * Find the daemon port for client connections.
+ * Priority: daemon.json (fast) → sessions.json fallback.
+ */
+export function findDaemonPort(): number | null {
+  // 1. daemon.json — authoritative, includes fallback port
+  const info = readDaemonInfo();
+  if (info) return info.port;
+
+  // 2. sessions.json — legacy fallback
+  const daemon = findExistingDaemon();
+  if (daemon) return daemon.port;
+
+  return null;
 }

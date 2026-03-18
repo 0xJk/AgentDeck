@@ -33,7 +33,7 @@ interface ResponseButtonSettings {
 }
 
 const DEFAULT_IDLE_SETTINGS: ResponseButtonSettings[] = [
-  { label: 'GO ON', action: 'continue', disconnectedLabel: 'START', disconnectedAction: 'sdc', baseDir: '~/Documents' },
+  { label: 'GO ON', action: 'continue', disconnectedLabel: 'START', disconnectedAction: 'agentdeck claude', baseDir: '~/Documents' },
   { label: 'REVIEW', action: '/review' },
   { label: 'COMMIT', action: '/commit' },
   { label: 'CLEAR', action: '/clear' },

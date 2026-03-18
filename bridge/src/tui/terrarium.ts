@@ -261,6 +261,7 @@ interface TerrariumContext {
   schools: FishSchool[];
   octopi: OctopusInstance[];
   crayfish: CrayfishState;
+  voiceAssistantState: string;
 }
 
 export function initTerrarium(): TerrariumContext {
@@ -278,6 +279,7 @@ export function initTerrarium(): TerrariumContext {
     schools: [initSchool(5, 0), initSchool(5, 1)],
     octopi: [],
     crayfish: { visible: false, routing: false, x: 0.75, y: 0.88 },
+    voiceAssistantState: 'disabled',
   };
 }
 
@@ -369,6 +371,10 @@ export function setCrayfish(ctx: TerrariumContext, visible: boolean, routing: bo
   ctx.crayfish.visible = visible;
   ctx.crayfish.routing = routing;
   if (name !== undefined) ctx.crayfish.name = name;
+}
+
+export function setVoiceAssistantState(ctx: TerrariumContext, state: string): void {
+  ctx.voiceAssistantState = state;
 }
 
 // ===== Render Frame =====
@@ -485,6 +491,59 @@ export function renderTerrariumFrame(
       if (oct.state.startsWith('awaiting') && oy - 1 === row) {
         const qx = Math.floor(oct.x * width) + octHalfW + 2;
         if (qx >= 0 && qx < width) { chars[qx] = '?'; charColors[qx] = fg(255, 255, 100); }
+      }
+      // Voice assistant indicator — above active octopus (first octopus or processing one)
+      if (ctx.voiceAssistantState !== 'disabled' && ctx.voiceAssistantState !== 'idle') {
+        const isVoiceTarget = ctx.octopi.length <= 1 || oct === ctx.octopi.find(o => o.state === 'processing') || oct === ctx.octopi[0];
+        if (isVoiceTarget) {
+          if (ctx.voiceAssistantState === 'listening') {
+            // Musical note above octopus
+            if (oy - 1 === row) {
+              const mX = Math.floor(oct.x * width) + octHalfW + 2;
+              if (mX >= 0 && mX < width) { chars[mX] = '\u266A'; charColors[mX] = fg(0, 220, 220); }
+            }
+            // Expanding listening circles (radio wave visualization)
+            for (let ring = 0; ring < 2; ring++) {
+              const ringPhase = (frame * 0.15 + ring * 2.5) % 5;
+              const radius = (1.5 + ringPhase) * scaleFactor * 0.6;
+              for (let p = 0; p < 6; p++) {
+                const angle = (p / 6) * Math.PI * 2;
+                const px = Math.floor(oct.x * width + Math.cos(angle) * radius);
+                const py = Math.floor(oct.y * height + Math.sin(angle) * radius * 0.5);
+                if (py === row && px >= 0 && px < width && chars[px] === ' ') {
+                  chars[px] = '\u00B7'; charColors[px] = fg(0, 200, 200);
+                }
+              }
+            }
+          } else if (ctx.voiceAssistantState === 'processing') {
+            // Animated "..." dots above octopus
+            if (oy - 1 === row) {
+              const dotCount = (Math.floor(frame / 5) % 3) + 1;
+              const dots = '.'.repeat(dotCount);
+              const dX = Math.floor(oct.x * width) + octHalfW + 2;
+              for (let d = 0; d < dots.length; d++) {
+                const px = dX + d;
+                if (px >= 0 && px < width) { chars[px] = '.'; charColors[px] = fg(220, 180, 50); }
+              }
+            }
+          } else if (ctx.voiceAssistantState === 'speaking') {
+            // Musical double note above octopus
+            if (oy - 1 === row) {
+              const mX = Math.floor(oct.x * width) + octHalfW + 2;
+              if (mX >= 0 && mX < width) { chars[mX] = '\u266C'; charColors[mX] = fg(50, 220, 50); }
+            }
+            // Wave pattern around octopus
+            for (let w = 0; w < 4; w++) {
+              const wAngle = (w / 4) * Math.PI * 2 + frame * 0.2;
+              const wR = (2.0 + Math.sin(frame * 0.1) * 0.5) * scaleFactor * 0.5;
+              const px = Math.floor(oct.x * width + Math.cos(wAngle) * wR);
+              const py = Math.floor(oct.y * height + Math.sin(wAngle) * wR * 0.5);
+              if (py === row && px >= 0 && px < width && chars[px] === ' ') {
+                chars[px] = '\u223F'; charColors[px] = fg(50, 200, 50);
+              }
+            }
+          }
+        }
       }
       // Starburst particles
       if (oct.state === 'processing') {

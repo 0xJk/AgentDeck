@@ -35,8 +35,8 @@ export async function openPicker(): Promise<void> {
   projects = scanProjects(baseDir);
   if (projects.length === 0) {
     dlog('Picker', `no projects found in ${baseDir}`);
-    // Fallback: just launch sdc in baseDir
-    await launchSdc(baseDir);
+    // Fallback: just launch agentdeck in baseDir
+    await launchAgentdeck(baseDir);
     return;
   }
   cursor = 0;
@@ -90,7 +90,7 @@ export async function selectProject(index?: number): Promise<void> {
   const project = projects[idx];
   dlog('Picker', `selected: ${project.name} (${project.path})`);
   active = false;
-  await launchSdc(project.path);
+  await launchAgentdeck(project.path);
 
   // Restore encoder layouts
   const defaultLayout = 'layouts/voice-layout.json';
@@ -123,9 +123,9 @@ function getAllEncoderIds(): string[] {
   ];
 }
 
-async function launchSdc(projectPath: string): Promise<void> {
+async function launchAgentdeck(projectPath: string): Promise<void> {
   const resolved = projectPath.startsWith('~/') ? projectPath.replace('~', process.env.HOME || '~') : projectPath;
-  const cmd = `cd ${JSON.stringify(resolved)} && sdc`;
+  const cmd = `cd ${JSON.stringify(resolved)} && agentdeck claude`;
   // Fast path: use running iTerm2. Slow path: launch iTerm2 and wait. Fallback: Terminal.app (iTerm2 not installed).
   const script = [
     `set cmd to ${JSON.stringify(cmd)}`,
@@ -168,7 +168,7 @@ async function launchSdc(projectPath: string): Promise<void> {
   ].join('\n');
   try {
     await osascript(script);
-    dlog('Picker', `launched sdc in ${projectPath}`);
+    dlog('Picker', `launched agentdeck in ${projectPath}`);
   } catch (e) {
     dlog('Picker', `launch failed: ${e}`);
   }

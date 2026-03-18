@@ -38,6 +38,7 @@ interface SessionEntry {
 }
 
 let bridge: ConnectionManager;
+let onSessionSwitched: (() => void) | null = null;
 let currentState = State.DISCONNECTED;
 let currentMode = PermissionMode.DEFAULT;
 let currentProjectName: string | undefined;
@@ -52,6 +53,7 @@ let animTimer: ReturnType<typeof setInterval> | null = null;
 let animFrame = 0;
 let fileWatchActive = false;
 let showingCcNoSession = false;
+let currentVoiceAssistantState: string | undefined;
 
 /** Bridge can proxy OpenClaw (daemon) so agentType may be 'openclaw' while active link remains bridge. */
 function isProxiedOpenClaw(): boolean {
@@ -90,8 +92,9 @@ export function setSessionSetupRequired(value: boolean): void {
   refreshAll();
 }
 
-export function initSessionButton(b: ConnectionManager): void {
+export function initSessionButton(b: ConnectionManager, sessionSwitchedCb?: () => void): void {
   bridge = b;
+  onSessionSwitched = sessionSwitchedCb ?? null;
   startFileWatch();
 }
 
@@ -157,6 +160,7 @@ export function updateSessionButton(
   model?: string,
   agentType?: AgentType | null,
   effortLevel?: string,
+  voiceAssistantState?: string,
 ): void {
   const wasConnected = currentState !== State.DISCONNECTED;
   const wasIdle = currentState === State.IDLE;
@@ -170,6 +174,7 @@ export function updateSessionButton(
   if (model) currentModel = model;
   if (agentType !== undefined) currentAgentType = agentType;
   if (effortLevel !== undefined) currentEffortLevel = effortLevel;
+  if (voiceAssistantState !== undefined) currentVoiceAssistantState = voiceAssistantState;
 
   // CC connected — clear NO SESSION mode
   if (showingCcNoSession && agentType === 'claude-code') {
@@ -230,9 +235,15 @@ export function switchToPort(port: number): void {
   if (bridge.getBridgePort() === port) return;
   currentSessionIndex = idx;
   currentProjectName = sessions[idx].projectName;
+  // Reset stale state for instant visual feedback
+  currentState = State.IDLE;
+  currentTool = undefined;
+  currentModel = undefined;
+  currentEffortLevel = undefined;
   dlog('SesBut', `switchToPort: → ${getDisplayName(sessions[idx], sessions)}:${port}`);
   bridge.reconnectBridgeTo(port);
   refreshAll();
+  onSessionSwitched?.();
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -399,7 +410,48 @@ function setupRequiredSvg(): string {
   ].join('');
 }
 
+function renderVoiceAssistantOverlaySvg(): string | null {
+  if (!currentVoiceAssistantState || currentVoiceAssistantState === 'idle' || currentVoiceAssistantState === 'disabled') {
+    return null;
+  }
+  switch (currentVoiceAssistantState) {
+    case 'listening':
+      return [
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a2a2e"/>`,
+        `<text x="72" y="48" text-anchor="middle" font-family="Arial,sans-serif" font-size="36">🎤</text>`,
+        `<text x="72" y="82" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#22d3ee">LISTENING</text>`,
+        `<text x="72" y="106" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#67e8f9" opacity="0.6">Voice Assistant</text>`,
+        `</svg>`,
+      ].join('');
+    case 'processing':
+      return [
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#1a1a0a"/>`,
+        `<text x="72" y="42" text-anchor="middle" font-family="Arial,sans-serif" font-size="36">🎤</text>`,
+        `<text x="72" y="76" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#fbbf24">PROCESSING</text>`,
+        `<text x="72" y="106" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#fbbf24" opacity="0.6">Voice Assistant</text>`,
+        `</svg>`,
+      ].join('');
+    case 'speaking':
+      return [
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+        `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#0a2e14"/>`,
+        `<text x="72" y="48" text-anchor="middle" font-family="Arial,sans-serif" font-size="36">🔊</text>`,
+        `<text x="72" y="82" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#4ade80">SPEAKING</text>`,
+        `<text x="72" y="106" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#4ade80" opacity="0.6">Voice Assistant</text>`,
+        `</svg>`,
+      ].join('');
+    default:
+      return null;
+  }
+}
+
 function renderSessionSvg(): string {
+  // Voice assistant active — override session button with VA indicator
+  const vaOverlay = renderVoiceAssistantOverlaySvg();
+  if (vaOverlay) return vaOverlay;
+
   // CC No Session virtual state
   if (showingCcNoSession) {
     return simpleSvg('NO', 'SESSION', '#666666', '#1a1a1a');
@@ -775,12 +827,19 @@ function cycleSession(): void {
     const session = next.session;
     currentSessionIndex = sessions.indexOf(session);
     currentProjectName = session.projectName;
+    // Reset stale state from previous session for instant visual feedback
+    currentState = State.IDLE;
+    currentTool = undefined;
+    currentModel = undefined;
+    currentEffortLevel = undefined;
     dlog('SesBut', `cycle: ${currentSessionIndex + 1}/${sessions.length} → ${getDisplayName(session, sessions)}:${session.port}`);
     suppressAutoSwitch();
     bridge.activateBridge();
     bridge.reconnectBridgeTo(session.port);
   }
   refreshAll();
+  // Trigger full UI flush (encoders, response buttons, etc.) with reset state
+  onSessionSwitched?.();
 }
 
 async function focusTerminal(): Promise<void> {

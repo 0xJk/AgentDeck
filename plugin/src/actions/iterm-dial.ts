@@ -166,7 +166,7 @@ async function syncFromSystem(): Promise<void> {
     if (activeTty && bridgeRef && itermFront && bridgeRef.getActiveAgentType() !== 'openclaw') {
       const currentPort = bridgeRef.getBridgePort();
 
-      // 1. parentTty match (non-tmux: sdc's stdin tty === iTerm tty)
+      // 1. parentTty match (non-tmux: agentdeck's stdin tty === iTerm tty)
       let match = adSessions.find((s) => s.parentTty && s.parentTty === activeTty);
 
       // 2. Legacy direct tty match

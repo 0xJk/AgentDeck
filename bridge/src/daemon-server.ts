@@ -16,10 +16,17 @@ import WebSocket from 'ws';
 import { BridgeCore } from './bridge-core.js';
 import { OpenClawAdapter } from './adapters/openclaw.js';
 import { BridgeLogStream } from './log-stream.js';
+import { VoiceManager } from './voice.js';
+import { VoiceAssistantManager } from './voice-assistant.js';
 import {
   listActive as listActiveSessions,
   findAvailablePort,
   findExistingDaemon,
+  DAEMON_DEFAULT_PORT,
+  probeDaemonHealth,
+  writeDaemonInfo,
+  removeDaemonInfo,
+  readDaemonInfo,
 } from './session-registry.js';
 import { fetchUsageFromApi, hasOAuthToken, type ApiUsageData } from './usage-api.js';
 import { isLocalConnection, validateToken } from './auth.js';
@@ -33,6 +40,9 @@ import {
 } from './modules/index.js';
 import { SerialModule } from './modules/serial-module.js';
 import { esp32ConnectionCount } from './esp32-serial.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import {
   BRIDGE_WS_PORT,
   OPENCLAW_CAPABILITIES,
@@ -41,6 +51,14 @@ import {
   type AdapterEvent,
   type ModelCatalogEntry,
 } from './types.js';
+
+function loadDaemonSettings(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(join(homedir(), '.agentdeck', 'settings.json'), 'utf-8'));
+  } catch {
+    return {};
+  }
+}
 
 function log(msg: string): void {
   process.stderr.write(msg + '\n');
@@ -128,6 +146,7 @@ async function fetchUsageRelayed(selfPort: number): Promise<ApiUsageData | null>
 export interface DaemonOptions {
   port?: number;
   debug?: boolean;
+  wakeWord?: boolean;
 }
 
 // ===== startDaemon =====
@@ -138,17 +157,40 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     log('[agentdeck] Debug logging enabled');
   }
 
-  // Singleton guard
-  const existing = findExistingDaemon();
-  if (existing) {
-    log(`[agentdeck] Daemon already running on port ${existing.port} (PID ${existing.pid}).`);
+  // CLI --wake-word flag OR settings.json wakeWord: true
+  const settings = loadDaemonSettings();
+  const wakeWordEnabled = opts.wakeWord || settings.wakeWord === true;
+
+  // ===== Singleton guard + port allocation =====
+  // 1. Check daemon.json and sessions.json for existing daemon
+  const existingInfo = readDaemonInfo();
+  if (existingInfo) {
+    log(`[agentdeck] Daemon already running on port ${existingInfo.port} (PID ${existingInfo.pid}).`);
+    process.exit(0);
+  }
+  const existingSession = findExistingDaemon();
+  if (existingSession) {
+    log(`[agentdeck] Daemon already running on port ${existingSession.port} (PID ${existingSession.pid}).`);
     process.exit(0);
   }
 
-  const requestedPort = opts.port ?? BRIDGE_WS_PORT;
-  const port = requestedPort === BRIDGE_WS_PORT ? await findAvailablePort() : requestedPort;
-  if (port !== requestedPort) {
-    log(`[agentdeck] Port ${requestedPort} in use, using ${port}`);
+  // 2. Determine port — try default first, fallback if occupied by non-daemon
+  const requestedPort = opts.port ?? DAEMON_DEFAULT_PORT;
+  let port = requestedPort;
+
+  // If using default port, check if it's available
+  if (requestedPort === DAEMON_DEFAULT_PORT) {
+    const health = await probeDaemonHealth(requestedPort);
+    if (health) {
+      if (health.mode === 'daemon') {
+        // Daemon alive but not in our registry — race condition or stale state
+        log(`[agentdeck] Daemon already running on port ${requestedPort} (detected via /health).`);
+        process.exit(0);
+      }
+      // Port occupied by non-daemon (e.g. session bridge) — find alternative
+      log(`[agentdeck] Port ${requestedPort} occupied (${health.mode ?? 'unknown'}), finding alternative...`);
+      port = await findAvailablePort();
+    }
   }
 
   log(`[agentdeck] Starting daemon on port ${port}...`);
@@ -245,10 +287,30 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   await new Promise<void>((resolve, reject) => {
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
-      reject(err.code === 'EADDRINUSE' ? new Error(`Port ${port} already in use.`) : err);
+      if (err.code === 'EADDRINUSE') {
+        // Port was grabbed between our check and bind — find alternative
+        reject(new Error(`EADDRINUSE:${port}`));
+      } else {
+        reject(err);
+      }
     });
     httpServer.listen(port, '0.0.0.0', () => resolve());
+  }).catch(async (err: Error) => {
+    // Handle race condition: port became unavailable after probe
+    if (err.message.startsWith('EADDRINUSE:') && port === requestedPort) {
+      port = await findAvailablePort();
+      log(`[agentdeck] Port ${requestedPort} grabbed, retrying on ${port}...`);
+      await new Promise<void>((resolve, reject) => {
+        httpServer.on('error', (e: NodeJS.ErrnoException) => reject(e));
+        httpServer.listen(port, '0.0.0.0', () => resolve());
+      });
+    } else {
+      throw err;
+    }
   });
+
+  // Write daemon.json for client discovery (must be after successful bind)
+  writeDaemonInfo({ port, pid: process.pid, startedAt: new Date().toISOString() });
 
   // ===== BridgeCore =====
   const core = new BridgeCore({
@@ -422,6 +484,61 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     core.broadcastSessionsList().catch(() => {});
   }
 
+  // ===== Voice assistant (wake word) =====
+  let voiceAssistant: VoiceAssistantManager | null = null;
+  let voiceManager: VoiceManager | null = null;
+  let previousDaemonState = State.IDLE;
+
+  if (wakeWordEnabled) {
+    voiceManager = new VoiceManager();
+    voiceManager.connectToServer().catch((err) => {
+      debug('daemon', `whisper-server connection failed: ${err}`);
+    });
+
+    voiceAssistant = new VoiceAssistantManager({
+      sendPrompt: (text) => {
+        if (gatewayAdapter?.isAlive() && gatewayAdapter.handleCommand({ type: 'send_prompt', text })) {
+          core.stateMachine.handleUserAction('send_prompt');
+        } else {
+          debug('daemon', 'Wake word prompt but no active adapter');
+        }
+      },
+      transcribeFile: (filePath) => voiceManager!.transcribeFile(filePath),
+    });
+
+    voiceAssistant.on('state_change', (info: { state: string; text?: string; responseText?: string }) => {
+      // Broadcast dedicated event (for plugin FORWARDED_EVENTS)
+      core.broadcast({
+        type: 'voice_assistant_state',
+        state: info.state,
+        deviceId: 'mac-builtin',
+        text: info.text,
+        responseText: info.responseText,
+      } as BridgeEvent);
+      // Piggyback on state_update so all clients (Android/Apple/TUI) get it automatically
+      core.updateVoiceAssistantState(
+        info.state as import('@agentdeck/shared').VoiceAssistantState,
+        info.text,
+        info.responseText,
+      );
+    });
+
+    voiceAssistant.on('wake_word_detected', (info: { deviceId: string; timestamp: number }) => {
+      core.broadcast({
+        type: 'wake_word_detected',
+        deviceId: info.deviceId,
+        timestamp: info.timestamp,
+      } as BridgeEvent);
+    });
+
+    voiceAssistant.start().then((ok) => {
+      if (ok) log('[agentdeck] Wake word voice assistant active ("오픈클로")');
+      else log('[agentdeck] Wake word not available (missing model or access key)');
+    }).catch((err) => {
+      log(`[agentdeck] Wake word start failed: ${err}`);
+    });
+  }
+
   // ===== State changed → broadcast =====
   core.stateMachine.on('state_changed', (snapshot) => {
     const gwAlive = gatewayAdapter?.isAlive() ?? false;
@@ -434,6 +551,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     core.wsServer.broadcast(stateEvent);
     core.maybeBroadcastSessionsList();
     core.broadcastUsage();
+
+    // Voice assistant: reset timeout on any activity during processing
+    if (snapshot.state === State.PROCESSING && voiceAssistant?.getState() === 'processing') {
+      voiceAssistant.resetResponseTimeout();
+    }
+
+    // Voice assistant: PROCESSING→IDLE triggers TTS response
+    const wasActive = previousDaemonState === State.PROCESSING;
+    previousDaemonState = snapshot.state;
+    if (wasActive && snapshot.state === State.IDLE && voiceAssistant?.getState() === 'processing') {
+      const lastEntry = core.bridgeTimeline.getLastEntry('chat_end');
+      const responseText = lastEntry?.detail ?? lastEntry?.raw ?? '';
+      voiceAssistant.handleResponse(responseText || '완료했습니다.').catch((err) => {
+        debug('daemon', `Voice assistant TTS error: ${err}`);
+      });
+    }
   });
 
   // ===== Commands from WS clients =====
@@ -503,6 +636,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   // ===== Shutdown =====
   core.onShutdown(async () => {
+    removeDaemonInfo();
+    voiceAssistant?.stop();
+    voiceManager?.disconnectFromServer();
     bridgeLogStream.stop();
     if (gatewayAdapter) {
       await gatewayAdapter.shutdown().catch(() => {});

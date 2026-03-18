@@ -13,6 +13,8 @@ import {
   type BillingType,
   type DeckSlotConfig,
   type DeckSlotMapEvent,
+  type VoiceAssistantStateEvent,
+  type VoiceAssistantState,
 } from '@agentdeck/shared';
 
 import { ConnectionManager } from './connection-manager.js';
@@ -84,6 +86,7 @@ import {
   setVoiceRecordingState,
   setVoiceTranscription,
   setVoiceError,
+  updateVoiceAssistantIndicator,
 } from './actions/voice-dial.js';
 import {
   UtilityDialAction,
@@ -105,11 +108,11 @@ function detectSetupState(): void {
   const bridgeEverStarted = existsSync(`${homedir()}/.agentdeck/`);
   let sdcInPath = false;
   try {
-    execSync('which sdc', { stdio: 'ignore', timeout: 3000 });
+    execSync('which agentdeck', { stdio: 'ignore', timeout: 3000 });
     sdcInPath = true;
   } catch { /* not found */ }
   setupRequired = !bridgeEverStarted && !sdcInPath;
-  dinfo('Plugin', `detectSetupState: bridgeEverStarted=${bridgeEverStarted} sdcInPath=${sdcInPath} setupRequired=${setupRequired}`);
+  dinfo('Plugin', `detectSetupState: bridgeEverStarted=${bridgeEverStarted} agentdeckInPath=${sdcInPath} setupRequired=${setupRequired}`);
 }
 
 function propagateSetupRequired(value: boolean): void {
@@ -137,6 +140,7 @@ let currentSuggestedPrompt: string | undefined;
 let currentSessionStatus: Record<string, unknown> | null = null;
 let takeoverGeneration = 0;
 let proxiedAgentType: AgentType | null = null;
+let currentVoiceAssistantState: VoiceAssistantState = 'disabled';
 
 // ---- Expanded mode state ----
 let expandedMode = false;
@@ -162,7 +166,7 @@ const layoutManager = new LayoutManager();
 initResponseButtons(connMgr, layoutManager);
 initStopButton(connMgr);
 initModeButton(connMgr);
-initSessionButton(connMgr);
+initSessionButton(connMgr, () => broadcastStateUpdate());
 initUsageButton(connMgr);
 initOptionDial(connMgr);
 initVoiceDial(connMgr);
@@ -247,6 +251,12 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   if (ev.pairingUrl !== undefined) {
     setPairingUrl(ev.pairingUrl);
   }
+  // Voice assistant state piggybacked on state_update
+  if (ev.voiceAssistantState !== undefined) {
+    currentVoiceAssistantState = ev.voiceAssistantState;
+    updateVoiceAssistantIndicator(ev.voiceAssistantState, ev.voiceAssistantText);
+  }
+
   // Clear suggestion on non-IDLE states
   if (ev.state !== State.IDLE) {
     currentSuggestedPrompt = undefined;
@@ -331,6 +341,14 @@ connMgr.on('voice_state', (ev: VoiceStateEvent) => {
   }
 });
 
+connMgr.on('voice_assistant_state', (ev: VoiceAssistantStateEvent) => {
+  dlog('Plugin', `voice_assistant_state: ${ev.state} text=${ev.text ? `"${ev.text.slice(0, 40)}"` : '-'}`);
+  currentVoiceAssistantState = ev.state;
+  updateVoiceAssistantIndicator(ev.state, ev.text);
+  // Also update session button to show/clear VA overlay
+  broadcastStateUpdate();
+});
+
 connMgr.on('timeline_event', (ev: { type: 'timeline_event'; entry: import('@agentdeck/shared').TimelineEntry; upsert?: boolean }) => {
   dlog('Plugin', `timeline_event from bridge: ${ev.entry.type} "${ev.entry.raw.slice(0, 60)}"${ev.upsert ? ' (upsert)' : ''}`);
   if (ev.upsert) {
@@ -405,6 +423,8 @@ connMgr.on('disconnected', () => {
   setUsageBridgeConnected(false);
   setUsageCapabilities(null);
   proxiedAgentType = null;
+  currentVoiceAssistantState = 'disabled';
+  updateVoiceAssistantIndicator('disabled');
   currentState = State.DISCONNECTED;
   currentOptions = [];
   currentQuestion = undefined;
@@ -456,7 +476,7 @@ function broadcastStateUpdate(): void {
     overrideUsageButton(null);
     setUsageState(currentState);
     updateModeButton(currentState, currentMode, caps);
-    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, currentEffortLevel);
+    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, currentEffortLevel, currentVoiceAssistantState);
     updateResponseState(currentState, currentMode as any, currentOptions, undefined, agentType, currentNavigable, caps);
 
     // Stop slot: may show 4th option or MORE button

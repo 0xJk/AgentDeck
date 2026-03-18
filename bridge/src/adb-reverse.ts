@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { debug, log } from './logger.js';
+import { debug } from './logger.js';
 
 const TAG = 'adb';
 
@@ -47,7 +47,7 @@ export function setupAdbReverse(port: number): void {
         stdio: 'pipe',
         timeout: 5000,
       });
-      log(`[sdc] adb reverse tcp:${port} → ${serial}`);
+      debug(TAG, `adb reverse tcp:${port} → ${serial}`);
     } catch (err) {
       debug(TAG, `adb reverse failed for ${serial}: ${err}`);
     }
@@ -77,7 +77,7 @@ export function startAdbReversePolling(port: number, intervalMs = 30_000): () =>
             stdio: 'pipe',
             timeout: 5000,
           });
-          log(`[sdc] adb reverse re-established tcp:${port} → ${serial}`);
+          debug(TAG, `adb reverse re-established tcp:${port} → ${serial}`);
         }
       } catch {
         // ignore — device may be unauthorized or disconnected

@@ -11,7 +11,7 @@
 import { Command } from 'commander';
 import { BRIDGE_WS_PORT } from './types.js';
 import { startDaemon } from './daemon-server.js';
-import { findExistingDaemon } from './session-registry.js';
+import { readDaemonInfo, findExistingDaemon, findDaemonPort } from './session-registry.js';
 
 function log(msg: string): void {
   process.stderr.write(msg + '\n');
@@ -30,6 +30,11 @@ program
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .option('-d, --debug', 'Enable debug logging')
   .action(async (opts) => {
+    const daemonInfo = readDaemonInfo();
+    if (daemonInfo) {
+      log(`Daemon already running on port ${daemonInfo.port} (PID ${daemonInfo.pid}).`);
+      process.exit(0);
+    }
     const existing = findExistingDaemon();
     if (existing) {
       log(`Daemon already running on port ${existing.port} (PID ${existing.pid}).`);
@@ -44,10 +49,7 @@ program
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .action(async (opts) => {
     const port = parseInt(opts.port, 10);
-    const { listActive } = await import('./session-registry.js');
-    const sessions = listActive();
-    const d = sessions.find(s => s.agentType === 'daemon');
-    const targetPort = d?.port ?? port;
+    const targetPort = findDaemonPort() ?? port;
     try {
       await fetch(`http://127.0.0.1:${targetPort}/shutdown`, { method: 'POST' });
       log('Shutdown signal sent');

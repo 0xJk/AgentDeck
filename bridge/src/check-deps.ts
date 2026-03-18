@@ -49,7 +49,7 @@ export function checkDependencies(): { ok: boolean; warnings: string[]; claudeCo
       }
     } catch {
       if (dep.required) {
-        process.stderr.write(`[sdc] ERROR: ${dep.name} not found. Install: ${dep.installHint}\n`);
+        process.stderr.write(`[agentdeck] ERROR: ${dep.name} not found. Install: ${dep.installHint}\n`);
         ok = false;
       } else {
         warnings.push(`${dep.name} not found — ${dep.installHint}`);
