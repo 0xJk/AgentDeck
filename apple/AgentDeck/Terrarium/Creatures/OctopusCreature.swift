@@ -372,15 +372,5 @@ final class OctopusCreature: Creature {
 // MARK: - Helpers
 
 private func lerpColor(_ a: Color, _ b: Color, _ t: Float) -> Color {
-    // SwiftUI doesn't expose RGB components easily, so use resolved colors
-    // Simple approximation: layer with opacity
-    let fraction = Double(min(1, max(0, t)))
-    if fraction < 0.01 { return a }
-    if fraction > 0.99 { return b }
-    // Use intermediate resolved blend
-    return Color(
-        red: Double(1 - fraction) * 0.753 + Double(fraction) * 0.816,
-        green: Double(1 - fraction) * 0.439 + Double(fraction) * 0.533,
-        blue: Double(1 - fraction) * 0.345 + Double(fraction) * 0.439
-    )
+    TerrariumColors.lerpColor(a, b, t)
 }

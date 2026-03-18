@@ -36,6 +36,7 @@ export interface DashboardState {
   agentType: string | null;
   gatewayAvailable: boolean;
   crayfishRouting: boolean;
+  gatewayHasError: boolean;
   voiceAssistantState: string;
   voiceAssistantText: string | null;
   voiceAssistantResponseText: string | null;
@@ -92,6 +93,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
     agentType: null,
     gatewayAvailable: false,
     crayfishRouting: false,
+    gatewayHasError: false,
     voiceAssistantState: 'disabled',
     voiceAssistantText: null,
     voiceAssistantResponseText: null,
@@ -135,7 +137,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
     const ocSibling = state.sessions.find(s =>
       s.agentType === 'openclaw' || (s as any).agentType === 'gateway'
     );
-    setCrayfish(terrCtx, state.gatewayAvailable || !!ocSibling, state.crayfishRouting, ocSibling?.projectName);
+    setCrayfish(terrCtx, state.gatewayAvailable || !!ocSibling, state.crayfishRouting, ocSibling?.projectName, state.gatewayHasError);
 
     // Render terrarium
     const layout = getLayout(cols, rows);
@@ -311,6 +313,7 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
         state.currentTool = e.currentTool || null;
         state.agentType = e.agentType || state.agentType;
         state.gatewayAvailable = e.gatewayAvailable || false;
+        state.gatewayHasError = e.gatewayHasError || false;
         if (e.state === 'processing' && e.agentType === 'openclaw') {
           state.crayfishRouting = true;
         }

@@ -54,6 +54,7 @@ let animFrame = 0;
 let fileWatchActive = false;
 let showingCcNoSession = false;
 let currentVoiceAssistantState: string | undefined;
+let currentGatewayHasError = false;
 
 /** Bridge can proxy OpenClaw (daemon) so agentType may be 'openclaw' while active link remains bridge. */
 function isProxiedOpenClaw(): boolean {
@@ -161,6 +162,7 @@ export function updateSessionButton(
   agentType?: AgentType | null,
   effortLevel?: string,
   voiceAssistantState?: string,
+  gatewayHasError?: boolean,
 ): void {
   const wasConnected = currentState !== State.DISCONNECTED;
   const wasIdle = currentState === State.IDLE;
@@ -175,6 +177,7 @@ export function updateSessionButton(
   if (agentType !== undefined) currentAgentType = agentType;
   if (effortLevel !== undefined) currentEffortLevel = effortLevel;
   if (voiceAssistantState !== undefined) currentVoiceAssistantState = voiceAssistantState;
+  if (gatewayHasError !== undefined) currentGatewayHasError = gatewayHasError;
 
   // CC connected — clear NO SESSION mode
   if (showingCcNoSession && agentType === 'claude-code') {
@@ -690,15 +693,28 @@ function renderOpenClawSvg(): string {
 
   // OC IDLE — lobster watermark + project name, no [OC] badge
   const name = 'OpenClaw';
-  const color = '#c084fc'; // purple for OC
+  const hasError = currentGatewayHasError;
+  const color = hasError ? '#ef4444' : '#c084fc'; // red on error, purple normally
+  const bgColor = hasError ? '#2a0a0a' : '#1a0a2e';
+  const dotColor = hasError ? '#ef4444' : '#4ade80';
   const lines: string[] = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
-    `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="#1a0a2e"/>`,
+    `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="${bgColor}"/>`,
     agentLogoWatermark('openclaw', color, 0.30),
-    `<circle cx="18" cy="18" r="5" fill="#4ade80"/>`,
-    `<text x="72" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="${color}">${escXml(name)}</text>`,
-    `</svg>`,
+    `<circle cx="18" cy="18" r="5" fill="${dotColor}"/>`,
   ];
+  if (hasError) {
+    lines.push(
+      `<text x="72" y="52" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" fill="#ef4444">\u26A0</text>`,
+      `<text x="72" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="${color}">${escXml(name)}</text>`,
+      `<text x="72" y="104" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#ef4444" opacity="0.7">Gateway Error</text>`,
+    );
+  } else {
+    lines.push(
+      `<text x="72" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="${color}">${escXml(name)}</text>`,
+    );
+  }
+  lines.push(`</svg>`);
   return lines.join('');
 }
 

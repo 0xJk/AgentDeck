@@ -68,6 +68,9 @@ enum TerrariumColors {
     static let hudText = Color(red: 0.886, green: 0.910, blue: 0.878)         // #E2E8F0
     static let hudSubtext = Color(red: 0.580, green: 0.639, blue: 0.722)      // #94A3B8
 
+    // Sick/desaturated crayfish
+    static let crayfishSick = Color(red: 0.545, green: 0.482, blue: 0.482) // #8B7B7B
+
     // Food crumbs
     static let foodCyan = Color(red: 0.0, green: 0.898, blue: 1.0)            // tools
     static let foodAmber = Color(red: 0.984, green: 0.749, blue: 0.141)       // messages
@@ -75,6 +78,22 @@ enum TerrariumColors {
 
     // Name tag
     static let claudeNameBg = Color(red: 0.753, green: 0.439, blue: 0.345).opacity(0.6)
+
+    /// Linear interpolation between two SwiftUI Colors using resolved RGBA components.
+    static func lerpColor(_ a: Color, _ b: Color, _ t: Float) -> Color {
+        let f = min(1, max(0, t))
+        if f < 0.01 { return a }
+        if f > 0.99 { return b }
+        let env = EnvironmentValues()
+        let ra = a.resolve(in: env)
+        let rb = b.resolve(in: env)
+        return Color(
+            red: Double(ra.red * (1 - f) + rb.red * f),
+            green: Double(ra.green * (1 - f) + rb.green * f),
+            blue: Double(ra.blue * (1 - f) + rb.blue * f),
+            opacity: Double(ra.opacity * (1 - f) + rb.opacity * f)
+        )
+    }
 }
 
 // MARK: - Layout

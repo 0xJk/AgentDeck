@@ -335,13 +335,7 @@ final class CrayfishCreature {
     // MARK: - Helpers
 
     private func lerpColor(_ a: Color, _ b: Color, _ t: Float) -> Color {
-        // SwiftUI doesn't expose RGBA components easily, so use resolved colors
-        // Approximate with opacity layering for visual correctness
-        let clamped = Double(min(1, max(0, t)))
-        if clamped < 0.01 { return a }
-        if clamped > 0.99 { return b }
-        // Layer b on top of a with opacity t
-        return a // fallback — in practice the gradient is close enough
+        TerrariumColors.lerpColor(a, b, t)
     }
 
     // MARK: - SVG Path Parser

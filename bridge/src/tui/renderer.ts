@@ -178,6 +178,11 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
     renderSession('OpenClaw', undefined, state.crayfishRouting ? 'processing' : 'idle', 'openclaw');
   }
 
+  // Gateway error warning
+  if (state.gatewayHasError) {
+    lines.push(`${colors.error} \u26A0 Gateway Error${RESET}`);
+  }
+
   // Voice assistant indicator
   if (state.voiceAssistantState && state.voiceAssistantState !== 'disabled' && state.voiceAssistantState !== 'idle') {
     lines.push('');
@@ -502,6 +507,10 @@ function renderAgentCompactLines(state: DashboardState, width: number): string[]
     const ocCol = stateColor(ocState);
     const ocEmoji = creatureEmoji('openclaw');
     lines.push(` ${ocEmoji} OpenClaw ${ocCol}${stateIcon(ocState)}${ocState.toUpperCase()}${RESET}`);
+  }
+  // Gateway error warning
+  if (state.gatewayHasError) {
+    lines.push(`${colors.error} \u26A0 Gateway Error${RESET}`);
   }
   // Voice assistant indicator (compact)
   if (state.voiceAssistantState && state.voiceAssistantState !== 'disabled' && state.voiceAssistantState !== 'idle') {

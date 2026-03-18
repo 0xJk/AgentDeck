@@ -121,8 +121,16 @@ extension DashboardState {
 
         result.creatures = creatures
 
-        // Environment state
-        result.environment = mapToEnvironment(state)
+        // Environment state — in daemon mode, derive from most active sibling
+        let isDaemonLike = agentType == "daemon" ||
+            (agentType != nil && siblingSessions.contains(where: { $0.agentType == agentType }))
+        let effectiveState: AgentConnectionState
+        if isDaemonLike && state == .disconnected {
+            effectiveState = mostActiveSiblingState(siblingSessions) ?? .idle
+        } else {
+            effectiveState = state
+        }
+        result.environment = mapToEnvironment(effectiveState)
         result.hasError = gatewayHasError
 
         // Crayfish (OpenClaw gateway)
@@ -138,11 +146,13 @@ extension DashboardState {
             result.crayfishState = .dormant
         }
 
-        // Tetra state
-        if state == .processing || creatures.contains(where: { $0.state == .working }) {
+        // Tetra state — use effectiveState so daemon mode isn't stuck on ABSENT
+        if effectiveState == .processing || creatures.contains(where: { $0.state == .working }) {
             result.tetraState = .streaming
-        } else if state.isAwaiting {
+        } else if effectiveState.isAwaiting {
             result.tetraState = .hovering
+        } else if effectiveState == .disconnected {
+            result.tetraState = .absent
         } else {
             result.tetraState = .circling
         }
@@ -180,5 +190,34 @@ extension DashboardState {
         case .processing: .active
         case .awaitingPermission, .awaitingOption, .awaitingDiff: .alert
         }
+    }
+
+    /// In daemon mode, derive the most active state from sibling sessions.
+    private func mostActiveSiblingState(_ siblings: [SessionInfo]) -> AgentConnectionState? {
+        func priority(_ s: AgentConnectionState) -> Int {
+            switch s {
+            case .disconnected: return 0
+            case .idle: return 1
+            case .processing: return 2
+            case .awaitingPermission, .awaitingOption, .awaitingDiff: return 3
+            }
+        }
+        var best: AgentConnectionState? = nil
+        for s in siblings {
+            if s.agentType == "daemon" { continue }
+            let mapped: AgentConnectionState? = switch s.state {
+            case "processing": .processing
+            case "awaiting_permission": .awaitingPermission
+            case "awaiting_option": .awaitingOption
+            case "awaiting_diff": .awaitingDiff
+            case "idle": .idle
+            default: nil
+            }
+            guard let m = mapped else { continue }
+            if best == nil || priority(m) > priority(best!) {
+                best = m
+            }
+        }
+        return best
     }
 }

@@ -144,6 +144,7 @@ const CRAYFISH_GRID_XLARGE = scaleGridN(CRAYFISH_GRID_SMALL, 3);
 interface CrayfishState {
   visible: boolean;
   routing: boolean;
+  sick: boolean;
   x: number;
   y: number;
   name?: string;
@@ -183,7 +184,9 @@ function renderCrayfish(state: CrayfishState, frame: number, scale: SpriteScale)
   }
   const braille = gridToBraille(grid, gw, gh);
   let color: string;
-  if (state.routing) {
+  if (state.sick) {
+    color = DIM + fg(180, 140, 140); // desaturated dim red
+  } else if (state.routing) {
     color = colors.crayfish;
   } else {
     // Heartbeat: double-pulse every ~50 frames
@@ -278,7 +281,7 @@ export function initTerrarium(): TerrariumContext {
     bubbles,
     schools: [initSchool(5, 0), initSchool(5, 1)],
     octopi: [],
-    crayfish: { visible: false, routing: false, x: 0.75, y: 0.88 },
+    crayfish: { visible: false, routing: false, sick: false, x: 0.75, y: 0.88 },
     voiceAssistantState: 'disabled',
   };
 }
@@ -367,9 +370,10 @@ export function setOctopi(
   ctx.octopi = newOctopi;
 }
 
-export function setCrayfish(ctx: TerrariumContext, visible: boolean, routing: boolean, name?: string): void {
+export function setCrayfish(ctx: TerrariumContext, visible: boolean, routing: boolean, name?: string, sick?: boolean): void {
   ctx.crayfish.visible = visible;
   ctx.crayfish.routing = routing;
+  ctx.crayfish.sick = sick || false;
   if (name !== undefined) ctx.crayfish.name = name;
 }
 
@@ -577,12 +581,14 @@ export function renderTerrariumFrame(
         }
       }
       // Crayfish name tag — directly above braille sprite
-      const cfName = ctx.crayfish.name || 'OpenClaw';
+      const cfBaseName = ctx.crayfish.name || 'OpenClaw';
+      const cfName = ctx.crayfish.sick ? `\u26A0 ${cfBaseName}` : cfBaseName;
+      const cfNameColor = ctx.crayfish.sick ? fg(200, 120, 120) : fg(180, 180, 180);
       if (cy - 1 === row) {
         const nx = Math.floor(ctx.crayfish.x * width) - Math.floor(cfName.length / 2);
         for (let nc = 0; nc < cfName.length; nc++) {
           const px = nx + nc;
-          if (px >= 0 && px < width) { chars[px] = cfName[nc]; charColors[px] = fg(180, 180, 180); }
+          if (px >= 0 && px < width) { chars[px] = cfName[nc]; charColors[px] = cfNameColor; }
         }
       }
 

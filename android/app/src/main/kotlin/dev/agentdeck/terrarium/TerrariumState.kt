@@ -67,11 +67,44 @@ data class TerrariumState(
     val popBurstPositions: List<Pair<Float, Float>> = emptyList(),
 )
 
+/** Derive the most active AgentState from sibling sessions (for daemon mode). */
+private fun mostActiveSessionState(siblings: List<dev.agentdeck.net.SessionInfo>): AgentState? {
+    // Priority: PROCESSING > AWAITING_* > IDLE > null
+    var best: AgentState? = null
+    for (s in siblings) {
+        if (s.agentType == "daemon") continue
+        val mapped = when (s.state) {
+            "processing" -> AgentState.PROCESSING
+            "awaiting_permission" -> AgentState.AWAITING_PERMISSION
+            "awaiting_option" -> AgentState.AWAITING_OPTION
+            "awaiting_diff" -> AgentState.AWAITING_DIFF
+            "idle" -> AgentState.IDLE
+            else -> null
+        } ?: continue
+        if (best == null || mapped.ordinal > best.ordinal) {
+            best = mapped
+        }
+    }
+    return best
+}
+
 /** Map DashboardState to visual TerrariumState. */
 fun DashboardState.toTerrariumState(): TerrariumState {
     val isOpenClaw = agentType == "openclaw"
     val hasTool = currentTool != null
-    val octopus = when (agentState) {
+
+    // In daemon mode, the daemon's own agentState is DISCONNECTED (no PTY).
+    // Derive effective state from the most active sibling session so that
+    // tetra/environment/bubbles reflect actual activity.
+    val isDaemonLike = agentType == "daemon" ||
+        (agentType != null && siblingSessions.any { it.agentType == agentType })
+    val effectiveAgentState = if (isDaemonLike && agentState == AgentState.DISCONNECTED) {
+        mostActiveSessionState(siblingSessions) ?: AgentState.IDLE
+    } else {
+        agentState
+    }
+
+    val octopus = when (effectiveAgentState) {
         AgentState.DISCONNECTED -> OctopusVisualState.SLEEPING
         AgentState.IDLE -> OctopusVisualState.FLOATING
         AgentState.PROCESSING -> OctopusVisualState.WORKING
@@ -84,7 +117,7 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     val ocSibling = siblingSessions.firstOrNull { it.agentType == "openclaw" }
     val crayfish = when {
         // Primary is OpenClaw — use primary state
-        isOpenClaw -> when (agentState) {
+        isOpenClaw -> when (effectiveAgentState) {
             AgentState.PROCESSING -> CrayfishVisualState.ROUTING
             AgentState.IDLE -> CrayfishVisualState.SITTING
             AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
@@ -99,8 +132,8 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         }
         // Gateway detected but no bridge
         gatewayAvailable == true -> CrayfishVisualState.SITTING
-        // Nothing — derive from primary agent state
-        else -> when (agentState) {
+        // Nothing — derive from effective agent state
+        else -> when (effectiveAgentState) {
             AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
             AgentState.PROCESSING -> CrayfishVisualState.OBSERVING
             else -> CrayfishVisualState.SITTING
@@ -115,7 +148,7 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     }
 
     val crayfishRouting = effectiveCrayfish == CrayfishVisualState.ROUTING
-    val tetra = when (agentState) {
+    val tetra = when (effectiveAgentState) {
         AgentState.DISCONNECTED -> TetraVisualState.ABSENT
         AgentState.IDLE -> if (crayfishRouting) TetraVisualState.STREAMING else TetraVisualState.CIRCLING
         AgentState.PROCESSING -> if (hasTool || isOpenClaw || crayfishRouting) TetraVisualState.STREAMING else TetraVisualState.CIRCLING
@@ -124,7 +157,7 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         AgentState.AWAITING_DIFF -> TetraVisualState.HOVERING
     }
 
-    val environment = when (agentState) {
+    val environment = when (effectiveAgentState) {
         AgentState.DISCONNECTED -> EnvironmentVisualState.DARK
         AgentState.IDLE -> EnvironmentVisualState.CALM
         AgentState.PROCESSING -> EnvironmentVisualState.ACTIVE
@@ -136,8 +169,8 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     // Build multi-agent creature list from sibling sessions
     val agents = mutableListOf<AgentCreatureState>()
 
-    // Primary agent — skip if disconnected (no session), daemon, or openclaw proxy
-    if (agentState != AgentState.DISCONNECTED && agentType != "daemon" && agentType != "openclaw") {
+    // Primary agent — skip if disconnected (no session), daemon-like, or openclaw proxy
+    if (agentState != AgentState.DISCONNECTED && !isDaemonLike && agentType != "openclaw") {
         agents.add(
             AgentCreatureState(
                 sessionId = sessionId ?: "primary",

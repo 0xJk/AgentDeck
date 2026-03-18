@@ -141,6 +141,7 @@ let currentSessionStatus: Record<string, unknown> | null = null;
 let takeoverGeneration = 0;
 let proxiedAgentType: AgentType | null = null;
 let currentVoiceAssistantState: VoiceAssistantState = 'disabled';
+let currentGatewayHasError = false;
 
 // ---- Expanded mode state ----
 let expandedMode = false;
@@ -202,6 +203,9 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   if (ev.billingType) currentBillingType = ev.billingType;
   if (ev.gatewayAvailable !== undefined) {
     connMgr.setBridgeGatewayAvailable(ev.gatewayAvailable);
+  }
+  if (ev.gatewayHasError !== undefined) {
+    currentGatewayHasError = ev.gatewayHasError;
   }
 
   // Track proxied agent type from daemon (state_update.agentType overrides connection-level detection)
@@ -476,7 +480,7 @@ function broadcastStateUpdate(): void {
     overrideUsageButton(null);
     setUsageState(currentState);
     updateModeButton(currentState, currentMode, caps);
-    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, currentEffortLevel, currentVoiceAssistantState);
+    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, currentEffortLevel, currentVoiceAssistantState, currentGatewayHasError);
     updateResponseState(currentState, currentMode as any, currentOptions, undefined, agentType, currentNavigable, caps);
 
     // Stop slot: may show 4th option or MORE button
