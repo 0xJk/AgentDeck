@@ -8,7 +8,7 @@ import Foundation
 import UIKit
 #endif
 
-@Observable @MainActor
+@Observable
 final class DisplaySyncService {
     var enabled = true
 
@@ -25,8 +25,10 @@ final class DisplaySyncService {
         if !displayOn {
             if isAppActive {
                 // App is foreground — dim immediately
-                savedBrightness = UIScreen.main.brightness
-                UIScreen.main.brightness = 0.0
+                DispatchQueue.main.async {
+                    self.savedBrightness = UIScreen.main.brightness
+                    UIScreen.main.brightness = 0.0
+                }
                 pendingDim = false
             } else {
                 // App is backgrounded — queue dim for when we return
@@ -35,7 +37,9 @@ final class DisplaySyncService {
         } else {
             pendingDim = false
             if let saved = savedBrightness {
-                UIScreen.main.brightness = saved
+                DispatchQueue.main.async {
+                    UIScreen.main.brightness = saved
+                }
                 savedBrightness = nil
             }
         }
@@ -49,8 +53,10 @@ final class DisplaySyncService {
     func handleForegroundReturn(hostDisplayOn: Bool) {
         guard enabled else { return }
         if pendingDim && !hostDisplayOn {
-            savedBrightness = UIScreen.main.brightness
-            UIScreen.main.brightness = 0.0
+            DispatchQueue.main.async {
+                self.savedBrightness = UIScreen.main.brightness
+                UIScreen.main.brightness = 0.0
+            }
             pendingDim = false
         }
     }
@@ -59,7 +65,9 @@ final class DisplaySyncService {
     func restoreOnDisconnect() {
         pendingDim = false
         if let saved = savedBrightness {
-            UIScreen.main.brightness = saved
+            DispatchQueue.main.async {
+                UIScreen.main.brightness = saved
+            }
             savedBrightness = nil
         }
     }
