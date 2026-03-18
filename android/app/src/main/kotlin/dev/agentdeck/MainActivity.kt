@@ -172,6 +172,34 @@ fun TabletDashboard(
         }
     }
 
+    // Re-discover when auth rejected (4001) or localhost gave up — URL cleared, disconnected
+    LaunchedEffect(connectionStatus, currentUrl) {
+        if (connectionStatus == ConnectionStatus.DISCONNECTED && currentUrl == null) {
+            delay(1000) // brief pause before re-discovery
+            Log.i(TAG, "Disconnected with no URL — re-discovering via mDNS")
+            val discovery = BridgeDiscovery(context)
+            var bestBridges = emptyList<DiscoveredBridge>()
+            val foundDaemon = withTimeoutOrNull(4000) {
+                discovery.discover().collect { bridges ->
+                    bestBridges = bridges
+                    val daemon = bridges.firstOrNull { it.agentType == "daemon" }
+                    if (daemon != null) {
+                        Log.i(TAG, "Re-discover (daemon): ${daemon.name} at ${daemon.wsUrl()}")
+                        connection.connect(daemon.wsUrl())
+                        return@collect
+                    }
+                }
+                true
+            }
+            if (foundDaemon == null && bestBridges.isNotEmpty() &&
+                connection.status.value != ConnectionStatus.CONNECTED) {
+                val bridge = bestBridges.first()
+                Log.i(TAG, "Re-discover (fallback): ${bridge.name} at ${bridge.wsUrl()}")
+                connection.connect(bridge.wsUrl())
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         MonitorScreen(
             stateHolder = stateHolder,

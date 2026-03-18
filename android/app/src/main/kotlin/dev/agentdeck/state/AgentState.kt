@@ -55,6 +55,9 @@ data class DashboardState(
     val ollamaStatus: OllamaStatus? = null,
     val gatewayAvailable: Boolean? = null,
     val gatewayHasError: Boolean? = null,
+    val voiceAssistantState: String? = null,
+    val voiceAssistantText: String? = null,
+    val voiceAssistantResponseText: String? = null,
 )
 
 class AgentStateHolder private constructor() {
@@ -108,6 +111,9 @@ class AgentStateHolder private constructor() {
                         ollamaStatus = event.data.ollamaStatus ?: current.ollamaStatus,
                         gatewayAvailable = event.data.gatewayAvailable ?: current.gatewayAvailable,
                         gatewayHasError = event.data.gatewayHasError ?: current.gatewayHasError,
+                        voiceAssistantState = event.data.voiceAssistantState ?: current.voiceAssistantState,
+                        voiceAssistantText = event.data.voiceAssistantText,
+                        voiceAssistantResponseText = event.data.voiceAssistantResponseText,
                     )
                 }
                 lastKnownState = _state.value

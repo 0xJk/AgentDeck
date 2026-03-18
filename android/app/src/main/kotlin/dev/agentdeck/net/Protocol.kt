@@ -97,6 +97,9 @@ data class StateUpdate(
     val ollamaStatus: OllamaStatus? = null,
     val gatewayAvailable: Boolean? = null,
     val gatewayHasError: Boolean? = null,
+    val voiceAssistantState: String? = null,
+    val voiceAssistantText: String? = null,
+    val voiceAssistantResponseText: String? = null,
 )
 
 @Serializable

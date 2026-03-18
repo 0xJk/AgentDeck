@@ -73,6 +73,7 @@ import dev.agentdeck.ui.eink.RefreshMode
 import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "EinkMonitor"
 
@@ -124,17 +125,29 @@ fun EinkMonitorScreen(
             // Wait for connection or timeout
             delay(5000)
         }
-        // If still disconnected, try mDNS discovery
+        // If still disconnected, try mDNS discovery with daemon grace period
         if (connection.status.value != ConnectionStatus.CONNECTED) {
             Log.i(TAG, "Saved URL failed, trying mDNS discovery...")
-            discovery.discover().collect { bridges ->
-                if (bridges.isNotEmpty() && connection.status.value != ConnectionStatus.CONNECTED) {
-                    // Prefer daemon bridge for consistent state (daemon aggregates all sessions)
-                    val bridge = bridges.firstOrNull { it.agentType == "daemon" }
-                        ?: bridges.first()
-                    Log.i(TAG, "mDNS auto-connect: ${bridge.name} (agent=${bridge.agentType}) at ${bridge.wsUrl()}")
-                    connection.connect(bridge.wsUrl())
+            var bestBridges = emptyList<DiscoveredBridge>()
+            val foundDaemon = withTimeoutOrNull(4000) {
+                discovery.discover().collect { bridges ->
+                    bestBridges = bridges
+                    if (bridges.isNotEmpty() && connection.status.value != ConnectionStatus.CONNECTED) {
+                        val daemon = bridges.firstOrNull { it.agentType == "daemon" }
+                        if (daemon != null) {
+                            Log.i(TAG, "mDNS daemon found: ${daemon.name} at ${daemon.wsUrl()}")
+                            connection.connect(daemon.wsUrl())
+                            return@collect
+                        }
+                    }
                 }
+            }
+            // Grace period expired without daemon — fall back to any bridge
+            if (foundDaemon == null && bestBridges.isNotEmpty() &&
+                connection.status.value != ConnectionStatus.CONNECTED) {
+                val bridge = bestBridges.first()
+                Log.i(TAG, "mDNS daemon not found, fallback: ${bridge.name} (agent=${bridge.agentType}) at ${bridge.wsUrl()}")
+                connection.connect(bridge.wsUrl())
             }
         }
     }
