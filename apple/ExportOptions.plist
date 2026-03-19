@@ -6,11 +6,11 @@
 	<string>app-store-connect</string>
 	<key>teamID</key>
 	<string>R22679GY5Z</string>
-	<key>provisioningProfiles</key>
-	<dict/>
 	<key>uploadSymbols</key>
 	<true/>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
 </dict>
 </plist>
