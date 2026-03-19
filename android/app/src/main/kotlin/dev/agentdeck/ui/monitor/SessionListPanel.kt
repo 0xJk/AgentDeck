@@ -107,8 +107,8 @@ fun SessionListPanel(
         AgentDeckLogo(isEink = false, modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Permission mode badge (non-default only)
-        if (permissionMode != PermissionMode.DEFAULT) {
+        // Permission mode badge — hidden (too noisy, mode info visible on SD+ already)
+        if (false && permissionMode != PermissionMode.DEFAULT) {
             Text(
                 text = "mode:${permissionMode.name.lowercase()}",
                 color = TerrariumColors.HUDSubtext,
