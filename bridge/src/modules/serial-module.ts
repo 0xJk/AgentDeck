@@ -21,7 +21,7 @@ export class SerialModule implements DeviceModule {
     try {
       const { readdirSync } = await import('fs');
       const devFiles = readdirSync('/dev');
-      return devFiles.some((f) => f.startsWith('tty.usbserial') || f.startsWith('tty.wchusbserial'));
+      return devFiles.some((f) => f.startsWith('tty.usbserial') || f.startsWith('tty.wchusbserial') || f.startsWith('tty.usbmodem'));
     } catch {
       return false;
     }
