@@ -57,6 +57,19 @@ jobs:
           mkdir -p ~/private_keys
           echo -n "$ASC_API_KEY_BASE64" | base64 --decode -o ~/private_keys/AuthKey_${ASC_API_KEY_ID}.p8
 
+      - name: Download provisioning profile
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          # Use xcodebuild to download provisioning profiles via API key
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          xcodebuild -downloadAllPlatforms \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_API_KEY_ID}.p8 \
+            -authenticationKeyID $ASC_API_KEY_ID \
+            -authenticationKeyIssuerID $ASC_ISSUER_ID \
+            2>/dev/null || true
+
       - name: Archive iOS
         run: |
           xcodebuild archive \
