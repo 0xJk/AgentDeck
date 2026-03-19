@@ -39,7 +39,9 @@ import {
   createDefaultModules,
 } from './modules/index.js';
 import { SerialModule } from './modules/serial-module.js';
-import { esp32ConnectionCount } from './esp32-serial.js';
+import { esp32ConnectionCount, onESP32Message, sendWifiProvisionToAll } from './esp32-serial.js';
+import { loadWifiConfig } from './wifi-config.js';
+import { getLanIp } from '@agentdeck/shared';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -349,6 +351,27 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     });
     // Include ESP32 serial connections in client count for polling guards
     core.setExternalClientCountProvider(() => esp32ConnectionCount());
+
+    // WiFi auto-provisioning for ESP32 (enables independent WiFi operation)
+    const wifiConfig = loadWifiConfig();
+    if (wifiConfig?.autoProvision) {
+      const lanIp = getLanIp();
+      onESP32Message((portPath, msg) => {
+        if (msg.type === 'device_info' && !msg.wifiConnected) {
+          sendWifiProvisionToAll({
+            type: 'wifi_provision' as const,
+            ssid: wifiConfig.ssid,
+            password: wifiConfig.password,
+            bridgeIp: lanIp,
+            bridgePort: port,
+            authToken: core.authToken,
+          });
+          log(`[agentdeck] WiFi provision sent to ESP32 on ${portPath}`);
+        } else if (msg.type === 'wifi_provision_ack') {
+          log(msg.success ? `[agentdeck] ESP32 WiFi connected: ${msg.ip} ✓` : `[agentdeck] ESP32 WiFi failed: ${msg.error || 'unknown'}`);
+        }
+      });
+    }
   }
 
   log(`[agentdeck] WebSocket server ready on port ${port}`);

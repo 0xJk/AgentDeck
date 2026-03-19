@@ -579,10 +579,10 @@ function drawUsageHUD(
   const bgTop = textY - 1;
   const bgBot = textY + 5;
 
-  // Deep water base — covers sand while preserving underwater feel
+  // Full-width dark base — hides sand/terrain at HUD rows regardless of camera zoom
   for (let y = bgTop; y <= bgBot; y++) {
     for (let x = 0; x < 64; x++) {
-      setPixel(buf, x, y, COLORS.waterDeep);
+      blendPixel(buf, x, y, COLORS.black, 0.55);
     }
   }
 
@@ -634,7 +634,7 @@ export function renderFrame(
   const state = stateEvent?.state ?? State.IDLE;
   const usagePct = usageEvent?.fiveHourPercent ?? 0;
   const surfaceY = SURFACE_Y;
-  const palette = getWaterPalette(usagePct);
+  const palette = ZONE_BLUE; // Water stays blue — usage shown only via HUD gauge
 
   // Gateway available: stateEvent flag OR openclaw session in sessions list
   const hasGateway = (stateEvent?.gatewayAvailable ?? false)

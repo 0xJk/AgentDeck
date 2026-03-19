@@ -54,8 +54,14 @@ export function saveWifiConfig(config: WifiConfig): void {
 export function detectCurrentSSID(): string | null {
   if (process.platform !== 'darwin') return null;
   try {
-    // macOS 14.4+ uses `networksetup -getairportnetwork en0`
-    const output = execSync('networksetup -getairportnetwork en0', {
+    // Find the actual Wi-Fi interface (not always en0 — e.g. en1 on Mac Studio)
+    const ports = execSync('networksetup -listallhardwareports', {
+      encoding: 'utf-8', timeout: 3000,
+    });
+    const wifiMatch = ports.match(/Hardware Port: Wi-Fi\nDevice: (en\d+)/);
+    const iface = wifiMatch ? wifiMatch[1] : 'en0';
+
+    const output = execSync(`networksetup -getairportnetwork ${iface}`, {
       encoding: 'utf-8',
       timeout: 3000,
     }).trim();

@@ -3,9 +3,6 @@ package dev.agentdeck
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.content.ComponentName
-import android.content.pm.PackageManager
-import dev.agentdeck.util.EinkDetector
 
 class AgentDeckApp : Application() {
 
@@ -19,20 +16,6 @@ class AgentDeckApp : Application() {
         super.onCreate()
         instance = this
         createNotificationChannel()
-        toggleHomeLauncher()
-    }
-
-    private fun toggleHomeLauncher() {
-        if (EinkDetector.isEinkDevice()) return  // manifest default: enabled
-        val component = ComponentName(this, "dev.agentdeck.MainActivityHome")
-        val current = packageManager.getComponentEnabledSetting(component)
-        if (current != PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
-            packageManager.setComponentEnabledSetting(
-                component,
-                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                PackageManager.DONT_KILL_APP
-            )
-        }
     }
 
     private fun createNotificationChannel() {
