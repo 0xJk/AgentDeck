@@ -150,10 +150,22 @@ agentdeck devices            # Connected devices
 agentdeck qr                 # Pairing QR code
 agentdeck diag               # Diagnostic dump
 agentdeck pixoo {scan|add|list|remove|test}
-agentdeck wifi-setup         # ESP32 WiFi setup
+agentdeck wifi-setup         # ESP32 WiFi provisioning (--ssid, --password)
 ```
 
 **Module flags**: `--local` (all off), `--no-mdns`, `--no-adb`, `--no-serial`, `--no-pixoo`
+
+### ESP32 WiFi 독립 운용
+
+ESP32 디스플레이는 **USB 시리얼** (기본) + **WiFi WebSocket** (독립 운용) 이중 경로 지원.
+
+```bash
+agentdeck wifi-setup --ssid "MyNetwork" --password "secret"
+# → ~/.agentdeck/wifi-config.json 저장 (autoProvision: true)
+# → daemon 재시작 시 ESP32에 자동 프로비저닝
+```
+
+**USB 연결 시**: daemon이 시리얼로 `wifi_provision` 전송 → ESP32 WiFi 자동 연결. **USB 분리 후**: ESP32가 저장된 자격증명으로 WiFi 재연결 → mDNS로 daemon 발견 → WebSocket 접속. WiFi 인터페이스 자동 감지 (`networksetup -listallhardwareports`), macOS Keychain 비밀번호 조회 지원. Daemon (`daemon-server.ts`)과 Session bridge (`index.ts`) 양쪽에서 auto-provisioning 동작
 
 ## Key Design Decisions
 
@@ -163,7 +175,7 @@ agentdeck wifi-setup         # ESP32 WiFi setup
 - **Node16 module resolution** in TypeScript
 - **BridgeCore** (`bridge/src/bridge-core.ts`): Shared infrastructure class used by both `startSession()` (index.ts) and `startDaemon()` (daemon-server.ts). Contains StateMachine, WsServer, UsageTracker, DisplayMonitor, OllamaProbe, state caches, and common event wiring. Eliminates ~600 lines of duplication
 - **PtyAdapter hierarchy** (`bridge/src/adapters/pty-adapter.ts`): Abstract base class for PTY-based agents. Subclasses implement `getDefaultCommand()`, `wireOutputParser()`, `feedParser()`, `handleAgentCommand()`. `ClaudeCodeAdapter` extends PtyAdapter with OutputParser + Shift+Tab mode switching. `MonitorAdapter` is hook-only (no PTY)
-- **Device module system** (`bridge/src/modules/`): Pluggable `DeviceModule` interface with auto-detect. Modules: mdns (always), adb/serial/pixoo (`'auto'` — detect at startup). CLI flags: `--local` (all off), `--no-{module}`
+- **Device module system** (`bridge/src/modules/`): Pluggable `DeviceModule` interface with auto-detect. Modules: mdns (daemon-only), adb/serial (`'auto'` — detect at startup), pixoo (daemon-only, `false` in session — avoids PTY log pollution). CLI flags: `--local` (all off), `--no-{module}`
 - **node-pty optional**: `optionalDependencies` + dynamic `await import('node-pty')` in PtyManager. Daemon/monitor modes never load the native module
 - **Daemon hub architecture**: Daemon owns port **9120** (default, fallback to 9121+ if occupied by non-daemon). All dashboard clients (Android, Apple, ESP32, TUI, Plugin) connect exclusively to daemon — session bridges never serve external devices. Session bridges use ports 9121–9139 for internal hook HTTP only (`AGENTDECK_PORT` env var injected into Claude process). `~/.agentdeck/daemon.json` stores `{ port, pid, startedAt }` for local client discovery (written on daemon bind, removed on shutdown). Remote clients discover via mDNS (daemon only advertises `_agentdeck._tcp`). **Daemon singleton guard**: `daemon.json` PID check → `sessions.json` fallback → `/health` HTTP probe. Port occupied by non-daemon → auto-fallback to next available port. **Whisper-server** uses fixed singleton port **9100** (`~/.agentdeck/whisper-server.json` info file for discovery, last session exit kills server)
 - **Shift+Tab** (`\x1b[Z`) for Claude Code mode switching (100ms debounce)

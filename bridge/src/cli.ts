@@ -641,9 +641,9 @@ pixoo
 
 program
   .command('wifi-setup')
-  .description('Configure WiFi credentials for ESP32 auto-provisioning')
-  .option('--ssid <ssid>', 'WiFi network name')
-  .option('--password <password>', 'WiFi password')
+  .description('Configure WiFi for ESP32 independent operation (USB-free)')
+  .option('--ssid <ssid>', 'WiFi network name (auto-detected from macOS if omitted)')
+  .option('--password <password>', 'WiFi password (auto-fetched from Keychain if omitted)')
   .action(async (opts) => {
     const { detectCurrentSSID, getKeychainPassword, saveWifiConfig } = await import('./wifi-config.js');
 
@@ -675,6 +675,7 @@ program
 
     saveWifiConfig({ ssid, password, autoProvision: true });
     log(`WiFi config saved: SSID="${ssid}" \u2192 ~/.agentdeck/wifi-config.json`);
+    log('Daemon will auto-provision ESP32 devices on next restart.');
   });
 
 // ===== TUI Dashboard =====
