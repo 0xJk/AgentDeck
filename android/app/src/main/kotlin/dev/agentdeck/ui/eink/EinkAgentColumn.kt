@@ -1,25 +1,36 @@
 package dev.agentdeck.ui.eink
 
+import android.content.pm.ActivityInfo
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.ui.component.AgentDeckLogo
+import kotlinx.coroutines.launch
 
 /**
  * LEFT zone (22%) — Agent panel for e-ink 3-zone layout.
@@ -31,8 +42,13 @@ import dev.agentdeck.ui.component.AgentDeckLogo
 fun EinkAgentPanel(
     state: DashboardState,
     onSettingsClick: () -> Unit,
+    displayPrefs: DisplayPreferences? = null,
     modifier: Modifier = Modifier,
 ) {
+    val scope = rememberCoroutineScope()
+    val currentOrientation = displayPrefs?.orientationFlow?.collectAsState(
+        initial = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    )?.value ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     // Build display list: primary + siblings (excluding self)
     data class AgentEntry(
         val projectName: String,
@@ -121,13 +137,36 @@ fun EinkAgentPanel(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Settings gear
-        Text(
-            text = "\u2699 Settings",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.clickable(onClick = onSettingsClick),
-        )
+        // Settings gear + rotation toggle
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "\u2699 Settings",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clickable(onClick = onSettingsClick),
+            )
+            if (displayPrefs != null) {
+                Icon(
+                    imageVector = Icons.Default.ScreenRotation,
+                    contentDescription = "Rotate screen",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable {
+                            scope.launch {
+                                val newOrientation = if (currentOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+                                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                else
+                                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                displayPrefs.setOrientation(newOrientation)
+                            }
+                        },
+                )
+            }
+        }
     }
 }
 
@@ -182,8 +221,9 @@ internal fun EinkAgentBlock(
 fun EinkAgentColumn(
     state: DashboardState,
     onSettingsClick: () -> Unit,
+    displayPrefs: DisplayPreferences? = null,
     modifier: Modifier = Modifier,
 ) {
-    EinkAgentPanel(state = state, onSettingsClick = onSettingsClick, modifier = modifier)
+    EinkAgentPanel(state = state, onSettingsClick = onSettingsClick, displayPrefs = displayPrefs, modifier = modifier)
 }
 

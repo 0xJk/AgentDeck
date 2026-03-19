@@ -20,7 +20,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -70,9 +73,12 @@ import dev.agentdeck.terrarium.toTerrariumState
 import dev.agentdeck.ui.eink.EinkAnimatedRefreshZone
 import dev.agentdeck.ui.eink.EinkRefreshZone
 import dev.agentdeck.ui.eink.RefreshMode
+import android.content.pm.ActivityInfo
 import android.util.Log
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "EinkMonitor"
@@ -116,14 +122,19 @@ fun EinkMonitorScreen(
         }
     }
 
-    // Auto-connect: saved URL first, then mDNS fallback
+    // Auto-connect: saved URL → localhost (USB) → mDNS (WiFi)
     LaunchedEffect(Unit) {
         val savedUrl = displayPrefs.lastBridgeUrlFlow.first()
         Log.i(TAG, "Auto-connect: savedUrl=$savedUrl")
         if (savedUrl != null) {
             connection.autoConnect(savedUrl)
-            // Wait for connection or timeout
             delay(5000)
+        }
+        // Try localhost (adb reverse USB connection) before mDNS
+        if (connection.status.value != ConnectionStatus.CONNECTED) {
+            Log.i(TAG, "Trying localhost:9120 (USB)...")
+            connection.connect("ws://127.0.0.1:9120")
+            delay(3000)
         }
         // If still disconnected, try mDNS discovery with daemon grace period
         if (connection.status.value != ConnectionStatus.CONNECTED) {
@@ -216,6 +227,7 @@ fun EinkMonitorScreen(
                     EinkAgentPanel(
                         state = state,
                         onSettingsClick = { showSettings = true },
+                        displayPrefs = displayPrefs,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -300,6 +312,7 @@ fun EinkMonitorScreen(
                 timelineEntries = timelineEntries,
                 metrics = metrics,
                 connection = connection,
+                displayPrefs = displayPrefs,
                 onSettingsClick = { showSettings = true },
             )
         }
@@ -603,6 +616,7 @@ private fun EinkPortraitLayout(
     timelineEntries: List<dev.agentdeck.state.TimelineEntry>,
     metrics: dev.agentdeck.state.MetricsSnapshot,
     connection: BridgeConnection,
+    displayPrefs: DisplayPreferences,
     onSettingsClick: () -> Unit,
 ) {
     val terrariumState by remember { derivedStateOf { state.toTerrariumState() } }
@@ -614,7 +628,7 @@ private fun EinkPortraitLayout(
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header: logo + primary agent + state + settings gear
-        EinkPortraitHeader(state = state, onSettingsClick = onSettingsClick)
+        EinkPortraitHeader(state = state, displayPrefs = displayPrefs, onSettingsClick = onSettingsClick)
 
         HorizontalDivider(thickness = 2.dp, color = Color.Black)
 
@@ -695,8 +709,13 @@ private fun EinkPortraitLayout(
 @Composable
 private fun EinkPortraitHeader(
     state: dev.agentdeck.state.DashboardState,
+    displayPrefs: DisplayPreferences,
     onSettingsClick: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    val currentOrientation by displayPrefs.orientationFlow.collectAsState(
+        initial = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    )
     // Build agent list — same logic as EinkAgentPanel
     data class AgentEntry(
         val projectName: String,
@@ -762,6 +781,23 @@ private fun EinkPortraitHeader(
                 )
                 Spacer(modifier = Modifier.padding(horizontal = 4.dp))
             }
+            Icon(
+                imageVector = Icons.Default.ScreenRotation,
+                contentDescription = "Rotate screen",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(16.dp)
+                    .clickable {
+                        scope.launch {
+                            val newOrientation = if (currentOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            else
+                                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                            displayPrefs.setOrientation(newOrientation)
+                        }
+                },
+            )
+            Spacer(modifier = Modifier.padding(horizontal = 4.dp))
             Text(
                 text = "\u2699 Settings",
                 style = MaterialTheme.typography.bodyMedium,

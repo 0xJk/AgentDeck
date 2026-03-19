@@ -134,42 +134,35 @@ fun EinkTerrariumView(
     val isAnimating = state.octopus != OctopusVisualState.SLEEPING ||
         state.crayfish != CrayfishVisualState.DORMANT
 
-    // Unified animation loop — handles both periodic frames and state-change renders.
-    // Color e-ink (Kaleido 3): disable animation loop entirely. CFA color mapping
-    // triggers visible flicker on every frame. Render static scene on state changes only.
-    // B&W e-ink: normal 2.5fps animation loop.
+    // Animation loop — platform-specific:
+    // B&W e-ink: 2.5fps full animation (400ms).
+    // Color Kaleido: slow 0.4fps (2500ms) — only fish/seaweed move.
+    //   RKCFA diffs frames; small changes (<1% pixels) use fast partial refresh
+    //   instead of full CFA re-processing, minimizing flicker.
     LaunchedEffect(isAnimating) {
-        if (!isAnimating || einkColorEnabled) {
-            // Static render: once with full dither (B&W) or color
+        if (!isAnimating) {
+            // Static state: render once
             val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
                 .also { reusableBitmap = it }
-            // Color e-ink: advance fish positions once for a natural static scene
-            if (einkColorEnabled && isAnimating) {
-                val s = currentState
-                val streaming = s.tetra == TetraVisualState.STREAMING
-                val agentSlots = dev.agentdeck.terrarium.layoutOctopuses(s.agents.size.coerceAtLeast(1))
-                fishSchool.update(streaming, agentSlots, s.crayfish == CrayfishVisualState.ROUTING)
-            }
             renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, 0, bmp, fishSchool = fishSchool)
             hostView.postInvalidate()
             onFrameRendered?.invoke(false)
             return@LaunchedEffect
         }
+        val frameInterval = if (einkColorEnabled) 5000L else EINK_ANIM_FRAME_MS
         while (isActive) {
             val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
                 .also { reusableBitmap = it }
             animFrame = (animFrame + 1) % EINK_ANIM_CYCLE
-            // Advance boids simulation before rendering
             val s = currentState
             val streaming = s.tetra == TetraVisualState.STREAMING
             val agentSlots = dev.agentdeck.terrarium.layoutOctopuses(s.agents.size.coerceAtLeast(1))
             fishSchool.update(streaming, agentSlots, s.crayfish == CrayfishVisualState.ROUTING)
-            // skipDither=true: all colors are pre-quantized grays, AA is off.
-            // Saves ~100-200ms per frame on RK3566.
-            renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, animFrame, bmp, skipDither = true, fishSchool = fishSchool)
+            renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, animFrame, bmp,
+                skipDither = einkColorEnabled, fishSchool = fishSchool)
             hostView.postInvalidate()
             onFrameRendered?.invoke(true)
-            delay(EINK_ANIM_FRAME_MS)
+            delay(frameInterval)
         }
     }
 
@@ -228,6 +221,27 @@ private fun renderEinkFrame(
 
     // Water background — entire frame is the aquarium (no inner border)
     canvas.drawColor(einkPick(GRAY_WATER_BG, COLOR_WATER_BG))
+
+    // Color e-ink: ukiyo-e style water depth lines for paper-print texture
+    if (einkColorEnabled) {
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.0f
+        val waveColor = 0xFF7AAAC0.toInt()  // slightly darker than water bg
+        paint.color = waveColor
+        for (i in 1..5) {
+            val lineY = height * (0.15f + i * 0.12f)
+            val wavePath = android.graphics.Path().apply {
+                moveTo(0f, lineY)
+                var x = 0f
+                while (x <= width) {
+                    val y = lineY + kotlin.math.sin((x * 0.015f + i * 0.8f).toDouble()).toFloat() * 2.5f
+                    lineTo(x, y)
+                    x += 3f
+                }
+            }
+            canvas.drawPath(wavePath, paint)
+        }
+    }
 
     // Water surface — flat air region above water line, wave only on the boundary
     val creatureFrame = animFrame % 4
@@ -1366,9 +1380,14 @@ object EinkRefreshHelper {
     private const val RK_EPD_A2 = "12"
     private const val RK_EPD_DU = "14"
 
-    /** Full GC16 refresh — 16-level grayscale, full flash. */
+    /** Full GC16 refresh — 16-level grayscale, full flash (B&W) or system-managed (color). */
     fun requestFullRefresh(view: View) {
-        // Rockchip RK3566: EinkManager.sendOneFullFrame() forces GC16 full refresh
+        // Color Kaleido: let RKCFA handle — no manual EPD commands
+        if (einkColorEnabled) {
+            view.invalidate()
+            return
+        }
+        // B&W e-ink: full GC16 with flash for crisp ghosting-free update
         if (tryRockchipRefresh(view, RK_EPD_FULL_GC16, sendFullFrame = true)) return
 
         try {
@@ -1406,10 +1425,18 @@ object EinkRefreshHelper {
         view.invalidate()
     }
 
-    /** GC16 partial refresh without full-screen flash — for animation frames. */
+    /** Animation refresh — platform-specific:
+     *  B&W e-ink: GC16 partial (16-gray, no flash).
+     *  Color Kaleido: no EPD commands — let RKCFA hardware compositor decide.
+     *    Manual EPD mode commands conflict with RKCFA's auto-detection.
+     *    System default produces smoothest results on Kaleido.
+     */
     fun requestAnimationRefresh(view: View) {
+        if (einkColorEnabled) {
+            view.invalidate()
+            return
+        }
         if (tryRockchipRefresh(view, RK_EPD_FULL_GC16, sendFullFrame = false)) return
-        // Onyx/fallback: standard invalidate
         view.invalidate()
     }
 
@@ -1509,33 +1536,41 @@ internal val einkColorEnabled: Boolean by lazy {
 /** Pick gray or color constant based on display capability. */
 private inline fun einkPick(gray: Int, color: Int): Int = if (einkColorEnabled) color else gray
 
-// Octopus — terracotta (brand color #C07058)
-private val COLOR_OCTO_BODY    = 0xFFC07058.toInt()  // terracotta body
+// Warm earth-tone palette for Kaleido 3 — "printed illustration" aesthetic
+// Light water background for creature visibility, warm earth tones for paper feel.
+// Kaleido CFA adds greenish tint — warm palette compensates.
+
+// Water — light blue-teal (creatures must be clearly visible against this)
+private val COLOR_WATER_BG     = 0xFF8BBAD0.toInt()  // soft sky-blue water
+private val COLOR_AIR          = 0xFFE8DCC8.toInt()  // warm cream above surface
+
+// Sand — warm ochre
+private val COLOR_SAND         = 0xFFD4B896.toInt()  // golden sand
+private val COLOR_GRAVEL       = 0xFFB09870.toInt()  // sand shadow/gravel
+private val COLOR_PEBBLE       = 0xFF9A8860.toInt()  // pebble
+
+// Environment — muted natural greens and browns
+private val COLOR_SEAWEED      = 0xFF3B7B4A.toInt()  // forest green
+private val COLOR_GRASS        = 0xFF4A8B52.toInt()  // slightly lighter green
+private val COLOR_ROCK         = 0xFF6A6055.toInt()  // warm brown
+
+// Octopus — terracotta (brand, high contrast against light water)
+private val COLOR_OCTO_BODY    = 0xFFC07058.toInt()  // terracotta body (brand color)
 private val COLOR_OCTO_LIMB    = 0xFF8B4513.toInt()  // saddle brown limbs
-private val COLOR_OCTO_SLEEP   = 0xFFA09080.toInt()  // muted tan (sleeping)
+private val COLOR_OCTO_SLEEP   = 0xFFB0A090.toInt()  // muted warm sleep
 
-// Crayfish — red
-private val COLOR_CRAY_BODY    = 0xFFCC3333.toInt()  // vivid red body
+// Crayfish — vivid red (high contrast)
+private val COLOR_CRAY_BODY    = 0xFFCC3333.toInt()  // vivid red
 private val COLOR_CRAY_CLAW    = 0xFF991111.toInt()  // dark red claws
-private val COLOR_CRAY_SICK    = 0xFF998877.toInt()  // desaturated olive (sick)
-private val COLOR_CRAY_SIGNAL  = 0xFF00AAAA.toInt()  // teal signal arcs
+private val COLOR_CRAY_SICK    = 0xFF998877.toInt()  // warm gray sick
+private val COLOR_CRAY_SIGNAL  = 0xFF2A8B6E.toInt()  // teal signals
 
-// Fish — blue/cyan neon tetra
+// Fish — distinct against light water
 private val COLOR_FISH_BODY    = 0xFF3366AA.toInt()  // royal blue body
-private val COLOR_FISH_STRIPE  = 0xFF55CCEE.toInt()  // cyan neon stripe
-
-// Environment
-private val COLOR_WATER_BG     = 0xFFC8DDE8.toInt()  // pale blue water
-private val COLOR_AIR          = 0xFFE8EEF0.toInt()  // very pale sky
-private val COLOR_SAND         = 0xFFD4B896.toInt()  // sandy beige
-private val COLOR_SEAWEED      = 0xFF336633.toInt()  // dark green
-private val COLOR_GRASS        = 0xFF447744.toInt()  // green
-private val COLOR_ROCK         = 0xFF887766.toInt()  // brown-gray
-private val COLOR_GRAVEL       = 0xFF998866.toInt()  // light brown
-private val COLOR_PEBBLE       = 0xFFAA9977.toInt()  // tan
-private val COLOR_BUBBLE       = 0xFFAADDEE.toInt()  // light blue
+private val COLOR_FISH_STRIPE  = 0xFFD4A040.toInt()  // golden neon stripe
 
 // Effects
-private val COLOR_STARBURST    = 0xFFDDAA44.toInt()  // amber/gold working glow
-private val COLOR_PARTICLE     = 0xFF55AACC.toInt()  // data particle cyan
+private val COLOR_BUBBLE       = 0xFFD8E8F0.toInt()  // light blue bubbles
+private val COLOR_STARBURST    = 0xFFDDAA44.toInt()  // golden working glow
+private val COLOR_PARTICLE     = 0xFF55AACC.toInt()  // cyan particles
 

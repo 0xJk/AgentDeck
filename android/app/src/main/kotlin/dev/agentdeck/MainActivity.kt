@@ -48,6 +48,8 @@ class MainActivity : ComponentActivity() {
 
         // E-ink: immersive fullscreen — hide status bar and navigation bar
         if (isEinkDevice) {
+            @Suppress("DEPRECATION")
+            window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
             hideSystemBars()
         }
 
