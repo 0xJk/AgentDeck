@@ -57,18 +57,16 @@ jobs:
           mkdir -p ~/private_keys
           echo -n "$ASC_API_KEY_BASE64" | base64 --decode -o ~/private_keys/AuthKey_${ASC_API_KEY_ID}.p8
 
-      - name: Download provisioning profile
+      - name: Install provisioning profile
         env:
-          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
-          # Use xcodebuild to download provisioning profiles via API key
+          PP_PATH=$RUNNER_TEMP/profile.mobileprovision
+          echo -n "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode -o $PP_PATH
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          xcodebuild -downloadAllPlatforms \
-            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_API_KEY_ID}.p8 \
-            -authenticationKeyID $ASC_API_KEY_ID \
-            -authenticationKeyIssuerID $ASC_ISSUER_ID \
-            2>/dev/null || true
+          UUID=$(security cms -D -i $PP_PATH | plutil -extract UUID raw -)
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+          echo "Installed profile: $UUID"
 
       - name: Archive iOS
         run: |
