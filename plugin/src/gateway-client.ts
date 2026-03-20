@@ -24,10 +24,10 @@ import {
   OPENCLAW_GATEWAY_PORT,
 } from '@agentdeck/shared';
 import type { StateUpdateEvent, ModelCatalogEntry, OcSessionStatus } from '@agentdeck/shared';
-import { augmentedPath, resolveOpenClawBin, cleanDetailText } from '@agentdeck/shared';
+import { augmentedPath, resolveOpenClawBin, cleanDetailText, cleanRawText, cleanNopMarkers } from '@agentdeck/shared';
 import type { AgentLink } from './agent-link.js';
 import { timelineStore, type TimelineEntry } from './timeline-store.js';
-import { summarizeResponse } from './timeline-summarizer.js';
+import { summarizeResponse, extractTopicHint } from './timeline-summarizer.js';
 import { logStream } from './log-stream.js';
 import { dlog, dinfo, dwarn, derr } from './log.js';
 
@@ -589,7 +589,7 @@ export class GatewayClient extends EventEmitter implements AgentLink {
               this.accumulatedResponse = deltaText || '';
               const prompt = this.lastPrompt
                 ? this.lastPrompt.length > 150 ? this.lastPrompt.slice(0, 147) + '...' : this.lastPrompt
-                : 'Prompt sent';
+                : '자동 작업';
               const promptDetail = this.lastPrompt && this.lastPrompt.length > 100
                 ? (this.lastPrompt.length > 1000 ? this.lastPrompt.slice(0, 997) + '...' : this.lastPrompt) : undefined;
               this.addTimelineEntry({
@@ -605,18 +605,13 @@ export class GatewayClient extends EventEmitter implements AgentLink {
 
               // Early topic extraction — upsert chat_start with topic from first response chunk
               if (!this.topicExtracted && this.accumulatedResponse.length > 20) {
-                if (!this.lastPrompt || this.lastPrompt === 'Prompt sent') {
-                  const firstLine = this.accumulatedResponse.split('\n')[0].trim();
-                  const topicHint = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
-                  const cleaned = topicHint
-                    .replace(/^(완료했습니다\.\s*|네,?\s*|알겠습니다\.\s*|확인했습니다\.\s*)/i, '')
-                    .replace(/^(\*\*|#{1,3}\s*)/g, '')
-                    .trim();
-                  if (cleaned && !this._receivingBridgeTimeline) {
+                if (!this.lastPrompt || this.lastPrompt === '자동 작업') {
+                  const topicHint = extractTopicHint(this.accumulatedResponse);
+                  if (topicHint && !this._receivingBridgeTimeline) {
                     this.topicExtracted = true;
                     const idx = timelineStore.findLastIndex('chat_start');
                     if (idx >= 0) {
-                      timelineStore.updateEntryRaw(idx, cleaned);
+                      timelineStore.updateEntryRaw(idx, cleanRawText(topicHint));
                     }
                   }
                 }
@@ -639,13 +634,14 @@ export class GatewayClient extends EventEmitter implements AgentLink {
             const finalText = this.extractMessageText(payload);
             const responseContent = (finalText && finalText.length > 10 ? finalText : undefined)
               || (this.accumulatedResponse.length > 10 ? this.accumulatedResponse : undefined);
-            const cleanedResponse = responseContent ? cleanDetailText(responseContent) : undefined;
+            const cleanedResponse = responseContent ? cleanNopMarkers(cleanDetailText(responseContent)) : undefined;
             const responseDetail = cleanedResponse && cleanedResponse.length > 10
               ? (cleanedResponse.length > 1000 ? cleanedResponse.slice(0, 997) + '...' : cleanedResponse)
               : undefined;
 
             // Emit chat_end summary (response content folded into detail)
-            const parts: string[] = ['Completed'];
+            const heuristicLabel = (responseContent && extractTopicHint(responseContent)) || 'Completed';
+            const parts: string[] = [heuristicLabel];
             if (elapsed > 0) parts.push(elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`);
             if (toolSummary) parts.push(toolSummary);
             const chatEndTs = Date.now();

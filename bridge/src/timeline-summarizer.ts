@@ -7,6 +7,7 @@
  */
 
 import { debug } from './logger.js';
+import { cleanRawText } from '@agentdeck/shared';
 
 const MLX_URL = 'http://127.0.0.1:8800/chat/completions';
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
@@ -93,12 +94,9 @@ export function extractTopicHint(text: string): string | null {
     if (/^#{1,6}\s*$/.test(line)) continue;
 
     // Strip markdown decorators for evaluation
-    const stripped = line
-      .replace(/^#{1,6}\s+/, '')
-      .replace(/^\*\*([^*]+)\*\*$/, '$1')
+    const stripped = cleanRawText(line)
       .replace(/^[-*]\s+/, '')
       .replace(/^>\s+/, '')
-      .replace(/`([^`]+)`/g, '$1')
       .trim();
 
     if (stripped.length >= 3) {

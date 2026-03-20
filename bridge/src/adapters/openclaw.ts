@@ -7,7 +7,7 @@ import { createPublicKey, createPrivateKey, sign as cryptoSign, randomUUID } fro
 import WebSocket from 'ws';
 import { debug } from '../logger.js';
 import { summarizeResponse, extractTopicHint } from '../timeline-summarizer.js';
-import { cleanDetailText } from '@agentdeck/shared';
+import { cleanDetailText, cleanRawText, cleanNopMarkers } from '@agentdeck/shared';
 import type {
   AgentAdapter,
   AgentCapabilities,
@@ -210,8 +210,8 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
             reject(err);
           }
         });
-        this.httpServer.listen(options.port, '0.0.0.0', () => {
-          debug('adapter:openclaw', `HTTP server listening on 0.0.0.0:${options.port}`);
+        this.httpServer.listen(options.port, '127.0.0.1', () => {
+          debug('adapter:openclaw', `HTTP server listening on 127.0.0.1:${options.port}`);
           resolve();
         });
       });
@@ -668,7 +668,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
               this.chatToolNames = [];
               this.topicExtracted = false;
               this.accumulatedResponse = deltaText || '';
-              const prompt = this.lastPrompt || 'Prompt sent';
+              const prompt = this.lastPrompt || '자동 작업';
               const promptRaw = prompt.length > 500 ? prompt.slice(0, 497) + '...' : prompt;
               const promptDetail = prompt.length > 100 ? (prompt.length > 1000 ? prompt.slice(0, 997) + '...' : prompt) : undefined;
               this.emitTimelineEntry({
@@ -684,11 +684,11 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
               // Early topic extraction — upsert chat_start with topic hint
               if (!this.topicExtracted && this.accumulatedResponse.length > 20) {
                 const topicHint = extractTopicHint(this.accumulatedResponse);
-                if (topicHint && (!this.lastPrompt || this.lastPrompt === 'Prompt sent')) {
+                if (topicHint && (!this.lastPrompt || this.lastPrompt === '자동 작업')) {
                   this.topicExtracted = true;
                   this.emitTimelineUpsert({
                     ts: this.chatStartTime, type: 'chat_start',
-                    raw: topicHint,
+                    raw: cleanRawText(topicHint),
                   });
                 }
               }
@@ -712,13 +712,14 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
               || (this.accumulatedResponse || undefined);
 
             // Build response detail (folded into chat_end instead of separate chat_response)
-            const cleanedResponse = responseContent ? cleanDetailText(responseContent) : undefined;
+            const cleanedResponse = responseContent ? cleanNopMarkers(cleanDetailText(responseContent)) : undefined;
             const responseDetail = cleanedResponse
               ? (cleanedResponse.length > 1000 ? cleanedResponse.slice(0, 997) + '...' : cleanedResponse)
               : undefined;
 
             // Emit chat_end with heuristic summary, then async LLM enrichment
-            const parts = ['Completed'];
+            const heuristicLabel = (responseContent && extractTopicHint(responseContent)) || 'Completed';
+            const parts = [heuristicLabel];
             if (duration > 0) parts.push(`${duration}s`);
             if (toolSummary) parts.push(toolSummary);
             const chatEndTs = Date.now();

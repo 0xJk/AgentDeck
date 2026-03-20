@@ -16,6 +16,7 @@ export interface TimelineEntry {
   approvalId?: string;
   status?: 'pending' | 'approved' | 'denied';
   agentType?: string;
+  repeatCount?: number;
 }
 
 /**
@@ -120,6 +121,125 @@ export function cleanDetailText(text: string): string {
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
 
   return cleaned.trim();
+}
+
+/**
+ * Strip inline markdown from raw text (lightweight version of cleanDetailText).
+ * Handles: **bold**, # heading, `code`, [text](url).
+ */
+export function cleanRawText(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .trim();
+}
+
+/**
+ * Remove NOP/NOOP markers from text.
+ * Applied to both raw and detail fields.
+ */
+export function cleanNopMarkers(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/\bN[Oo][Oo]?[Pp]\b\s*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Extract the semantic core of a timeline entry for dedup comparison.
+ * For chat_end: strip duration/tool suffix (everything after first ' · ').
+ * For chat_start: use full raw text.
+ */
+export function extractSemanticCore(raw: string, type: TimelineEntryType): string {
+  if (type === 'chat_end') {
+    const sepIdx = raw.indexOf(' \u00b7 ');
+    return sepIdx >= 0 ? raw.slice(0, sepIdx).trim() : raw.trim();
+  }
+  return raw.trim();
+}
+
+/**
+ * Normalize a semantic core for fuzzy comparison.
+ * Extracts sorted unique keywords, stripping punctuation and common suffixes.
+ * "WhatsApp 연결 상태 확인 완료, 정상 작동" → "whatsapp 연결 상태 완료 작동 정상 확인"
+ */
+function normalizeCore(core: string): string {
+  return core
+    .toLowerCase()
+    .replace(/[.,!?·✓✅:…""''`\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Extract a keyword bag from text for similarity comparison.
+ * Strips Korean verb/adjective endings and common fillers.
+ */
+function extractKeywords(text: string): Set<string> {
+  const normalized = normalizeCore(text);
+  const words = normalized.split(' ').filter(w => w.length >= 2);
+
+  // Strip common Korean verbal endings for stemming
+  const stemmed = words.map(w =>
+    w.replace(/(하겠습니다|합니다|합니다|한다|시작|완료|중|확인됨|됨|했습니다)$/, '')
+     .replace(/(을|를|이|가|의|에|에서|으로|로|는|은|도|만|까지)$/, '')
+  ).filter(w => w.length >= 2);
+
+  // Remove common filler words
+  const fillers = new Set(['시작', '완료', '중', '및', '조치', '불필요', '정상', 'completed', 'prompt', 'sent', 'noop', 'nop']);
+  return new Set(stemmed.filter(w => !fillers.has(w)));
+}
+
+/**
+ * Check if two semantic cores are similar enough to be considered duplicates.
+ * Uses keyword overlap — if 60%+ of smaller keyword set overlaps, it's a dupe.
+ */
+function isSimilarCore(a: string, b: string): boolean {
+  const na = normalizeCore(a);
+  const nb = normalizeCore(b);
+  if (na === nb) return true;
+
+  // Keyword-based similarity
+  const ka = extractKeywords(a);
+  const kb = extractKeywords(b);
+  if (ka.size === 0 || kb.size === 0) return false;
+
+  const smaller = ka.size <= kb.size ? ka : kb;
+  const larger = ka.size > kb.size ? ka : kb;
+  let overlap = 0;
+  for (const w of smaller) {
+    if (larger.has(w)) overlap++;
+  }
+
+  // 60% overlap of the smaller set → similar
+  return overlap >= smaller.size * 0.6 && overlap >= 2;
+}
+
+/**
+ * Check if an entry is repetitive compared to recent entries.
+ * Returns the index of the matching entry in recentEntries, or -1 if not repetitive.
+ */
+export function isRepetitiveEntry(
+  entry: TimelineEntry,
+  recentEntries: readonly TimelineEntry[],
+  windowMs = 3_600_000,
+): number {
+  if (entry.type !== 'chat_end' && entry.type !== 'chat_start') return -1;
+  const core = extractSemanticCore(entry.raw, entry.type);
+  if (!core) return -1;
+
+  for (let i = recentEntries.length - 1; i >= 0; i--) {
+    const e = recentEntries[i];
+    if (entry.ts - e.ts > windowMs) break;
+    if (e.type !== entry.type) continue;
+    const eCore = extractSemanticCore(e.raw, e.type);
+    if (isSimilarCore(core, eCore)) return i;
+  }
+  return -1;
 }
 
 /** Parse a single JSON log line into a TimelineEntry, or null if unrecognized. */

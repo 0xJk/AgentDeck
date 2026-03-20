@@ -3,6 +3,8 @@
  * Tries MLX qwen → heuristic fallback. Ollama skipped to keep plugin lean.
  */
 
+import { cleanRawText } from '@agentdeck/shared';
+
 const MLX_URL = 'http://127.0.0.1:8800/chat/completions';
 const TIMEOUT_MS = 15_000;
 const MAX_INPUT_CHARS = 2000;
@@ -75,4 +77,39 @@ function cleanOutput(content: string): string | null {
   if (!cleaned || cleaned.length < 3) return null;
   if (cleaned.length > 80) cleaned = cleaned.slice(0, 77) + '...';
   return cleaned;
+}
+
+/**
+ * Extract a topic hint from the first few tokens of a response.
+ * Used for immediate chat_start enrichment before LLM summarization.
+ */
+export function extractTopicHint(text: string): string | null {
+  if (!text || text.length < 5) return null;
+
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+  let candidate: string | null = null;
+  let inCodeFence = false;
+  for (const line of lines) {
+    if (/^```/.test(line)) { inCodeFence = !inCodeFence; continue; }
+    if (inCodeFence) continue;
+    if (/^#{1,6}\s*$/.test(line)) continue;
+
+    const stripped = cleanRawText(line)
+      .replace(/^[-*]\s+/, '')
+      .replace(/^>\s+/, '')
+      .trim();
+
+    if (stripped.length >= 3) { candidate = stripped; break; }
+  }
+
+  if (!candidate) return null;
+  const snippet = candidate.length > 80 ? candidate.slice(0, 77) + '...' : candidate;
+
+  let cleaned = snippet;
+  cleaned = cleaned.replace(/^네[,.]?\s*/i, '');
+  cleaned = cleaned.replace(/^(완료했습니다\.\s*|알겠습니다\.\s*|확인했습니다\.\s*)/i, '');
+  cleaned = cleaned.trim();
+
+  return cleaned || null;
 }

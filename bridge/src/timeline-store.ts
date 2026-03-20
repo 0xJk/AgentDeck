@@ -5,6 +5,7 @@
  */
 
 import type { TimelineEntry } from './types.js';
+import { isRepetitiveEntry, cleanRawText, cleanNopMarkers } from '@agentdeck/shared';
 
 type EntryListener = (entry: TimelineEntry, upsert?: boolean) => void;
 
@@ -15,12 +16,40 @@ export class BridgeTimelineStore {
   private listeners: EntryListener[] = [];
 
   addEntry(entry: TimelineEntry): void {
+    // Clean text artifacts (markdown, NOP markers) at store level
+    if (entry.raw) entry = { ...entry, raw: cleanNopMarkers(cleanRawText(entry.raw)) };
+    if (entry.detail) entry = { ...entry, detail: cleanNopMarkers(entry.detail) };
+
     // Dedup: skip if same type + raw within 5 seconds
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const e = this.entries[i];
       if (entry.ts - e.ts > 5_000) break;
       if (e.type === entry.type && e.raw === entry.raw) return;
     }
+
+    // Repetitive entry dedup (10min window) — merge into existing entry
+    const repIdx = isRepetitiveEntry(entry, this.entries);
+    if (repIdx >= 0) {
+      const existing = this.entries[repIdx];
+      existing.repeatCount = (existing.repeatCount || 1) + 1;
+      existing.ts = entry.ts;
+      // For chat_end dedup, also remove the paired chat_start if it's also repetitive
+      if (entry.type === 'chat_end') {
+        for (let j = this.entries.length - 1; j >= 0; j--) {
+          const cs = this.entries[j];
+          if (cs.type !== 'chat_start') continue;
+          if (entry.ts - cs.ts > 3_600_000) break;
+          // Only remove if this chat_start is itself repetitive (has a matching earlier one)
+          if (isRepetitiveEntry(cs, this.entries.slice(0, j)) >= 0) {
+            this.entries.splice(j, 1);
+            break;
+          }
+        }
+      }
+      for (const cb of this.listeners) cb(existing, true);
+      return;
+    }
+
     this.entries.push(entry);
     if (this.entries.length > MAX_ENTRIES) {
       this.entries.shift();
