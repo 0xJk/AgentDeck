@@ -8,7 +8,7 @@
  * 4. Transcribe via whisper-server
  * 5. Route to OpenClaw Gateway (or Claude Code) via adapter
  * 6. Receive response text
- * 7. Synthesize + play via Piper TTS
+ * 7. Synthesize + play via macOS say
  *
  * States: idle → listening → processing → speaking → idle
  */
@@ -190,6 +190,7 @@ export class VoiceAssistantManager extends EventEmitter {
 
   /** Feed LLM response text for TTS playback */
   async handleResponse(text: string): Promise<void> {
+    log(`handleResponse called (state=${this.state}, text=${text.length} chars): "${text.slice(0, 80)}..."`);
     if (this.state !== 'processing') {
       debug(TAG, `Ignoring response in state ${this.state}`);
       return;
@@ -253,8 +254,10 @@ export class VoiceAssistantManager extends EventEmitter {
     // Pause wake word detection to avoid self-triggering
     this.wakeWord.pause();
 
-    // Start recording user speech
-    this.startRecording();
+    // CoreAudio device release delay — PvRecorder.stop() releases the audio
+    // device asynchronously. Starting rec immediately can cause device contention
+    // resulting in corrupted/empty audio capture.
+    setTimeout(() => this.startRecording(), 300);
   }
 
   private startRecording(): void {
@@ -373,12 +376,25 @@ export class VoiceAssistantManager extends EventEmitter {
     // Transcribe
     this.setState('processing');
     try {
-      const text = await this.opts.transcribeFile(this.audioFile);
-      debug(TAG, `Transcription: "${text}"`);
+      let text = await this.opts.transcribeFile(this.audioFile);
+      log(`Transcription result: "${text}" (${text?.length ?? 0} chars)`);
+
+      // Retry once on empty transcription — device contention may have
+      // corrupted the first ~200ms of audio. Re-record a short clip.
+      if ((!text || text.length < 2) && rms > SILENCE_RMS_THRESHOLD * 3) {
+        log('Empty transcription with strong RMS — retrying recording');
+        this.cleanupAudio();
+        await this.retryRecording();
+        if (this.audioFile && existsSync(this.audioFile)) {
+          text = await this.opts.transcribeFile(this.audioFile);
+          log(`Retry transcription: "${text}" (${text?.length ?? 0} chars)`);
+        }
+      }
+
       this.cleanupAudio();
 
       if (!text || text.length < 2) {
-        debug(TAG, 'Empty transcription, returning to idle');
+        log('Empty transcription, returning to idle');
         this.setState('idle');
         this.wakeWord.resume();
         return;
@@ -391,17 +407,37 @@ export class VoiceAssistantManager extends EventEmitter {
       });
 
       // Send to agent
+      log(`Sending prompt to agent: "${text}"`);
       this.opts.sendPrompt(text);
 
       // Activity-aware timeout: 60s initial, reset on each activity
       this.resetResponseTimeout();
 
     } catch (err) {
-      debug(TAG, `Transcription error: ${err}`);
+      log(`Transcription error: ${err}`);
       this.cleanupAudio();
       this.setState('idle');
       this.wakeWord.resume();
     }
+  }
+
+  /** Re-record a short clip for retry (device should be fully available now) */
+  private async retryRecording(): Promise<void> {
+    this.audioFile = join(tmpdir(), `agentdeck-va-retry-${Date.now()}.wav`);
+    const retryDuration = 5; // seconds
+
+    return new Promise<void>((resolve) => {
+      const proc = spawn(this.recBin, [
+        '-r', '16000', '-c', '1', '-b', '16',
+        this.audioFile,
+        'trim', '0', String(retryDuration),
+      ], { stdio: ['ignore', 'ignore', 'ignore'] });
+
+      proc.on('exit', () => resolve());
+      proc.on('error', () => resolve());
+      // Safety timeout
+      setTimeout(() => { proc.kill('SIGINT'); }, (retryDuration + 1) * 1000);
+    });
   }
 
   private cancelRecording(): void {
