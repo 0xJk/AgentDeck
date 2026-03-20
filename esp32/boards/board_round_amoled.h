@@ -31,7 +31,9 @@
 #define BOARD_NATIVE_W       360   // Actual resolution (not 240!)
 #define BOARD_NATIVE_H       360
 
-// Audio (I2S PDM — speaker + microphone)
-#define BOARD_HAS_AUDIO      1
-#define BOARD_PIN_I2S_LRCLK  45
-#define BOARD_PIN_I2S_DIN    46
+// Audio: NO hardware — MEMS mic/codec chip not populated on this board.
+// GPIOs 45/46 are exposed on header but no I2S peripheral is connected.
+// 3.5mm jack (if present) is for antenna/serial debug, NOT audio.
+// #define BOARD_HAS_AUDIO      1
+// #define BOARD_PIN_I2S_LRCLK  45
+// #define BOARD_PIN_I2S_DIN    46

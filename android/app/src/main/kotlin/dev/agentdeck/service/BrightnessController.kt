@@ -9,13 +9,12 @@ import android.util.Log
 /**
  * Controls display brightness/timeout in response to host display sleep events.
  *
- * LCD tablets: Forces manual brightness mode, sets brightness to 0, then
- * SCREEN_OFF_TIMEOUT to 2s so the backlight turns off completely.
- * On wake: restores timeout first, sends WAKEUP, then restores brightness + mode.
+ * LCD tablets: brightness→0, SCREEN_OFF_TIMEOUT→2s → screen turns off.
+ * On wake: restores timeout, wakes screen, restores brightness + mode.
  *
- * E-ink devices: Turns off frontlight via sysfs (/sys/class/backlight/{warm,white}).
- * Screen content remains visible in ambient light; system stays awake.
- * Saved frontlight values are persisted to disk so they survive app restarts.
+ * E-ink devices: sysfs /sys/class/backlight/{device}/brightness → 0.
+ * Works on Crema S (warm/white). Pantone 6 sysfs is SELinux-protected — dim skipped.
+ * Saved frontlight values are persisted to disk for crash recovery.
  */
 class BrightnessController(
     private val context: Context,
@@ -29,13 +28,23 @@ class BrightnessController(
         private const val PREFS_NAME = "brightness_controller"
         private const val PREF_DIMMED = "is_dimmed"
         private const val PREF_FRONTLIGHT_PREFIX = "frontlight_"
-        private val FRONTLIGHT_PATHS = listOf(
-            "/sys/class/backlight/warm/brightness",
-            "/sys/class/backlight/white/brightness",
+        private const val BACKLIGHT_BASE = "/sys/class/backlight"
+
+        /** Known sysfs frontlight device names across e-ink vendors. */
+        private val KNOWN_BACKLIGHT_DEVICES = listOf(
+            "warm", "white",                       // Crema S (RK3566 B&W)
+            "aw99703", "aw99703_sec",              // MOAAN Pantone 6 sysfs (not app-writable)
+            "rk_backlight",                        // Generic Rockchip
+            "backlight", "lcd-backlight",           // Common Android
         )
+
+        /** Derive a stable SharedPreferences key from path (parent dir name). */
+        private fun prefKeyForPath(path: String): String =
+            java.io.File(path).parentFile?.name ?: path.substringAfterLast('/')
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val frontlightPaths: List<String> = discoverFrontlightPaths()
     private var isDimmed = false
     private var savedBrightness: Int? = null
     private var savedBrightnessMode: Int? = null
@@ -46,35 +55,30 @@ class BrightnessController(
         // Recover from crash/restart while dimmed — restore frontlight from disk
         if (isEink && prefs.getBoolean(PREF_DIMMED, false)) {
             val saved = mutableMapOf<String, Int>()
-            for (path in FRONTLIGHT_PATHS) {
-                val key = PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/')
+            for (path in frontlightPaths) {
+                val key = PREF_FRONTLIGHT_PREFIX + prefKeyForPath(path)
                 val value = prefs.getInt(key, -1)
                 if (value >= 0) saved[path] = value
             }
             if (saved.isNotEmpty()) {
                 Log.i(TAG, "Recovering frontlight from previous crash: $saved")
                 saved.forEach { (path, value) ->
-                    try {
-                        java.io.File(path).writeText(value.toString())
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Cannot recover $path: ${e.message}")
-                    }
+                    try { java.io.File(path).writeText(value.toString()) }
+                    catch (e: Exception) { Log.w(TAG, "Cannot recover $path: ${e.message}") }
                 }
             }
             prefs.edit().putBoolean(PREF_DIMMED, false).apply()
         }
     }
 
-    /** Check if the app has WRITE_SETTINGS permission (required for LCD brightness control). */
     fun canWriteSettings(): Boolean = isEink || Settings.System.canWrite(context)
 
     fun dim() {
         if (isDimmed) return
 
         if (!isEink && !Settings.System.canWrite(context)) {
-            Log.w(TAG, "Cannot dim LCD — WRITE_SETTINGS permission not granted. " +
-                "Grant via: Settings > Apps > AgentDeck > Modify system settings, " +
-                "or: adb shell appops set ${context.packageName} WRITE_SETTINGS allow")
+            Log.w(TAG, "Cannot dim LCD — WRITE_SETTINGS not granted. " +
+                "Grant via: adb shell appops set ${context.packageName} WRITE_SETTINGS allow")
             return
         }
 
@@ -100,34 +104,29 @@ class BrightnessController(
 
     fun isDimmed(): Boolean = isDimmed
 
+    // ── LCD ─────────────────────────────────────────────────────────────
+
     private fun dimLcd() {
         try {
-            // Save current brightness mode (auto/manual)
             savedBrightnessMode = Settings.System.getInt(
                 contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
                 Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
             )
-            // Force manual mode so brightness=0 is respected
             Settings.System.putInt(
                 contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
                 Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
             )
-
-            // Save and set brightness to minimum
             savedBrightness = Settings.System.getInt(
                 contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128
             )
             Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, 0)
-
-            // Save screen-off timeout and set to 2s for full backlight off
             savedScreenOffTimeout = Settings.System.getInt(
                 contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 60_000
             )
             Settings.System.putInt(
                 contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, LCD_OFF_TIMEOUT_MS
             )
-
-            Log.i(TAG, "LCD dim: brightness ${savedBrightness}→0, mode ${savedBrightnessMode}→MANUAL, timeout ${savedScreenOffTimeout}→${LCD_OFF_TIMEOUT_MS}ms")
+            Log.i(TAG, "LCD dim: brightness ${savedBrightness}→0, timeout ${savedScreenOffTimeout}→${LCD_OFF_TIMEOUT_MS}ms")
         } catch (e: SecurityException) {
             Log.w(TAG, "Cannot dim LCD (no WRITE_SETTINGS): ${e.message}")
             savedBrightness = null
@@ -138,44 +137,15 @@ class BrightnessController(
 
     private fun restoreLcd() {
         try {
-            // Restore timeout first — prevents re-sleep after wake
             savedScreenOffTimeout?.let { timeout ->
-                Settings.System.putInt(
-                    contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, timeout
-                )
+                Settings.System.putInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, timeout)
             }
-
-            // Wake the screen (it may be off from the 2s timeout or deep Doze)
-            if (!powerManager.isInteractive) {
-                // Use PowerManager wake lock — more reliable than exec in Doze
-                @Suppress("DEPRECATION")
-                try {
-                    powerManager.newWakeLock(
-                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                        "AgentDeck:ScreenWake"
-                    ).acquire(3_000L)
-                    Log.d(TAG, "Acquired SCREEN_BRIGHT wake lock to wake LCD")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Wake lock failed, trying keyevent fallback: ${e.message}")
-                    try {
-                        Runtime.getRuntime().exec(arrayOf("input", "keyevent", "KEYCODE_WAKEUP"))
-                    } catch (e2: Exception) {
-                        Log.w(TAG, "KEYCODE_WAKEUP also failed: ${e2.message}")
-                    }
-                }
-            }
-
-            // Restore brightness
+            wakeScreen()
             val brightness = savedBrightness ?: 128
             Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, brightness)
-
-            // Restore brightness mode (auto/manual)
             savedBrightnessMode?.let { mode ->
-                Settings.System.putInt(
-                    contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, mode
-                )
+                Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, mode)
             }
-
             Log.i(TAG, "LCD restored: brightness=$brightness, mode=${savedBrightnessMode}, timeout=${savedScreenOffTimeout}")
         } catch (e: SecurityException) {
             Log.w(TAG, "Cannot restore LCD: ${e.message}")
@@ -185,56 +155,89 @@ class BrightnessController(
         savedScreenOffTimeout = null
     }
 
+    // ── E-ink ───────────────────────────────────────────────────────────
+
     private fun dimEink() {
-        // Save current frontlight values and turn off
         val saved = mutableMapOf<String, Int>()
-        for (path in FRONTLIGHT_PATHS) {
+        var sysfsWorked = false
+        for (path in frontlightPaths) {
             try {
                 val current = java.io.File(path).readText().trim().toIntOrNull() ?: continue
-                if (current == 0) continue // already off, don't save 0 as restore target
+                if (current == 0) continue
                 saved[path] = current
                 java.io.File(path).writeText("0")
-            } catch (e: Exception) {
-                Log.w(TAG, "Cannot write $path: ${e.message}")
-            }
+                sysfsWorked = true
+            } catch (_: Exception) {}
         }
+
         savedFrontlight = saved.ifEmpty { null }
+
         // Persist to disk for crash recovery
         prefs.edit().apply {
             putBoolean(PREF_DIMMED, true)
             saved.forEach { (path, value) ->
-                putInt(PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/'), value)
+                putInt(PREF_FRONTLIGHT_PREFIX + prefKeyForPath(path), value)
             }
         }.apply()
-        Log.i(TAG, "E-ink dim: frontlight ${saved.entries.joinToString { "${it.key.substringAfterLast('/')}=${it.value}→0" }}")
+
+        if (sysfsWorked) {
+            Log.i(TAG, "E-ink dim: sysfs OK, saved=${saved.size} values")
+        } else {
+            // Pantone 6: frontlight not app-controllable without root
+            Log.w(TAG, "E-ink dim: sysfs not writable — skipping (no app-level frontlight control)")
+        }
     }
 
     private fun restoreEink() {
         val toRestore = savedFrontlight ?: run {
-            // Fallback: load from disk (crash recovery path)
             val fromDisk = mutableMapOf<String, Int>()
-            for (path in FRONTLIGHT_PATHS) {
-                val key = PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/')
+            for (path in frontlightPaths) {
+                val key = PREF_FRONTLIGHT_PREFIX + prefKeyForPath(path)
                 val value = prefs.getInt(key, -1)
                 if (value > 0) fromDisk[path] = value
             }
             fromDisk.ifEmpty { null }
         }
         toRestore?.forEach { (path, value) ->
-            try {
-                java.io.File(path).writeText(value.toString())
-            } catch (e: Exception) {
-                Log.w(TAG, "Cannot restore $path: ${e.message}")
-            }
+            try { java.io.File(path).writeText(value.toString()) }
+            catch (e: Exception) { Log.w(TAG, "Cannot restore $path: ${e.message}") }
         }
         // Clear disk state
         prefs.edit().apply {
             putBoolean(PREF_DIMMED, false)
-            FRONTLIGHT_PATHS.forEach { path ->
-                remove(PREF_FRONTLIGHT_PREFIX + path.substringAfterLast('/'))
+            frontlightPaths.forEach { path ->
+                remove(PREF_FRONTLIGHT_PREFIX + prefKeyForPath(path))
             }
         }.apply()
-        Log.i(TAG, "E-ink restored: frontlight ${toRestore?.entries?.joinToString { "${it.key.substringAfterLast('/')}=${it.value}" } ?: "none"}")
+        Log.i(TAG, "E-ink restored: ${toRestore?.entries?.joinToString { "${prefKeyForPath(it.key)}=${it.value}" } ?: "nothing"}")
         savedFrontlight = null
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    /** Probe known sysfs backlight device paths. */
+    private fun discoverFrontlightPaths(): List<String> {
+        val found = KNOWN_BACKLIGHT_DEVICES
+            .map { "$BACKLIGHT_BASE/$it/brightness" }
+            .filter { path -> try { java.io.File(path).exists() } catch (_: Exception) { false } }
+        Log.i(TAG, "Discovered frontlight paths: $found")
+        return found
+    }
+
+    private fun wakeScreen() {
+        if (!powerManager.isInteractive) {
+            @Suppress("DEPRECATION")
+            try {
+                powerManager.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "AgentDeck:ScreenWake"
+                ).acquire(3_000L)
+                Log.d(TAG, "Acquired SCREEN_BRIGHT wake lock to wake screen")
+            } catch (e: Exception) {
+                Log.w(TAG, "Wake lock failed, trying KEYCODE_WAKEUP: ${e.message}")
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "KEYCODE_WAKEUP")) }
+                catch (e2: Exception) { Log.w(TAG, "KEYCODE_WAKEUP also failed: ${e2.message}") }
+            }
+        }
     }
 }

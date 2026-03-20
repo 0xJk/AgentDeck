@@ -275,7 +275,7 @@ private fun ModelInfoSection(
     val tightStyle = PlatformTextStyle(includeFontPadding = false)
     Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
         Text(
-            text = "MODEL",
+            text = "MODELS",
             color = TerrariumColors.HUDSubtext,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,

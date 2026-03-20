@@ -33,7 +33,7 @@ struct TankStatusPanel: View {
             // MODEL section
             if stateHolder.state.modelName != nil || !stateHolder.state.modelCatalog.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("MODEL")
+                    Text("MODELS")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundStyle(TerrariumHUD.subtext)
 

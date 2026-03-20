@@ -129,14 +129,19 @@ fun TabletDashboard(
     val currentUrl by connection.url.collectAsState()
     val context = LocalContext.current
 
-    // Auto-connect: saved URL first, then mDNS fallback
+    // Auto-connect: saved URL → localhost (USB) → mDNS (WiFi)
     LaunchedEffect(Unit) {
         val savedUrl = displayPrefs.lastBridgeUrlFlow.first()
         Log.i(TAG, "Auto-connect: savedUrl=$savedUrl")
         if (savedUrl != null) {
             connection.autoConnect(savedUrl)
-            // Wait for connection or timeout
             delay(5000)
+        }
+        // Try localhost (adb reverse USB connection) before mDNS
+        if (connection.status.value != ConnectionStatus.CONNECTED) {
+            Log.i(TAG, "Trying localhost:9120 (USB)...")
+            connection.connect("ws://127.0.0.1:9120")
+            delay(3000)
         }
         // If still disconnected, try mDNS discovery
         if (connection.status.value != ConnectionStatus.CONNECTED) {
@@ -156,13 +161,8 @@ fun TabletDashboard(
                 }
                 true
             }
-            // Phase 2: no daemon found within 4s — fall back to any bridge
-            if (foundDaemon == null && bestBridges.isNotEmpty() &&
-                connection.status.value != ConnectionStatus.CONNECTED) {
-                val bridge = bestBridges.first()
-                Log.i(TAG, "mDNS auto-connect (fallback): ${bridge.name} (agent=${bridge.agentType}) at ${bridge.wsUrl()}")
-                connection.connect(bridge.wsUrl())
-            }
+            // No non-daemon fallback — session bridges don't serve external clients.
+            // If daemon not found, stay disconnected and let user connect manually.
         }
     }
 
@@ -193,12 +193,7 @@ fun TabletDashboard(
                 }
                 true
             }
-            if (foundDaemon == null && bestBridges.isNotEmpty() &&
-                connection.status.value != ConnectionStatus.CONNECTED) {
-                val bridge = bestBridges.first()
-                Log.i(TAG, "Re-discover (fallback): ${bridge.name} at ${bridge.wsUrl()}")
-                connection.connect(bridge.wsUrl())
-            }
+            // No non-daemon fallback — daemon only
         }
     }
 

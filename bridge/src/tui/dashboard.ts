@@ -67,15 +67,11 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
     if (daemonPort) {
       targetPort = daemonPort;
     } else {
-      const sessions = listActive();
-      if (sessions.length === 0) {
-        process.stderr.write(
-          'No AgentDeck sessions running.\n' +
-          'Start with: agentdeck claude  or  agentdeck daemon start\n'
-        );
-        process.exit(1);
-      }
-      targetPort = sessions[0].port;
+      process.stderr.write(
+        'No AgentDeck daemon running.\n' +
+        'Start with: agentdeck daemon start\n'
+      );
+      process.exit(1);
     }
   }
 

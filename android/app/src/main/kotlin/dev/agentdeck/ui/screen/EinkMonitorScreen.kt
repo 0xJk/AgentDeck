@@ -153,8 +153,8 @@ fun EinkMonitorScreen(
                     }
                 }
             }
-            // Grace period expired without daemon — fall back to any bridge
-            if (foundDaemon == null && bestBridges.isNotEmpty() &&
+            // No non-daemon fallback — session bridges don't serve external clients.
+            if (false && foundDaemon == null && bestBridges.isNotEmpty() &&
                 connection.status.value != ConnectionStatus.CONNECTED) {
                 val bridge = bestBridges.first()
                 Log.i(TAG, "mDNS daemon not found, fallback: ${bridge.name} (agent=${bridge.agentType}) at ${bridge.wsUrl()}")

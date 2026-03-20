@@ -31,9 +31,6 @@ test-*.js
 # Runtime
 compatibility.json
 
-# Piper TTS runtime (binaries + espeak-ng data, install locally)
-piper/
-
 # Android signing
 android/signing.properties
 android/*.jks

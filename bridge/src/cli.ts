@@ -120,19 +120,6 @@ program
   });
 
 program
-  .command('codex')
-  .description('Start Codex CLI session (PTY + bridge) — coming soon')
-  .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
-  .option('-c, --command <cmd>', 'Command to spawn', 'codex')
-  .option('-d, --debug', 'Enable debug logging')
-  .option('--local', 'Disable all device modules')
-  .action(async (opts) => {
-    // Codex adapter not yet implemented — use generic PTY adapter when ready
-    log('Codex CLI adapter is not yet implemented. Coming soon.');
-    process.exit(1);
-  });
-
-program
   .command('monitor')
   .description('Start hook-only bridge (no PTY — run claude separately)')
   .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
@@ -308,20 +295,11 @@ program
   });
 
 program
-  .command('attach [session]')
-  .description('Attach to an existing session terminal')
-  .option('-p, --port <port>', 'Bridge server port')
-  .action(async (_session, opts) => {
-    log('Attach mode not yet implemented');
-    process.exit(1);
-  });
-
-program
-  .command('stop [session]')
+  .command('stop')
   .description('Stop a session or all sessions')
   .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
   .option('-a, --all', 'Stop all sessions')
-  .action(async (_session, opts) => {
+  .action(async (opts) => {
     const port = parseInt(opts.port, 10);
     if (opts.all) {
       const { listActive } = await import('./session-registry.js');

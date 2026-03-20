@@ -85,7 +85,7 @@ A **control surface** — like an audio mixing console, but for AI coding agents
 - **Quick actions** — GO ON / REVIEW / COMMIT / CLEAR; encoder cycles custom prompts
 - **System utilities** — volume, mic, media, timer from the Utility encoder
 - **Terminal sessions** — iTerm dial switches sessions, auto-attaches tmux
-- **Works from anywhere** — all 11 surfaces can monitor and control the agent independently
+- **Works from anywhere** — all 11 surfaces can monitor the agent; interactive surfaces (Stream Deck, Android, Apple) can also control it
 
 The bridge is transparent: if it's off, Claude Code works exactly as before.
 
@@ -144,7 +144,7 @@ Claude Code Hooks ─ HTTP ───►│  Output Parser → State Machine    �
                               └──────────────────────────────────┘
 ```
 
-The daemon is the sole hub for all dashboard clients. Session bridges handle PTY + hooks only. The daemon aggregates state from all sessions and broadcasts to all 11 surfaces. Local clients are auto-trusted; LAN clients authenticate with a token from `~/.agentdeck/auth-token`. All surfaces can monitor and control the agent independently or simultaneously.
+The daemon is the sole hub for all dashboard clients. Session bridges handle PTY + hooks only. The daemon aggregates state from all sessions and broadcasts to all 11 surfaces. Local clients are auto-trusted; LAN clients authenticate with a token from `~/.agentdeck/auth-token`. Interactive surfaces (Stream Deck, Android, Apple) can control the agent; monitoring surfaces (Pixoo, TUI, ESP32) display state.
 
 ---
 
@@ -244,9 +244,9 @@ See **[Voice Setup Guide](docs/voice-setup.md)** for full instructions including
 agentdeck claude
 ```
 
-This starts the bridge on port 9120 (HTTP + WebSocket), spawns Claude Code inside a PTY, and proxies your terminal transparently. Use Claude exactly as before — the Stream Deck adds a parallel control channel.
+This spawns Claude Code inside a PTY and starts a session bridge on a dynamic port (HTTP + hooks). Your terminal works exactly as before — the Stream Deck adds a parallel control channel. The **daemon** (port 9120, `0.0.0.0`) aggregates all sessions for external clients.
 
-> **Security:** The bridge binds to `0.0.0.0` for LAN access (multi-surface monitoring). Local connections bypass authentication. Remote connections require the auth token from `~/.agentdeck/auth-token`.
+> **Security:** The daemon binds to `0.0.0.0` for LAN access (multi-surface monitoring). Local connections bypass authentication. Remote connections require the auth token from `~/.agentdeck/auth-token`.
 
 ### CLI Reference
 
@@ -278,8 +278,7 @@ The CLI command is `agentdeck`.
 | Command | Description |
 |---------|-------------|
 | `agentdeck status` | All sessions + daemon status |
-| `agentdeck stop [session]` | Stop a session (`-a` for all) |
-| `agentdeck attach [session]` | Attach terminal to session |
+| `agentdeck stop` | Stop a session (`-a` for all, `-p` for specific port) |
 
 #### Monitoring
 
