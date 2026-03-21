@@ -98,7 +98,7 @@ program
   .option('--no-adb', 'Disable ADB reverse setup')
   .option('--no-serial', 'Disable ESP32 serial')
   .option('--no-pixoo', 'Disable Pixoo LED matrix')
-  .option('--no-postit', 'Disable terminal tab title/badge updates')
+  .option('--no-postit', 'Disable terminal tab title updates')
   .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
   .action(async (opts) => {
     const { startSession } = await import('./index.js');

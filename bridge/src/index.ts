@@ -19,7 +19,7 @@ import { BridgeLogStream } from './log-stream.js';
 import { extractTopicHint, summarizeResponse } from './timeline-summarizer.js';
 import { cleanDetailText } from '@agentdeck/shared';
 import { VoiceAssistantManager } from './voice-assistant.js';
-import { TerminalPostit } from './terminal-postit.js';
+import { TerminalStatus } from './terminal-status.js';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -308,9 +308,9 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   // ===== Display monitor =====
   core.wireDisplayMonitor();
 
-  // ===== Terminal post-it (tab title + badge) =====
+  // ===== Terminal status (tab title + user vars) =====
   const postit = opts.postit !== false && adapter.capabilities.hasTerminal
-    ? new TerminalPostit(process.stdout)
+    ? new TerminalStatus(process.stdout)
     : null;
 
   // Register process handlers early (before module init) so uncaughtException
