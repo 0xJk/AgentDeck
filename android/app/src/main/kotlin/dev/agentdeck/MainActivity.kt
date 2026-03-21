@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.lifecycleScope
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.BridgeConnection
+import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.ui.monitor.MonitorScreen
@@ -139,8 +140,8 @@ fun TabletDashboard(
         }
         // Try localhost (adb reverse USB connection) before mDNS
         if (connection.status.value != ConnectionStatus.CONNECTED) {
-            Log.i(TAG, "Trying localhost:9120 (USB)...")
-            connection.connect("ws://127.0.0.1:9120")
+            Log.i(TAG, "Trying localhost:${BridgeConstants.WS_PORT} (USB)...")
+            connection.connect(BridgeConstants.LOCALHOST_WS_URL)
             delay(3000)
         }
         // If still disconnected, try mDNS discovery

@@ -35,6 +35,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.BridgeConnection
+import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.ui.common.ConnectionPanel
 import kotlinx.coroutines.launch
@@ -99,7 +100,7 @@ fun EinkSettingsOverlay(
                         connection.connect(bridge.wsUrl())
                     },
                     onConnectLocalhost = {
-                        connection.connect("ws://127.0.0.1:9120")
+                        connection.connect(BridgeConstants.LOCALHOST_WS_URL)
                     },
                     onConnectManualUrl = { url -> connection.connect(url) },
                     onDisconnect = {

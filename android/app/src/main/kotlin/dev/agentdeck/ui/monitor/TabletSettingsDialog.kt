@@ -33,6 +33,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.BridgeConnection
+import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
@@ -106,7 +107,7 @@ fun TabletSettingsDialog(
                             lastError = lastError,
                             discoveredBridges = discoveredBridges,
                             onConnectToBridge = { bridge -> connection.connect(bridge.wsUrl()) },
-                            onConnectLocalhost = { connection.connect("ws://127.0.0.1:9120") },
+                            onConnectLocalhost = { connection.connect(BridgeConstants.LOCALHOST_WS_URL) },
                             onConnectManualUrl = { url -> connection.connect(url) },
                             onDisconnect = { connection.disconnect() },
                         )

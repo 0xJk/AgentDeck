@@ -54,6 +54,7 @@ import dev.agentdeck.R
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.net.BridgeConnection
+import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
@@ -132,8 +133,8 @@ fun EinkMonitorScreen(
         }
         // Try localhost (adb reverse USB connection) before mDNS
         if (connection.status.value != ConnectionStatus.CONNECTED) {
-            Log.i(TAG, "Trying localhost:9120 (USB)...")
-            connection.connect("ws://127.0.0.1:9120")
+            Log.i(TAG, "Trying localhost:${BridgeConstants.WS_PORT} (USB)...")
+            connection.connect(BridgeConstants.LOCALHOST_WS_URL)
             delay(3000)
         }
         // If still disconnected, try mDNS discovery with daemon grace period
@@ -189,7 +190,7 @@ fun EinkMonitorScreen(
                     connection.connect(bridge.wsUrl())
                 },
                 onConnectLocalhost = {
-                    connection.connect("ws://127.0.0.1:9120")
+                    connection.connect(BridgeConstants.LOCALHOST_WS_URL)
                 },
                 onSettingsClick = { showSettings = true },
             )
@@ -412,7 +413,7 @@ private fun EinkNotConnectedScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "127.0.0.1:9120",
+                        text = BridgeConstants.LOCALHOST_DISPLAY,
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

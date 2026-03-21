@@ -53,6 +53,7 @@ import dev.agentdeck.R
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.net.BridgeConnection
+import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
@@ -145,7 +146,7 @@ fun MonitorScreen(
                     connection.connect(bridge.wsUrl())
                 },
                 onConnectLocalhost = {
-                    connection.connect("ws://127.0.0.1:9120")
+                    connection.connect(BridgeConstants.LOCALHOST_WS_URL)
                 },
                 onStopReconnecting = {
                     connection.disconnect()
@@ -347,7 +348,7 @@ private fun ConnectionOverlay(
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             )
                             Text(
-                                text = "127.0.0.1:9120",
+                                text = BridgeConstants.LOCALHOST_DISPLAY,
                                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                                 color = Color.White.copy(alpha = 0.7f),
                             )

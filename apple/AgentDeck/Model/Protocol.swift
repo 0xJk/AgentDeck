@@ -155,6 +155,7 @@ struct UsageEvent: Codable, Sendable {
     var oauthConnected: Bool?
     var ollamaStatus: OllamaStatus?
     var usageStale: Bool?
+    var tokenStatus: String?  // "valid" | "expired" | "missing" | "unknown"
 }
 
 struct ConnectionEvent: Codable, Sendable {

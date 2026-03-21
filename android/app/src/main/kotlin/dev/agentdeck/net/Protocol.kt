@@ -55,7 +55,7 @@ data class OcSessionStatus(
     val model: String? = null,
     val contextTokens: Int? = null,
     val messageCount: Int? = null,
-    val uptime: Int? = null,
+    val uptime: String? = null,
     val sessionId: String? = null,
 )
 
@@ -125,6 +125,7 @@ data class UsageUpdate(
     val oauthConnected: Boolean? = null,
     val ollamaStatus: OllamaStatus? = null,
     val usageStale: Boolean? = null,
+    val tokenStatus: String? = null,  // "valid" | "expired" | "missing" | "unknown"
 )
 
 @Serializable

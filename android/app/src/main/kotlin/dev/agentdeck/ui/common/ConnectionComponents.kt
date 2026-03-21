@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.ui.theme.AgentDeckColors
@@ -116,7 +117,7 @@ fun UsbConnectButton(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    text = "127.0.0.1:9120",
+                    text = BridgeConstants.LOCALHOST_DISPLAY,
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -138,7 +139,7 @@ fun UsbConnectButton(
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 )
                 Text(
-                    text = "127.0.0.1:9120",
+                    text = BridgeConstants.LOCALHOST_DISPLAY,
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = Color.White.copy(alpha = 0.7f),
                 )
