@@ -301,25 +301,5 @@ export async function fetchUsageFromApi(): Promise<ApiUsageData | null> {
   }
 }
 
-/** Format ISO timestamp to relative time like "2h 30m" or "10:30am" */
-export function formatResetTime(isoString: string): string {
-  try {
-    const resetAt = new Date(isoString);
-    const now = new Date();
-    const diffMs = resetAt.getTime() - now.getTime();
-
-    if (diffMs <= 0) return 'now';
-
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 60) return `${diffMin}m`;
-
-    const h = Math.floor(diffMin / 60);
-    const m = diffMin % 60;
-    if (h < 24) return m > 0 ? `${h}h ${m}m` : `${h}h`;
-
-    const d = Math.floor(h / 24);
-    return `${d}d ${h % 24}h`;
-  } catch {
-    return isoString;
-  }
-}
+// formatResetTime is now in @agentdeck/shared/format-utils
+export { formatResetTime } from '@agentdeck/shared';

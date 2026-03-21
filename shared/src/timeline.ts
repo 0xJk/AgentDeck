@@ -17,6 +17,7 @@ export interface TimelineEntry {
   status?: 'pending' | 'approved' | 'denied';
   agentType?: string;
   repeatCount?: number;
+  automated?: boolean;
 }
 
 /**
@@ -229,17 +230,72 @@ export function isRepetitiveEntry(
   windowMs = 3_600_000,
 ): number {
   if (entry.type !== 'chat_end' && entry.type !== 'chat_start') return -1;
+
+  // Automated entries (cron/channel-initiated): 8h window, any automated pair is a dupe
+  const effectiveWindowMs = entry.automated ? 8 * 3_600_000 : windowMs;
+
   const core = extractSemanticCore(entry.raw, entry.type);
   if (!core) return -1;
 
   for (let i = recentEntries.length - 1; i >= 0; i--) {
     const e = recentEntries[i];
-    if (entry.ts - e.ts > windowMs) break;
+    if (entry.ts - e.ts > effectiveWindowMs) break;
     if (e.type !== entry.type) continue;
+
+    // Automated entries: content-agnostic dedup (any two automated chats collapse)
+    if (entry.automated && e.automated) return i;
+
     const eCore = extractSemanticCore(e.raw, e.type);
     if (isSimilarCore(core, eCore)) return i;
   }
   return -1;
+}
+
+/**
+ * Shared dedup pipeline for timeline stores.
+ * Cleans text, checks exact dedup (5s), and repetitive dedup (1h).
+ * Returns: 'skip' (duplicate), 'merge' + index (repetitive), or 'add' (new).
+ */
+export type DeduplicateResult =
+  | { action: 'skip' }
+  | { action: 'merge'; index: number; removeChatStartIndex?: number }
+  | { action: 'add'; entry: TimelineEntry };
+
+export function deduplicateEntry(
+  entry: TimelineEntry,
+  entries: readonly TimelineEntry[],
+): DeduplicateResult {
+  // 1. Clean text artifacts
+  if (entry.raw) entry = { ...entry, raw: cleanNopMarkers(cleanRawText(entry.raw)) };
+  if (entry.detail) entry = { ...entry, detail: cleanNopMarkers(entry.detail) };
+
+  // 2. Exact dedup: skip if same type + raw within 5 seconds
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (entry.ts - e.ts > 5_000) break;
+    if (e.type === entry.type && e.raw === entry.raw) return { action: 'skip' };
+  }
+
+  // 3. Repetitive entry dedup (1h window)
+  const repIdx = isRepetitiveEntry(entry, entries);
+  if (repIdx >= 0) {
+    let removeChatStartIndex: number | undefined;
+    // For chat_end dedup, find paired chat_start that's also repetitive
+    if (entry.type === 'chat_end') {
+      for (let j = entries.length - 1; j >= 0; j--) {
+        const cs = entries[j];
+        if (cs.type !== 'chat_start') continue;
+        if (entry.ts - cs.ts > 3_600_000) break;
+        if (isRepetitiveEntry(cs, entries.slice(0, j)) >= 0) {
+          removeChatStartIndex = j;
+          break;
+        }
+      }
+    }
+    return { action: 'merge', index: repIdx, removeChatStartIndex };
+  }
+
+  return { action: 'add', entry };
 }
 
 /** Parse a single JSON log line into a TimelineEntry, or null if unrecognized. */

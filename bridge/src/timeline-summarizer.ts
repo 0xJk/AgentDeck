@@ -7,18 +7,13 @@
  */
 
 import { debug } from './logger.js';
-import { cleanRawText } from '@agentdeck/shared';
+import { SUMMARY_SYSTEM_PROMPT, cleanLLMOutput } from '@agentdeck/shared';
+export { extractTopicHint } from '@agentdeck/shared';
 
 const MLX_URL = 'http://127.0.0.1:8800/chat/completions';
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
 const TIMEOUT_MS = 30_000; // 30s — first inference needs model load time
 const MAX_INPUT_CHARS = 2000;
-
-const SYSTEM_PROMPT = `You are a timeline summarizer. Given an AI assistant's response text, produce a single-line Korean summary (max 80 characters) of what was accomplished. Focus on the result, not the process. No quotes, no markdown, no punctuation at the end. Output ONLY the summary line, nothing else. Examples:
-- 봇마당 인박스에 AI 에이전트 운영 팁 3건 수집
-- 주간 모델 사용량 리포트: glm-5 28회 최다
-- GitHub 이슈 #10428 검토 완료, PR #16831 대기 중
-- HBF 뉴스 9월~2월분 한글 정리 완료`;
 
 let mlxAvailable: boolean | null = null;
 let ollamaAvailable: boolean | null = null;
@@ -70,85 +65,7 @@ export async function summarizeResponse(text: string): Promise<string | null> {
   return null;
 }
 
-/**
- * Extract a topic hint from the first few tokens of a response.
- * Used for immediate chat_start enrichment before LLM summarization.
- */
-export function extractTopicHint(text: string): string | null {
-  if (!text || text.length < 5) return null;
-
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-  // Find first non-markdown, non-code-fence, non-empty line
-  let candidate: string | null = null;
-  let inCodeFence = false;
-  for (const line of lines) {
-    // Track code fence boundaries
-    if (/^```/.test(line)) {
-      inCodeFence = !inCodeFence;
-      continue;
-    }
-    if (inCodeFence) continue;
-
-    // Skip headings-only
-    if (/^#{1,6}\s*$/.test(line)) continue;
-
-    // Strip markdown decorators for evaluation
-    const stripped = cleanRawText(line)
-      .replace(/^[-*]\s+/, '')
-      .replace(/^>\s+/, '')
-      .trim();
-
-    if (stripped.length >= 3) {
-      candidate = stripped;
-      break;
-    }
-  }
-
-  if (!candidate) return null;
-
-  const snippet = candidate.length > 80 ? candidate.slice(0, 77) + '...' : candidate;
-
-  // Remove common Korean prefixes (chained — "네, 확인했습니다." → "")
-  let cleaned = snippet;
-  // Strip leading "네," / "네." first, then polite phrases
-  cleaned = cleaned.replace(/^네[,.]?\s*/i, '');
-  cleaned = cleaned.replace(/^(완료했습니다\.\s*|알겠습니다\.\s*|확인했습니다\.\s*)/i, '');
-  cleaned = cleaned.trim();
-
-  return cleaned || null;
-}
-
-/** Clean LLM output — strip thinking, quotes, markdown artifacts */
-function cleanLLMOutput(content: string): string | null {
-  let cleaned = content
-    // Strip <think>...</think> blocks (Qwen thinking mode)
-    .replace(/<think>[\s\S]*?<\/think>/g, '')
-    // Strip unclosed <think> at end (truncated output)
-    .replace(/<think>[\s\S]*$/g, '')
-    .trim();
-
-  // If output has multiple lines, take the last non-empty line
-  // (thinking text tends to come first, summary last)
-  const lines = cleaned.split('\n').map(l => l.trim()).filter(Boolean);
-  if (lines.length > 1) {
-    // Find the last line that looks like Korean summary (contains Korean chars)
-    const koreanLine = lines.reverse().find(l => /[\uAC00-\uD7AF]/.test(l));
-    cleaned = koreanLine || lines[lines.length - 1];
-  }
-
-  // Strip surrounding quotes, markdown list markers
-  cleaned = cleaned
-    .replace(/^[-*]\s*/, '')
-    .replace(/^["'`"""]+|["'`"""]+$/g, '')
-    .replace(/[.。]$/, '') // remove trailing period
-    .trim();
-
-  if (!cleaned || cleaned.length < 3) return null;
-  // Truncate to 80 chars if needed
-  if (cleaned.length > 80) cleaned = cleaned.slice(0, 77) + '...';
-  return cleaned;
-}
+// extractTopicHint and cleanLLMOutput moved to @agentdeck/shared/timeline-summarizer
 
 async function callMLX(input: string): Promise<string | null> {
   const controller = new AbortController();
@@ -162,7 +79,7 @@ async function callMLX(input: string): Promise<string | null> {
         model: 'mlx-community/Qwen3.5-35B-A3B-4bit',
         enable_thinking: false,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
           { role: 'user', content: input },
         ],
         max_tokens: 100,
@@ -319,7 +236,7 @@ async function callOllama(input: string): Promise<string | null> {
       body: JSON.stringify({
         model: 'qwen2.5:7b',
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
           { role: 'user', content: input },
         ],
         stream: false,

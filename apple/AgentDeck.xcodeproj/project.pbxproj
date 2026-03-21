@@ -69,7 +69,7 @@
 		A8293F557BD8D3FB91BF4CF4 /* StateTimelineGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38C2485BC8700CBDD9EDE70E /* StateTimelineGenerator.swift */; };
 		ABE80C830C69CB0A2D03A767 /* LightRaySystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = D53F4A08898B95CB592E133A /* LightRaySystem.swift */; };
 		AC7E59A42A23408F8FEC3AC5 /* WaterEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = E47A555A3917875178A5B7E5 /* WaterEffect.swift */; };
-		ACA8B3AC8A89039E02DB0B25 /* SessionMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 558D3003B87503877CD1177F /* SessionMetrics.swift */; };
+
 		AFF6EF70E6B6A6BC16048A65 /* WaterSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F134F38758589B5D47652C8 /* WaterSurface.swift */; };
 		B1B90826D46626CD1211ED7A /* TerrariumView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69BCA057209786EF62993762 /* TerrariumView.swift */; };
 		B5479F2C2CBAE673EB1C3D93 /* AgentState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15F55435772A15B8F0E92C1 /* AgentState.swift */; };
@@ -97,7 +97,7 @@
 		E940E2714946D07856C8FB37 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5200B4548DFE9F98AEE8D504 /* ContentView.swift */; };
 		EA32929C78C6088451DDF476 /* TimelineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95824B0CF6571507DBAF27C5 /* TimelineStore.swift */; };
 		EB83962F2BDBC13AB130DD6B /* SessionListPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40755F64E4C39A49B99D88CA /* SessionListPanel.swift */; };
-		EBFF02B51A6DD408055A8955 /* SessionMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 558D3003B87503877CD1177F /* SessionMetrics.swift */; };
+
 		F20373DB53552C2F36204EDF /* TerrariumConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403CDDF7DDFCF5D8702491EA /* TerrariumConfig.swift */; };
 		F5B2BB7991E7283F4B99902F /* MonitorHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19949AA33CE27D478B358976 /* MonitorHUD.swift */; };
 		FB05C5FF001D9A5382E3FB66 /* TankStatusPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF4F61CE4842A567D1BC861E /* TankStatusPanel.swift */; };
@@ -138,7 +138,7 @@
 		4D7EC34DCAF26B2F39F5257B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		4FD4B5CF393BD9B6CEDBCFAF /* AgentDeckTests_macOS.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentDeckTests_macOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5200B4548DFE9F98AEE8D504 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		558D3003B87503877CD1177F /* SessionMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionMetrics.swift; sourceTree = "<group>"; };
+
 		57722317EDF1D567981112DE /* DataParticleSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataParticleSystem.swift; sourceTree = "<group>"; };
 		593C80232028E1DBC0227E17 /* TerrariumState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerrariumState.swift; sourceTree = "<group>"; };
 		5B7A8A00EB9D3B9345E36EB4 /* ProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTests.swift; sourceTree = "<group>"; };
@@ -221,7 +221,7 @@
 			children = (
 				92F84E0AB4261F8308A45186 /* AgentStateHolder.swift */,
 				89F9A134A1BC3EDEE8309695 /* DisplaySyncService.swift */,
-				558D3003B87503877CD1177F /* SessionMetrics.swift */,
+
 				38C2485BC8700CBDD9EDE70E /* StateTimelineGenerator.swift */,
 				95824B0CF6571507DBAF27C5 /* TimelineStore.swift */,
 			);
@@ -559,7 +559,7 @@
 				85B903EFA7879FA42B54A258 /* RockFormation.swift in Sources */,
 				981C289DD626CAD0B9900C39 /* SandDisturbance.swift in Sources */,
 				EB83962F2BDBC13AB130DD6B /* SessionListPanel.swift in Sources */,
-				EBFF02B51A6DD408055A8955 /* SessionMetrics.swift in Sources */,
+
 				D53BC123AAE467EB342A5041 /* SettingsScreen.swift in Sources */,
 				A8293F557BD8D3FB91BF4CF4 /* StateTimelineGenerator.swift in Sources */,
 				DF804392C56333041A3C2784 /* StatusBadge.swift in Sources */,
@@ -610,7 +610,7 @@
 				530A55B6786D79B8D42211BF /* RockFormation.swift in Sources */,
 				86F7FE3919CB9698A247E2A3 /* SandDisturbance.swift in Sources */,
 				B777A61FBB6AD6F51B165DA5 /* SessionListPanel.swift in Sources */,
-				ACA8B3AC8A89039E02DB0B25 /* SessionMetrics.swift in Sources */,
+
 				38E9C043A76BB267FCACB4B7 /* SettingsScreen.swift in Sources */,
 				942DEF7F0BE77DF0FA264AF8 /* StateTimelineGenerator.swift in Sources */,
 				67FA80518E8F347B39576FCC /* StatusBadge.swift in Sources */,

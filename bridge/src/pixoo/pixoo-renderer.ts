@@ -21,6 +21,7 @@
 import { State } from '../types.js';
 import type { StateUpdateEvent, UsageEvent } from '../types.js';
 import type { SessionInfo } from '@agentdeck/shared/protocol';
+import { formatResetTimeCompact } from '@agentdeck/shared';
 import {
   type RGB, COLORS, setPixel, blendPixel, glowPixel, fillRect, lerpColor,
   drawOctopus, drawCrayfish, drawTetra,
@@ -527,21 +528,7 @@ function gaugeColor(pct: number, animFrame: number): RGB {
   return COLORS.stateProcessing;  // blue
 }
 
-/** Format remaining time from ISO reset timestamp. Supports days for 7d reset times. */
-function formatResetTime(resetsAt: string): string {
-  const ms = new Date(resetsAt).getTime() - Date.now();
-  if (ms <= 0) return '0m';
-  const totalMins = Math.max(1, Math.ceil(ms / 60000));
-  const hours = Math.floor(totalMins / 60);
-  const days = Math.floor(hours / 24);
-  const remHours = hours % 24;
-  const mins = totalMins % 60;
-  if (days > 0 && remHours > 0) return `${days}d${remHours}h`;
-  if (days > 0) return `${days}d`;
-  if (hours > 0 && mins > 0) return `${hours}h${mins}`;
-  if (hours > 0) return `${hours}h`;
-  return `${mins}m`;
-}
+// formatResetTime removed — using shared formatResetTimeCompact
 
 /**
  * Compact reset time for HUD columns (one unit only — saves pixel space).
@@ -604,7 +591,7 @@ function drawUsageHUD(
   if (usageEvent.sevenDayPercent == null) {
     // Single full-width zone
     const reset5 = usageEvent.fiveHourResetsAt
-      ? ` ${formatResetTime(usageEvent.fiveHourResetsAt)}` : '';
+      ? ` ${formatResetTimeCompact(usageEvent.fiveHourResetsAt)}` : '';
     renderZone(`${Math.round(pct5)}%${reset5}`, pct5, 0, 63);
     return;
   }

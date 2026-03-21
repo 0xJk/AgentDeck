@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import type { TimelineEntry as SharedTimelineEntry, TimelineEntryType as SharedType } from '@agentdeck/shared';
-import { isRepetitiveEntry, cleanRawText, cleanNopMarkers } from '@agentdeck/shared';
+import { deduplicateEntry } from '@agentdeck/shared';
 
 // Plugin extends shared TimelineEntry with 'now_marker' (display-only, not persisted/relayed)
 export interface TimelineEntry {
@@ -23,6 +23,7 @@ export interface TimelineEntry {
   approvalId?: string;
   status?: 'pending' | 'approved' | 'denied';
   repeatCount?: number;
+  automated?: boolean;
 }
 
 /** Convert shared TimelineEntry to plugin TimelineEntry (compatible — just re-type) */
@@ -120,40 +121,25 @@ class TimelineStore {
 
   addEntry(entry: TimelineEntry): void {
     this.ensureLoaded();
-    // Clean text artifacts (markdown, NOP markers) at store level
-    if (entry.raw) entry = { ...entry, raw: cleanNopMarkers(cleanRawText(entry.raw)) };
-    if (entry.detail) entry = { ...entry, detail: cleanNopMarkers(entry.detail) };
 
-    // Dedup: skip if same type + raw within 5 seconds
-    for (let i = this.entries.length - 1; i >= 0; i--) {
-      const e = this.entries[i];
-      if (entry.ts - e.ts > 5_000) break;
-      if (e.type === entry.type && e.raw === entry.raw) return;
-    }
+    const result = deduplicateEntry(entry as SharedTimelineEntry, this.entries as SharedTimelineEntry[]);
 
-    // Repetitive entry dedup (10min window) — merge into existing entry
-    const repIdx = isRepetitiveEntry(entry as SharedTimelineEntry, this.entries as SharedTimelineEntry[]);
-    if (repIdx >= 0) {
-      const existing = this.entries[repIdx];
+    if (result.action === 'skip') return;
+
+    if (result.action === 'merge') {
+      const existing = this.entries[result.index];
       existing.repeatCount = (existing.repeatCount || 1) + 1;
       existing.ts = entry.ts;
-      // For chat_end dedup, also remove the paired chat_start if it's also repetitive
-      if (entry.type === 'chat_end') {
-        for (let j = this.entries.length - 1; j >= 0; j--) {
-          const cs = this.entries[j];
-          if (cs.type !== 'chat_start') continue;
-          if (entry.ts - cs.ts > 3_600_000) break;
-          if (isRepetitiveEntry(cs as SharedTimelineEntry, (this.entries.slice(0, j)) as SharedTimelineEntry[]) >= 0) {
-            this.entries.splice(j, 1);
-            break;
-          }
-        }
+      if (result.removeChatStartIndex != null) {
+        this.entries.splice(result.removeChatStartIndex, 1);
       }
       this.scheduleSave();
       this.notify();
       return;
     }
 
+    // action === 'add' — use cleaned entry from dedup pipeline
+    entry = result.entry as TimelineEntry;
     this.entries.push(entry);
     if (this.entries.length > MAX_ENTRIES) {
       this.entries.shift();

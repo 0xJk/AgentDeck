@@ -16,6 +16,7 @@ import { createWriteStream, createReadStream, type WriteStream, type ReadStream 
 import type { BridgeEvent } from './types.js';
 import { SERIAL_FORWARDED_EVENTS } from '@agentdeck/shared/protocol';
 import type { ESP32ToHostMessage, WifiProvisionMessage } from '@agentdeck/shared/protocol';
+import { formatResetTime } from '@agentdeck/shared';
 import { debug } from './logger.js';
 
 // Serial port patterns for ESP32 devices
@@ -53,31 +54,8 @@ let messageHandler: ((port: string, msg: ESP32ToHostMessage) => void) | null = n
 // Events to forward — shared constant from @agentdeck/shared
 const FORWARDED_EVENTS = SERIAL_FORWARDED_EVENTS;
 
-/**
- * Convert ISO 8601 reset time to pre-formatted relative string ("4h 23m", "2d 5h").
- * ESP32 without WiFi/NTP can't parse ISO dates, so bridge formats them.
- */
-function formatResetTime(iso: string | undefined): string | undefined {
-  if (!iso || !iso.includes('T')) return iso; // already formatted or missing
-
-  try {
-    const resetMs = new Date(iso).getTime();
-    if (isNaN(resetMs)) return undefined;
-    const diffSec = Math.max(0, Math.floor((resetMs - Date.now()) / 1000));
-
-    if (diffSec === 0) return 'now';
-    const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin}m`;
-    const h = Math.floor(diffMin / 60);
-    const m = diffMin % 60;
-    if (h < 24) return m > 0 ? `${h}h ${m}m` : `${h}h`;
-    const d = Math.floor(h / 24);
-    const rh = h % 24;
-    return rh > 0 ? `${d}d ${rh}h` : `${d}d`;
-  } catch {
-    return undefined;
-  }
-}
+// ESP32 without WiFi/NTP can't parse ISO dates — shared formatResetTime
+// handles undefined and pre-formatted strings.
 
 /**
  * Prepare a BridgeEvent for serial transmission.
