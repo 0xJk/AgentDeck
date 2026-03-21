@@ -9,5 +9,20 @@ export default defineConfig({
       'plugin/src/__tests__/**/*.test.ts',
     ],
     testTimeout: 10_000,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov'],
+      include: [
+        'bridge/src/**/*.ts',
+        'shared/src/**/*.ts',
+        'plugin/src/**/*.ts',
+        'hooks/src/**/*.ts',
+      ],
+      exclude: [
+        '**/__tests__/**',
+        '**/node_modules/**',
+        '**/dist/**',
+      ],
+    },
   },
 });
