@@ -1,0 +1,57 @@
+import eslint from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import eslintConfigPrettier from 'eslint-config-prettier';
+import globals from 'globals';
+
+export default tseslint.config(
+  eslint.configs.recommended,
+  ...tseslint.configs.recommended,
+  eslintConfigPrettier,
+  {
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/coverage/**',
+      'bound.serendipity.agentdeck.sdPlugin/**',
+      'plugin/bound.serendipity.agentdeck.sdPlugin/**',
+      'android/**',
+      'apple/**',
+      'esp32/**',
+      'docs/**',
+      'scripts/**',
+      '*.js',        // root JS files (config, test scripts)
+      '*.mjs',
+    ],
+  },
+  {
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      // Match existing conventions — don't enforce what isn't there
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
+      '@typescript-eslint/no-unused-expressions': 'off', // optional chaining `cb?.()`
+      '@typescript-eslint/no-empty-function': 'off',
+      '@typescript-eslint/no-this-alias': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-unsafe-function-type': 'off',
+      'no-empty': ['warn', { allowEmptyCatch: true }],
+      'no-control-regex': 'off',        // ANSI escape sequences in regex
+      'no-unused-vars': 'off',          // handled by @typescript-eslint version
+      'no-useless-escape': 'off',       // regex escapes in serial/parser patterns
+      'no-useless-assignment': 'off',   // parser state machine patterns
+      'no-prototype-builtins': 'off',   // .hasOwnProperty() in protocol parsing
+      'no-cond-assign': 'off',          // while (match = regex.exec()) pattern
+      'no-redeclare': 'off',            // handled by TypeScript
+      'preserve-caught-error': 'off',   // re-throw patterns in catch handlers
+      'prefer-const': 'warn',
+    },
+  },
+);
