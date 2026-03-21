@@ -229,7 +229,7 @@ export function isRepetitiveEntry(
   recentEntries: readonly TimelineEntry[],
   windowMs = 3_600_000,
 ): number {
-  if (entry.type !== 'chat_end' && entry.type !== 'chat_start') return -1;
+  if (entry.type !== 'chat_end' && entry.type !== 'chat_start' && entry.type !== 'error') return -1;
 
   // Automated entries (cron/channel-initiated): 8h window, any automated pair is a dupe
   const effectiveWindowMs = entry.automated ? 8 * 3_600_000 : windowMs;
@@ -357,9 +357,27 @@ export function parseLogLine(json: unknown): TimelineEntry | null {
   // ===== OpenClaw message-text based matching =====
   if (!message) return null;
 
+  // Skip very short messages (JSON fragments, truncated output)
+  if (message.length < 5) return null;
+
   // Gateway WS subsystem: all RPC events are redundant with adapter-generated timeline
   // (chat.send → chat_start, chat.abort → chat_end, exec.approval.resolve → tool_resolved)
   if (subsystem === 'gateway/ws') return null;
+
+  // Cron list table rows: UUID-prefixed lines from `openclaw cron list` output
+  // Keep error rows as summarized entries; skip ok/skipped rows
+  const cronRowMatch = message.match(/^[0-9a-f]{8}-[0-9a-f]{4}-\S+\s+(\S+(?:\.\.\.)?\S*)\s+.*?\b(error|ok|skipped)\b/i);
+  if (cronRowMatch) {
+    const [, jobName, status] = cronRowMatch;
+    if (status.toLowerCase() !== 'error') return null; // ok/skipped → skip
+    // Extract human-readable job name (strip trailing ...)
+    const name = jobName.replace(/\.{3}$/, '').replace(/-/g, ' ');
+    return { ts, type: 'error', raw: `Cron error: ${name}` };
+  }
+
+  // Skip cron module noise and JSON blobs (internal state, not user-facing)
+  if (module_ === 'cron' || subsystem === 'cron') return null;
+  if (/^"jobs"\s*:\s*\[|^\{"jobs":/i.test(message)) return null;
 
   // Skip noisy infrastructure messages
   if (message.startsWith('- agent:main:') && message.includes(' ago)')) return null;
@@ -367,7 +385,6 @@ export function parseLogLine(json: unknown): TimelineEntry | null {
   if (message.startsWith('Heartbeat interval:') || message.startsWith('WhatsApp:') || message.startsWith('LINE:')) return null;
   if (message.startsWith('Web Channel:') || message.startsWith('Run "openclaw')) return null;
   if (message.includes('web gateway heartbeat') || module_ === 'web-heartbeat') return null;
-  if (module_ === 'cron' || message.includes('cron:')) return null;
   // Skip hook registration and session setup noise
   if (/\bRegistered hook\b/i.test(message)) return null;
   if (/\bSession (store|restored|loaded)\b/i.test(message)) return null;
@@ -436,8 +453,11 @@ export function parseLogLine(json: unknown): TimelineEntry | null {
       return null;
     }
   }
-  // Skip raw JSON connection status blobs (always infra, regardless of subsystem)
+  // Skip raw JSON blobs — connection status, event payloads, cron state
   if (/^\{"connectionId":/i.test(message)) {
+    return null;
+  }
+  if (/^\{"event":/i.test(message)) {
     return null;
   }
 
@@ -446,6 +466,9 @@ export function parseLogLine(json: unknown): TimelineEntry | null {
     return null;
   }
   if (/\bDelivery recovery complete\b/i.test(message)) {
+    return null;
+  }
+  if (/\bRetry failed for delivery\b/i.test(message)) {
     return null;
   }
 

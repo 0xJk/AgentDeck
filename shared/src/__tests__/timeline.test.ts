@@ -150,10 +150,16 @@ describe('isRepetitiveEntry', () => {
     expect(isRepetitiveEntry(entry, recent)).toBe(-1);
   });
 
-  it('only applies to chat_end and chat_start types', () => {
+  it('only applies to chat_end, chat_start, and error types', () => {
+    const recent: TimelineEntry[] = [{ ts: 500, type: 'tool_request', raw: 'same tool' }];
+    const entry: TimelineEntry = { ts: 800, type: 'tool_request', raw: 'same tool' };
+    expect(isRepetitiveEntry(entry, recent)).toBe(-1);
+  });
+
+  it('dedupes repeated error entries within 1h window', () => {
     const recent: TimelineEntry[] = [{ ts: 500, type: 'error', raw: 'same error' }];
     const entry: TimelineEntry = { ts: 800, type: 'error', raw: 'same error' };
-    expect(isRepetitiveEntry(entry, recent)).toBe(-1);
+    expect(isRepetitiveEntry(entry, recent)).toBe(0);
   });
 
   it('matches chat_start entries', () => {

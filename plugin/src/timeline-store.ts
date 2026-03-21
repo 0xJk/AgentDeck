@@ -202,21 +202,32 @@ class TimelineStore {
 
   /**
    * Merge history entries (e.g. events that occurred while plugin was offline).
-   * Deduplicates by ts + type + raw. Sorts by timestamp after merge.
+   * Runs each entry through the dedup pipeline (clean + exact + semantic dedup).
    */
   mergeHistory(newEntries: TimelineEntry[]): void {
     this.ensureLoaded();
     const existing = new Set(this.entries.map((e) => `${e.ts}:${e.type}:${e.raw}`));
-    let added = 0;
+    let changed = false;
     for (const entry of newEntries) {
       const key = `${entry.ts}:${entry.type}:${entry.raw}`;
-      if (!existing.has(key)) {
-        this.entries.push(entry);
-        existing.add(key);
-        added++;
+      if (existing.has(key)) continue;
+      const result = deduplicateEntry(entry as SharedTimelineEntry, this.entries as SharedTimelineEntry[]);
+      if (result.action === 'skip') continue;
+      if (result.action === 'merge') {
+        const ex = this.entries[result.index];
+        ex.repeatCount = (ex.repeatCount || 1) + 1;
+        ex.ts = entry.ts;
+        if (result.removeChatStartIndex != null) {
+          this.entries.splice(result.removeChatStartIndex, 1);
+        }
+        changed = true;
+        continue;
       }
+      this.entries.push(result.entry as TimelineEntry);
+      existing.add(key);
+      changed = true;
     }
-    if (added === 0) return;
+    if (!changed) return;
     this.entries.sort((a, b) => a.ts - b.ts);
     while (this.entries.length > MAX_ENTRIES) {
       this.entries.shift();
