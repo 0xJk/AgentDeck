@@ -526,7 +526,16 @@ export class BridgeCore {
         invalidateMdnsInstance();
         return;
       }
-      logError(`Uncaught exception: ${err}`);
+      // Log full stack trace to stderr AND append to crash log
+      const stack = err instanceof Error ? err.stack : String(err);
+      const crashMsg = `[${new Date().toISOString()}] Uncaught exception: ${stack}\n`;
+      logError(crashMsg);
+      try {
+        const { appendFileSync } = require('fs');
+        const { join } = require('path');
+        const crashLog = join(process.env.HOME || '/tmp', '.agentdeck', 'daemon-crash.log');
+        appendFileSync(crashLog, crashMsg);
+      } catch { /* best effort */ }
       handler();
     });
     process.on('unhandledRejection', (reason) => {

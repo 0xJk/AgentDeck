@@ -79,9 +79,9 @@ const DYNAMIC_PROFILE_DIR = join(
 );
 const DYNAMIC_PROFILE_PATH = join(DYNAMIC_PROFILE_DIR, 'agentdeck.json');
 
-// Badge sizing — height scales with line count to maintain readable font
+// Badge sizing — 0.35 height with 8-line padding keeps font consistent
 const BADGE_MAX_WIDTH_FRACTION = 0.5;
-const BADGE_MAX_HEIGHT_FRACTION = 0.55;
+const BADGE_MAX_HEIGHT_FRACTION = 0.35;
 
 export class TerminalStatus {
   private stdout: NodeJS.WritableStream;
@@ -410,11 +410,12 @@ export class TerminalStatus {
     }
 
     // Lines 4-8: milestones (LLM-summarized work rounds)
-    if (this.milestones.length > 0) {
-      for (const ms of this.milestones.slice(-MAX_MILESTONES)) {
-        lines.push(`${formatTime(ms.time)}  ${ms.text}`);
-      }
+    for (const ms of this.milestones.slice(-MAX_MILESTONES)) {
+      lines.push(`${formatTime(ms.time)}  ${ms.text}`);
     }
+
+    // Pad to 8 lines with braille blank (U+2800) — empty strings are ignored by iTerm2
+    while (lines.length < 8) lines.push('\u2800');
 
     return lines.join('\n');
   }
