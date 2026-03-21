@@ -18,6 +18,7 @@ import {
 } from './session-registry.js';
 import { getOrCreateToken, getWsUrl } from './auth.js';
 import { debug } from './logger.js';
+import { invalidateMdnsInstance } from './mdns.js';
 import {
   State,
   type BridgeEvent,
@@ -512,9 +513,16 @@ export class BridgeCore {
     process.on('SIGINT', handler);
     process.on('SIGTERM', handler);
     process.on('uncaughtException', (err) => {
-      // mDNS "already in use" is non-critical
-      if (err?.message?.includes('already in use on the network')) {
-        log(`[${label}] mDNS conflict (ignored): ${err.message}`);
+      const msg = err?.message ?? '';
+      // mDNS errors are non-critical — network interface changes (sleep/wake,
+      // WiFi reconnect, VPN toggle) cause transient multicast failures.
+      // Null out the mDNS instance so the recovery timer can re-publish.
+      if (
+        msg.includes('already in use on the network') ||
+        (msg.includes('EADDRNOTAVAIL') && msg.includes('5353'))
+      ) {
+        log(`[${label}] mDNS error (ignored): ${msg}`);
+        invalidateMdnsInstance();
         return;
       }
       log(`[${label}] Uncaught exception: ${err}`);
