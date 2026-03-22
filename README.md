@@ -24,12 +24,12 @@
 
 **Stop Chatting. Start Steering.**
 
-AgentDeck is a physical control surface for AI coding agents. It started with an Elgato Stream Deck+ and now runs on **11 display surfaces simultaneously** — tablets, e-ink readers, phones, ESP32 modules, LED matrices, and terminals.
+AgentDeck is a physical control surface for AI coding agents. It started with an Elgato Stream Deck+ and now runs on **12 display surfaces simultaneously** — tablets, e-ink readers, phones, ESP32 modules, LED matrices, and terminals.
 
-> One bridge. 11 surfaces. Steer your AI — without leaving your keyboard flow.
+> One bridge. 12 surfaces. Steer your AI — without leaving your keyboard flow.
 
 <p align="center">
-  <img src="docs/media/desk-setup-top.jpg" width="720" alt="AgentDeck — 11 surfaces running simultaneously: Stream Deck+, Android tablet, Crema S E-ink, Pantone 6 Color E-ink, iPhone, iPad, macOS, ESP32 Round AMOLED, ESP32 IPS LCD, Pixoo64 LED, TUI terminal">
+  <img src="assets/AgentDeck_SNS_Collage.png" width="720" alt="AgentDeck collage — Stream Deck+, Android, e-ink, Apple devices, ESP32 displays, Pixoo64, and TUI dashboard">
 </p>
 
 <p align="center">
@@ -97,7 +97,8 @@ A **control surface** — like an audio mixing console, but for AI coding agents
 - **Quick actions** — GO ON / REVIEW / COMMIT / CLEAR; encoder cycles custom prompts
 - **System utilities** — volume, mic, media, timer from the Utility encoder
 - **Terminal sessions** — iTerm dial switches sessions, auto-attaches tmux
-- **Works from anywhere** — all 11 surfaces can monitor the agent; interactive surfaces (Stream Deck, Android, Apple) can also control it
+- **Multiple coding agents** — Claude Code, Codex CLI, and OpenClaw in one multi-agent daemon view
+- **Works from anywhere** — all 12 surfaces can monitor the agent; interactive surfaces (Stream Deck, Android, Apple) can also control it
 
 The bridge is transparent: if it's off, Claude Code works exactly as before.
 
@@ -106,9 +107,10 @@ The bridge is transparent: if it's off, Claude Code works exactly as before.
 | Agent | Status |
 |-------|--------|
 | **Claude Code** | Supported (primary) |
+| **Codex CLI** | Supported — PTY parser, model detection, and dashboard integration |
 | **OpenClaw** | Experimental — Gateway WebSocket, timeline panel, log stream |
 
-### Supported Surfaces — 11 Types
+### Supported Surfaces — 12 Types
 
 | # | Surface | Description |
 |---|---------|-------------|
@@ -121,8 +123,9 @@ The bridge is transparent: if it's off, Claude Code works exactly as before.
 | 7 | **ESP32 Round AMOLED** | 1.8" circular 466×466 — compact WiFi display |
 | 8 | **ESP32 IPS LCD** | 3.5" rectangular 480×320 |
 | 9 | **ESP32 B86 Box** | 4" wall-mount touch panel 480×480 |
-| 10 | **Pixoo64 LED** | 64×64 RGB LED pixel art terrarium |
-| 11 | **TUI Terminal** | Unicode braille terrarium + ANSI dashboard — SSH/remote |
+| 10 | **Ulanzi TC001** | 8×32 RGB LED matrix — compact HUD pages and creature sprites |
+| 11 | **Pixoo64 LED** | 64×64 RGB LED pixel art terrarium |
+| 12 | **TUI Terminal** | Unicode braille terrarium + ANSI dashboard — SSH/remote |
 
 <p align="center">
   <img src="docs/media/ipad-iphone-closeup.jpg" width="360" alt="iPad and iPhone showing terrarium with pixel art creatures">
@@ -156,7 +159,7 @@ Claude Code Hooks ─ HTTP ───►│  Output Parser → State Machine    �
                               └──────────────────────────────────┘
 ```
 
-The daemon is the sole hub for all dashboard clients. Session bridges handle PTY + hooks only. The daemon aggregates state from all sessions and broadcasts to all 11 surfaces. Local clients are auto-trusted; LAN clients authenticate with a token from `~/.agentdeck/auth-token`. Interactive surfaces (Stream Deck, Android, Apple) can control the agent; monitoring surfaces (Pixoo, TUI, ESP32) display state.
+The daemon is the sole hub for all dashboard clients. Session bridges handle PTY + hooks only. The daemon aggregates state from all sessions and broadcasts to all 12 surfaces. Local clients are auto-trusted; LAN clients authenticate with a token from `~/.agentdeck/auth-token`. Interactive surfaces (Stream Deck, Android, Apple) can control the agent; monitoring surfaces (Pixoo, TUI, ESP32) display state.
 
 ---
 
@@ -256,10 +259,10 @@ See **[Voice Setup Guide](docs/voice-setup.md)** for full instructions including
 ### Start
 
 ```bash
-agentdeck claude
+agentdeck claude   # or: agentdeck codex
 ```
 
-This spawns Claude Code inside a PTY and starts a session bridge on a dynamic port (HTTP + hooks). Your terminal works exactly as before — the Stream Deck adds a parallel control channel. The **daemon** (port 9120, `0.0.0.0`) aggregates all sessions for external clients.
+This spawns Claude Code or Codex CLI inside a PTY and starts a session bridge on a dynamic port (HTTP + hooks). Your terminal works exactly as before — the Stream Deck adds a parallel control channel. The **daemon** (port 9120, `0.0.0.0`) aggregates all sessions for external clients.
 
 > **Security:** The daemon binds to `0.0.0.0` for LAN access (multi-surface monitoring). Local connections bypass authentication. Remote connections require the auth token from `~/.agentdeck/auth-token`.
 
@@ -272,6 +275,7 @@ The CLI command is `agentdeck`.
 | Command | Description |
 |---------|-------------|
 | `agentdeck claude` | Start Claude Code session (PTY + bridge) |
+| `agentdeck codex` | Start Codex CLI session (PTY + bridge) |
 | `agentdeck monitor` | Hook-only bridge (no PTY — run `claude` separately) |
 
 **Flags:** `-p <port>`, `-c <command>`, `-d` (debug), `--no-update-check`
@@ -374,21 +378,16 @@ See **[Stream Deck+ Layout Reference](docs/streamdeck-layout.md)** for per-state
 Monitor and control your AI agents from any Android device — no Stream Deck required.
 
 <p align="center">
-  <img src="docs/media/tablet-fullui-latest.png" width="720" alt="Android tablet — full terrarium UI with octopus creatures, crayfish, HUD panels, and timeline">
+  <img src="assets/LenovoTab_screenshot.png" width="720" alt="Android tablet — AgentDeck terrarium UI on Lenovo tablet">
 </p>
 <p align="center"><em>Tablet mode — color terrarium with multi-session octopi, crayfish, neon tetra, and HUD overlay</em></p>
 
 <p align="center">
-  <img src="docs/media/android-eink.png" width="360" alt="Android e-ink — B&W aquarium dashboard on Crema S">
+  <img src="assets/CremaS_screenshot.png" width="360" alt="Crema S e-ink AgentDeck dashboard">
   &nbsp;&nbsp;
-  <img src="docs/media/eink-crema-timeline.png" width="360" alt="Crema S E-ink — grayscale aquarium with timeline and rate limits">
+  <img src="assets/Pantone6_screenshot.png" width="360" alt="Pantone 6 color e-ink AgentDeck dashboard">
 </p>
-<p align="center"><em>E-ink mode (Crema S) — 16-level grayscale aquarium with agent list, rate limits, and event timeline</em></p>
-
-<p align="center">
-  <img src="docs/media/color-eink-esp32.jpg" width="480" alt="Color E-ink (Pantone 6 Kaleido 3) showing multi-agent aquarium with ESP32 Round AMOLED">
-</p>
-<p align="center"><em>Color E-ink (MOAAN Pantone 6, Kaleido 3) — 4096 colors, multi-agent view with ESP32 Round AMOLED</em></p>
+<p align="center"><em>E-ink mode — Crema S grayscale dashboard and Pantone 6 Kaleido 3 color dashboard</em></p>
 
 The Android app connects to the same bridge server over your local network, giving you a second screen for agent monitoring and a full mirror of the Stream Deck controls.
 
@@ -497,6 +496,7 @@ Compact WiFi-connected displays for always-on agent monitoring.
 | **Round AMOLED** | 1.8" circular AMOLED | 466×466 |
 | **IPS LCD** | 3.5" rectangular IPS | 480×320 |
 | **B86 Box** | 4" wall-mount touch panel | 480×480 |
+| **Ulanzi TC001** | 8×32 WS2812B RGB LED matrix | 256 pixels |
 
 ### Setup
 
@@ -635,6 +635,8 @@ pnpm test:android                # Android suite via unified report script
 
 The repository currently uses 4 test frameworks. The default `pnpm test` path only runs the root Vitest suite; Android, Apple, and ESP32 suites are executed through `scripts/test-report.sh`.
 
+GitHub Pages publishes the current test dashboard at `https://puritysb.github.io/AgentDeck/reports/` with suite status, scenario coverage mapping, and coverage trends.
+
 | Framework | Scope | Current inventory | Notes |
 |-----------|-------|-------------------|-------|
 | **Vitest** | `bridge`, `plugin`, `shared`, `hooks` | 26 `.test.ts` files | Root `pnpm test` and CI path |
@@ -689,9 +691,10 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 - [x] Android tablet + e-ink dashboard (Jetpack Compose)
 - [x] Apple iOS/iPad/macOS dashboard (SwiftUI multiplatform)
 - [x] Apple TestFlight CI pipeline
-- [x] ESP32 compact displays (Round AMOLED, IPS LCD, B86 Box)
+- [x] ESP32 compact displays (Round AMOLED, IPS LCD, B86 Box, Ulanzi TC001)
 - [x] TUI terminal dashboard (Unicode Braille + ANSI)
 - [x] Pixoo64 LED matrix pixel art
+- [x] Codex CLI session support
 - [x] Multi-agent visualization (Claude Code + OpenClaw creatures)
 - [x] Daemon mode with multi-session aggregation
 - [x] Voice assistant pipeline (wake word → STT → LLM → TTS)
@@ -700,7 +703,7 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 
 ### Planned
 
-- Additional agent integrations (Opencode, Codex CLI)
+- Additional agent integrations (Opencode)
 - Windows/Linux platform support
 - Project-specific layout presets
 - Custom button icon support
