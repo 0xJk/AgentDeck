@@ -87,23 +87,32 @@ function stateY(state: 'idle' | 'processing' | 'awaiting'): number {
  * Sync creature instances with current session data.
  * Called every frame to add/remove/update creatures.
  */
+/** Check if agent type gets a creature (octopus or jellyfish). */
+function isCreatureAgent(agentType: string): boolean {
+  return CODING_AGENTS.has(agentType) || JELLYFISH_AGENTS.has(agentType);
+}
+
+function creatureTypeFor(agentType: string): 'octopus' | 'jellyfish' {
+  return JELLYFISH_AGENTS.has(agentType) ? 'jellyfish' : 'octopus';
+}
+
 function syncCreatures(
   sessions: SessionInfo[] | null,
   stateEvent: StateUpdateEvent | null,
 ): void {
-  // Determine which sessions are alive coding agents
+  // Determine which sessions are alive creature agents (octopus or jellyfish)
   const aliveCoding: { id: string; agentType: string; state: string }[] = [];
   if (sessions) {
     for (const s of sessions) {
-      if (s.alive && s.agentType && CODING_AGENTS.has(s.agentType)) {
+      if (s.alive && s.agentType && isCreatureAgent(s.agentType)) {
         aliveCoding.push({ id: s.id, agentType: s.agentType, state: s.state ?? 'idle' });
       }
     }
   }
 
-  // If no sessions data, use stateEvent as single session (only for coding agents)
+  // If no sessions data, use stateEvent as single session (only for creature agents)
   const stateAgentType = (stateEvent?.agentType ?? 'claude-code') as string;
-  if (aliveCoding.length === 0 && stateEvent && CODING_AGENTS.has(stateAgentType)) {
+  if (aliveCoding.length === 0 && stateEvent && isCreatureAgent(stateAgentType)) {
     aliveCoding.push({
       id: '_primary',
       agentType: stateAgentType,
@@ -127,6 +136,7 @@ function syncCreatures(
     if (existing) {
       existing.state = sessionState;
       existing.agentType = s.agentType;
+      existing.creatureType = creatureTypeFor(s.agentType);
       // Update Y position based on state (X stays fixed)
       existing.worldY = stateY(sessionState);
     } else {
@@ -137,6 +147,7 @@ function syncCreatures(
       creatureInstances.set(s.id, {
         sessionId: s.id,
         agentType: s.agentType,
+        creatureType: creatureTypeFor(s.agentType),
         state: sessionState,
         worldX: x,
         worldY: stateY(sessionState),
@@ -146,10 +157,10 @@ function syncCreatures(
   }
 
   // Override primary session state from stateEvent (more precise than polling)
-  // Only when stateEvent is from a coding agent — daemon/openclaw report stale IDLE
+  // Only when stateEvent is from a creature agent — daemon/openclaw report stale IDLE
   const aType = stateEvent?.agentType as string | undefined;
-  const isCodingAgent = CODING_AGENTS.has(aType ?? '');
-  if (stateEvent && isCodingAgent && aliveCoding.length > 0) {
+  const isCreature = isCreatureAgent(aType ?? '');
+  if (stateEvent && isCreature && aliveCoding.length > 0) {
     const primaryId = aliveCoding[0].id;
     const primary = creatureInstances.get(primaryId);
     if (primary) {
@@ -738,7 +749,7 @@ export function renderFrame(
     }
   }
 
-  // Octopus creatures — always drawn; IDLE = idle (body still, limbs animate gently)
+  // Creature instances — octopus or jellyfish based on agent type
   const creatureOrder = [...creatureInstances.keys()];
   for (const c of creatureInstances.values()) {
     const sessionToneIndex = creatureOrder.indexOf(c.sessionId);
@@ -746,15 +757,28 @@ export function renderFrame(
       c.state === 'processing' ? 'working'
         : c.state === 'awaiting' ? 'asking'
           : 'idle'; // IDLE → idle (limbs move, body color preserved)
-    drawOctopus(
-      outputBuf,
-      c.worldX,
-      c.worldY,
-      spriteState,
-      animFrame + c.phaseOffset,
-      camera,
-      getOctopusPaletteForSession(sessionToneIndex),
-    );
+
+    if (c.creatureType === 'jellyfish') {
+      drawJellyfish(
+        outputBuf,
+        c.worldX,
+        c.worldY,
+        spriteState,
+        animFrame + c.phaseOffset,
+        camera,
+        getJellyfishPaletteForSession(sessionToneIndex),
+      );
+    } else {
+      drawOctopus(
+        outputBuf,
+        c.worldX,
+        c.worldY,
+        spriteState,
+        animFrame + c.phaseOffset,
+        camera,
+        getOctopusPaletteForSession(sessionToneIndex),
+      );
+    }
   }
 
   // Crayfish — always drawn when gateway available; IDLE = sitting (subtle breathing only)
@@ -777,16 +801,20 @@ export function renderFrame(
     }
   }
 
-  // Session count indicator (top-left, screen-space) — terracotta dots when 2+ sessions
+  // Session count indicator (top-left, screen-space) — colored dots when 2+ sessions
   const sessionCount = creatureInstances.size;
   if (sessionCount >= 2) {
+    const orderedCreatures = [...creatureInstances.values()];
     for (let i = 0; i < Math.min(sessionCount, 6); i++) {
       const dotX = 1 + i * 3;  // 2px dot + 1px gap
-      const palette = getOctopusPaletteForSession(i);
-      setPixel(outputBuf, dotX, 1, palette.body);
-      setPixel(outputBuf, dotX + 1, 1, palette.body);
-      setPixel(outputBuf, dotX, 2, palette.body);
-      setPixel(outputBuf, dotX + 1, 2, palette.body);
+      const c = orderedCreatures[i];
+      const dotColor = c.creatureType === 'jellyfish'
+        ? getJellyfishPaletteForSession(i).body
+        : getOctopusPaletteForSession(i).body;
+      setPixel(outputBuf, dotX, 1, dotColor);
+      setPixel(outputBuf, dotX + 1, 1, dotColor);
+      setPixel(outputBuf, dotX, 2, dotColor);
+      setPixel(outputBuf, dotX + 1, 2, dotColor);
     }
   }
 
