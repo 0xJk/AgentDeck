@@ -18,7 +18,6 @@ jobs:
 
       - name: Select Xcode
         run: |
-          # Use latest available Xcode on the runner
           XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
           echo "Using: $XCODE"
           sudo xcode-select -s "$XCODE/Contents/Developer"
@@ -57,7 +56,7 @@ jobs:
           mkdir -p ~/private_keys
           echo -n "$ASC_API_KEY_BASE64" | base64 --decode -o ~/private_keys/AuthKey_${ASC_API_KEY_ID}.p8
 
-      - name: Install provisioning profile
+      - name: Install iOS provisioning profile
         env:
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
@@ -66,7 +65,7 @@ jobs:
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           UUID=$(security cms -D -i $PP_PATH | plutil -extract UUID raw -)
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          echo "Installed profile: $UUID"
+          echo "Installed iOS profile: $UUID"
 
       - name: Archive iOS
         run: |
@@ -75,10 +74,6 @@ jobs:
             -scheme AgentDeck_iOS \
             -destination 'generic/platform=iOS' \
             -archivePath $RUNNER_TEMP/AgentDeck_iOS.xcarchive \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
-            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
-            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }} \
             MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM=R22679GY5Z \
@@ -89,11 +84,7 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath $RUNNER_TEMP/AgentDeck_iOS.xcarchive \
             -exportOptionsPlist apple/ExportOptions.plist \
-            -exportPath $RUNNER_TEMP/export_ios \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
-            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
-            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }}
+            -exportPath $RUNNER_TEMP/export_ios
 
       - name: Upload iOS to TestFlight
         run: |
@@ -103,21 +94,6 @@ jobs:
             --apiKey ${{ secrets.ASC_API_KEY_ID }} \
             --apiIssuer ${{ secrets.ASC_ISSUER_ID }}
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "AgentDeck Apple v${{ steps.version.outputs.VERSION }}"
-          body: |
-            ## AgentDeck Apple v${{ steps.version.outputs.VERSION }}
-
-            iOS/iPad dashboard app for monitoring Claude Code sessions.
-
-            ### Install
-            The build has been uploaded to **TestFlight**. Install via:
-            1. Open TestFlight on your iPhone/iPad
-            2. Accept the invite or check for available builds
-            3. Install AgentDeck
-
       - name: Cleanup
         if: always()
         run: |
@@ -126,7 +102,6 @@ jobs:
           rm -rf ~/private_keys
 
   build-macos:
-    if: false  # TODO: needs "Mac Installer Distribution" cert + cloud signing permission
     runs-on: macos-15
     timeout-minutes: 30
 
@@ -135,7 +110,6 @@ jobs:
 
       - name: Select Xcode
         run: |
-          # Use latest available Xcode on the runner
           XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
           echo "Using: $XCODE"
           sudo xcode-select -s "$XCODE/Contents/Developer"
@@ -174,6 +148,17 @@ jobs:
           mkdir -p ~/private_keys
           echo -n "$ASC_API_KEY_BASE64" | base64 --decode -o ~/private_keys/AuthKey_${ASC_API_KEY_ID}.p8
 
+      - name: Install macOS provisioning profile
+        env:
+          MACOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PP_PATH=$RUNNER_TEMP/profile.provisionprofile
+          echo -n "$MACOS_PROVISIONING_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          UUID=$(security cms -D -i $PP_PATH | plutil -extract UUID raw -)
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.provisionprofile
+          echo "Installed macOS profile: $UUID"
+
       - name: Archive macOS
         run: |
           xcodebuild archive \
@@ -181,24 +166,16 @@ jobs:
             -scheme AgentDeck_macOS \
             -destination 'generic/platform=macOS' \
             -archivePath $RUNNER_TEMP/AgentDeck_macOS.xcarchive \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
-            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
-            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }} \
             MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM=R22679GY5Z
 
-      - name: Export macOS app
+      - name: Export macOS pkg
         run: |
           xcodebuild -exportArchive \
             -archivePath $RUNNER_TEMP/AgentDeck_macOS.xcarchive \
-            -exportOptionsPlist apple/ExportOptions.plist \
-            -exportPath $RUNNER_TEMP/export_macos \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
-            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
-            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }}
+            -exportOptionsPlist apple/ExportOptions-macOS.plist \
+            -exportPath $RUNNER_TEMP/export_macos
 
       - name: Upload macOS to App Store Connect
         run: |
@@ -214,3 +191,21 @@ jobs:
           security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
           rm -f $RUNNER_TEMP/certificate.p12
           rm -rf ~/private_keys
+
+  release:
+    needs: [build-ios, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "AgentDeck Apple v${{ github.ref_name }}"
+          body: |
+            ## AgentDeck Apple ${{ github.ref_name }}
+
+            Universal dashboard app for monitoring coding agent sessions.
+
+            ### Install via TestFlight
+            1. Open **TestFlight** on your iPhone/iPad/Mac
+            2. Accept the invite or check for available builds
+            3. Install **AgentDeck Dashboard**
