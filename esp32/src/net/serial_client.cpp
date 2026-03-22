@@ -2,7 +2,9 @@
 #include "protocol.h"
 #include "wifi_manager.h"
 #include "../state/agent_state.h"
+#ifndef BOARD_ULANZI_TC001
 #include "../ui/screens/splash.h"
+#endif
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
@@ -26,7 +28,9 @@ static void sendDeviceInfoSerial() {
     JsonDocument resp;
     resp["type"] = "device_info";
 
-    #if IS_ROUND
+    #if defined(BOARD_ULANZI_TC001)
+    resp["board"] = "ulanzi_tc001";
+    #elif IS_ROUND
     resp["board"] = "round_amoled";
     #elif defined(IS_86BOX)
     resp["board"] = "86box";

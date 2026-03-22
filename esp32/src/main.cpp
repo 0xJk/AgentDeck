@@ -1,15 +1,12 @@
 /**
- * AgentDeck ESP32-S3 Touch Display Client
+ * AgentDeck ESP32 Display Client
  *
  * FreeRTOS dual-core architecture:
  *   Core 0: WiFi + mDNS + WebSocket (network task)
- *   Core 1: LVGL rendering + touch (UI task)
+ *   Core 1: UI rendering (LVGL or LED matrix)
  *
- * Screens:
- *   Splash → Aquarium ↔ Timeline (swipe up/down)
- *   Settings (long press on aquarium)
- *   Permission → octopus "?" speech bubble (no modal)
- *
+ * LVGL boards (ESP32-S3): Splash → Aquarium ↔ Timeline, Settings
+ * TC001 (ESP32 classic): 8x32 WS2812B LED matrix, page-based UI
  */
 
 #include <Arduino.h>
@@ -22,18 +19,24 @@
 #include "net/wifi_manager.h"
 #include "net/mdns_discovery.h"
 #include "net/ws_client.h"
+
+#ifdef BOARD_ULANZI_TC001
+#include "ui/matrix/matrix_display.h"
+#else
 #include "ui/display.h"
 #include "ui/screens/splash.h"
 #include "ui/screens/aquarium.h"
 #include "ui/screens/timeline_scr.h"
 #include "ui/screens/settings.h"
 #include "ui/screens/permission.h"
+#endif
 
 // ===== Global state =====
 DashboardState g_state;
 SemaphoreHandle_t g_stateMutex = nullptr;
 
-// ===== Screen objects =====
+#ifndef BOARD_ULANZI_TC001
+// ===== Screen objects (LVGL boards only) =====
 static lv_obj_t* scrSplash = nullptr;
 static lv_obj_t* scrAquarium = nullptr;
 static lv_obj_t* scrTimeline = nullptr;
@@ -45,6 +48,7 @@ static enum {
     VIEW_TIMELINE,
     VIEW_SETTINGS
 } currentView = VIEW_SPLASH;
+#endif
 
 // ===== Network task (Core 0) =====
 static void networkTask(void* param) {
@@ -100,6 +104,7 @@ static void networkTask(void* param) {
     }
 }
 
+#ifndef BOARD_ULANZI_TC001
 // ===== Settings long-press handler =====
 static void onLongPress(lv_event_t* e) {
     if (currentView == VIEW_AQUARIUM) {
@@ -179,9 +184,10 @@ static void uiTask(void* param) {
                 lv_screen_load_anim(scrAquarium, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
                 currentView = VIEW_AQUARIUM;
                 // Show initial connection status on aquarium
-                if (!Net::wifiConnected()) {
+                // Serial connection counts as connected (no WiFi needed)
+                if (!Net::wifiConnected() && !Net::serialConnected()) {
                     Screens::aquariumSetConnectionStatus(ConnOverlayStatus::NO_WIFI);
-                } else {
+                } else if (!connected) {
                     Screens::aquariumSetConnectionStatus(ConnOverlayStatus::SEARCHING);
                 }
             } else if (Net::wifiConnected()) {
@@ -200,14 +206,16 @@ static void uiTask(void* param) {
         wasTimelineView = wantTimeline;
 
         // Update connection status overlay on aquarium
+        // connected = serial OR websocket — either path is valid
         bool wifiNow = Net::wifiConnected();
+        bool serialNow = Net::serialConnected();
         if (connected != prevConnStatus || wifiNow != prevWifiStatus) {
             prevConnStatus = connected;
             prevWifiStatus = wifiNow;
             if (currentView == VIEW_AQUARIUM || currentView == VIEW_TIMELINE) {
                 if (connected) {
                     Screens::aquariumSetConnectionStatus(ConnOverlayStatus::HIDDEN);
-                } else if (!wifiNow) {
+                } else if (!wifiNow && !serialNow) {
                     Screens::aquariumSetConnectionStatus(ConnOverlayStatus::NO_WIFI);
                 } else if (everConnected) {
                     Screens::aquariumSetConnectionStatus(ConnOverlayStatus::RECONNECTING);
@@ -239,18 +247,46 @@ static void uiTask(void* param) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
+#else // BOARD_ULANZI_TC001
+// ===== UI task — LED matrix (Core 1) =====
+static void uiTask(void* param) {
+    Serial.println("[UI] Matrix task started on core 1");
+    Matrix::init();
+
+    uint32_t lastFrameMs = millis();
+    while (true) {
+        uint32_t now = millis();
+        float dt = (now - lastFrameMs) / 1000.0f;
+        lastFrameMs = now;
+        if (dt > 0.1f) dt = 0.1f;
+
+        Matrix::update(dt);
+        Matrix::render();
+
+        vTaskDelay(pdMS_TO_TICKS(RENDER_INTERVAL_MS));
+    }
+}
+#endif // BOARD_ULANZI_TC001
 
 // ===== Arduino setup =====
 void setup() {
     Serial.setRxBufferSize(2048);  // Default 256 too small for large JSON messages
     Serial.begin(115200);
+#ifdef BOARD_ULANZI_TC001
+    // CH340 UART: no CDC wait needed
+    delay(200);
+    Serial.println("\n=== AgentDeck Ulanzi TC001 LED Matrix ===");
+#else
     // Native USB CDC: wait for host connection (up to 3 seconds)
     for (int i = 0; i < 30 && !Serial; i++) delay(100);
     delay(200);
     Serial.println("\n=== AgentDeck ESP32-S3 Display ===");
+#endif
     Serial.flush();
     Serial.printf("Board: %s  Screen: %dx%d\n",
-#if defined(BOARD_IPS_35)
+#if defined(BOARD_ULANZI_TC001)
+        "Ulanzi TC001",
+#elif defined(BOARD_IPS_35)
         "IPS 3.5\"",
 #elif defined(BOARD_BOX_86)
         "86 Box 4\"",
@@ -261,12 +297,16 @@ void setup() {
 #endif
         SCREEN_W, SCREEN_H);
 
+#ifndef BOARD_ULANZI_TC001
     // Init PSRAM
     if (psramFound()) {
         Serial.printf("PSRAM: %d KB free\n", ESP.getFreePsram() / 1024);
     } else {
         Serial.println("WARNING: No PSRAM found!");
     }
+#else
+    Serial.printf("Free heap: %d KB\n", ESP.getFreeHeap() / 1024);
+#endif
 
     // Init state
     g_stateMutex = xSemaphoreCreateMutex();
@@ -274,7 +314,7 @@ void setup() {
 
     // Launch tasks on separate cores
     xTaskCreatePinnedToCore(networkTask, "net", STACK_NETWORK, NULL, 1, NULL, CORE_NETWORK);
-    xTaskCreatePinnedToCore(uiTask, "ui", STACK_LVGL, NULL, 2, NULL, CORE_LVGL);
+    xTaskCreatePinnedToCore(uiTask, "ui", STACK_UI, NULL, 2, NULL, CORE_UI);
 }
 
 void loop() {

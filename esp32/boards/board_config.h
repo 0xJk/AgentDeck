@@ -9,6 +9,8 @@
     #include "board_86_box.h"
 #elif defined(BOARD_ROUND_AMOLED)
     #include "board_round_amoled.h"
+#elif defined(BOARD_ULANZI_TC001)
+    #include "board_ulanzi_tc001.h"
 #else
-    #error "No board defined! Use -DBOARD_IPS_35, -DBOARD_BOX_86, or -DBOARD_ROUND_AMOLED"
+    #error "No board defined! Use -DBOARD_IPS_35, -DBOARD_BOX_86, -DBOARD_ROUND_AMOLED, or -DBOARD_ULANZI_TC001"
 #endif

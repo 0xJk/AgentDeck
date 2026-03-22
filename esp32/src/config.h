@@ -24,12 +24,21 @@ constexpr uint32_t WS_PING_INTERVAL_MS  = 15000;
 constexpr uint32_t WS_PONG_TIMEOUT_MS   = 30000;
 
 // ===== LVGL =====
+#ifndef BOARD_ULANZI_TC001
 constexpr uint32_t LVGL_TICK_MS        = 5;
 constexpr uint32_t LVGL_TIMER_MS       = 5;
+#endif
 constexpr uint32_t RENDER_INTERVAL_MS  = 33;  // ~30fps
 
 // ===== Terrarium =====
-#if IS_ROUND
+#if defined(BOARD_ULANZI_TC001)
+constexpr uint8_t  MAX_OCTOPUS         = 1;
+constexpr uint8_t  MAX_TETRA           = 0;
+constexpr uint8_t  MAX_BUBBLES         = 0;
+constexpr uint8_t  MAX_FOOD_CRUMBS     = 0;
+constexpr uint8_t  KELP_COUNT          = 0;
+constexpr uint8_t  WAVE_SEGMENTS       = 0;
+#elif IS_ROUND
 constexpr uint8_t  MAX_OCTOPUS         = 4;
 constexpr uint8_t  MAX_TETRA           = 4;
 constexpr uint8_t  MAX_BUBBLES         = 12;
@@ -46,16 +55,37 @@ constexpr uint8_t  WAVE_SEGMENTS       = 20;
 #endif
 
 // ===== Timeline =====
+#if defined(BOARD_ULANZI_TC001)
+constexpr uint8_t  TIMELINE_MAX_ENTRIES = 32;
+#else
 constexpr uint8_t  TIMELINE_MAX_ENTRIES = 64;
+#endif
 
 // ===== Sin/Cos lookup table =====
 constexpr uint16_t SIN_TABLE_SIZE      = 256;
 
 // ===== FreeRTOS =====
 constexpr uint8_t  CORE_NETWORK        = 0;
-constexpr uint8_t  CORE_LVGL           = 1;
+constexpr uint8_t  CORE_UI             = 1;
 constexpr uint32_t STACK_NETWORK       = 8192;
-constexpr uint32_t STACK_LVGL          = 16384;
+#if defined(BOARD_ULANZI_TC001)
+constexpr uint32_t STACK_UI            = 4096;
+#else
+constexpr uint32_t STACK_UI            = 16384;
+#endif
 
 // ===== HUD =====
+#ifndef BOARD_ULANZI_TC001
 constexpr uint8_t  HUD_BAR_HEIGHT      = 24;
+#endif
+
+// ===== Matrix (TC001) =====
+#if defined(BOARD_ULANZI_TC001)
+constexpr uint8_t  MATRIX_BRIGHTNESS_MIN = 5;
+constexpr uint8_t  MATRIX_BRIGHTNESS_MAX = 80;
+constexpr uint8_t  MATRIX_BRIGHTNESS_DEF = 40;
+constexpr uint32_t PAGE_AUTO_CYCLE_MS    = 5000;
+constexpr uint32_t SCROLL_SPEED_MS       = 60;
+constexpr uint8_t  FONT_CHAR_W           = 4;   // 3px glyph + 1px gap
+constexpr uint8_t  FONT_CHAR_H           = 5;
+#endif
