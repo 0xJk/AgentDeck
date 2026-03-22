@@ -23,10 +23,10 @@ import type { StateUpdateEvent, UsageEvent } from '../types.js';
 import type { SessionInfo } from '@agentdeck/shared/protocol';
 import {
   type RGB, COLORS, setPixel, blendPixel, glowPixel, fillRect, lerpColor,
-  drawOctopus, drawCrayfish, drawTetra,
+  drawOctopus, drawJellyfish, drawCrayfish, drawTetra,
   drawText,
-  getOctopusPaletteForSession,
-  OCTO_WORLD_W, CF_WORLD_W,
+  getOctopusPaletteForSession, getJellyfishPaletteForSession,
+  OCTO_WORLD_W, JF_WORLD_W, CF_WORLD_W,
 } from './pixoo-sprites.js';
 import {
   type Camera, type ActiveCreature, CAMERA_WIDE, blitWithCamera,
@@ -54,6 +54,7 @@ const CF_DEFAULT_Y = 0.76; // just above sand line (sitting on ground)
 interface CreatureInstance {
   sessionId: string;
   agentType: string;
+  creatureType: 'octopus' | 'jellyfish';
   state: 'idle' | 'processing' | 'awaiting';
   worldX: number;
   worldY: number;
@@ -67,7 +68,9 @@ const PHI = (1 + Math.sqrt(5)) / 2;
 const creatureInstances = new Map<string, CreatureInstance>();
 
 /** Agent types that represent coding agents (draw as octopus). */
-const CODING_AGENTS = new Set(['claude-code', 'codex-cli', 'opencode']);
+const CODING_AGENTS = new Set(['claude-code', 'opencode']);
+/** Agent types drawn as jellyfish (cloud creature). */
+const JELLYFISH_AGENTS = new Set(['codex-cli']);
 
 // Y positions by state — idle nearly on sand, active higher up
 const IDLE_Y = 0.78;      // just above sand line (sleeping on ground)

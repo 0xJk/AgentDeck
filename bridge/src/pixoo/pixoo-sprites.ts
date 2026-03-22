@@ -108,6 +108,41 @@ const CRAYFISH_LOD: number[][] = [
 const CF_LOD_COLS = 8;
 const CF_LOD_ROWS = 6;
 
+// ===== Jellyfish 10×8 — 6-lobe cloud (matches TUI/Android CloudCreature) =====
+//
+// Codex CLI creature: clover-shaped cloud with >_ terminal prompt marking.
+// Cell types: 0=empty, 1=body, 2=marking(>_), 3=edge(breathe/contract)
+//
+export const JELLYFISH_GRID: number[][] = [
+  [0,0,1,1,0,0,1,1,0,0],  // top lobes
+  [0,1,1,1,1,1,1,1,1,0],  // upper merge
+  [1,1,1,1,1,1,1,1,1,1],  // widest — side lobes
+  [3,1,2,2,1,1,2,1,1,3],  // >_ marking + breathe edges
+  [3,1,1,1,1,1,1,1,1,3],  // center + breathe edges
+  [1,1,1,1,1,1,1,1,1,1],  // widest
+  [0,1,1,1,1,1,1,1,1,0],  // taper
+  [0,0,1,1,0,0,1,1,0,0],  // bottom lobes
+];
+const JF_COLS = 10;
+const JF_ROWS = 8;
+/** World width of jellyfish in normalized coords. */
+export const JF_WORLD_W = 10 / 64;
+
+// ===== Jellyfish LOD 7×5 — compact for zoom < 1.3 =====
+const JELLYFISH_LOD: number[][] = [
+  [0,1,1,0,1,1,0],  // top lobes
+  [1,1,1,1,1,1,1],  // widest
+  [1,1,2,1,2,1,1],  // marking
+  [1,1,1,1,1,1,1],  // widest
+  [0,1,1,0,1,1,0],  // bottom lobes
+];
+const JF_LOD_COLS = 7;
+const JF_LOD_ROWS = 5;
+
+// Cell type constants for jellyfish
+const MARKING = 2;
+const BREATHE_EDGE = 3;
+
 // ===== Colors — Android-matching darker palette =====
 type RGB = readonly [number, number, number];
 export interface OctopusPalette {
@@ -139,6 +174,14 @@ export const COLORS = {
   crayfishAntenna: [0xDD, 0x55, 0x55] as const,
   crayfishGlow:    [0x80, 0x20, 0x20] as const,  // warm red glow
   crayfishSick:    [0x88, 0x66, 0x66] as const,  // desaturated gray-red (gateway error)
+
+  // Jellyfish / Codex CLI (indigo — TUI/Android match)
+  jellyfishBody:    [0x63, 0x66, 0xF1] as const,  // indigo #6366F1
+  jellyfishEdge:    [0x4F, 0x46, 0xE5] as const,  // darker edge (breathe cells)
+  jellyfishMarking: [0xA5, 0xB4, 0xFC] as const,  // glow #A5B4FC (>_ prompt)
+  jellyfishGlow:    [0x31, 0x33, 0x78] as const,   // dim indigo glow halo
+  jellyfishPulse:   [0xA5, 0xB4, 0xFC] as const,   // bioluminescent pulse
+  jellyfishSleeping:[0x3A, 0x3C, 0x90] as const,   // dimmed indigo
 
   // Tetra (neon)
   tetraNeon: [0x00, 0xE5, 0xFF] as const,
@@ -231,6 +274,30 @@ export function getOctopusPaletteForSession(sessionIndex = 0): OctopusPalette {
     leg: scaleColor(COLORS.octopusLeg, tone),
     sleeping: scaleColor(COLORS.octopusSleeping, tone),
     starburst: scaleColor(COLORS.octopusStarburst, tone),
+  };
+}
+
+export interface JellyfishPalette {
+  body: RGB;
+  edge: RGB;
+  marking: RGB;
+  sleeping: RGB;
+  pulse: RGB;
+}
+
+/**
+ * Multi-session jellyfish palette with brightness ramp (same as octopus).
+ */
+export function getJellyfishPaletteForSession(sessionIndex = 0): JellyfishPalette {
+  const tone = SESSION_TONE_FACTORS[
+    Math.max(0, Math.min(SESSION_TONE_FACTORS.length - 1, sessionIndex))
+  ];
+  return {
+    body: scaleColor(COLORS.jellyfishBody, tone),
+    edge: scaleColor(COLORS.jellyfishEdge, tone),
+    marking: scaleColor(COLORS.jellyfishMarking, tone),
+    sleeping: scaleColor(COLORS.jellyfishSleeping, tone),
+    pulse: scaleColor(COLORS.jellyfishPulse, tone),
   };
 }
 
@@ -562,6 +629,137 @@ export function drawOctopus(
       const sx = scx + Math.cos(angle) * dist;
       const sy = scy + breathPx + Math.sin(angle) * dist * 0.6;
       setPixel(buf, Math.round(sx), Math.round(sy), palette.starburst);
+    }
+  }
+}
+
+/**
+ * Draw jellyfish — Codex CLI cloud creature (6-lobe clover, indigo).
+ *
+ * LED pixel art style matching octopus approach.
+ * Bell pulse: edge cells contract/expand rhythmically.
+ * >_ marking blinks subtly. Bioluminescent glow when processing.
+ */
+export function drawJellyfish(
+  buf: Uint8Array,
+  worldX: number, worldY: number,
+  state: 'idle' | 'working' | 'sleeping' | 'asking',
+  animFrame: number,
+  cam: Camera,
+  palette: JellyfishPalette = getJellyfishPaletteForSession(1),
+): void {
+  if (!isVisible(worldX, worldY, cam, 0.15)) return;
+
+  const [scx, scy] = worldToScreen(worldX, worldY, cam);
+
+  // LOD selection
+  const useLOD = cam.zoom < 1.3;
+  const grid = useLOD ? JELLYFISH_LOD : JELLYFISH_GRID;
+  const cols = useLOD ? JF_LOD_COLS : JF_COLS;
+  const rows = useLOD ? JF_LOD_ROWS : JF_ROWS;
+
+  // Fixed 1px per cell — LED pixel art
+  const cellSz = 1;
+  const spriteW = cols;
+  const spriteH = rows;
+
+  const baseX = Math.round(scx - spriteW / 2);
+  const baseY = Math.round(scy - spriteH / 2);
+
+  // Bell pulse: contraction/expansion
+  const pulseSpeed = state === 'working' ? 0.25 : 0.06;
+  const pulsePhase = Math.sin(animFrame * pulseSpeed);
+  const contracting = pulsePhase < 0;
+
+  // Vertical bob when working
+  const breathPx = state === 'working'
+    ? Math.round(Math.sin(animFrame * 0.3) * 1.5)
+    : 0;
+
+  // Bioluminescent body color pulse when working
+  const bodyColor = state === 'working'
+    ? lerpColor(palette.body, palette.pulse, (Math.sin(animFrame * 0.2) + 1) * 0.5)
+    : state === 'sleeping' ? palette.sleeping
+      : palette.body;
+
+  // >_ marking blink
+  const markingVisible = (animFrame % 60) > 5;
+
+  // Draw all cells
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const cellType = grid[row][col];
+      if (cellType === EMPTY) continue;
+
+      // Breathe edge: hide when contracting
+      if (cellType === BREATHE_EDGE) {
+        if (contracting) continue;
+        fillCell(buf,
+          baseX + col * cellSz,
+          baseY + row * cellSz + breathPx,
+          cellSz, cellSz, palette.edge,
+        );
+        continue;
+      }
+
+      // >_ marking: blink
+      if (cellType === MARKING) {
+        if (!markingVisible) {
+          // Show body color when marking hidden
+          fillCell(buf,
+            baseX + col * cellSz,
+            baseY + row * cellSz + breathPx,
+            cellSz, cellSz, bodyColor,
+          );
+          continue;
+        }
+        fillCell(buf,
+          baseX + col * cellSz,
+          baseY + row * cellSz + breathPx,
+          cellSz, cellSz, palette.marking,
+        );
+        continue;
+      }
+
+      // Body cell
+      fillCell(buf,
+        baseX + col * cellSz,
+        baseY + row * cellSz + breathPx,
+        cellSz, cellSz, bodyColor,
+      );
+    }
+  }
+
+  // "?" bubble when asking
+  if (state === 'asking') {
+    const bobY = Math.round(Math.sin(animFrame * 0.25));
+    const bx = scx;
+    const by = baseY - 3 + bobY;
+    const r = 3;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy <= r * r) {
+          blendPixel(buf, bx + dx, by + dy, COLORS.white, 0.7);
+        }
+      }
+    }
+    const qx = Math.round(bx);
+    const qy = Math.round(by);
+    setPixel(buf, qx + 1, qy - Math.round(r * 0.4), COLORS.stateAwaiting);
+    setPixel(buf, qx + 1, qy - Math.round(r * 0.2), COLORS.stateAwaiting);
+    setPixel(buf, qx, qy, COLORS.stateAwaiting);
+    setPixel(buf, qx, qy + Math.max(1, Math.round(r * 0.35)), COLORS.stateAwaiting);
+  }
+
+  // Orbiting glow particles when working (bioluminescent)
+  if (state === 'working') {
+    const orbitPhase = animFrame * 0.2;
+    const dist = 5 + Math.sin(animFrame * 0.15) * 2;
+    for (let i = 0; i < 4; i++) {
+      const angle = orbitPhase + (i * Math.PI * 2 / 4);
+      const sx = scx + Math.cos(angle) * dist;
+      const sy = scy + breathPx + Math.sin(angle) * dist * 0.6;
+      setPixel(buf, Math.round(sx), Math.round(sy), palette.pulse);
     }
   }
 }
