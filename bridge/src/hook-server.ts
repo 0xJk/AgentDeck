@@ -161,14 +161,16 @@ export class HookServer extends EventEmitter {
       this.sseClients.push({ res, id });
 
       // Send current state snapshot
-      if (this.lastStateEvent) {
-        const data = JSON.stringify(this.lastStateEvent);
-        res.write(`event: ${this.lastStateEvent.type}\ndata: ${data}\n\n`);
-      }
-      if (this.lastUsageEvent) {
-        const data = JSON.stringify(this.lastUsageEvent);
-        res.write(`event: ${this.lastUsageEvent.type}\ndata: ${data}\n\n`);
-      }
+      try {
+        if (this.lastStateEvent) {
+          const data = JSON.stringify(this.lastStateEvent);
+          res.write(`event: ${this.lastStateEvent.type}\ndata: ${data}\n\n`);
+        }
+        if (this.lastUsageEvent) {
+          const data = JSON.stringify(this.lastUsageEvent);
+          res.write(`event: ${this.lastUsageEvent.type}\ndata: ${data}\n\n`);
+        }
+      } catch { /* client disconnected before initial state sent */ }
 
       // Keep-alive heartbeat
       const heartbeat = setInterval(() => {

@@ -19,15 +19,21 @@ export class WsServer {
 
     // Server-side ping/pong to detect zombie connections
     this.pingTimer = setInterval(() => {
+      const dead: WebSocket[] = [];
       for (const ws of this.wss.clients) {
         if (this.clientAlive.get(ws) === false) {
-          debug('WS', 'Terminating unresponsive client');
-          this.clientAlive.delete(ws);
-          ws.terminate();
+          dead.push(ws);
           continue;
         }
         this.clientAlive.set(ws, false);
         ws.ping();
+      }
+      // Terminate outside iteration — ws.terminate() synchronously removes
+      // the client from wss.clients Set, which would corrupt the iterator.
+      for (const ws of dead) {
+        debug('WS', 'Terminating unresponsive client');
+        this.clientAlive.delete(ws);
+        ws.terminate();
       }
     }, WS_PING_INTERVAL_MS);
 
@@ -100,7 +106,7 @@ export class WsServer {
     debug('WS', `broadcast(${event.type}) to ${clientCount} clients`);
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
+        try { client.send(payload); } catch { /* client disconnecting */ }
       }
     }
     // Relay to registered hooks (ESP32 serial, etc.)
@@ -123,7 +129,7 @@ export class WsServer {
     const payload = JSON.stringify(event);
     for (const client of this.wss.clients) {
       if (client !== except && client.readyState === WebSocket.OPEN) {
-        client.send(payload);
+        try { client.send(payload); } catch { /* client disconnecting */ }
       }
     }
   }
@@ -138,7 +144,7 @@ export class WsServer {
 
   sendTo(ws: WebSocket, event: BridgeEvent): void {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(event));
+      try { ws.send(JSON.stringify(event)); } catch { /* client disconnecting */ }
     }
   }
 
@@ -149,7 +155,8 @@ export class WsServer {
   close(): void {
     clearInterval(this.pingTimer);
     this.clientAlive.clear();
-    for (const client of this.wss.clients) {
+    // Spread to array — client.close() modifies wss.clients Set
+    for (const client of [...this.wss.clients]) {
       client.close();
     }
     this.wss.close();
