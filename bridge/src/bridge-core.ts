@@ -515,6 +515,7 @@ export class BridgeCore {
     process.on('SIGTERM', handler);
     process.on('uncaughtException', (err) => {
       const msg = err?.message ?? '';
+      const code = (err as NodeJS.ErrnoException)?.code ?? '';
       // mDNS errors are non-critical — network interface changes (sleep/wake,
       // WiFi reconnect, VPN toggle) cause transient multicast failures.
       // Null out the mDNS instance so the recovery timer can re-publish.
@@ -524,6 +525,17 @@ export class BridgeCore {
       ) {
         debug('mDNS', `error (ignored): ${msg}`);
         invalidateMdnsInstance();
+        return;
+      }
+      // Stream/network errors are non-critical — client disconnects can cause
+      // EPIPE, ECONNRESET, or stream-destroyed errors asynchronously.
+      // Log and continue rather than killing the daemon.
+      if (
+        code === 'EPIPE' || code === 'ECONNRESET' || code === 'ENOTCONN' ||
+        msg.includes('ERR_STREAM_DESTROYED') || msg.includes('ERR_STREAM_WRITE_AFTER_END') ||
+        msg.includes('write after end') || msg.includes('This socket has been ended')
+      ) {
+        debug('core', `Stream/network error (ignored): ${code || msg}`);
         return;
       }
       // Log full stack trace to stderr AND append to crash log
@@ -542,6 +554,18 @@ export class BridgeCore {
       debug('core', `Unhandled rejection: ${reason}`);
       debug('core', `Unhandled rejection stack: ${reason instanceof Error ? reason.stack : reason}`);
       // Non-fatal — don't shutdown
+    });
+
+    // Diagnostic: log unexpected exits (SIGKILL can't be caught, but everything else is logged)
+    process.on('exit', (code) => {
+      if (!this.shutdownInProgress) {
+        const msg = `[${new Date().toISOString()}] Process exit without shutdown (code=${code})\n`;
+        try {
+          const { appendFileSync } = require('fs');
+          const { join } = require('path');
+          appendFileSync(join(process.env.HOME || '/tmp', '.agentdeck', 'daemon-crash.log'), msg);
+        } catch { /* best effort */ }
+      }
     });
   }
 

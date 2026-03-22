@@ -233,6 +233,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
       });
+      res.on('error', () => {}); // Prevent unhandled stream error on client disconnect
 
       const listener = (frame: Uint8Array) => {
         const bmp = rgbToBmp(frame, 64, 64);
@@ -274,6 +275,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     if (req.method === 'GET' && pathname === '/sse') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      res.on('error', () => {}); // Prevent unhandled stream error on client disconnect
       res.write(`event: connected\ndata: {}\n\n`);
       req.on('close', () => {});
       return;
@@ -286,6 +288,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
+  });
+
+  // Catch HTTP-level client errors (malformed requests, abrupt disconnects during upgrade)
+  httpServer.on('clientError', (err, socket) => {
+    debug('daemon', `HTTP client error: ${(err as Error).message}`);
+    if (!socket.destroyed) socket.destroy();
   });
 
   await new Promise<void>((resolve, reject) => {

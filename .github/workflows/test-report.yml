@@ -51,6 +51,8 @@ jobs:
         run: |
           mkdir -p coverage/test-report
           npx vitest run --reporter=json --reporter=default --outputFile=coverage/test-report/vitest.json --coverage
+        env:
+          COLORTERM: truecolor
 
       - name: Run Android tests
         id: android

@@ -17,6 +17,12 @@ export class WsServer {
   constructor(server: Server) {
     this.wss = new WebSocketServer({ server });
 
+    // Catch server-level errors (e.g., upgrade failures, internal ws errors)
+    // Without this handler, EventEmitter throws synchronously → process dies
+    this.wss.on('error', (err) => {
+      debug('WS', `WebSocketServer error: ${err}`);
+    });
+
     // Server-side ping/pong to detect zombie connections
     this.pingTimer = setInterval(() => {
       const dead: WebSocket[] = [];

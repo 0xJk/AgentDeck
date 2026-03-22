@@ -33,6 +33,10 @@ jobs:
 
       - name: Test
         run: pnpm test
+        env:
+          COLORTERM: truecolor
 
       - name: Coverage check
         run: npx vitest run --coverage
+        env:
+          COLORTERM: truecolor

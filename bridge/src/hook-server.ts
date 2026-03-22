@@ -156,6 +156,7 @@ export class HookServer extends EventEmitter {
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
       });
+      res.on('error', () => {}); // Prevent unhandled stream error on client disconnect
 
       const id = ++this.sseIdCounter;
       this.sseClients.push({ res, id });
@@ -274,6 +275,7 @@ export class HookServer extends EventEmitter {
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
       });
+      res.on('error', () => {}); // Prevent unhandled stream error on client disconnect
 
       const listener = (frame: Uint8Array) => {
         const bmp = rgbToBmp(frame, 64, 64);
