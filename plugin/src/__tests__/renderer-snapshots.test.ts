@@ -87,7 +87,7 @@ import {
 // ===== Test data factories =====
 
 function makeOption(overrides: Partial<PromptOption> = {}): PromptOption {
-  return { label: 'Allow', value: 'y', ...overrides };
+  return { index: 0, label: 'Allow', ...overrides };
 }
 
 function makeGroupedEntry(overrides: Partial<{
@@ -337,7 +337,11 @@ describe('option-renderer snapshots', () => {
 
   it('renderDetailPanel', () => {
     expect(renderDetailPanel({
-      opt: makeOption({ label: 'Allow', description: 'Write to /src/main.ts' }),
+      opt: makeOption({ label: 'Allow' }),
+      isPermOrDiff: true,
+      state: State.AWAITING_PERMISSION,
+      selectedIndex: 0,
+      total: 3,
       toolInput: '/Users/dev/project/src/main.ts',
       question: 'Allow file write?',
     })).toMatchSnapshot();

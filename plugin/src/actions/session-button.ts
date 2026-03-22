@@ -114,7 +114,6 @@ function startFileWatch(): void {
       if (currentState === State.DISCONNECTED || showingCcNoSession) {
         if (showingCcNoSession) {
           setNoSessionMode(false);
-          bridge.resetToAuto();
         }
         const sorted = [...sessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
         const newest = sorted[0];

@@ -109,6 +109,9 @@ importers:
       '@elgato/streamdeck':
         specifier: ^2.0.0
         version: 2.0.1
+      '@elgato/utils':
+        specifier: ^0.4.1
+        version: 0.4.1
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4

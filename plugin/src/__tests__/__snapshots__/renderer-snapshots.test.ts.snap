@@ -77,7 +77,7 @@ exports[`option-renderer snapshots > renderContextPanel permission 1`] = `
   </svg>"
 `;
 
-exports[`option-renderer snapshots > renderDetailPanel 1`] = `"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><defs><linearGradient id="dg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0f172a"/><stop offset="100%" stop-color="#0f172a"/></linearGradient></defs><rect width="200" height="100" fill="url(#dg)"/><text x="10" y="16" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#93c5fd">DETAIL</text><text x="10" y="30" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#e2e8f0">Allow</text></svg>"`;
+exports[`option-renderer snapshots > renderDetailPanel 1`] = `"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><defs><linearGradient id="dg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1a0505"/><stop offset="100%" stop-color="#0f172a"/></linearGradient></defs><rect width="200" height="100" fill="url(#dg)"/><text x="10" y="16" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#fca5a5">DETAIL</text><text x="10" y="34" font-family="monospace,Courier" font-size="13" fill="#e2e8f0">/Users/dev/project/src/mai</text><text x="10" y="50" font-family="monospace,Courier" font-size="13" fill="#e2e8f0">n.ts</text></svg>"`;
 
 exports[`option-renderer snapshots > renderFocusPanel with recommended option 1`] = `
 "<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">

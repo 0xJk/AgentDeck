@@ -14,7 +14,7 @@ import { dlog } from './log.js';
 const PIXMAP_LAYOUT = 'layouts/option-pixmap-layout.json';
 
 // Register cross-module callback (breaks circular dep with option-dial)
-setRefreshTakeoverCallback((...args: any[]) => refreshEncoderTakeover(...args));
+setRefreshTakeoverCallback((state, options, selectedIndex, question, currentTool, toolInput) => refreshEncoderTakeover(state, options, selectedIndex, question, currentTool, toolInput));
 
 let active = false;
 let generation = 0;

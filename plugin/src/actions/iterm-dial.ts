@@ -26,7 +26,7 @@ import { homedir } from 'os';
 
 // Register cross-module callbacks (breaks circular deps via encoder-registry)
 setTakeoverExitCallback(() => resetItermLayout());
-setUpdateItermStateCallback((...args: any[]) => updateItermDialState(...args));
+setUpdateItermStateCallback((state, agentType, sessionStatus, caps) => updateItermDialState(state, agentType, sessionStatus, caps));
 setSuppressAutoSwitchCallback(() => suppressAutoSwitch());
 
 const POLL_INTERVAL = 2000;
