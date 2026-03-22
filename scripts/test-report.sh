@@ -34,6 +34,35 @@ SUITES=()
 
 MODE="${1:---all}"
 
+write_metadata() {
+    local metadata="$REPORT_DIR/run-metadata.json"
+    python3 - <<PY
+import json
+
+suites = {}
+for name in ("vitest", "android", "apple", "robot"):
+    suites[name] = {"status": "not-run", "executed": False, "note": ""}
+
+$(for suite in "${SUITES[@]}"; do
+    note=""
+    case "$suite" in
+        vitest) note="Local vitest run" ;;
+        android) note="Local Android JUnit run" ;;
+        apple) note="Local Apple XCTest run" ;;
+        robot) note="Local Robot Framework run" ;;
+    esac
+    echo "suites['$suite'] = {'status': '${SUITE_STATUS[$suite]:-skip}', 'executed': True, 'note': '$note'}"
+done)
+
+data = {
+    "run_profile": "local",
+    "suites": suites,
+}
+with open("$metadata", "w") as f:
+    json.dump(data, f, indent=2)
+PY
+}
+
 # ============================================================
 # Vitest (bridge, plugin, shared, hooks)
 # ============================================================
@@ -372,6 +401,7 @@ with open('$json_report', 'w') as f:
     [ -d "$REPORT_DIR/robot" ] && echo -e "  ${DIM}Robot HTML:  $REPORT_DIR/robot/report.html${RESET}"
 
     # Generate HTML dashboard
+    write_metadata
     if python3 "$ROOT/scripts/generate-html-report.py" 2>/dev/null; then
         echo -e "  ${DIM}HTML report: $REPORT_DIR/index.html${RESET}"
     fi

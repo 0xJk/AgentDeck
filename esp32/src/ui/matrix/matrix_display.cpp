@@ -17,7 +17,7 @@ static Page currentPage = Page::USAGE;
 static float animTime = 0.0f;
 static bool autoCycle = true;
 static float pageCycleTimer = 0.0f;
-static float smoothBrightness = MATRIX_BRIGHTNESS_DEF;
+float smoothBrightness = MATRIX_BRIGHTNESS_DEF;  // non-static: accessed by matrix_pages
 
 void init() {
     FastLED.addLeds<WS2812B, BOARD_PIN_LED_DATA, GRB>(leds, MATRIX_LEDS);

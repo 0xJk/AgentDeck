@@ -67,7 +67,7 @@ import dev.agentdeck.ui.eink.EinkEventLog
 import dev.agentdeck.ui.eink.EinkAquariumFrame
 import dev.agentdeck.ui.eink.EinkSettingsOverlay
 import dev.agentdeck.ui.eink.EinkStatusCompact
-import dev.agentdeck.ui.eink.agentIcon
+import dev.agentdeck.ui.component.BrandIcon
 import dev.agentdeck.ui.eink.compactStateMarker
 import dev.agentdeck.ui.eink.mapSessionState
 import dev.agentdeck.terrarium.toTerrariumState
@@ -824,7 +824,6 @@ private fun EinkPortraitHeader(
             verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             entries.forEach { entry ->
-                val icon = agentIcon(entry.agentType)
                 val key = NameKey(entry.projectName, entry.agentType)
                 val needsSuffix = (nameCounts[key] ?: 1) > 1
                 val suffix = if (needsSuffix) {
@@ -847,19 +846,25 @@ private fun EinkPortraitHeader(
                     else -> null
                 }
                 val label = buildString {
-                    append("$icon $name$suffix ")
+                    append("$name$suffix ")
                     if (modelPart != null) append("$modelPart ")
                     append(stateMarker)
                 }
 
-                Text(
-                    text = label,
-                    fontSize = fontSize,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    BrandIcon(agentType = entry.agentType, isEink = true, size = fontSize.value.dp)
+                    Text(
+                        text = label,
+                        fontSize = fontSize,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }

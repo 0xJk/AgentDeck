@@ -87,8 +87,8 @@ constexpr uint8_t  HUD_BAR_HEIGHT      = 24;
 constexpr uint8_t  MATRIX_BRIGHTNESS_MIN = 3;
 constexpr uint8_t  MATRIX_BRIGHTNESS_MAX = 120;   // WS2812B max 255, capped for power stability
 constexpr uint8_t  MATRIX_BRIGHTNESS_DEF = 60;
-constexpr uint32_t PAGE_AUTO_CYCLE_MS    = 10000;  // 10s per page
-constexpr uint32_t SCROLL_SPEED_MS       = 60;
+constexpr uint32_t PAGE_AUTO_CYCLE_MS    = 15000;  // 15s per page
+constexpr uint32_t SCROLL_SPEED_MS       = 90;    // slower scroll
 constexpr uint8_t  FONT_CHAR_W           = 4;   // 3px glyph + 1px gap
 constexpr uint8_t  FONT_CHAR_H           = 5;
 #endif

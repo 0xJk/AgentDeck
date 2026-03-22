@@ -30,6 +30,7 @@ import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.ui.component.AgentDeckLogo
+import dev.agentdeck.ui.component.BrandIcon
 import kotlinx.coroutines.launch
 
 /**
@@ -106,7 +107,6 @@ fun EinkAgentPanel(
         Spacer(modifier = Modifier.height(6.dp))
 
         entries.forEach { entry ->
-            val icon = agentIcon(entry.agentType)
             val key = NameKey(entry.projectName, entry.agentType)
             val needsSuffix = (nameCounts[key] ?: 1) > 1
             val suffix = if (needsSuffix) {
@@ -116,9 +116,10 @@ fun EinkAgentPanel(
             } else {
                 ""
             }
-            val displayName = "$icon ${entry.projectName}$suffix"
+            val displayName = "${entry.projectName}$suffix"
 
             EinkAgentBlock(
+                agentType = entry.agentType,
                 displayName = displayName,
                 modelName = entry.modelName,
                 effortLevel = entry.effortLevel,
@@ -176,6 +177,7 @@ fun EinkAgentPanel(
  */
 @Composable
 internal fun EinkAgentBlock(
+    agentType: String?,
     displayName: String,
     modelName: String?,
     effortLevel: String? = null,
@@ -195,14 +197,20 @@ internal fun EinkAgentBlock(
     }
 
     Column {
-        Text(
-            text = displayName,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            BrandIcon(agentType = agentType, isEink = true)
+            Text(
+                text = displayName,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Text(
             text = subLine,
             fontSize = 13.sp,

@@ -23,8 +23,8 @@ import dev.agentdeck.net.PermissionMode
 import dev.agentdeck.net.SessionInfo
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.ui.component.AgentDeckLogo
+import dev.agentdeck.ui.component.BrandIcon
 import dev.agentdeck.ui.component.stateColor
-import dev.agentdeck.ui.eink.agentIcon
 import dev.agentdeck.ui.eink.compactStateMarker
 import dev.agentdeck.ui.eink.mapSessionState
 import dev.agentdeck.ui.eink.stateRank
@@ -123,7 +123,6 @@ fun SessionListPanel(
 
         // Session entries
         entries.forEach { entry ->
-            val icon = agentIcon(entry.agentType)
             val stateMarker = compactStateMarker(entry.agentState)
             val modelEffort = when {
                 entry.modelName != null && entry.effortLevel != null && entry.effortLevel != "medium" ->
@@ -149,15 +148,21 @@ fun SessionListPanel(
             }
 
             Column(modifier = Modifier.fillMaxWidth()) {
-                // Agent icon + session name
-                Text(
-                    text = "$icon ${entry.projectName}$suffix",
-                    color = TerrariumColors.HUDText,
-                    fontSize = 12.sp,
-                    fontWeight = if (entry.isPrimary) FontWeight.Bold else FontWeight.Normal,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // Agent brand icon + session name
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    BrandIcon(agentType = entry.agentType, isEink = false)
+                    Text(
+                        text = "${entry.projectName}$suffix",
+                        color = TerrariumColors.HUDText,
+                        fontSize = 12.sp,
+                        fontWeight = if (entry.isPrimary) FontWeight.Bold else FontWeight.Normal,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 // Model · state (state colored)
                 Text(
                     text = subLine,

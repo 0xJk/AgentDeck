@@ -172,8 +172,11 @@ bash scripts/test-report.sh --robot      # Robot Framework only
 Output includes:
 - Terminal table with pass/fail/skip per suite
 - JSON summary at `coverage/test-report/summary.json`
+- Run metadata at `coverage/test-report/run-metadata.json`
 - Vitest JSON at `coverage/test-report/vitest.json`
 - Robot HTML report at `coverage/test-report/robot/report.html` (if run)
+
+The GitHub Pages report also renders a scenario coverage mapping. That view is based on explicit file + assertion/case pattern matches from `scripts/scenario-matrix.json`, not raw code coverage percentages.
 
 ## CI Pipeline
 

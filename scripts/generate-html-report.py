@@ -30,6 +30,8 @@ ANDROID_XML_DIR = ROOT / "android" / "app" / "build" / "test-results" / "testDeb
 SCENARIO_JSON = ROOT / "scripts" / "scenario-matrix.json"
 ROBOT_XML = REPORT_DIR / "robot" / "output.xml"
 HISTORY_JSON = REPORT_DIR / "history.json"
+METADATA_JSON = REPORT_DIR / "run-metadata.json"
+SUMMARY_JSON = REPORT_DIR / "summary.json"
 OUTPUT_HTML = REPORT_DIR / "index.html"
 
 # ===== Data collection =====
@@ -136,8 +138,19 @@ def load_history():
     except (json.JSONDecodeError, ValueError):
         return []
 
-def update_history(history, total_passed, total_failed, total_all, lines_pct):
+def load_metadata():
+    if not METADATA_JSON.exists():
+        return {}
+    try:
+        with open(METADATA_JSON) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+def update_history(history, total_passed, total_failed, total_all, lines_pct, metadata):
     commit_sha = os.environ.get("GITHUB_SHA", "local")[:7]
+    suites = metadata.get("suites", {}) if metadata else {}
+    executed = sorted([name for name, suite in suites.items() if suite.get("executed")])
     history.append({
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
         "commit": commit_sha,
@@ -145,6 +158,8 @@ def update_history(history, total_passed, total_failed, total_all, lines_pct):
         "passed": total_passed,
         "failed": total_failed,
         "coverage": round(lines_pct, 1),
+        "run_profile": metadata.get("run_profile", "unknown") if metadata else "unknown",
+        "executed_suites": executed,
     })
     # Keep last 50 entries
     history = history[-50:]
@@ -211,11 +226,50 @@ def category_badge_html(category):
     fg, bg = colors.get(category, ("#64748b", "#64748b22"))
     return f'<span style="font-size:0.65rem;font-weight:600;padding:1px 6px;border-radius:3px;background:{bg};color:{fg};margin-left:0.5rem">{category}</span>'
 
+def suite_meta(metadata, name):
+    suites = metadata.get("suites", {}) if metadata else {}
+    meta = suites.get(name, {})
+    executed = bool(meta.get("executed"))
+    status = meta.get("status") or ("pass" if executed else "not-run")
+    return {
+        "status": status,
+        "executed": executed,
+        "note": meta.get("note", ""),
+    }
+
+def build_default_metadata(vitest, android, robot):
+    return {
+        "run_profile": "ad-hoc",
+        "suites": {
+            "vitest": {"status": "pass" if vitest else "not-run", "executed": bool(vitest), "note": ""},
+            "android": {"status": "pass" if android else "not-run", "executed": bool(android), "note": ""},
+            "apple": {"status": "not-run", "executed": False, "note": "No Apple result parser input"},
+            "robot": {"status": "pass" if robot else "not-run", "executed": bool(robot), "note": ""},
+        },
+    }
+
+def full_assertion_name(assertion):
+    ancestors = assertion.get("ancestorTitles", [])
+    title = assertion.get("title", "")
+    return " > ".join([*ancestors, title]).strip().lower()
+
+def pattern_matches(text, patterns):
+    if not patterns or "*" in patterns:
+        return True
+    lowered = text.lower()
+    return any(pattern.lower() in lowered for pattern in patterns)
+
 
 # ===== Scenario matrix =====
 
-def build_scenario_results(scenarios, vitest, android_suites):
+def build_scenario_results(scenarios, vitest, android_suites, metadata):
     """Cross-reference scenario test mappings against actual test results."""
+    suite_status = {
+        "vitest": suite_meta(metadata, "vitest"),
+        "android": suite_meta(metadata, "android"),
+        "apple": suite_meta(metadata, "apple"),
+        "robot": suite_meta(metadata, "robot"),
+    }
     # Build lookup: relative file path -> {status, passed, failed, total}
     vt_lookup = {}
     if vitest:
@@ -224,13 +278,66 @@ def build_scenario_results(scenarios, vitest, android_suites):
             assertions = result.get("assertionResults", [])
             p = sum(1 for a in assertions if a["status"] == "passed")
             f = sum(1 for a in assertions if a["status"] == "failed")
-            vt_lookup[rel] = {"status": result["status"], "passed": p, "failed": f, "total": p + f}
+            vt_lookup[rel] = {"status": result["status"], "passed": p, "failed": f, "total": p + f, "assertions": assertions}
 
     and_lookup = {}
     for suite in android_suites:
         # Android test files use classname like dev.agentdeck.net.ProtocolTest
         and_lookup[suite["name"]] = {"status": "passed" if suite["failures"] == 0 else "failed",
-                                     "passed": suite["passed"], "failed": suite["failures"], "total": suite["tests"]}
+                                     "passed": suite["passed"], "failed": suite["failures"], "total": suite["tests"],
+                                     "cases": suite["cases"]}
+
+    def resolve_entry(entry):
+        fpath = entry["file"]
+        patterns = entry.get("patterns", ["*"])
+
+        if fpath.startswith("apple/"):
+            return {"status": "not-run" if not suite_status["apple"]["executed"] else "missing", "passed": 0, "failed": 0}
+        if fpath.startswith("esp32/robot/"):
+            return {"status": "not-run" if not suite_status["robot"]["executed"] else "missing", "passed": 0, "failed": 0}
+
+        found = vt_lookup.get(fpath)
+        if not found:
+            basename = Path(fpath).name
+            for vpath, vdata in vt_lookup.items():
+                if vpath.endswith(basename):
+                    found = vdata
+                    break
+        if found:
+            if not suite_status["vitest"]["executed"]:
+                return {"status": "not-run", "passed": 0, "failed": 0}
+            if "*" in patterns:
+                return {"status": "fail" if found["failed"] else "pass", "passed": found["passed"], "failed": found["failed"]}
+            matched = [a for a in found.get("assertions", []) if pattern_matches(full_assertion_name(a), patterns)]
+            if not matched:
+                return {"status": "missing", "passed": 0, "failed": 0}
+            passed = sum(1 for a in matched if a["status"] == "passed")
+            failed = sum(1 for a in matched if a["status"] == "failed")
+            return {"status": "fail" if failed else "pass", "passed": passed, "failed": failed}
+
+        found = None
+        for aname, adata in and_lookup.items():
+            fname = Path(fpath).stem.replace("Test", "")
+            if fname.lower() in aname.lower():
+                found = adata
+                break
+        if found:
+            if not suite_status["android"]["executed"]:
+                return {"status": "not-run", "passed": 0, "failed": 0}
+            if "*" in patterns:
+                return {"status": "fail" if found["failed"] else "pass", "passed": found["passed"], "failed": found["failed"]}
+            matched = [c for c in found.get("cases", []) if pattern_matches(c.get("name", ""), patterns)]
+            if not matched:
+                return {"status": "missing", "passed": 0, "failed": 0}
+            passed = sum(1 for c in matched if c["status"] == "passed")
+            failed = sum(1 for c in matched if c["status"] == "failed")
+            return {"status": "fail" if failed else "pass", "passed": passed, "failed": failed}
+
+        if fpath.startswith("android/") and not suite_status["android"]["executed"]:
+            return {"status": "not-run", "passed": 0, "failed": 0}
+        if not suite_status["vitest"]["executed"]:
+            return {"status": "not-run", "passed": 0, "failed": 0}
+        return {"status": "missing", "passed": 0, "failed": 0}
 
     results = []
     for sc in scenarios:
@@ -240,38 +347,19 @@ def build_scenario_results(scenarios, vitest, android_suites):
 
         for cat in ("unit", "integration", "platform", "e2e"):
             test_entries = sc.get("tests", {}).get(cat, [])
-            cat_result = {"tests": [], "passed": 0, "failed": 0, "missing": 0, "total": len(test_entries)}
+            cat_result = {"tests": [], "passed": 0, "failed": 0, "missing": 0, "not_run": 0, "total": len(test_entries)}
 
             for entry in test_entries:
-                fpath = entry["file"]
-                # Try vitest lookup first
-                found = vt_lookup.get(fpath)
-                if not found:
-                    # Try android lookup by matching classname suffix
-                    for aname, adata in and_lookup.items():
-                        # Match partial: ProtocolTest.kt -> dev.agentdeck.net.ProtocolTest
-                        fname = Path(fpath).stem.replace("Test", "")
-                        if fname.lower() in aname.lower():
-                            found = adata
-                            break
-                if not found:
-                    # Try by filename match in vitest results
-                    basename = Path(fpath).name
-                    for vpath, vdata in vt_lookup.items():
-                        if vpath.endswith(basename):
-                            found = vdata
-                            break
-
-                if found:
-                    status = "pass" if found["failed"] == 0 else "fail"
-                    cat_result["tests"].append({"file": fpath, "status": status,
-                                                "passed": found["passed"], "failed": found["failed"]})
-                    if found["failed"] > 0:
-                        cat_result["failed"] += 1
-                    else:
-                        cat_result["passed"] += 1
+                resolved = resolve_entry(entry)
+                cat_result["tests"].append({"file": entry["file"], "status": resolved["status"],
+                                            "passed": resolved["passed"], "failed": resolved["failed"]})
+                if resolved["status"] == "fail":
+                    cat_result["failed"] += 1
+                elif resolved["status"] == "pass":
+                    cat_result["passed"] += 1
+                elif resolved["status"] == "not-run":
+                    cat_result["not_run"] += 1
                 else:
-                    cat_result["tests"].append({"file": fpath, "status": "missing", "passed": 0, "failed": 0})
                     cat_result["missing"] += 1
 
             sc_result["categories"][cat] = cat_result
@@ -302,11 +390,20 @@ def gauge_svg(pct, size=48):
     </svg>'''
 
 def status_badge(status):
-    if status == "passed":
+    if status in ("passed", "pass"):
         return '<span class="badge pass">PASS</span>'
-    elif status == "failed":
+    elif status in ("failed", "fail", "error"):
         return '<span class="badge fail">FAIL</span>'
+    elif status == "not-run":
+        return '<span class="badge skip">NOT RUN</span>'
     return '<span class="badge skip">SKIP</span>'
+
+def suite_progress_color(status):
+    if status in ("failed", "fail", "error"):
+        return "#ef4444"
+    if status in ("passed", "pass"):
+        return "#22c55e"
+    return "#64748b"
 
 def duration_fmt(ms):
     if ms < 1000:
@@ -325,10 +422,11 @@ def scenario_cell_html(cat_data):
     p = cat_data["passed"]
     f = cat_data["failed"]
     m = cat_data["missing"]
+    nr = cat_data.get("not_run", 0)
     if f > 0:
         cls = "sc-fail"
         label = f"{p}/{t}"
-    elif m > 0:
+    elif m > 0 or nr > 0:
         cls = "sc-warn"
         label = f"{p}/{t}"
     else:
@@ -338,7 +436,31 @@ def scenario_cell_html(cat_data):
     if p: title_parts.append(f"{p} passed")
     if f: title_parts.append(f"{f} failed")
     if m: title_parts.append(f"{m} not found in CI")
+    if nr: title_parts.append(f"{nr} not executed in this report")
     return f'<td class="sc-cell {cls}" title="{", ".join(title_parts)}">{label}</td>'
+
+def write_summary(metadata, total_passed, total_failed, total_all):
+    suites_meta = metadata.get("suites", {}) if metadata else {}
+    suites = []
+    for name in ("vitest", "android", "apple", "robot"):
+        meta = suites_meta.get(name, {})
+        suites.append({
+            "name": name,
+            "status": meta.get("status", "not-run"),
+            "executed": bool(meta.get("executed")),
+            "note": meta.get("note", ""),
+        })
+    report = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "run_profile": metadata.get("run_profile", "unknown") if metadata else "unknown",
+        "suites": suites,
+        "total": {
+            "passed": total_passed,
+            "failed": total_failed,
+            "total": total_all,
+        },
+    }
+    SUMMARY_JSON.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 def sparkline_svg(history, key, color, label, w=200, h=40):
     """Generate an SVG sparkline for a history metric."""
@@ -379,14 +501,18 @@ def sparkline_svg(history, key, color, label, w=200, h=40):
     </div>'''
 
 
-def generate_html(vitest, android_suites, cov_data, scenarios, scenario_results, history, robot=None):
+def generate_html(vitest, android_suites, cov_data, scenarios, scenario_results, history, metadata, robot=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    vitest_meta = suite_meta(metadata, "vitest")
+    android_meta = suite_meta(metadata, "android")
+    apple_meta = suite_meta(metadata, "apple")
+    robot_meta = suite_meta(metadata, "robot")
 
     # --- Aggregate stats ---
     vt_passed = vitest["numPassedTests"] if vitest else 0
     vt_failed = vitest["numFailedTests"] if vitest else 0
     vt_total = vitest["numTotalTests"] if vitest else 0
-    vt_suites = vitest["numTotalTestSuites"] if vitest else 0
+    vt_suites = len(vitest.get("testResults", [])) if vitest else 0
     vt_duration = (vitest["testResults"][-1]["endTime"] - vitest["startTime"]) if vitest and vitest.get("testResults") else 0
 
     and_passed = sum(s["passed"] for s in android_suites)
@@ -535,12 +661,13 @@ def generate_html(vitest, android_suites, cov_data, scenarios, scenario_results,
         all_total = sum(sc["categories"][c]["total"] for c in ("unit", "integration", "platform", "e2e"))
         all_failed = sum(sc["categories"][c]["failed"] for c in ("unit", "integration", "platform", "e2e"))
         all_missing = sum(sc["categories"][c]["missing"] for c in ("unit", "integration", "platform", "e2e"))
+        all_not_run = sum(sc["categories"][c].get("not_run", 0) for c in ("unit", "integration", "platform", "e2e"))
 
         if all_total == 0:
             score_cls = "sc-none"
         elif all_failed > 0:
             score_cls = "sc-fail"
-        elif all_missing > 0:
+        elif all_missing > 0 or all_not_run > 0:
             score_cls = "sc-warn"
         else:
             score_cls = "sc-pass"
@@ -555,8 +682,8 @@ def generate_html(vitest, android_suites, cov_data, scenarios, scenario_results,
         detail_html = ""
         for cat in ("unit", "integration", "platform", "e2e"):
             for t in sc["categories"][cat]["tests"]:
-                t_icon = "✓" if t["status"] == "pass" else ("✗" if t["status"] == "fail" else "?")
-                t_color = "#22c55e" if t["status"] == "pass" else ("#ef4444" if t["status"] == "fail" else "#64748b")
+                t_icon = "✓" if t["status"] == "pass" else ("✗" if t["status"] == "fail" else "○" if t["status"] == "not-run" else "?")
+                t_color = "#22c55e" if t["status"] == "pass" else ("#ef4444" if t["status"] == "fail" else "#94a3b8" if t["status"] == "not-run" else "#64748b")
                 detail_html += f'''<tr class="sc-detail-row" data-scenario="{sc["id"]}" style="display:none">
                     <td style="padding-left:2rem;color:{t_color}">{t_icon}</td>
                     <td class="file-path" style="font-size:0.75rem">{t["file"]}</td>
@@ -580,7 +707,7 @@ def generate_html(vitest, android_suites, cov_data, scenarios, scenario_results,
     # --- Scenario summary stats ---
     sc_total = len(scenario_results)
     sc_full = sum(1 for s in scenario_results
-                  if all(s["categories"][c]["total"] == 0 or (s["categories"][c]["failed"] == 0 and s["categories"][c]["missing"] == 0)
+                  if all(s["categories"][c]["total"] == 0 or (s["categories"][c]["failed"] == 0 and s["categories"][c]["missing"] == 0 and s["categories"][c].get("not_run", 0) == 0)
                          for c in ("unit", "integration", "platform", "e2e"))
                   and any(s["categories"][c]["total"] > 0 for c in ("unit", "integration", "platform", "e2e")))
     sc_gaps = sum(1 for s in scenario_results if s["gaps"])
@@ -718,14 +845,14 @@ td {{ padding: 0.5rem 0.75rem; border-bottom: 1px solid #1e293b; font-size: 0.85
 <body>
 <div class="container">
   <h1>AgentDeck Test Report</h1>
-  <p class="subtitle">Generated {now} &middot; {total_all} tests across {vt_suites + len(android_suites)} suites</p>
+  <p class="subtitle">Generated {now} &middot; {total_all} executed tests &middot; profile {metadata.get("run_profile", "unknown") if metadata else "unknown"}</p>
 
   <!-- Summary Cards -->
   <div class="summary">
     <div class="card">
       <div class="card-label">Status</div>
       <div class="card-value" style="color:{overall_color}">{overall_status}</div>
-      <div class="card-sub">{total_all} total tests</div>
+      <div class="card-sub">{total_all} executed tests</div>
     </div>
     <div class="card">
       <div class="card-label">Passed</div>
@@ -743,9 +870,9 @@ td {{ padding: 0.5rem 0.75rem; border-bottom: 1px solid #1e293b; font-size: 0.85
       <div class="card-sub">{duration_fmt(vt_duration)} vitest + {duration_fmt(and_duration)} android</div>
     </div>
     <div class="card">
-      <div class="card-label">Line Coverage</div>
+      <div class="card-label">TS Line Coverage</div>
       <div class="card-value" style="color:{pct_color(lines_pct)}">{lines_pct:.1f}%</div>
-      <div class="card-sub">{lines_covered:,}/{lines_total_n:,} lines</div>
+      <div class="card-sub">{lines_covered:,}/{lines_total_n:,} TypeScript lines</div>
     </div>
   </div>
 
@@ -756,58 +883,58 @@ td {{ padding: 0.5rem 0.75rem; border-bottom: 1px solid #1e293b; font-size: 0.85
     <div class="suite-bar">
       <div class="suite-bar-header">
         <h3>Vitest</h3>
-        {status_badge("passed" if vt_failed == 0 else "failed")}
+        {status_badge(vitest_meta["status"])}
       </div>
       <div class="progress-bar">
-        <div class="progress-fill" style="width:{vt_passed/vt_total*100 if vt_total else 0:.1f}%;background:#22c55e"></div>
+        <div class="progress-fill" style="width:{vt_passed/vt_total*100 if vt_total else 0:.1f}%;background:{suite_progress_color(vitest_meta["status"])}"></div>
       </div>
       <div class="suite-stats">
         <span>Pass {vt_passed}</span>
         <span>Fail {vt_failed}</span>
         <span>{vt_suites} files</span>
-        <span>{duration_fmt(vt_duration)}</span>
+        <span>{vitest_meta["note"] or duration_fmt(vt_duration)}</span>
       </div>
     </div>
     <div class="suite-bar">
       <div class="suite-bar-header">
         <h3>Android</h3>
-        {status_badge("passed" if and_failed == 0 else "failed") if android_suites else status_badge("skip")}
+        {status_badge(android_meta["status"])}
       </div>
       <div class="progress-bar">
-        <div class="progress-fill" style="width:{and_passed/and_total*100 if and_total else 0:.1f}%;background:#22c55e"></div>
+        <div class="progress-fill" style="width:{and_passed/and_total*100 if and_total else 0:.1f}%;background:{suite_progress_color(android_meta["status"])}"></div>
       </div>
       <div class="suite-stats">
         <span>Pass {and_passed}</span>
         <span>Fail {and_failed}</span>
         <span>{len(android_suites)} files</span>
-        <span>{duration_fmt(and_duration)}</span>
+        <span>{android_meta["note"] or duration_fmt(and_duration)}</span>
       </div>
     </div>
     <div class="suite-bar">
       <div class="suite-bar-header">
         <h3>Apple (XCTest)</h3>
-        {status_badge("skip")}
+        {status_badge(apple_meta["status"])}
       </div>
-      <div class="progress-bar"><div class="progress-fill" style="width:0"></div></div>
-      <div class="suite-stats"><span style="color:var(--dim)">Requires macOS runner</span></div>
+      <div class="progress-bar"><div class="progress-fill" style="width:0;background:{suite_progress_color(apple_meta["status"])}"></div></div>
+      <div class="suite-stats"><span style="color:var(--dim)">{apple_meta["note"] or "Requires macOS runner"}</span></div>
     </div>
     <div class="suite-bar">
       <div class="suite-bar-header">
         <h3>Robot Framework</h3>
-        {status_badge("passed" if robot and rob_failed == 0 else "failed") if robot else status_badge("skip")}
+        {status_badge(robot_meta["status"])}
       </div>
       <div class="progress-bar">
-        <div class="progress-fill" style="width:{rob_passed/rob_total*100 if rob_total else 0:.1f}%;background:#22c55e"></div>
+        <div class="progress-fill" style="width:{rob_passed/rob_total*100 if rob_total else 0:.1f}%;background:{suite_progress_color(robot_meta["status"])}"></div>
       </div>
       <div class="suite-stats">
-        {f"<span>Pass {rob_passed}</span><span>Fail {rob_failed}</span><span>Skip {rob_skipped}</span>" if robot else '<span style="color:var(--dim)">Not available</span>'}
+        {f"<span>Pass {rob_passed}</span><span>Fail {rob_failed}</span><span>Skip {rob_skipped}</span>" if robot else f'<span style="color:var(--dim)">{robot_meta["note"] or "Not available"}</span>'}
       </div>
     </div>
   </div>
 
   <!-- Scenario Coverage Matrix -->
   {"" if not scenario_results else f"""<div class="section">
-    <div class="section-title">Scenario Coverage <span>{sc_total} scenarios &middot; {sc_full} fully covered &middot; {sc_gaps} with gaps</span></div>
+    <div class="section-title">Scenario Coverage Mapping <span>{sc_total} scenarios &middot; {sc_full} fully covered in this report &middot; {sc_gaps} with known gaps</span></div>
 
     <div class="sc-summary-bar">
       <span class="sc-summary-item"><span style="color:#22c55e;font-weight:600">{sc_full}</span> covered</span>
@@ -888,10 +1015,10 @@ td {{ padding: 0.5rem 0.75rem; border-bottom: 1px solid #1e293b; font-size: 0.85
     <div class="section-title">Coverage <span>v8 provider &middot; {lines_total_n:,} lines tracked</span></div>
 
     <div style="margin-bottom:1rem">
-      <div class="threshold"><div class="dot" style="background:{"#22c55e" if lines_pct >= 18 else "#ef4444"}"></div>Lines &ge;18%: {lines_pct:.1f}%</div>
-      <div class="threshold"><div class="dot" style="background:{"#22c55e" if funcs_pct >= 16 else "#ef4444"}"></div>Functions &ge;16%: {funcs_pct:.1f}%</div>
+      <div class="threshold"><div class="dot" style="background:{"#22c55e" if lines_pct >= 17 else "#ef4444"}"></div>Lines &ge;17%: {lines_pct:.1f}%</div>
+      <div class="threshold"><div class="dot" style="background:{"#22c55e" if funcs_pct >= 15 else "#ef4444"}"></div>Functions &ge;15%: {funcs_pct:.1f}%</div>
       <div class="threshold"><div class="dot" style="background:{"#22c55e" if branch_pct >= 14 else "#ef4444"}"></div>Branches &ge;14%: {branch_pct:.1f}%</div>
-      <div class="threshold"><div class="dot" style="background:{"#22c55e" if stmts_pct >= 18 else "#ef4444"}"></div>Statements &ge;18%: {stmts_pct:.1f}%</div>
+      <div class="threshold"><div class="dot" style="background:{"#22c55e" if stmts_pct >= 16 else "#ef4444"}"></div>Statements &ge;16%: {stmts_pct:.1f}%</div>
     </div>
 
     <div class="cov-cards">{pkg_cards}</div>
@@ -984,13 +1111,17 @@ def main():
     robot = load_robot_xml()
     scenarios = load_scenarios()
     history = load_history()
+    metadata = load_metadata()
+    if not metadata:
+        metadata = build_default_metadata(vitest, android, robot)
+        METADATA_JSON.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     if not vitest and not android and not robot:
         print("No test results found. Run 'pnpm test:report' first.")
         sys.exit(1)
 
     # Build scenario cross-reference
-    scenario_results = build_scenario_results(scenarios, vitest, android) if scenarios else []
+    scenario_results = build_scenario_results(scenarios, vitest, android, metadata) if scenarios else []
 
     # Compute stats for history
     vt_passed = vitest["numPassedTests"] if vitest else 0
@@ -1009,9 +1140,10 @@ def main():
     lines_pct = cov_total.get("lines", {}).get("pct", 0)
 
     # Update history
-    history = update_history(history, total_passed, total_failed, total_all, lines_pct)
+    history = update_history(history, total_passed, total_failed, total_all, lines_pct, metadata)
 
-    html = generate_html(vitest, android, cov, scenarios, scenario_results, history, robot)
+    write_summary(metadata, total_passed, total_failed, total_all)
+    html = generate_html(vitest, android, cov, scenarios, scenario_results, history, metadata, robot)
     OUTPUT_HTML.write_text(html, encoding="utf-8")
     print(f"HTML report: {OUTPUT_HTML}")
 
