@@ -922,46 +922,49 @@ private fun drawEinkCloud(
         einkPick(GRAY_CLOUD_BODY, COLOR_CLOUD_BODY)
     }
 
-    // Draw 6 overlapping lobe circles
-    paint.style = Paint.Style.FILL
-    paint.color = bodyColor
+    // Build unified cloud path (all lobes + center merged) — no internal seam lines
+    val cloudPath = android.graphics.Path()
     for (i in EINK_CLOUD_LOBE_OFFSETS.indices) {
         val (dx, dy) = EINK_CLOUD_LOBE_OFFSETS[i]
         val lobeRadius = bodyRadius * EINK_CLOUD_LOBE_RADII[i] * breathScale
         val lobeCx = cx + bodyRadius * dx
         val lobeCy = cy + bodyRadius * dy
-        canvas.drawCircle(lobeCx, lobeCy, lobeRadius, paint)
+        val lobePath = android.graphics.Path()
+        lobePath.addCircle(lobeCx, lobeCy, lobeRadius, android.graphics.Path.Direction.CW)
+        cloudPath.op(lobePath, android.graphics.Path.Op.UNION)
     }
+    // Central fill to cover gaps between lobes
+    val centerPath = android.graphics.Path()
+    centerPath.addCircle(cx, cy, bodyRadius * 0.32f * breathScale, android.graphics.Path.Direction.CW)
+    cloudPath.op(centerPath, android.graphics.Path.Op.UNION)
 
-    // Central fill circle to cover gaps between lobes
-    canvas.drawCircle(cx, cy, bodyRadius * 0.32f * breathScale, paint)
+    // Fill cloud body
+    paint.style = Paint.Style.FILL
+    paint.color = bodyColor
+    canvas.drawPath(cloudPath, paint)
 
-    // Outline for e-ink contrast (slightly darker stroke around each lobe)
+    // Stroke only the outer contour (unified path = no internal overlap lines)
     paint.style = Paint.Style.STROKE
     paint.strokeWidth = 1.5f * scaleFactor
     paint.color = einkPick(GRAY_CLOUD_PROMPT, COLOR_CLOUD_PROMPT)
-    for (i in EINK_CLOUD_LOBE_OFFSETS.indices) {
-        val (dx, dy) = EINK_CLOUD_LOBE_OFFSETS[i]
-        val lobeRadius = bodyRadius * EINK_CLOUD_LOBE_RADII[i] * breathScale
-        val lobeCx = cx + bodyRadius * dx
-        val lobeCy = cy + bodyRadius * dy
-        canvas.drawCircle(lobeCx, lobeCy, lobeRadius, paint)
-    }
+    canvas.drawPath(cloudPath, paint)
 
     // ">_" terminal prompt text inside cloud body
     if (state != OctopusVisualState.SLEEPING) {
         paint.style = Paint.Style.FILL
         paint.color = einkPick(GRAY_CLOUD_PROMPT, COLOR_CLOUD_PROMPT)
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = bodyRadius * 0.55f * scaleFactor
+        paint.textSize = bodyRadius * 0.75f * scaleFactor
+        paint.typeface = android.graphics.Typeface.MONOSPACE
         // Cursor blink for ASKING state (2-frame on, 2-frame off)
         val promptText = when {
             state == OctopusVisualState.ASKING && animFrame % 4 >= 2 -> ">_"
             state == OctopusVisualState.ASKING -> "> "
             else -> ">_"
         }
-        canvas.drawText(promptText, cx, cy + bodyRadius * 0.15f, paint)
+        canvas.drawText(promptText, cx, cy + bodyRadius * 0.20f, paint)
         paint.textAlign = Paint.Align.LEFT
+        paint.typeface = android.graphics.Typeface.DEFAULT
     }
 
     // Name tag above cloud (reuse the shared name tag renderer)
