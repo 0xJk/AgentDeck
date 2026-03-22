@@ -78,6 +78,7 @@ jobs:
           mkdir -p _site/reports
           # Landing page at root
           cp scripts/pages-index.html _site/index.html
+          cp docs/media/agentdeck-icon.png _site/icon.png
           # Test report under /reports/
           cp coverage/test-report/index.html _site/reports/index.html
           cp coverage/test-report/history.json _site/reports/history.json 2>/dev/null || true
