@@ -140,7 +140,7 @@ Coverage thresholds (regression guard): lines ≥17%, functions ≥15%, branches
 
 - **URL**: `https://puritysb.github.io/AgentDeck/` (landing) / `/reports/` (test report)
 - **Workflow**: `.github/workflows/test-report.yml` — push to master → Vitest + Android JUnit + Robot Framework (no-hw) → HTML report → GitHub Pages deploy
-- **Report generator**: `scripts/generate-html-report.py` — self-contained HTML dashboard with suite execution metadata, scenario coverage mapping, test category tags, history trend sparklines
+- **Report generator**: `scripts/generate-html-report.py` — tab-based SPA dashboard. Sidebar nav: Overview + 10 test layers + Android + Robot + Scenarios + Coverage. Each layer tab shows purpose question, describe-block grouping, all test cases visible by default. Robot XML `</robot>` truncation defense built-in
 - **Scenario matrix**: `scripts/scenario-matrix.json` — 10 user scenarios mapped to test files + assertion/case patterns with gap analysis
 - **Landing page**: `scripts/pages-index.html` — product intro at Pages root
 
@@ -208,7 +208,7 @@ agentdeck wifi-setup --ssid "MyNetwork" --password "secret"
 - **Voice local recording**: 브리지 연결 상태와 무관하게 항상 로컬 녹음. iTerm2 `create window with default profile command`로 `rec` 실행 (iTerm2 마이크 권한 상속). `pkill -INT`로 녹음 중지. RMS 무음 감지 (threshold 0.001). 전사 결과 전달: iTerm2 최전면 → `write text`, 기타 앱 → 클립보드 복사 + 알림
 - **Voice binary/model paths**: `shared/src/voice-paths.ts`에 `REC_CANDIDATES`, `WHISPER_CANDIDATES`, `MODEL_SEARCH_DIRS` 등 공유 상수 정의 — bridge/plugin 양쪽에서 import
 - Hook scripts use `|| true` to avoid blocking Claude when bridge is down
-- **Hook format**: Claude Code v2.1+ requires 3-level nesting: `{ matcher: "", hooks: [{ type: "command", command: "..." }] }`. Old flat format `{ type, command }` silently fails. `migrateHooksIfNeeded()` auto-upgrades on bridge start
+- **Hook format**: Claude Code v2.1+ requires 3-level nesting: `{ matcher: "", hooks: [{ type: "command", command: "..." }] }`. Old flat format `{ type, command }` silently fails. `hooks/src/install.ts` exports pure logic (`applyHooks`, `removeHooks`, `migrateHooks`) + filesystem wrappers (`installHooks`, `uninstallHooks`, `migrateHooksIfNeeded`). Bridge imports `migrateHooksIfNeeded` from `@agentdeck/hooks` (no duplication)
 - **Action ID pattern**: All SD actions store string IDs and use `getActionById()` — never store action object references
 - **Plugin UUID**: `bound.serendipity.agentdeck` (확정 — 배포 후 변경 불가)
 - **Package scope**: `@agentdeck/*` (shared, bridge, plugin, hooks, setup)
