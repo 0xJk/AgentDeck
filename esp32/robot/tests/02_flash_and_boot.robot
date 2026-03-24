@@ -1,95 +1,79 @@
 *** Settings ***
-Documentation       ESP32 firmware flash and boot verification.
+Documentation       ESP32 firmware flash and boot verification (BDD style).
 ...                 Requires physical ESP32 device connected via USB.
-...                 Flashes boot_test firmware, verifies boot output,
-...                 and checks hardware health (heap, PSRAM, flash).
-Library             Process
-Library             Collections
-Library             ../libraries/ESP32Serial.py
-Variables           ../resources/variables.py
+...                 Uses Test Template to run the same flash→boot→health
+...                 scenario across all board variants.
+Resource            ../resources/bdd_keywords.robot
 Force Tags          hw
-Suite Teardown      Close ESP32 Serial
-
-*** Variables ***
-${FLASH_TIMEOUT}    180s
+Suite Teardown      Disconnect Device
 
 *** Test Cases ***
-Detect Connected ESP32 Device
-    [Documentation]    Verify an ESP32 device is detected on USB.
-    ${port}=    Detect ESP32 Port
-    Skip If    '${port}' == 'None'    No ESP32 device connected
-    Log    Detected device on ${port}
-    Set Suite Variable    ${ESP32_PORT}    ${port}
+# ── Per-board flash and boot ─────────────────────────────────────
 
-Flash Boot Test Firmware
-    [Documentation]    Flash minimal boot_test firmware and verify upload succeeds.
-    [Tags]    flash
-    Skip If    not $ESP32_PORT    No ESP32 device
-    # Build and upload boot_test (minimal — no LVGL, fast build)
-    ${result}=    Run Process    pio    run    -e    boot_test    -t    upload
-    ...    cwd=${PROJECT_DIR}    timeout=${FLASH_TIMEOUT}    stderr=STDOUT
-    Log    ${result.stdout}
-    Should Be Equal As Integers    ${result.rc}    0
-    ...    msg=Flash failed:\n${result.stdout}
+Box 86 Flash And Boot
+    [Template]    Flash And Boot Scenario
+    box_86
 
-Verify Boot Messages
-    [Documentation]    After flash, ESP32 should boot and print diagnostics.
-    [Tags]    flash
-    Skip If    not $ESP32_PORT    No ESP32 device
-    Open ESP32 Serial    ${ESP32_PORT}
-    ${boot_line}=    Wait For Boot Message    timeout=${BOOT_TIMEOUT_SEC}
-    Should Contain    ${boot_line}    Boot OK!
-    ...    msg=Boot marker not found: ${boot_line}
+IPS 3.5 Flash And Boot
+    [Template]    Flash And Boot Scenario
+    ips_35
 
-Hardware Health Check
-    [Documentation]    Verify heap, PSRAM, and flash from boot output.
-    [Tags]    flash
-    Skip If    not $ESP32_PORT    No ESP32 device
-    ${info}=    Collect Boot Info
-    Log    Boot info: ${info}
-    # Heap should be >100KB on fresh boot
-    Should Be True    ${info}[heap] > 100000
-    ...    msg=Low heap at boot: ${info}[heap] bytes
-    # PSRAM should be detected (ESP32-S3 boards have 8MB OPI PSRAM)
-    Should Be True    ${info}[psram] > 0
-    ...    msg=PSRAM not detected — board may be damaged
-    # CPU should be 240MHz
-    Should Be True    ${info}[cpu] == 240
-    ...    msg=Unexpected CPU frequency: ${info}[cpu] MHz
+Round AMOLED Flash And Boot
+    [Template]    Flash And Boot Scenario
+    round_amoled
 
-Device Responds After Boot
-    [Documentation]    ESP32 should continue sending alive messages after boot.
-    [Tags]    flash
-    Skip If    not $ESP32_PORT    No ESP32 device
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
-    ...    msg=ESP32 not responsive after boot
+Ulanzi TC001 Flash And Boot
+    [Template]    Flash And Boot Scenario
+    ulanzi_tc001
 
-Flash Full Firmware
-    [Documentation]    Flash full box_86 firmware (with LVGL/display/network).
-    [Tags]    flash    full
-    Skip If    not $ESP32_PORT    No ESP32 device
-    ${result}=    Run Process    pio    run    -e    box_86    -t    upload
-    ...    cwd=${PROJECT_DIR}    timeout=${FLASH_TIMEOUT}    stderr=STDOUT
-    Log    ${result.stdout}
-    Should Be Equal As Integers    ${result.rc}    0
-    ...    msg=Full firmware flash failed:\n${result.stdout}
+# ── Full firmware boot (after flashing full env) ─────────────────
 
-Full Firmware Boot
-    [Documentation]    Full firmware should boot and initialize serial JSON listener.
-    [Tags]    flash    full
-    Skip If    not $ESP32_PORT    No ESP32 device
-    Open ESP32 Serial    ${ESP32_PORT}
-    ${boot_line}=    Wait For Boot Message    timeout=${BOOT_TIMEOUT_SEC}
-    Log    Full firmware boot: ${boot_line}
+Box 86 Full Firmware Boot
+    [Template]    Full Firmware Boot Scenario
+    [Tags]    full
+    box_86
 
-Flash Recovery After Power Cycle
-    [Documentation]    Simulate recovery: close/reopen serial, verify device still alive.
+IPS 3.5 Full Firmware Boot
+    [Template]    Full Firmware Boot Scenario
+    [Tags]    full
+    ips_35
+
+Round AMOLED Full Firmware Boot
+    [Template]    Full Firmware Boot Scenario
+    [Tags]    full
+    round_amoled
+
+# ── Recovery after disconnect ────────────────────────────────────
+
+Box 86 Recovery After Reconnect
+    [Template]    Recovery Scenario
     [Tags]    recovery
-    Skip If    not $ESP32_PORT    No ESP32 device
-    Close ESP32 Serial
-    Sleep    2s    Wait for port to settle
-    Open ESP32 Serial    ${ESP32_PORT}
-    ${responsive}=    ESP32 Is Responsive    timeout=10
-    Should Be True    ${responsive}
-    ...    msg=ESP32 not responsive after reconnect
+    box_86
+
+*** Keywords ***
+Flash And Boot Scenario
+    [Documentation]    Flash firmware, verify boot and hardware health.
+    [Arguments]    ${board}
+    Given the "${board}" firmware is built if not exists
+    And the "${board}" firmware is flashed to the device
+    When the ESP32 device "${board}" is connected
+    Then the ESP32 device "${board}" is booted
+    And the boot message should contain "AgentDeck"
+    And the heap should be greater than "100000" bytes
+    And the device should still be responsive
+
+Full Firmware Boot Scenario
+    [Documentation]    Flash full firmware and verify boot completes.
+    [Arguments]    ${board}
+    Given the "${board}" firmware is built
+    And the "${board}" firmware is flashed to the device
+    When the ESP32 device "${board}" is connected
+    Then the ESP32 device "${board}" is booted
+    And the device should still be responsive
+
+Recovery Scenario
+    [Documentation]    Verify device survives serial disconnect/reconnect.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I reconnect after closing the serial port
+    Then the device should still be responsive

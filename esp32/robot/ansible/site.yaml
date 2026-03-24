@@ -1,0 +1,9 @@
+---
+# Full pipeline: build → flash → test → report.
+#
+# Usage:
+#   ansible-playbook site.yaml -i inventory.yaml
+#   ansible-playbook site.yaml -i inventory.yaml -e boards=box_86
+#   ansible-playbook site.yaml -i inventory.yaml -e "boards=box_86,ips_35 tags=protocol"
+- import_playbook: flash_firmware.yaml
+- import_playbook: run_tests.yaml

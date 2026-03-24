@@ -1,0 +1,52 @@
+# AgentDeck ESP32 Device Inventory
+# Central registry of all ESP32 board variants for Robot Framework tests.
+# Used by BDD keywords to resolve board → port/capabilities mapping.
+
+devices:
+  box_86:
+    env: box_86
+    port: /dev/cu.usbserial-21130
+    board_id: 86box
+    screen: "480x480"
+    has_psram: true
+    has_display: true
+    display_type: lcd
+    min_firmware_bytes: 1000000
+    max_firmware_bytes: 3500000
+    boot_test_env: boot_test
+
+  ips_35:
+    env: ips_35
+    port: /dev/cu.usbmodem2111101
+    board_id: ips_35
+    screen: "480x320"
+    has_psram: true
+    has_display: true
+    display_type: lcd
+    min_firmware_bytes: 1000000
+    max_firmware_bytes: 3500000
+    boot_test_env: boot_test
+
+  round_amoled:
+    env: round_amoled
+    port: /dev/cu.usbmodem211201
+    board_id: round_amoled
+    screen: "360x360"
+    has_psram: true
+    has_display: true
+    display_type: amoled
+    min_firmware_bytes: 1000000
+    max_firmware_bytes: 3500000
+    boot_test_env: boot_test_qspi
+
+  ulanzi_tc001:
+    env: ulanzi_tc001
+    port: /dev/cu.usbserial-211110
+    board_id: ulanzi_tc001
+    screen: "32x8"
+    has_psram: false
+    has_display: true
+    display_type: led_matrix
+    min_firmware_bytes: 500000
+    max_firmware_bytes: 2000000
+    boot_test_env: ~    # no separate boot_test for Ulanzi

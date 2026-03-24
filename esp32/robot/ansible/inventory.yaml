@@ -1,0 +1,27 @@
+# Ansible inventory for AgentDeck ESP32 firmware deployment.
+# All tasks run locally (connection: local) — the host machine
+# has PlatformIO and USB-connected ESP32 devices.
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  vars:
+    project_dir: "{{ playbook_dir }}/../../"
+    robot_dir: "{{ playbook_dir }}/../"
+    pio_timeout: 300
+    flash_timeout: 180
+
+    devices:
+      - env: box_86
+        port: /dev/cu.usbserial-21130
+        name: "86 Box 4\" 480×480"
+      - env: ips_35
+        port: /dev/cu.usbmodem2111101
+        name: "IPS 3.5\" 480×320"
+      - env: round_amoled
+        port: /dev/cu.usbmodem211201
+        name: "Round AMOLED 1.8\" 360×360"
+      - env: ulanzi_tc001
+        port: /dev/cu.usbserial-211110
+        name: "Ulanzi TC001 32×8 LED"

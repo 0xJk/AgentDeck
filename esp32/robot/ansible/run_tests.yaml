@@ -1,0 +1,83 @@
+---
+# Run Robot Framework tests for each ESP32 device.
+#
+# Usage:
+#   ansible-playbook run_tests.yaml -i inventory.yaml
+#   ansible-playbook run_tests.yaml -i inventory.yaml -e boards=box_86
+#   ansible-playbook run_tests.yaml -i inventory.yaml -e "tags=protocol"
+- name: Run Robot Framework tests per device
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    target_boards: "{{ boards | default('all') }}"
+    test_tags: "{{ tags | default('hw') }}"
+
+  tasks:
+    - name: Resolve target device list
+      set_fact:
+        test_targets: >-
+          {{ (target_boards == 'all')
+             | ternary(devices,
+                       devices | selectattr('env', 'in', target_boards.split(',')) | list) }}
+
+    - name: Show test plan
+      debug:
+        msg: >-
+          Running tests with tags [{{ test_tags }}] on:
+          {{ test_targets | map(attribute='name') | list }}
+
+    - name: Ensure results directory exists
+      file:
+        path: "{{ robot_dir }}/results/{{ item.env }}"
+        state: directory
+      loop: "{{ test_targets }}"
+      loop_control:
+        label: "{{ item.env }}"
+
+    - name: Run Robot Framework tests for each board
+      command: >-
+        python3 -m robot
+        --variable BOARD:{{ item.env }}
+        --include {{ test_tags }}
+        --outputdir {{ robot_dir }}/results/{{ item.env }}
+        --loglevel DEBUG
+        {{ robot_dir }}/tests/
+      args:
+        chdir: "{{ robot_dir }}"
+      loop: "{{ test_targets }}"
+      loop_control:
+        label: "{{ item.env }}"
+      ignore_errors: true
+      register: test_results
+
+    - name: Report test results
+      debug:
+        msg: >-
+          {{ item.item.env }}:
+          {{ '✅ All passed' if (item.rc | default(-1)) == 0
+             else '❌ Some tests failed (rc=' ~ (item.rc | default('?')) ~ ')' }}
+      loop: "{{ test_results.results }}"
+      loop_control:
+        label: "{{ item.item.env }}"
+
+    - name: Merge all board reports
+      command: >-
+        python3 -m robot.rebot
+        --output {{ robot_dir }}/results/merged_output.xml
+        --log {{ robot_dir }}/results/merged_log.html
+        --report {{ robot_dir }}/results/merged_report.html
+        --merge
+        {{ robot_dir }}/results/*/output.xml
+      args:
+        chdir: "{{ robot_dir }}"
+      ignore_errors: true
+
+    - name: Show report location
+      debug:
+        msg: >-
+          📊 Merged report: {{ robot_dir }}/results/merged_report.html
+          📋 Per-board reports:
+          {% for t in test_targets %}
+            - {{ t.env }}: {{ robot_dir }}/results/{{ t.env }}/report.html
+          {% endfor %}

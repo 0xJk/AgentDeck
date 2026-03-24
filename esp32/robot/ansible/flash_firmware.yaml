@@ -1,0 +1,73 @@
+---
+# Flash firmware to ESP32 devices.
+#
+# Usage:
+#   ansible-playbook flash_firmware.yaml -i inventory.yaml
+#   ansible-playbook flash_firmware.yaml -i inventory.yaml -e boards=box_86
+#   ansible-playbook flash_firmware.yaml -i inventory.yaml -e boards=box_86,ips_35
+- name: Flash firmware to ESP32 devices
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    target_boards: "{{ boards | default('all') }}"
+
+  tasks:
+    - name: Resolve target device list
+      set_fact:
+        flash_targets: >-
+          {{ (target_boards == 'all')
+             | ternary(devices,
+                       devices | selectattr('env', 'in', target_boards.split(',')) | list) }}
+
+    - name: Show target devices
+      debug:
+        msg: "Will flash: {{ flash_targets | map(attribute='name') | list }}"
+
+    - name: Check serial port exists
+      stat:
+        path: "{{ item.port }}"
+      loop: "{{ flash_targets }}"
+      loop_control:
+        label: "{{ item.env }}"
+      register: port_checks
+
+    - name: Warn about missing devices
+      debug:
+        msg: "⚠ {{ item.item.env }} ({{ item.item.port }}) — device not connected"
+      loop: "{{ port_checks.results }}"
+      loop_control:
+        label: "{{ item.item.env }}"
+      when: not item.stat.exists
+
+    - name: Build firmware for each board
+      command: pio run -e {{ item.env }}
+      args:
+        chdir: "{{ project_dir }}/esp32"
+      loop: "{{ flash_targets }}"
+      loop_control:
+        label: "{{ item.env }}"
+      register: build_results
+      timeout: "{{ pio_timeout }}"
+
+    - name: Flash firmware to connected devices
+      command: pio run -e {{ item.0.env }} -t upload --upload-port {{ item.0.port }}
+      args:
+        chdir: "{{ project_dir }}/esp32"
+      loop: "{{ flash_targets | zip(port_checks.results) | list }}"
+      loop_control:
+        label: "{{ item.0.env }}"
+      when: item.1.stat.exists
+      register: flash_results
+      timeout: "{{ flash_timeout }}"
+
+    - name: Report results
+      debug:
+        msg: >-
+          {{ item.item.0.env }}:
+          {{ '✅ Flashed' if (item.rc | default(-1)) == 0
+             else ('⏭ Skipped (not connected)' if item.skipped | default(false)
+                   else '❌ Failed') }}
+      loop: "{{ flash_results.results }}"
+      loop_control:
+        label: "{{ item.item.0.env }}"

@@ -1,161 +1,226 @@
 *** Settings ***
-Documentation       ESP32 serial JSON protocol compatibility tests.
+Documentation       ESP32 serial JSON protocol compatibility tests (BDD style).
 ...                 Requires physical ESP32 with full firmware flashed.
-...                 Tests JSON message handling: device_info, state_update,
-...                 usage_update, malformed JSON recovery.
-Library             Collections
-Library             ../libraries/ESP32Serial.py
-Variables           ../resources/variables.py
+...                 Uses Test Template to run the same protocol scenarios
+...                 across all board variants.
+Resource            ../resources/bdd_keywords.robot
 Force Tags          hw    protocol
-Suite Setup         Connect To ESP32
-Suite Teardown      Close ESP32 Serial
+Suite Teardown      Disconnect Device
 
 *** Test Cases ***
-Device Info Request And Response
-    [Documentation]    Send device_info_request, verify response fields.
-    ...                ESP32 should respond with: type, board, version,
-    ...                wifiConfigured, wifiConnected.
-    ${info}=    Get Device Info    timeout=5
-    Dictionary Should Contain Key    ${info}    type
-    Dictionary Should Contain Key    ${info}    board
-    Dictionary Should Contain Key    ${info}    version
-    Dictionary Should Contain Key    ${info}    wifiConfigured
-    Dictionary Should Contain Key    ${info}    wifiConnected
-    Should Be Equal    ${info}[type]    device_info
-    Log    Device: board=${info}[board] version=${info}[version]
+# ═══════════════════════════════════════════════════════════════════
+# Device Info
+# ═══════════════════════════════════════════════════════════════════
 
-Device Info Board Is Valid
-    [Documentation]    Board identifier should match a known board.
-    ${info}=    Get Device Info
-    ${valid_boards}=    Create List    86box    ips_35    round_amoled
-    Should Contain    ${valid_boards}    ${info}[board]
-    ...    msg=Unknown board: ${info}[board]
+Box 86 Device Info
+    [Template]    Device Info Scenario
+    box_86
 
-State Update Processing
-    [Documentation]    ESP32 should accept state_update without crashing.
-    ${msg}=    Create Dictionary
-    ...    type=state_update
-    ...    state=processing
-    ...    projectName=TestProject
-    ...    modelName=opus-4
-    ...    agentType=claude-code
-    Send JSON Message    ${msg}
-    # Verify device is still responsive (didn't crash)
-    Sleep    1s
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
-    ...    msg=ESP32 stopped responding after state_update
+IPS 3.5 Device Info
+    [Template]    Device Info Scenario
+    ips_35
 
-State Update With Options
-    [Documentation]    state_update with options array should be handled.
-    ${option1}=    Create Dictionary    label=Yes    index=${0}    recommended=${True}
-    ${option2}=    Create Dictionary    label=No    index=${1}    recommended=${False}
-    ${options}=    Create List    ${option1}    ${option2}
-    ${msg}=    Create Dictionary
-    ...    type=state_update
-    ...    state=awaiting_permission
-    ...    question=Allow file read?
-    ...    options=${options}
-    Send JSON Message    ${msg}
-    Sleep    1s
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
+Round AMOLED Device Info
+    [Template]    Device Info Scenario
+    round_amoled
 
-Usage Update Processing
-    [Documentation]    ESP32 should accept usage_update messages.
-    ${msg}=    Create Dictionary
-    ...    type=usage_update
-    ...    fiveHourPercent=${42.5}
-    ...    sevenDayPercent=${15.0}
-    ...    inputTokens=${50000}
-    ...    outputTokens=${12000}
-    ...    toolCalls=${25}
-    ...    sessionDurationSec=${3600}
-    ...    fiveHourResetsAt=1h 30m
-    ...    sevenDayResetsAt=2d 4h
-    Send JSON Message    ${msg}
-    Sleep    1s
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
+Ulanzi TC001 Device Info
+    [Template]    Device Info Scenario
+    ulanzi_tc001
 
-Sessions List Processing
-    [Documentation]    ESP32 should handle sessions_list with multiple sessions.
-    ${session1}=    Create Dictionary
-    ...    id=sess-001    projectName=MyApp    agentType=claude-code
-    ...    state=processing    port=${9121}    alive=${True}
-    ${session2}=    Create Dictionary
-    ...    id=sess-002    projectName=Backend    agentType=claude-code
-    ...    state=idle    port=${9122}    alive=${True}
-    ${sessions}=    Create List    ${session1}    ${session2}
-    ${msg}=    Create Dictionary    type=sessions_list    sessions=${sessions}
-    Send JSON Message    ${msg}
-    Sleep    1s
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
+# ═══════════════════════════════════════════════════════════════════
+# State Updates
+# ═══════════════════════════════════════════════════════════════════
 
-Display State On/Off
-    [Documentation]    display_state messages should not crash the device.
-    Send JSON Message    {"type": "display_state", "displayOn": false}
-    Sleep    0.5s
-    Send JSON Message    {"type": "display_state", "displayOn": true}
-    Sleep    1s
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
+Box 86 State Update
+    [Template]    State Update Scenario
+    box_86
 
-Malformed JSON Recovery
-    [Documentation]    ESP32 should survive malformed JSON and recover.
-    # Send broken JSON
-    Send Raw    {broken json without closing\n
-    Send Raw    not json at all\n
-    Send Raw    {"type": "incomplete\n
-    Send Raw    \n
-    # Now send valid request — should still work
-    Sleep    0.5s
-    ${info}=    Get Device Info    timeout=5
-    Should Be Equal    ${info}[type]    device_info
-    ...    msg=ESP32 did not recover from malformed JSON
+IPS 3.5 State Update
+    [Template]    State Update Scenario
+    ips_35
 
-Empty Line Handling
-    [Documentation]    Empty lines should be silently ignored.
-    Send Raw    \n
-    Send Raw    \n
-    Send Raw    \n
-    ${info}=    Get Device Info    timeout=5
-    Should Be Equal    ${info}[type]    device_info
+Round AMOLED State Update
+    [Template]    State Update Scenario
+    round_amoled
 
-Large Message Handling
-    [Documentation]    Messages near buffer limit (4096 bytes) should be handled.
-    # Create a message that's large but within buffer
-    ${long_name}=    Evaluate    'A' * 200
-    ${msg}=    Create Dictionary
-    ...    type=state_update    state=idle    projectName=${long_name}
-    Send JSON Message    ${msg}
-    Sleep    1s
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
+Ulanzi TC001 State Update
+    [Template]    State Update Scenario
+    ulanzi_tc001
 
-Rapid Message Burst
-    [Documentation]    Rapid sequential messages should not overflow ESP32 buffer.
-    FOR    ${i}    IN RANGE    20
-        Send JSON Message    {"type": "state_update", "state": "processing"}
-    END
-    Sleep    2s
-    ${responsive}=    ESP32 Is Responsive    timeout=5
-    Should Be True    ${responsive}
-    ...    msg=ESP32 not responsive after message burst
+# ═══════════════════════════════════════════════════════════════════
+# State Update With Options
+# ═══════════════════════════════════════════════════════════════════
 
-Unknown Message Type Ignored
-    [Documentation]    Unknown message types should be silently ignored.
-    Send JSON Message    {"type": "unknown_future_message", "data": "test"}
-    Sleep    0.5s
-    ${info}=    Get Device Info    timeout=5
-    Should Be Equal    ${info}[type]    device_info
+Box 86 State Update With Options
+    [Template]    State Update With Options Scenario
+    box_86
+
+IPS 3.5 State Update With Options
+    [Template]    State Update With Options Scenario
+    ips_35
+
+Round AMOLED State Update With Options
+    [Template]    State Update With Options Scenario
+    round_amoled
+
+Ulanzi TC001 State Update With Options
+    [Template]    State Update With Options Scenario
+    ulanzi_tc001
+
+# ═══════════════════════════════════════════════════════════════════
+# Usage & Sessions
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 Usage Update
+    [Template]    Usage Update Scenario
+    box_86
+
+Box 86 Sessions List
+    [Template]    Sessions List Scenario
+    box_86
+
+# ═══════════════════════════════════════════════════════════════════
+# Display Control
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 Display On Off
+    [Template]    Display On Off Scenario
+    box_86
+
+IPS 3.5 Display On Off
+    [Template]    Display On Off Scenario
+    ips_35
+
+Round AMOLED Display On Off
+    [Template]    Display On Off Scenario
+    round_amoled
+
+# ═══════════════════════════════════════════════════════════════════
+# Error Recovery (critical for all devices)
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 Malformed JSON Recovery
+    [Template]    Malformed JSON Recovery Scenario
+    box_86
+
+IPS 3.5 Malformed JSON Recovery
+    [Template]    Malformed JSON Recovery Scenario
+    ips_35
+
+Round AMOLED Malformed JSON Recovery
+    [Template]    Malformed JSON Recovery Scenario
+    round_amoled
+
+Ulanzi TC001 Malformed JSON Recovery
+    [Template]    Malformed JSON Recovery Scenario
+    ulanzi_tc001
+
+# ═══════════════════════════════════════════════════════════════════
+# Stress / Edge Cases
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 Empty Lines
+    [Template]    Empty Line Handling Scenario
+    box_86
+
+Box 86 Large Message
+    [Template]    Large Message Scenario
+    box_86
+
+Box 86 Rapid Burst
+    [Template]    Rapid Burst Scenario
+    box_86
+
+Box 86 Unknown Message Type
+    [Template]    Unknown Message Type Scenario
+    box_86
 
 *** Keywords ***
-Connect To ESP32
-    [Documentation]    Detect port, open serial, and wait for boot/ready.
-    ${port}=    Detect ESP32 Port
-    Skip If    '${port}' == 'None'    No ESP32 device connected
-    Set Suite Variable    ${ESP32_PORT}    ${port}
-    Open ESP32 Serial    ${port}
-    Wait For Boot Message    timeout=${BOOT_TIMEOUT_SEC}
+# ───────────────────────────────────────────────────────────────────
+
+Device Info Scenario
+    [Documentation]    Request device_info and verify all fields.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a device info request
+    Then the device should respond with device info
+    And the device info should contain valid fields
+    And the device info board should be valid
+
+State Update Scenario
+    [Documentation]    Send state_update and verify no crash.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a state update with state "processing"
+    Then the device should still be responsive
+
+State Update With Options Scenario
+    [Documentation]    Send state_update with options array.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a state update with options
+    Then the device should still be responsive
+
+Usage Update Scenario
+    [Documentation]    Send usage_update and verify acceptance.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a usage update
+    Then the device should still be responsive
+
+Sessions List Scenario
+    [Documentation]    Send multi-session list.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a sessions list
+    Then the device should still be responsive
+
+Display On Off Scenario
+    [Documentation]    Toggle display on/off.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send display state "off"
+    And I send display state "on"
+    Then the device should still be responsive
+
+Malformed JSON Recovery Scenario
+    [Documentation]    Send broken JSON, verify recovery.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send malformed JSON data
+    Then the device should still be responsive
+    When I send a device info request
+    Then the device should respond with device info
+
+Empty Line Handling Scenario
+    [Documentation]    Empty lines should be silently ignored.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send empty lines
+    Then the device should still be responsive
+    When I send a device info request
+    Then the device should respond with device info
+
+Large Message Scenario
+    [Documentation]    Messages near buffer limit should be handled.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a large message with project name of "200" characters
+    Then the device should still be responsive
+
+Rapid Burst Scenario
+    [Documentation]    Rapid sequential messages should not overflow.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send "20" rapid messages
+    Then the device should still be responsive
+
+Unknown Message Type Scenario
+    [Documentation]    Unknown types should be silently ignored.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send an unknown message type
+    Then the device should still be responsive
+    When I send a device info request
+    Then the device should respond with device info
