@@ -50,8 +50,13 @@ class MainActivity : ComponentActivity() {
 
         isEinkDevice = EinkDetector.isEinkDevice()
 
-        // E-ink: immersive fullscreen — hide status bar and navigation bar
+        // E-ink: set landscape IMMEDIATELY — before any async/layout.
+        // Pantone 6 (RK3566) ignores late requestedOrientation changes,
+        // so this must happen before the first frame renders.
         if (isEinkDevice) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            applySystemRotation(Surface.ROTATION_90)
+
             @Suppress("DEPRECATION")
             window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
             hideSystemBars()
@@ -61,25 +66,18 @@ class MainActivity : ComponentActivity() {
         val connection = BridgeConnection.instance
         val displayPrefs = DisplayPreferences(this, isEink = isEinkDevice)
 
-        // Apply saved orientation preference
+        // Apply saved orientation preference (async — for user changes via Settings)
         lifecycleScope.launch {
             displayPrefs.orientationFlow.collect { orientation ->
                 requestedOrientation = orientation
 
-                // Fallback: Pantone 6 (RK3566) ignores requestedOrientation.
-                // Set system-level rotation as backup (requires WRITE_SETTINGS permission).
-                if (isEinkDevice && Settings.System.canWrite(this@MainActivity)) {
-                    try {
-                        val rotation = when (orientation) {
-                            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE -> Surface.ROTATION_90
-                            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT -> Surface.ROTATION_0
-                            else -> return@collect
-                        }
-                        Settings.System.putInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0)
-                        Settings.System.putInt(contentResolver, Settings.System.USER_ROTATION, rotation)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "System rotation fallback failed: ${e.message}")
+                if (isEinkDevice) {
+                    val rotation = when (orientation) {
+                        ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE -> Surface.ROTATION_90
+                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT -> Surface.ROTATION_0
+                        else -> return@collect
                     }
+                    applySystemRotation(rotation)
                 }
             }
         }
@@ -124,6 +122,32 @@ class MainActivity : ComponentActivity() {
         // which resets immersive mode flags on the main window)
         if (hasFocus && isEinkDevice) {
             hideSystemBars()
+        }
+    }
+
+    /**
+     * Apply system-level rotation for RK3566 devices that ignore requestedOrientation.
+     * Auto-requests WRITE_SETTINGS permission if not granted (lost on APK reinstall).
+     */
+    private fun applySystemRotation(rotation: Int) {
+        if (Settings.System.canWrite(this)) {
+            try {
+                Settings.System.putInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0)
+                Settings.System.putInt(contentResolver, Settings.System.USER_ROTATION, rotation)
+            } catch (e: Exception) {
+                Log.w(TAG, "System rotation fallback failed: ${e.message}")
+            }
+        } else {
+            // WRITE_SETTINGS lost (APK reinstall) — auto-request via system UI
+            Log.w(TAG, "WRITE_SETTINGS not granted — requesting permission")
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                    data = android.net.Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            } catch (e: Exception) {
+                Log.e(TAG, "Cannot open WRITE_SETTINGS screen: ${e.message}")
+            }
         }
     }
 
