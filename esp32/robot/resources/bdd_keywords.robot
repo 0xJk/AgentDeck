@@ -158,6 +158,78 @@ I send an unknown message type
     [Documentation]    Send a message type the firmware doesn't know about.
     Send JSON Message    {"type": "unknown_future_message", "data": "test"}
 
+I cycle through states "${states}"
+    [Documentation]    Send state_update for each state in comma-separated list.
+    @{state_list}=    Evaluate    [s.strip() for s in "${states}".split(",")]
+    FOR    ${s}    IN    @{state_list}
+        ${msg}=    Create Dictionary
+        ...    type=state_update    state=${s}
+        ...    projectName=TestProject    modelName=opus-4    agentType=claude-code
+        Send JSON Message    ${msg}
+        Sleep    0.5s
+    END
+
+I send a timeline event
+    [Documentation]    Send a timeline_event message.
+    ${msg}=    Create Dictionary
+    ...    type=timeline_event
+    ...    ts=${1711324800000}
+    ...    entryType=tool_request
+    ...    raw=Read file src/main.ts
+    Send JSON Message    ${msg}
+
+I send a timeline history
+    [Documentation]    Send timeline_history batch with multiple entries.
+    ${e1}=    Create Dictionary
+    ...    ts=${1711324700000}    entryType=chat_start    raw=User prompt
+    ${e2}=    Create Dictionary
+    ...    ts=${1711324750000}    entryType=tool_request    raw=Read file
+    ${e3}=    Create Dictionary
+    ...    ts=${1711324800000}    entryType=chat_end    raw=Response done
+    ${entries}=    Create List    ${e1}    ${e2}    ${e3}
+    ${msg}=    Create Dictionary    type=timeline_history    entries=${entries}
+    Send JSON Message    ${msg}
+
+I send a wifi provision message
+    [Documentation]    Send wifi_provision message (test with dummy credentials).
+    ${msg}=    Create Dictionary
+    ...    type=wifi_provision    ssid=TestNetwork    password=test1234
+    Send JSON Message    ${msg}
+
+I send a connection status "${status}"
+    [Documentation]    Send connection status message.
+    ${msg}=    Create Dictionary    type=connection    status=${status}
+    Send JSON Message    ${msg}
+
+I send usage at boundary "${five_pct}" and "${seven_pct}"
+    [Documentation]    Send usage_update with boundary percentage values.
+    ${msg}=    Create Dictionary
+    ...    type=usage_update
+    ...    fiveHourPercent=${five_pct}    sevenDayPercent=${seven_pct}
+    ...    inputTokens=${0}    outputTokens=${0}
+    ...    toolCalls=${0}    sessionDurationSec=${0}
+    Send JSON Message    ${msg}
+
+I send a state update with many options
+    [Documentation]    Send state_update with 8 options (max realistic).
+    ${options}=    Create List
+    FOR    ${i}    IN RANGE    8
+        ${opt}=    Create Dictionary    label=Option ${i}    index=${i}    recommended=${False}
+        Append To List    ${options}    ${opt}
+    END
+    ${msg}=    Create Dictionary
+    ...    type=state_update    state=awaiting_permission
+    ...    question=Select an option    options=${options}
+    Send JSON Message    ${msg}
+
+I send a state update with empty options
+    [Documentation]    Send state_update with awaiting_permission but empty options array.
+    ${options}=    Create List
+    ${msg}=    Create Dictionary
+    ...    type=state_update    state=awaiting_permission
+    ...    question=Empty options    options=${options}
+    Send JSON Message    ${msg}
+
 I reconnect after closing the serial port
     [Documentation]    Close serial, wait, then reopen.
     Close ESP32 Serial

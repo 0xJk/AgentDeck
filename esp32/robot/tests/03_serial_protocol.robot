@@ -136,6 +136,70 @@ Box 86 Unknown Message Type
     [Template]    Unknown Message Type Scenario
     box_86
 
+# ═══════════════════════════════════════════════════════════════════
+# State Transitions
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 State Cycle
+    [Template]    State Cycle Scenario
+    box_86
+
+IPS 3.5 State Cycle
+    [Template]    State Cycle Scenario
+    ips_35
+
+Round AMOLED State Cycle
+    [Template]    State Cycle Scenario
+    round_amoled
+
+Ulanzi TC001 State Cycle
+    [Template]    State Cycle Scenario
+    ulanzi_tc001
+
+# ═══════════════════════════════════════════════════════════════════
+# Timeline Events
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 Timeline Event
+    [Template]    Timeline Event Scenario
+    box_86
+
+Box 86 Timeline History
+    [Template]    Timeline History Scenario
+    box_86
+
+# ═══════════════════════════════════════════════════════════════════
+# WiFi & Connection
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 WiFi Provision
+    [Template]    WiFi Provision Scenario
+    box_86
+
+Box 86 Connection Status
+    [Template]    Connection Status Scenario
+    box_86
+
+# ═══════════════════════════════════════════════════════════════════
+# Boundary Values
+# ═══════════════════════════════════════════════════════════════════
+
+Box 86 Usage Zero Percent
+    [Template]    Usage Boundary Scenario
+    box_86    ${0}    ${0}
+
+Box 86 Usage Full Percent
+    [Template]    Usage Boundary Scenario
+    box_86    ${100}    ${100}
+
+Box 86 Many Options
+    [Template]    Many Options Scenario
+    box_86
+
+Box 86 Empty Options
+    [Template]    Empty Options Scenario
+    box_86
+
 *** Keywords ***
 # ───────────────────────────────────────────────────────────────────
 
@@ -224,3 +288,62 @@ Unknown Message Type Scenario
     Then the device should still be responsive
     When I send a device info request
     Then the device should respond with device info
+
+State Cycle Scenario
+    [Documentation]    Cycle through all agent states and verify survival.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I cycle through states "idle, processing, awaiting_permission, awaiting_input, idle"
+    Then the device should still be responsive
+    When I send a device info request
+    Then the device should respond with device info
+
+Timeline Event Scenario
+    [Documentation]    Send timeline_event and verify acceptance.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a timeline event
+    Then the device should still be responsive
+
+Timeline History Scenario
+    [Documentation]    Send timeline_history batch and verify acceptance.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a timeline history
+    Then the device should still be responsive
+
+WiFi Provision Scenario
+    [Documentation]    Send wifi_provision and verify device handles it.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a wifi provision message
+    Then the device should still be responsive
+
+Connection Status Scenario
+    [Documentation]    Send connection status messages.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a connection status "connected"
+    And I send a connection status "disconnected"
+    Then the device should still be responsive
+
+Usage Boundary Scenario
+    [Documentation]    Send usage_update with boundary values.
+    [Arguments]    ${board}    ${five_pct}    ${seven_pct}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send usage at boundary "${five_pct}" and "${seven_pct}"
+    Then the device should still be responsive
+
+Many Options Scenario
+    [Documentation]    Send awaiting_permission with 8 options.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a state update with many options
+    Then the device should still be responsive
+
+Empty Options Scenario
+    [Documentation]    Send awaiting_permission with empty options array.
+    [Arguments]    ${board}
+    Given the ESP32 device "${board}" is connected and booted
+    When I send a state update with empty options
+    Then the device should still be responsive

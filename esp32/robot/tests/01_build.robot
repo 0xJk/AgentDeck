@@ -36,6 +36,13 @@ Boot Test Environment Builds Successfully
     Should Be True    ${size} < 500000
     ...    msg=boot_test firmware unexpectedly large: ${size} bytes
 
+# ── QSPI boot test environment ──────────────────────────────────
+
+Boot Test QSPI Environment Builds Successfully
+    [Documentation]    QSPI boot_test variant must compile.
+    Given the "boot_test_qspi" firmware is built
+    Then the firmware binary should exist for "boot_test_qspi"
+
 # ── Source and config sanity ─────────────────────────────────────
 
 Source Files Are Present
