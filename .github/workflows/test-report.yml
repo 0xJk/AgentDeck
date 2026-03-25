@@ -73,8 +73,13 @@ jobs:
       - name: Run Robot Framework tests (no-hw)
         id: robot
         continue-on-error: true
+        env:
+          PIO_TIMEOUT: 600
         run: |
           pip install robotframework platformio pyserial pyyaml
+          # Pre-install PIO platforms to avoid download failures during tests
+          pio pkg install --global --platform "https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip" || true
+          pio pkg install --global --platform "espressif32@^6.9.0" || true
           mkdir -p coverage/test-report/robot
           cd esp32/robot && python3 -m robot --include no-hw --exclude hw \
             --outputdir ../../coverage/test-report/robot \
