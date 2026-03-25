@@ -60,11 +60,21 @@ jobs:
         continue-on-error: true
         run: cd android && ./gradlew testDebugUnitTest
 
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            esp32/.pio
+          key: pio-${{ hashFiles('esp32/platformio.ini') }}
+          restore-keys: pio-
+
       - name: Run Robot Framework tests (no-hw)
         id: robot
         continue-on-error: true
         run: |
-          pip install robotframework platformio
+          pip install robotframework platformio pyserial pyyaml
           mkdir -p coverage/test-report/robot
           cd esp32/robot && python3 -m robot --include no-hw --exclude hw \
             --outputdir ../../coverage/test-report/robot \
