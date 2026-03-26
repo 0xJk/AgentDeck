@@ -40,6 +40,8 @@ Boot Test Environment Builds Successfully
 
 Boot Test QSPI Environment Builds Successfully
     [Documentation]    QSPI boot_test variant must compile.
+    ...    Note: pioarduino FRAMEWORK_DIR issue may cause CI failure.
+    [Tags]    no-hw    smoke    local-only
     Given the "boot_test_qspi" firmware is built
     Then the firmware binary should exist for "boot_test_qspi"
 

@@ -87,7 +87,7 @@ jobs:
           pio run -e boot_test_qspi || true
           cd ..
           mkdir -p coverage/test-report/robot
-          cd esp32/robot && python3 -m robot --include no-hw --exclude hw \
+          cd esp32/robot && python3 -m robot --include no-hw --exclude hw --exclude local-only \
             --outputdir ../../coverage/test-report/robot \
             tests/
 
