@@ -77,9 +77,14 @@ jobs:
           PIO_TIMEOUT: 600
         run: |
           pip install robotframework platformio pyserial pyyaml intelhex
-          # Pre-build one env per platform to cache toolchains + frameworks
-          cd esp32 && pio run -e ips_35 --target checkprogsize || true
-          pio run -e ulanzi_tc001 --target checkprogsize || true
+          # Pre-build all envs to cache toolchains + frameworks
+          cd esp32
+          pio run -e box_86 || true
+          pio run -e ips_35 || true
+          pio run -e round_amoled || true
+          pio run -e ulanzi_tc001 || true
+          pio run -e boot_test || true
+          pio run -e boot_test_qspi || true
           cd ..
           mkdir -p coverage/test-report/robot
           cd esp32/robot && python3 -m robot --include no-hw --exclude hw \
