@@ -336,11 +336,59 @@ const BUBBLE_CHARS = ['\u00B0', '\u00B7', '\u25CB', '\u25E6'];
 
 interface Bubble { x: number; y: number; char: string; speed: number; }
 
+// ===== OpenCode — Box-Drawing Nested Square (simulator SSOT) =====
+
+export interface OpenCodeInstance {
+  id: string;
+  x: number;
+  y: number;
+  homeX: number;
+  state: string;
+  name?: string;
+  phaseOffset: number;
+}
+
+function renderOpenCode(_inst: OpenCodeInstance, frame: number, scale: SpriteScale): { lines: string[]; color: string } {
+  const isSleeping = _inst.state === 'sleeping' || _inst.state === 'paused';
+  const isProcessing = _inst.state === 'processing';
+  const outerColor = isSleeping ? DIM + fg(160, 158, 158) : fg(241, 236, 236);
+  const innerColor = isSleeping ? DIM + fg(60, 56, 56) : fg(75, 70, 70);
+  const pulse = isProcessing && ((frame + _inst.phaseOffset) % 30 < 15);
+  const oc = pulse ? fg(207, 206, 205) : outerColor;
+  const ic = innerColor;
+  if (scale === 'xlarge') {
+    return { lines: [
+      `${oc}\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510${RESET}`,
+      `${oc}\u2502${RESET}       ${oc}\u2502${RESET}`,
+      `${oc}\u2502${RESET} ${ic}\u250c\u2500\u2500\u2500\u2510${RESET} ${oc}\u2502${RESET}`,
+      `${oc}\u2502${RESET} ${ic}\u2502   \u2502${RESET} ${oc}\u2502${RESET}`,
+      `${oc}\u2502${RESET} ${ic}\u2514\u2500\u2500\u2500\u2518${RESET} ${oc}\u2502${RESET}`,
+      `${oc}\u2502${RESET}       ${oc}\u2502${RESET}`,
+      `${oc}\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518${RESET}`,
+    ], color: outerColor };
+  }
+  if (scale === 'large') {
+    return { lines: [
+      `${oc}\u250c\u2500\u2500\u2500\u2500\u2500\u2510${RESET}`,
+      `${oc}\u2502${RESET}     ${oc}\u2502${RESET}`,
+      `${oc}\u2502${RESET} ${ic}\u250c\u2500\u2510${RESET} ${oc}\u2502${RESET}`,
+      `${oc}\u2502${RESET}     ${oc}\u2502${RESET}`,
+      `${oc}\u2514\u2500\u2500\u2500\u2500\u2500\u2518${RESET}`,
+    ], color: outerColor };
+  }
+  return { lines: [
+    `${oc}\u250c\u2500\u2500\u2500\u2510${RESET}`,
+    `${oc}\u2502${ic}\u250c\u2500\u2510${oc}\u2502${RESET}`,
+    `${oc}\u2514\u2500\u2500\u2500\u2518${RESET}`,
+  ], color: outerColor };
+}
+
 interface TerrariumContext {
   bubbles: Bubble[];
   schools: FishSchool[];
   octopi: OctopusInstance[];
   jellyfish: JellyfishInstance[];
+  opencode: OpenCodeInstance[];
   crayfish: CrayfishState;
   voiceAssistantState: string;
 }
@@ -360,6 +408,7 @@ export function initTerrarium(): TerrariumContext {
     schools: [initSchool(5, 0), initSchool(5, 1)],
     octopi: [],
     jellyfish: [],
+    opencode: [],
     crayfish: { visible: false, routing: false, sick: false, x: 0.75, y: 0.88 },
     voiceAssistantState: 'disabled',
   };
@@ -420,6 +469,16 @@ export function updateTerrarium(ctx: TerrariumContext, frame: number): void {
     jf.x = Math.max(0.08, Math.min(0.65, jf.x));
   }
 
+  // OpenCode Y — same state-Y mapping as octopus
+  for (const oc of ctx.opencode) {
+    const targetY = oc.state === 'processing' ? 0.30 :
+                    oc.state.startsWith('awaiting') ? 0.50 : 0.88;
+    oc.y += (targetY - oc.y) * 0.04;
+    if (oc.state === 'processing') {
+      oc.y += Math.sin((frame + oc.phaseOffset) * 0.08) * 0.006;
+    }
+  }
+
   // Crayfish Y: routing swims up, sitting rests on floor
   const crayfishTargetY = ctx.crayfish.routing ? 0.50 : 0.85;
   ctx.crayfish.y += (crayfishTargetY - ctx.crayfish.y) * 0.04;
@@ -432,7 +491,8 @@ export function setOctopi(
   const octSessions = sessions.filter(s =>
     (s.agentType as string) !== 'daemon' &&
     (s.agentType as string) !== 'openclaw' &&
-    (s.agentType as string) !== 'codex-cli'
+    (s.agentType as string) !== 'codex-cli' &&
+    (s.agentType as string) !== 'opencode'
   );
   const count = octSessions.length;
   // Count name occurrences to number duplicates
@@ -518,6 +578,36 @@ export function setJellyfish(
     }
   }
   ctx.jellyfish = newJellyfish;
+}
+
+export function setOpenCode(
+  ctx: TerrariumContext,
+  sessions: Array<{ id?: string; state: string; name?: string; agentType?: string }>,
+): void {
+  const ocSessions = sessions.filter(s => (s.agentType as string) === 'opencode');
+  const count = ocSessions.length;
+  const nameCounts = new Map<string, number>();
+  for (const s of ocSessions) { const n = s.name || ''; nameCounts.set(n, (nameCounts.get(n) || 0) + 1); }
+  const nameSeq = new Map<string, number>();
+  const newOc: OpenCodeInstance[] = [];
+  for (let i = 0; i < count; i++) {
+    const s = ocSessions[i];
+    const sid = s.id || `oc-${i}`;
+    const baseName = s.name || '';
+    const seq = (nameSeq.get(baseName) || 0) + 1;
+    nameSeq.set(baseName, seq);
+    const displayName = (nameCounts.get(baseName) || 0) > 1 ? `${baseName} #${seq}` : baseName;
+    const homeX = count === 1 ? 0.55 : 0.48 + (i * 0.20) / Math.max(1, count - 1);
+    const existing = ctx.opencode.find(o => o.id === sid);
+    if (existing) {
+      existing.state = s.state; existing.name = displayName || undefined;
+      existing.homeX = homeX; existing.x = homeX;
+      newOc.push(existing);
+    } else {
+      newOc.push({ id: sid, x: homeX, y: 0.88, homeX, state: s.state, name: displayName || undefined, phaseOffset: Math.floor(Math.random() * 40) });
+    }
+  }
+  ctx.opencode = newOc;
 }
 
 export function setVoiceAssistantState(ctx: TerrariumContext, state: string): void {
@@ -749,6 +839,38 @@ export function renderTerrariumFrame(
             charColors[px] = colors.jellyfishGlow;
           }
         }
+      }
+    }
+
+    // OpenCode (box-drawing nested square)
+    for (const oc of ctx.opencode) {
+      const { lines, color } = renderOpenCode(oc, frame, scale);
+      const ocHalfW = Math.floor((lines[0]?.replace(/\x1b\[[^m]*m/g, '').length ?? 5) / 2);
+      const ox = Math.floor(oc.x * width) - ocHalfW;
+      const oy = Math.floor(oc.y * height) - Math.floor(lines.length / 2);
+      for (let lr = 0; lr < lines.length; lr++) {
+        if (oy + lr === row) {
+          const stripped = lines[lr].replace(/\x1b\[[^m]*m/g, '');
+          for (let ci = 0; ci < stripped.length; ci++) {
+            const px = ox + ci;
+            if (px >= 0 && px < width) {
+              chars[px] = stripped[ci];
+              charColors[px] = color;
+            }
+          }
+        }
+      }
+      if (oc.name && oy - 1 === row) {
+        const name = oc.name.length > 12 ? oc.name.slice(0, 11) + '\u2026' : oc.name;
+        const nx = Math.floor(oc.x * width) - Math.floor(name.length / 2);
+        for (let nc = 0; nc < name.length; nc++) {
+          const px = nx + nc;
+          if (px >= 0 && px < width) { chars[px] = name[nc]; charColors[px] = fg(180, 180, 180); }
+        }
+      }
+      if (oc.state.startsWith('awaiting') && oy + lines.length === row) {
+        const qx = Math.floor(oc.x * width) + ocHalfW + 1;
+        if (qx >= 0 && qx < width) { chars[qx] = '?'; charColors[qx] = fg(255, 255, 100); }
       }
     }
 

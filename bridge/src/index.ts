@@ -204,8 +204,9 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     process.exit(1);
   }
 
-  // Suppress stderr logging once PTY is active (MonitorAdapter has no PTY)
-  if (!(adapter instanceof MonitorAdapter)) {
+  // Suppress stderr logging once PTY is active (PTY adapters share terminal)
+  // Non-PTY adapters (Monitor, OpenClaw) keep logs visible
+  if (adapter.capabilities.hasTerminal) {
     setPtyMode(true);
   }
 
@@ -498,8 +499,8 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   });
 
   // Adapter exit — always shutdown (shutdownInProgress guard prevents double-shutdown)
-  adapter.on('exit', () => {
-    log('Agent process exited');
+  adapter.on('exit', (code, signal) => {
+    log(`Agent process exited (code=${code}, signal=${signal})`);
     shutdown();
   });
 

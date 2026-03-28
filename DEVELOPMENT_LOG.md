@@ -2,6 +2,83 @@
 
 ---
 
+## 2026-03-29 — Swift Native Daemon for Mac App Store
+
+### 문제
+AgentDeck daemon이 Node.js 의존으로 설치 장벽 높음 (`npm install -g @agentdeck/bridge` + `agentdeck daemon install`). Mac App Store 단일 앱 배포 불가.
+
+### 해결
+daemon-server.ts 전체를 **Swift로 재작성** (29 files, ~4800 LOC). macOS 앱(`apple/AgentDeck/Daemon/`)에 in-process 통합.
+
+**핵심 아키텍처**: 별도 daemon 프로세스가 아니라 앱 안에서 직접 실행
+- `DaemonService` → `DaemonServer.startServices()` — 앱 시작 시 자동 기동
+- WS 서버 (Network.framework) + HTTP 서버 (커스텀 TCP 파서) — 같은 포트 불가하여 port/port+1
+- `MenuBarExtra` — Show Dashboard / Launch Session / Start at Login / Quit
+- 기존 대시보드(`AgentStateHolder`)는 `ws://127.0.0.1:{port}`로 in-process daemon에 연결
+
+**외부 의존 완전 제거**:
+- python3 (CoreGraphics) → `CGDisplayIsAsleep()` 직접 호출
+- osascript (볼륨/밝기) → CoreAudio `AudioObjectGetPropertyData` + IOKit `IODisplaySetFloatParameter`
+- bonjour-service → Network.framework `NWListener.Service`
+- ws/express → Network.framework 네이티브 WS + 커스텀 HTTP
+
+**"설치 한 번이면 끝" 기능들**:
+- `HookInstaller` — 앱 시작 시 `~/.claude/settings.local.json`에 hooks 자동 설치
+- `SessionLauncher` — 메뉴바에서 Terminal.app으로 `agentdeck claude` 실행
+- `DaemonVoiceAssistant` — AVAudioEngine + whisper + AVSpeechSynthesizer
+- `PixooRenderer` — 상태→64x64 RGB 픽셀 프레임 변환 (3x5 폰트 내장)
+
+### 핵심 설계 결정
+1. **SMAppService.agent()가 아닌 in-process 방식 채택**: agent 바이너리 분리 시 App Review 리스크 + 코드 공유 어려움. 앱 자체가 daemon + dashboard 겸용. Login Item으로 자동 시작
+2. **Singleton guard**: Node.js daemon이 이미 실행 중이면 Swift daemon 시작 안 함 → 기존 Node.js 인프라와 공존 가능
+3. **HTTP 포트 분리**: Network.framework에서 WS + HTTP 같은 포트 불가 → HTTP는 port+1, 실패 시 port+2~+10 자동 시도
+4. **`[String: Any]` Sendable 문제**: Swift 6 strict concurrency에서 dict가 actor 경계를 넘을 수 없음 → `SendableDict` wrapper + `broadcastRaw(Data)` 패턴
+5. **GatewayProbe 크래시**: `withCheckedContinuation` + NWConnection `stateUpdateHandler`에서 timer/state 이중 resume → POSIX socket `poll()` 방식으로 교체
+6. **MCP는 AgentDeck 제어에 부적합**: MCP 방향이 반대 (Claude→MCP Server). 외부 앱이 Claude Code를 제어하는 유일한 공식 메커니즘은 **Hooks**
+7. **80/20 배포 전략**: Mac App(hooks) → 모니터링+권한응답 (80% 사용자), CLI Bridge 추가 → 옵션 선택/모드 전환/diff (20% 파워 유저)
+
+### 파일 (apple/AgentDeck/Daemon/)
+- `Server/` — DaemonServer, WebSocketServer, HTTPServer, AuthManager
+- `Core/` — StateMachine, DaemonLogger, UsageAPIClient, HookInstaller, SessionLauncher
+- `Session/` — SessionRegistry, SessionAggregator, TimelineRelay
+- `Modules/` — ESP32Serial, SerialModule, AdbModule (D200H), MdnsModule, PixooModule, PixooRenderer, WifiConfig, ModuleManager
+- `System/` — DisplayMonitor, UtilityProxy
+- `Gateway/` — OpenClawAdapter (Ed25519 CryptoKit), GatewayProbe
+- `Timeline/` — DaemonTimelineStore, TimelineSummarizer, BridgeLogStream
+- `Voice/` — DaemonVoiceAssistant
+- `DaemonService.swift` — in-process lifecycle + Login Item
+
+---
+
+## 2026-03-29 — OpenCode Agent Integration
+
+### 문제
+AgentDeck이 Claude Code와 Codex CLI만 지원. OpenCode (Go 기반 코딩 에이전트) 추가 필요.
+
+### 해결
+OpenCode가 구조화된 HTTP API + SSE 이벤트를 제공한다는 것을 발견 (`opencode serve`, `GET /global/event`). 처음에는 API-only(non-PTY) 방식으로 구현했으나, 사용자가 TUI에서 직접 작업하길 원해 **PTY + SSE 하이브리드** 방식으로 전환.
+
+**최종 구조**: `OpenCodeAdapter extends PtyAdapter`
+- PTY: `opencode --port XXXX` — 사용자가 TUI에서 직접 코딩
+- SSE: 내장 서버의 `/global/event`에 연결 — 구조화된 이벤트 수신
+- TUI 파싱 불필요 — SSE가 상태/도구/토큰/모델 정보를 모두 제공
+
+### 핵심 설계 결정
+1. **SSE 이벤트가 TUI 파싱을 완전 대체**: Codex CLI는 TUI 출력을 regex로 파싱(CodexOutputParser)하지만 OpenCode는 SSE 이벤트가 있어 `wireOutputParser()`와 `feedParser()`가 no-op. 더 안정적이고 유지보수 용이
+2. **내장 서버 포트**: `opencode --port XXXX`로 실행하면 TUI와 HTTP 서버가 동시에 뜸. 어댑터가 랜덤 포트(14096+) 할당
+3. **세션 자동 추적**: SSE의 `session.status` 이벤트에서 첫 번째 세션을 자동으로 추적
+4. **OpenCode API 검증**: `opencode serve` + curl로 직접 검증. SSE 이벤트 타입: `session.status` (busy/idle), `message.part.updated` (tool/text/step-finish), `message.updated` (model/tokens/cost), `permission.requested`
+5. **setPtyMode 분기**: `hasTerminal` 기반으로 변경 — non-PTY 어댑터(Monitor, OpenClaw)에서 stderr 로그가 숨겨지는 버그 수정
+
+### 파일
+- `bridge/src/opencode-client.ts` — HTTP API 클라이언트 + SSE EventSource
+- `bridge/src/adapters/opencode-adapter.ts` — PtyAdapter + SSE 하이브리드
+- `bridge/src/__tests__/opencode-client.test.ts` — 클라이언트 단위 테스트 (13개)
+- `shared/src/adapter.ts` — `'opencode'` AgentType + OPENCODE_CAPABILITIES
+- `bridge/src/cli.ts` — `agentdeck opencode` CLI 커맨드
+
+---
+
 ## 2026-03-26 — Usage 리셋 버그 + E-ink 시간 표시 잘림 + Daemon 좀비 프로세스
 
 ### 문제

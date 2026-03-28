@@ -144,6 +144,32 @@ program
   });
 
 program
+  .command('opencode')
+  .description('Start OpenCode session (PTY + SSE bridge)')
+  .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
+  .option('-c, --command <cmd>', 'Command to spawn', 'opencode')
+  .option('-d, --debug', 'Enable debug logging')
+  .option('--local', 'Disable all device modules (WS only)')
+  .option('--no-adb', 'Disable ADB reverse setup')
+  .option('--no-postit', 'Disable terminal tab title updates')
+  .action(async (opts) => {
+    const { startSession } = await import('./index.js');
+    await startSession({
+      agentType: 'opencode',
+      port: parseInt(opts.port, 10),
+      command: opts.command,
+      debug: opts.debug,
+      postit: opts.postit !== false,
+      modules: opts.local ? { mdns: false, adb: false, serial: false, pixoo: false } : {
+        mdns: false,
+        adb: opts.adb !== false ? 'auto' : false,
+        serial: false,
+        pixoo: false,
+      },
+    });
+  });
+
+program
   .command('monitor')
   .description('Start hook-only bridge (no PTY — run claude separately)')
   .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))
