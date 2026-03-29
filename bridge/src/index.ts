@@ -12,7 +12,7 @@ import { enableDebugLog, log, logError, debug, setPtyMode } from './logger.js';
 import { EventJournal } from './event-journal.js';
 import { PtyRingBuffer } from './pty-ringbuffer.js';
 import { createDiagDump } from './diag-analyzer.js';
-import { createAdapter, ClaudeCodeAdapter, CodexCliAdapter } from './adapters/index.js';
+import { createAdapter, ClaudeCodeAdapter, CodexCliAdapter, OpenCodeAdapter } from './adapters/index.js';
 import { MonitorAdapter } from './adapters/monitor.js';
 import { UtilityProxy } from './utility-proxy.js';
 import { BridgeLogStream } from './log-stream.js';
@@ -296,6 +296,11 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     hookServer.pairingToken = core.authToken;
   } else if (adapter instanceof CodexCliAdapter) {
     hookServer = adapter.getCodexHookServer();
+    hookServer.setMeta({ agentType, projectName });
+    hookServer.setVoiceManager(voiceManager);
+    hookServer.pairingToken = core.authToken;
+  } else if (adapter instanceof OpenCodeAdapter) {
+    hookServer = adapter.getHookServer();
     hookServer.setMeta({ agentType, projectName });
     hookServer.setVoiceManager(voiceManager);
     hookServer.pairingToken = core.authToken;

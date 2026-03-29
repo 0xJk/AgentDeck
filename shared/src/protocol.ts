@@ -410,6 +410,7 @@ export const SERIAL_FORWARDED_EVENTS = new Set([
   ...DISPLAY_FORWARDED_EVENTS,
   'timeline_event',
   'timeline_history',
+  'set_orientation',
 ]);
 
 export const BRIDGE_WS_PORT = 9120;

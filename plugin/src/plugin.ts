@@ -9,6 +9,9 @@ import {
   State,
   PermissionMode,
   OPENCLAW_CAPABILITIES,
+  OPENCODE_CAPABILITIES,
+  CODEX_CLI_CAPABILITIES,
+  CLAUDE_CODE_CAPABILITIES,
   type AgentType,
   type BillingType,
   type DeckSlotConfig,
@@ -143,6 +146,14 @@ let proxiedAgentType: AgentType | null = null;
 let currentVoiceAssistantState: VoiceAssistantState = 'disabled';
 let currentGatewayHasError = false;
 
+/** Resolve capabilities for the current proxied agent type */
+function capsForProxiedAgent(): import('@agentdeck/shared').AgentCapabilities {
+  if (proxiedAgentType === 'openclaw') return OPENCLAW_CAPABILITIES;
+  if (proxiedAgentType === 'opencode') return OPENCODE_CAPABILITIES;
+  if (proxiedAgentType === 'codex-cli') return CODEX_CLI_CAPABILITIES;
+  return connMgr.getCapabilities() ?? CLAUDE_CODE_CAPABILITIES;
+}
+
 // ---- Expanded mode state ----
 let expandedMode = false;
 
@@ -177,7 +188,7 @@ initItermDial(connMgr);
 // Refresh other dials when voice text takeover exits
 setVoiceTextExitCallback(() => {
   const agentType = proxiedAgentType;
-  const vtCaps = proxiedAgentType === 'openclaw' ? OPENCLAW_CAPABILITIES : connMgr.getCapabilities();
+  const vtCaps = capsForProxiedAgent();
   updateOptionDialState(currentState, currentOptions, undefined, undefined, undefined, undefined, undefined, currentSuggestedPrompt, agentType, currentSessionStatus, vtCaps);
   updateUtilityDialState(currentState);
   updateItermDialState(currentState, agentType, currentSessionStatus, vtCaps);
@@ -209,7 +220,7 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   }
 
   // Track proxied agent type from daemon (state_update.agentType overrides connection-level detection)
-  if (ev.agentType === 'openclaw' || ev.agentType === 'claude-code') {
+  if (ev.agentType === 'openclaw' || ev.agentType === 'claude-code' || ev.agentType === 'codex-cli' || ev.agentType === 'opencode') {
     proxiedAgentType = ev.agentType;
   }
 
@@ -219,6 +230,10 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
     setUsageCapabilities(ev.agentCapabilities);
   } else if (proxiedAgentType === 'openclaw') {
     setUsageCapabilities(OPENCLAW_CAPABILITIES);
+  } else if (proxiedAgentType === 'opencode') {
+    setUsageCapabilities(OPENCODE_CAPABILITIES);
+  } else if (proxiedAgentType === 'codex-cli') {
+    setUsageCapabilities(CODEX_CLI_CAPABILITIES);
   }
 
   // Update model catalog if present
@@ -409,7 +424,7 @@ connMgr.on('display_state', (ev: { type: 'display_state'; displayOn: boolean }) 
 connMgr.on('connected', () => {
   dinfo('Plugin', `connected (agentType=${proxiedAgentType} prevState=${currentState})`);
   setUsageBridgeConnected(true);
-  const connCaps = proxiedAgentType === 'openclaw' ? OPENCLAW_CAPABILITIES : connMgr.getCapabilities();
+  const connCaps = capsForProxiedAgent();
   setUsageCapabilities(connCaps);
   // Request fresh usage data immediately on connect (covers sleep/wake recovery)
   connMgr.send({ type: 'query_usage' });
@@ -452,9 +467,7 @@ function broadcastStateUpdate(): void {
   dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length} expanded=${expandedMode} takeover=${isEncoderTakeoverActive()}`);
 
   const agentType = proxiedAgentType;
-  const caps = proxiedAgentType === 'openclaw'
-    ? OPENCLAW_CAPABILITIES
-    : connMgr.getCapabilities();
+  const caps = capsForProxiedAgent();
 
   if (expandedMode && currentOptions.length > 4) {
     // Expanded mode: all 7 keypad slots show options

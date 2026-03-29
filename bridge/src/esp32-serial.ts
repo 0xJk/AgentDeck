@@ -21,7 +21,8 @@ import { debug } from './logger.js';
 
 /** @internal Exported for testing only */
 export const ESP32_PORT_PATTERNS = [
-  /\/dev\/cu\.usbserial-\d+/,   // CH340 (86 Box)
+  /\/dev\/cu\.usbserial-\d+/,    // CP210x / CH340 (cu.usbserial-XXXX)
+  /\/dev\/cu\.wchusbserial\d+/,  // CH340 (cu.wchusbserialXXXX — 86 Box)
   /\/dev\/cu\.usbmodem\d+/,      // Native USB JTAG (IPS 3.5", Round AMOLED)
   /\/dev\/ttyUSB\d+/,            // Linux CH340
   /\/dev\/ttyACM\d+/,            // Linux native USB
@@ -114,7 +115,7 @@ async function detectESP32Ports(): Promise<string[]> {
     let output: string;
 
     if (platform === 'darwin') {
-      output = await execWithKill('ls /dev/cu.usb* 2>/dev/null || true');
+      output = await execWithKill('ls /dev/cu.usb* /dev/cu.wchusbserial* 2>/dev/null || true');
     } else if (platform === 'linux') {
       output = await execWithKill('ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true');
     } else {
