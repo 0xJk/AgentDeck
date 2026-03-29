@@ -59,11 +59,23 @@ struct AgentCreatureState: Identifiable {
     var exitedAsking = false
 }
 
+// MARK: - OpenCode Creature State
+
+struct OpenCodeCreatureState: Identifiable {
+    let id: String
+    let projectName: String?
+    let state: OpenCodeVisualState
+    let homeX: Float
+    let homeY: Float
+    let scale: Float
+}
+
 // MARK: - Terrarium State (aggregate)
 
 struct TerrariumState {
     var creatures: [AgentCreatureState] = []
     var jellyfishCreatures: [JellyfishCreatureState] = []
+    var opencodeCreatures: [OpenCodeCreatureState] = []
     var crayfishState: CrayfishVisualState = .dormant
     var crayfishVisible: Bool = false
     var tetraState: TetraVisualState = .circling
