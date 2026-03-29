@@ -40,4 +40,5 @@ export interface ModuleConfigs {
   adb?: 'auto' | boolean;
   serial?: 'auto' | boolean;
   pixoo?: 'auto' | boolean;
+  d200h?: 'auto' | boolean;
 }
