@@ -125,6 +125,11 @@ export class WsServer {
     this.commandCallback = callback;
   }
 
+  /** Inject a command from a non-WS source (e.g., D200H agent via stdout/stdin pipe). */
+  dispatchCommand(cmd: PluginCommand): void {
+    this.commandCallback?.(cmd);
+  }
+
   /** Register a callback for raw messages before PluginCommand dispatch. Return true to consume. */
   onRawMessage(callback: (msg: Record<string, unknown>, sender: WebSocket) => boolean): void {
     this.rawMessageCallback = callback;

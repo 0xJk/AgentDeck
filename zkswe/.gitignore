@@ -1,0 +1,13 @@
+recon/dumps/
+backups/
+
+# Compiled ARM binaries
+agent/agentdeck-d200h
+agent/gpio-probe
+agent/hid-sniff
+agent/sysfs-probe
+agent/uart-sniff
+agent/fb-test
+
+# SD card overlay (device-specific)
+sdcard/
