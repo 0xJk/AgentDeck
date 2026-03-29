@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-03-30 — D200H: ADB 펌웨어 해킹 → 순정 HID 프로토콜 전환
+
+### 문제
+D200H 커스텀 펌웨어 개조 시도가 모두 실패:
+- fbdev 직접 쓰기: ioctl 성공하지만 화면 출력 없음 (zkgui의 MI 하드웨어 레이어가 가림)
+- MI_GFX 동적 바이너리: dlopen/BitBlit 성공하지만 visible target address가 부팅마다 drift → 검은 화면
+- ADB 불안정: 첫 shell만 동작, reverse 행, 4초 ADB→HID 전환
+
+### 해결
+**D200H는 D200과 동일한 HID 프로토콜을 사용한다는 것을 발견** — 이미 커뮤니티가 완전히 역공학한 프로토콜.
+
+검증 과정:
+1. D200H USB 재연결 → 4초 후 HID 모드 (VID `0x2207` / PID `0x0019`) 확인
+2. Python `hidapi`로 Consumer Control 인터페이스 열기 성공
+3. `SET_BUTTONS` (ZIP: manifest.json + 196×196 PNG) 전송 → 화면 표시 확인
+4. `DEVICE_INFO` 응답: `{"DeviceType":"D200","HardwareVersion":"SSD210V100","Dversion":"5.3.0"}`
+
+### 핵심 설계 결정
+- **ADB 경로 완전 포기**: 커스텀 온디바이스 에이전트, MI_GFX, GPIO 스캐닝 모두 불필요
+- **순정 HID 프로토콜 채택**: `strmdck` 라이브러리와 호환, 1024바이트 고정 패킷
+- **node-hid optionalDependencies**: node-pty와 동일 패턴 (네이티브 모듈 옵셔널)
+- **두 HID 인터페이스**: Interface 0 (Consumer, usagePage=12) = 디스플레이/명령, Interface 1 (Keyboard, usagePage=1) = 버튼 이벤트
+- **macOS 키보드 독점 문제**: 버튼 이벤트는 Keyboard 인터페이스를 통해 오는데 macOS가 독점 사용. Swift IOKit `IOHIDManager`로 해결 필요
+
+### 미완료
+- 버튼 이벤트 수신 (Swift IOKit 또는 node-hid macOS 권한)
+- daemon 실시간 통합 테스트
+- ADB D200H 코드 정리 + zkswe/agent/ 아카이브
+
+---
+
 ## 2026-03-29 — ESP32 IPS 3.5" Portrait Mode + Multi-agent 버그 수정
 
 ### 문제
@@ -43,6 +74,45 @@
 - **D200H 디스플레이의 1차 가설은 "렌더링 기법 미해결"보다 "잘못된 바이너리/실행 경로 사용" 쪽이 더 강하다**
 - Node bridge 경로를 기준 SSOT로 보고, Swift daemon도 동일한 foreground agent 전략으로 수렴시켰다
 - 다음 실제 검증은 `fb-test --gfx --copy-test`와 동적 메인 에이전트 실행 로그를 같은 세션에서 확보하는 순서가 맞다
+
+---
+
+## 2026-03-29 — D200H 현재 점검: first-shell 로그로 MI_GFX 성공 확인, visible target 재의심
+
+### 상황
+- 재부팅 직후 첫 `adb shell`에서만 유의미한 정보가 나오는 경우가 많고, 그 이후 `adbd`가 쉽게 hang함
+- 한동안 실험이 계속 오염됐는데, 원인 중 하나는 호스트에서 별도로 돌던 전역 프로세스:
+  - `node /Users/puritysb/Library/pnpm/agentdeck opencode`
+- 이 프로세스가 정적 `/data/agentdeck`용 `adb push`와 `adb shell`을 계속 되살려 로컬 repo 기준 테스트와 충돌했음
+
+### 조치
+- 전역 `agentdeck opencode` 프로세스를 강제로 종료
+- D200H 실행 경로를 `/data/agentdeck-dyn`로 분리한 상태를 유지
+- on-device agent stdout/stderr를 무버퍼로 변경
+- device shell에 `sleep`이 없어 single-shot takeover 스크립트에서 `sleep 1` 제거
+- first-shell takeover를 직접 실행해 startup 로그를 확보
+
+### first-shell startup 로그 핵심
+- `AgentDeck D200H Agent v1.0`
+- `fb0 smem_start=0x30121000 line_length=2160`
+- `MI_GFX backend initialized (bus_base=0x50121000)`
+- `MI_GFX: active`
+- `Framebuffer OK (960x540)`
+
+### 현재 판단
+- 동적 agent는 실제로 실행되고, `MI_GFX` 초기화도 성공함
+- 그런데 이 부트에서 agent가 선택한 타깃 `0x50121000`은 여전히 검은 화면이었음
+- 반면 저장소 기록과 과거 실기기 성공 경로는 `0x50101000`
+- 따라서 지금의 가장 강한 가설은:
+  - takeover 자체는 됨
+  - 문제는 `MI_GFX` 존재 여부가 아니라 **visible target 주소 드리프트**
+
+### 후속 조치
+- `zkswe/agent/src/framebuffer.c`와 `zkswe/agent/src/fb_test.c`를 다시 수정해
+  D200H에서는 `0x50101000`을 우선 사용하도록 변경
+- 새 `agentdeck-d200h-dyn`를 재빌드
+- 그러나 직후 실검은 ADB window collapse와 stock firmware 복귀 때문에
+  끝까지 안정적으로 검증하지 못함
 
 ---
 
