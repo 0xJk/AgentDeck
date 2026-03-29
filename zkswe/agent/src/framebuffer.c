@@ -9,9 +9,95 @@
 #include <linux/fb.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <stdlib.h>
+#include <dlfcn.h>
 
 static int fb_fd = -1;
 static uint8_t *fb_mem = NULL;
+static uint8_t *canvas_mem = NULL;
+
+typedef unsigned int       MI_U32;
+typedef unsigned short     MI_U16;
+typedef unsigned long long MI_PHY;
+typedef signed int         MI_S32;
+typedef unsigned char      MI_BOOL;
+
+typedef struct {
+    MI_PHY phyAddr;
+    MI_U32 eColorFmt;
+    MI_U32 u32Width;
+    MI_U32 u32Height;
+    MI_U32 u32Stride;
+} MI_GFX_Surface_t;
+
+typedef struct {
+    MI_S32 s32Xpos;
+    MI_S32 s32Ypos;
+    MI_U32 u32Width;
+    MI_U32 u32Height;
+} MI_GFX_Rect_t;
+
+typedef MI_S32 (*fn_MI_SYS_Init)(void);
+typedef MI_S32 (*fn_MI_GFX_Open)(void);
+typedef MI_S32 (*fn_MI_GFX_Close)(void);
+typedef MI_S32 (*fn_MI_GFX_BitBlit)(
+    MI_GFX_Surface_t *pstSrc,
+    MI_GFX_Rect_t *pstSrcRect,
+    MI_GFX_Surface_t *pstDst,
+    MI_GFX_Rect_t *pstDstRect,
+    void *pstOpt,
+    MI_U16 *pu16Fence);
+typedef MI_S32 (*fn_MI_GFX_WaitAllDone)(MI_BOOL bBlock, MI_U32 u32TimeoutMs);
+
+static struct {
+    void *h_sys;
+    void *h_gfx;
+    fn_MI_SYS_Init sys_init;
+    fn_MI_GFX_Open gfx_open;
+    fn_MI_GFX_Close gfx_close;
+    fn_MI_GFX_BitBlit gfx_bitblit;
+    fn_MI_GFX_WaitAllDone gfx_wait_all_done;
+    int active;
+    MI_PHY bus_base;
+    MI_U32 page_size;
+    MI_GFX_Surface_t src;
+    MI_GFX_Surface_t dst;
+    MI_GFX_Rect_t rect;
+} mi = {0};
+
+static int fb_try_init_mi_backend(void) {
+    mi.h_sys = dlopen("libmi_sys.so", RTLD_NOW | RTLD_GLOBAL);
+    mi.h_gfx = dlopen("libmi_gfx.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!mi.h_sys || !mi.h_gfx) return -1;
+
+    mi.sys_init = (fn_MI_SYS_Init)dlsym(mi.h_sys, "MI_SYS_Init");
+    mi.gfx_open = (fn_MI_GFX_Open)dlsym(mi.h_gfx, "MI_GFX_Open");
+    mi.gfx_close = (fn_MI_GFX_Close)dlsym(mi.h_gfx, "MI_GFX_Close");
+    mi.gfx_bitblit = (fn_MI_GFX_BitBlit)dlsym(mi.h_gfx, "MI_GFX_BitBlit");
+    mi.gfx_wait_all_done = (fn_MI_GFX_WaitAllDone)dlsym(mi.h_gfx, "MI_GFX_WaitAllDone");
+    if (!mi.gfx_open || !mi.gfx_bitblit || !mi.gfx_wait_all_done) return -1;
+
+    if (mi.sys_init && mi.sys_init() != 0) return -1;
+    if (mi.gfx_open() != 0) return -1;
+
+    mi.bus_base = 0x50101000ULL;
+    mi.page_size = FB_PAGE_SIZE;
+    mi.src.phyAddr = mi.bus_base + mi.page_size;
+    mi.src.eColorFmt = 11; /* E_MI_GFX_FMT_ARGB8888 */
+    mi.src.u32Width = FB_W;
+    mi.src.u32Height = FB_H;
+    mi.src.u32Stride = FB_W * FB_BPP;
+    mi.dst = mi.src;
+    mi.dst.phyAddr = mi.bus_base;
+
+    mi.rect.s32Xpos = 0;
+    mi.rect.s32Ypos = 0;
+    mi.rect.u32Width = FB_W;
+    mi.rect.u32Height = FB_H;
+
+    mi.active = 1;
+    return 0;
+}
 
 int fb_init(void) {
     fb_fd = open(FB_DEVICE, O_RDWR);
@@ -21,13 +107,30 @@ int fb_init(void) {
                               MAP_SHARED, fb_fd, 0);
     if (fb_mem == MAP_FAILED) { perror("mmap fb0"); close(fb_fd); return -1; }
 
+    canvas_mem = (uint8_t *)calloc(1, FB_PAGE_SIZE);
+    if (!canvas_mem) {
+        perror("calloc canvas");
+        munmap(fb_mem, FB_PAGE_SIZE * 2);
+        close(fb_fd);
+        fb_mem = NULL;
+        fb_fd = -1;
+        return -1;
+    }
+
+    fb_try_init_mi_backend();
     fb_set_backlight(255);
     return 0;
 }
 
 void fb_close(void) {
+    if (mi.active && mi.gfx_close) mi.gfx_close();
+    if (mi.h_gfx) dlclose(mi.h_gfx);
+    if (mi.h_sys) dlclose(mi.h_sys);
+    free(canvas_mem);
     if (fb_mem && fb_mem != MAP_FAILED) munmap(fb_mem, FB_PAGE_SIZE * 2);
     if (fb_fd >= 0) close(fb_fd);
+    memset(&mi, 0, sizeof(mi));
+    canvas_mem = NULL;
     fb_mem = NULL;
     fb_fd = -1;
 }
@@ -38,18 +141,12 @@ void fb_close(void) {
 void fb_set_pixel(int sx, int sy, Color c) {
     int fx = sy;
     int fy = (FB_H - 1) - sx;
-    if (fx < 0 || fx >= FB_W || fy < 0 || fy >= FB_H) return;
+    if (!canvas_mem || fx < 0 || fx >= FB_W || fy < 0 || fy >= FB_H) return;
     int off = (fy * FB_W + fx) * FB_BPP;
-    /* Page 0 */
-    fb_mem[off]   = c.b;
-    fb_mem[off+1] = c.g;
-    fb_mem[off+2] = c.r;
-    fb_mem[off+3] = c.a;
-    /* Page 1 */
-    fb_mem[FB_PAGE_SIZE + off]   = c.b;
-    fb_mem[FB_PAGE_SIZE + off+1] = c.g;
-    fb_mem[FB_PAGE_SIZE + off+2] = c.r;
-    fb_mem[FB_PAGE_SIZE + off+3] = c.a;
+    canvas_mem[off]   = c.b;
+    canvas_mem[off+1] = c.g;
+    canvas_mem[off+2] = c.r;
+    canvas_mem[off+3] = c.a;
 }
 
 void fb_clear(Color c) {
@@ -62,6 +159,21 @@ void fb_fill_rect(int x1, int y1, int x2, int y2, Color c) {
     for (int sy = y1; sy < y2; sy++)
         for (int sx = x1; sx < x2; sx++)
             fb_set_pixel(sx, sy, c);
+}
+
+void fb_present(void) {
+    if (!canvas_mem || !fb_mem || fb_mem == MAP_FAILED) return;
+    if (mi.active) {
+        MI_U16 fence = 0;
+        memcpy(fb_mem + FB_PAGE_SIZE, canvas_mem, FB_PAGE_SIZE);
+        if (mi.gfx_bitblit(&mi.src, &mi.rect, &mi.dst, &mi.rect, NULL, &fence) == 0) {
+            mi.gfx_wait_all_done(1, 1000);
+            return;
+        }
+        mi.active = 0;
+    }
+    memcpy(fb_mem, canvas_mem, FB_PAGE_SIZE);
+    memcpy(fb_mem + FB_PAGE_SIZE, canvas_mem, FB_PAGE_SIZE);
 }
 
 void fb_draw_text(int x, int y, const char *text, int scale, Color c) {
