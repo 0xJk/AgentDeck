@@ -325,10 +325,9 @@
             <div class="tc-previews">
               <svg class="device-screen" id="sim-tc-usage" viewBox="0 0 32 8" style="aspect-ratio:4/1"></svg>
               <svg class="device-screen" id="sim-tc-agents" viewBox="0 0 32 8" style="aspect-ratio:4/1"></svg>
-              <svg class="device-screen" id="sim-tc-info" viewBox="0 0 32 8" style="aspect-ratio:4/1"></svg>
             </div>
           </div>
-          <div class="device-meta">Ulanzi TC001 / TC100-class matrix. Real device flow preview: full-screen gauge, octopus row plus fixed crayfish, then scroll text. Non-OpenClaw agents collapse to octopus here.</div>
+          <div class="device-meta">Ulanzi TC001 / TC100-class matrix. Two pages: full-screen 5H/7D gauge and octopus row plus fixed crayfish. Non-OpenClaw agents collapse to octopus here.</div>
         </section>
         <section>
           <div class="device-frame">
@@ -513,7 +512,6 @@
         "sim-pixoo": [64, 64],
         "sim-tc-usage": [32, 8],
         "sim-tc-agents": [32, 8],
-        "sim-tc-info": [32, 8],
         "sim-streamdeck": [144, 144],
         "sim-apple-watch": [416, 496],
         "sim-tui": [720, 420],
@@ -989,6 +987,30 @@
         x: x + w * 0.08, y: labelY + h * 0.08, fill: text, "font-size": h * 0.062,
         "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
       }));
+      if (opts.apiCost) {
+        const costY = labelY + h * 0.17;
+        svg.appendChild(textNode("API COST", {
+          x: x + w * 0.08, y: costY, fill: sub, "font-size": h * 0.046, "font-weight": 700,
+          "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+        }));
+        const barW = w * 0.84;
+        const barH = h * 0.06;
+        const barX = x + w * 0.08;
+        const barY = costY + h * 0.02;
+        const pct = Math.min(1, opts.apiCost.spent / opts.apiCost.limit);
+        const fill = pct >= 0.9 ? colors.red : pct >= 0.7 ? colors.amber : colors.green;
+        svg.appendChild(el("rect", {
+          x: barX, y: barY, width: barW, height: barH, rx: 4, fill: "rgba(255,255,255,0.08)",
+        }));
+        svg.appendChild(el("rect", {
+          x: barX, y: barY, width: barW * pct, height: barH, rx: 4, fill, opacity: 0.52,
+        }));
+        svg.appendChild(textNode(`$${opts.apiCost.spent.toFixed(2)} / $${opts.apiCost.limit.toFixed(0)}`, {
+          x: barX + barW / 2, y: barY + barH * 0.75, fill: text, "font-size": h * 0.045, "font-weight": 600,
+          "text-anchor": "middle", "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+        }));
+      }
+
       const dotY = y + h * 0.93;
       const dotColors = [colors.green, mono ? "#666" : "#22C55E"];
       ["OAuth", "Ollama"].forEach((name, i) => {
@@ -998,6 +1020,72 @@
           "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
         }));
       });
+    }
+
+    function drawEinkStatusCompact(svg, x, y, w, h, opts = {}) {
+      const bg = opts.bg || "#DCD5C7";
+      const text = opts.text || "#111111";
+      const sub = opts.sub || "#4F4B46";
+      const mono = !!opts.mono;
+      const green = mono ? text : "#227733";
+      const amber = mono ? text : "#BB7700";
+      const red = mono ? text : "#CC2222";
+
+      svg.appendChild(el("rect", { x, y, width: w, height: h, fill: bg }));
+
+      const leftW = w * 0.38;
+      const rightX = x + leftW + 8;
+
+      // Vertical Divider
+      svg.appendChild(el("line", { x1: x + leftW, y1: y + h * 0.1, x2: x + leftW, y2: y + h * 0.9, stroke: mono ? "#AAAAAA" : "#CCCCCC", "stroke-width": 1 }));
+
+      const fontSize = h * 0.18;
+      const lineH = h * 0.22;
+
+      // Left Column: LIMITS
+      let leftY = y + lineH * 0.9;
+      svg.appendChild(textNode("LIMITS", {
+        x: x + 10, y: leftY, fill: mono ? "#555" : "#335588", "font-weight": 700, "font-size": fontSize,
+        "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+        "letter-spacing": "1",
+      }));
+
+      // blockGauge helper
+      const drawBlockGauge = (label, pct, reset, yPos) => {
+        const val = Math.max(0, Math.min(100, pct));
+        const filled = Math.round((val / 100) * 8);
+        const bar = "█".repeat(filled) + "░".repeat(8 - filled);
+        const color = val >= 85 ? red : val >= 60 ? amber : green;
+        svg.appendChild(textNode(`${label} ${bar} ${val}%`, {
+          x: x + 10, y: yPos, fill: color, "font-size": fontSize * 0.95,
+          "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+        }));
+        svg.appendChild(textNode(`   ⟲ ${reset}`, {
+          x: x + 10, y: yPos + lineH * 0.55, fill: "#555555", "font-size": fontSize * 0.85,
+          "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+        }));
+      };
+
+      drawBlockGauge("5h", 46, "1h24m", leftY + lineH * 1.2);
+      drawBlockGauge("7d", 72, "1d12h", leftY + lineH * 2.8);
+
+      // Right Column: MODELS
+      let rightY = y + lineH * 0.9;
+      svg.appendChild(textNode("MODELS", {
+        x: rightX, y: rightY, fill: mono ? "#555" : "#335588", "font-weight": 700, "font-size": fontSize,
+        "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+        "letter-spacing": "1",
+      }));
+
+      svg.appendChild(textNode("OAuth: opus-4, gpt-5", {
+        x: rightX, y: rightY + lineH * 1.2, fill: green, "font-size": fontSize * 0.95,
+        "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+      }));
+
+      svg.appendChild(textNode("Ollama: qwen2.5:7b 4.5G", {
+        x: rightX, y: rightY + lineH * 2.2, fill: text, "font-size": fontSize * 0.95,
+        "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+      }));
     }
 
     function drawTimelinePanel(svg, x, y, w, h, opts = {}) {
@@ -1285,6 +1373,7 @@
         bg: "rgba(0,0,0,0.50)",
         text: "#E2E8F0",
         sub: "#94A3B8",
+        apiCost: { spent: 12.34, limit: 20 },
       });
       drawTimelinePanel(svg, 16, h * 0.66, w - 32, h * 0.29, {
         bg: "rgba(0,0,0,0.32)",
@@ -1342,13 +1431,11 @@
         x: rightX + 14, y: rowY + rowH * 0.46, fill: colorMode ? "#211B18" : "#1A1815",
         "font-size": rowH * 0.18, "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
       }));
-      drawTankPanel(svg, rightX + rightW * 0.34 + 1, rowY, rightW * 0.66 - 1, rowH, {
+      drawEinkStatusCompact(svg, rightX + rightW * 0.34 + 1, rowY, rightW * 0.66 - 1, rowH, {
         bg: panel,
         text: colorMode ? "#211B18" : "#1A1815",
         sub: colorMode ? "#625B52" : "#4F4B46",
         mono: !colorMode,
-        radius: 0,
-        modelLine: colorMode ? "OAuth: opus-4 · Ollama: qwen" : "OAuth · Ollama",
       });
       svg.appendChild(el("rect", { x: rightX, y: h * 0.63, width: rightW, height: 1, fill: colorMode ? "#4A4137" : "#2D2A25" }));
       drawTimelinePanel(svg, rightX, h * 0.63, rightW, h * 0.37, {
@@ -1491,6 +1578,18 @@
           }));
         }
       }
+      // Usage HUD bar at bottom (matching actual Pixoo renderer)
+      const pct5h = state === "working" ? 72 : state === "asking" ? 46 : 34;
+      const pct7d = state === "working" ? 38 : state === "asking" ? 25 : 18;
+      scene.appendChild(el("rect", { x: 0, y: 57, width: 64, height: 7, fill: "#000000", opacity: 0.55 }));
+      // 5H gauge (left half)
+      const fill5h = Math.round((pct5h / 100) * 30);
+      const color5h = pct5h >= 90 ? "#EF4444" : pct5h >= 70 ? "#F59E0B" : pct5h >= 50 ? "#00C8B4" : "#3B82F6";
+      scene.appendChild(el("rect", { x: 1, y: 58, width: fill5h, height: 5, fill: color5h, opacity: 0.35 }));
+      // 7D gauge (right half)
+      const fill7d = Math.round((pct7d / 100) * 30);
+      const color7d = pct7d >= 90 ? "#EF4444" : pct7d >= 70 ? "#F59E0B" : pct7d >= 50 ? "#00C8B4" : "#3B82F6";
+      scene.appendChild(el("rect", { x: 33, y: 58, width: fill7d, height: 5, fill: color7d, opacity: 0.35 }));
     }
 
     function renderMatrixUsageDevice(svg, state, t) {
@@ -1499,8 +1598,20 @@
       const pct = state === "working" ? 72 : state === "asking" ? 46 : state === "sleeping" ? 18 : 34;
       const label = Math.floor((t / 4) % 2) === 0 ? "5H" : "7D";
       const fillW = Math.max(0, Math.min(32, Math.round((pct / 100) * 32)));
+      // Pixoo-matched color palette
+      let fillColor;
+      if (pct >= 90) {
+        const pulse = 0.7 + 0.3 * Math.sin(t * 6);
+        fillColor = `rgb(${Math.round(239*pulse)},${Math.round(68*pulse)},${Math.round(68*pulse)})`;
+      } else if (pct >= 70) fillColor = "#F59E0B";
+      else if (pct >= 50) fillColor = "#00C8B4";
+      else fillColor = "#3B82F6";
       for (let x = 0; x < fillW; x++) {
-        for (let y = 0; y < 8; y++) drawMatrixPixel(svg, x, y, x < fillW - 2 ? "#2F6FA2" : "#5EA8E5", 0.9);
+        for (let y = 0; y < 8; y++) drawMatrixPixel(svg, x, y, fillColor, 0.9);
+      }
+      // Dark unfilled area
+      for (let x = fillW; x < 32; x++) {
+        for (let y = 0; y < 8; y++) drawMatrixPixel(svg, x, y, "#0F0F14", 0.5);
       }
       drawMatrixText(svg, label, 1, 1, "#F5FAFF");
       drawMatrixText(svg, `${pct}%`, 18, 1, "#F5FAFF");
@@ -1530,67 +1641,91 @@
       }));
     }
 
-    function renderMatrixInfoDevice(svg, agent, state, t) {
-      clear(svg);
-      drawMatrixLedGrid(svg);
-      const model = agent === "claude" ? "CLAUDE" : agent === "codex" ? "CODEX" : agent === "opencode" ? "OPEN" : "CLAW";
-      const status = state === "working" ? "ACT" : state === "asking" ? "ASK" : state === "sleeping" ? "SLP" : "IDL";
-      const text = `${model}-${status}`;
-      const totalWidth = text.length * 4 - 1;
-      const offset = 32 - ((t * 8) % (totalWidth + 40));
-      drawMatrixText(svg, text, Math.round(offset), 1, "#DCEBFA");
-    }
-
     function renderStreamDeckDevice(svg, agent, state, t) {
       clear(svg);
       const accent = agent === "claude" ? "#4ADE80" : agent === "codex" ? "#8BA4FF" : agent === "openclaw" ? "#C084FC" : "#F1ECEC";
-      const bg = agent === "openclaw" ? "#1A0A2E" : state === "working" ? "#0F1A2E" : state === "sleeping" ? "#1A1A1A" : "#0A2E14";
+      const isActive = state === "working" || state === "asking";
+      // Background colors matching actual plugin getStatusInfo()
+      const bg = agent === "openclaw" ? "#1A0A2E"
+        : state === "working" ? "#2a1f00"
+        : state === "asking" ? "#2a0f0f"
+        : state === "sleeping" ? "#1A1A1A"
+        : "#0A2E14";
+      const stateColor = state === "working" ? "#fbbf24"
+        : state === "asking" ? "#f87171"
+        : accent;
       svg.appendChild(el("rect", { x: 0, y: 0, width: 144, height: 144, rx: 12, fill: bg }));
-      svg.appendChild(el("circle", { cx: 18, cy: 18, r: 5, fill: state === "asking" ? "#F5B942" : state === "working" ? "#34D399" : "#4ADE80" }));
-      if (state !== "sleeping") {
-        svg.appendChild(el("rect", { x: 102, y: 6, width: 36, height: 20, rx: 10, fill: accent, opacity: 0.20 }));
-        svg.appendChild(textNode("1/3", {
-          x: 120, y: 20, "font-size": 12, "font-weight": 700, "text-anchor": "middle",
-          fill: accent, "font-family": "Arial,sans-serif",
-        }));
-      }
+      // Agent watermark
       if (agent === "claude") {
-        drawAgentMark(svg, agent, 72, 72, 86, { state: "idle", t, palette: { fill: accent, opacity: 0.08 } });
+        drawAgentMark(svg, agent, 72, 72, 86, { state: "idle", t, palette: { fill: stateColor, opacity: isActive ? 0.15 : 0.12 } });
       } else if (agent === "codex") {
         drawAgentMark(svg, agent, 72, 72, 84, {
           state: "idle", t,
-          palette: { top: "#CEC4FF", mid: "#89A7FF", bottom: "#3941FF", opacity: 0.15 },
+          palette: { top: "#CEC4FF", mid: "#89A7FF", bottom: "#3941FF", opacity: isActive ? 0.18 : 0.15 },
           promptStyle: { color: "#EDEBFF", fontSize: 20, yOffset: 6, opacity: 0.28 },
         });
       } else if (agent === "opencode") {
         drawAgentMark(svg, agent, 72, 72, 66, {
           state: "idle", t,
-          palette: { outer: "#F1ECEC", inner: "#4B4646", bg, opacity: 0.24 },
+          palette: { outer: "#F1ECEC", inner: "#4B4646", bg, opacity: isActive ? 0.28 : 0.24 },
         });
       } else {
         drawAgentMark(svg, agent, 72, 72, 78, {
           state: "idle", t,
-          palette: { top: "#FF4D4D", bottom: "#991B1B", eye: "#00E5CC", opacity: 0.22 },
+          palette: { top: "#FF4D4D", bottom: "#991B1B", eye: "#00E5CC", opacity: isActive ? 0.26 : 0.22 },
         });
       }
-      if (state === "working" || state === "asking") {
-        const angle = (t * 120) % 360;
-        svg.appendChild(el("g", { transform: `translate(72 56) rotate(${angle})` }));
-        const spinner = svg.lastChild;
-        spinner.appendChild(el("path", {
-          d: "M0,-12 L3,-4 L12,0 L3,4 L0,12 L-3,4 L-12,0 L-3,-4 Z",
-          fill: accent,
-          opacity: 0.82,
+      // Status LED
+      svg.appendChild(el("circle", { cx: 18, cy: 18, r: 5, fill: state === "asking" ? "#F5B942" : state === "working" ? "#34D399" : "#4ADE80" }));
+      // Session counter badge
+      if (state !== "sleeping") {
+        svg.appendChild(el("rect", { x: 102, y: 6, width: 36, height: 20, rx: 10, fill: stateColor, opacity: 0.25 }));
+        svg.appendChild(textNode("1/3", {
+          x: 120, y: 20, "font-size": 12, "font-weight": 700, "text-anchor": "middle",
+          fill: stateColor, "font-family": "Arial,sans-serif",
         }));
       }
-      svg.appendChild(textNode(AGENTS[agent].label.split(" ")[0], {
-        x: 72, y: state === "working" || state === "asking" ? 92 : 80, "font-size": 24,
-        "font-weight": 700, "text-anchor": "middle", fill: accent, "font-family": "Arial,sans-serif",
-      }));
-      svg.appendChild(textNode(state === "working" ? "Read file" : state === "asking" ? "Need input" : agent === "claude" ? "opus-4" : agent === "codex" ? "gpt-5" : "session", {
-        x: 72, y: state === "working" || state === "asking" ? 112 : 100, "font-size": 16,
-        "text-anchor": "middle", fill: accent, opacity: 0.7, "font-family": "Arial,sans-serif",
-      }));
+      if (isActive) {
+        // ACTIVE state: project name (small) + spinner + state label + detail
+        // Project name
+        svg.appendChild(textNode("AgentDeck", {
+          x: 72, y: 38, "font-size": 13, "text-anchor": "middle",
+          fill: stateColor, opacity: 0.6, "font-family": "Arial,sans-serif",
+        }));
+        // Spinning Claude sparkle
+        const angle = (t * 100) % 360;
+        const opacity = (0.75 + 0.25 * Math.sin(t * Math.PI * 2)).toFixed(2);
+        const spinner = el("g", { transform: `translate(72 58) rotate(${angle}) scale(1.5) translate(-8,-8)` });
+        spinner.appendChild(el("path", {
+          d: "M8,0 L10,5 L16,8 L10,11 L8,16 L6,11 L0,8 L6,5 Z",
+          fill: stateColor,
+          opacity,
+        }));
+        svg.appendChild(spinner);
+        // State label
+        const label = state === "working" ? "RUNNING" : "PERMIT?";
+        svg.appendChild(textNode(label, {
+          x: 72, y: 92, "font-size": 24, "font-weight": 700, "text-anchor": "middle",
+          fill: stateColor, "font-family": "Arial,sans-serif",
+        }));
+        // Detail
+        const detail = state === "working" ? "Read file" : "Need input";
+        svg.appendChild(textNode(detail, {
+          x: 72, y: 114, "font-size": 16, "text-anchor": "middle",
+          fill: stateColor, opacity: 0.7, "font-family": "Arial,sans-serif",
+        }));
+      } else {
+        // IDLE state: project name (large) + model line
+        svg.appendChild(textNode("AgentDeck", {
+          x: 72, y: 72, "font-size": 24, "font-weight": 700, "text-anchor": "middle",
+          fill: stateColor, "font-family": "Arial,sans-serif",
+        }));
+        const modelStr = agent === "claude" ? "opus-4 \u00b7 high" : agent === "codex" ? "gpt-5" : agent === "opencode" ? "opencode" : "openclaw";
+        svg.appendChild(textNode(modelStr, {
+          x: 72, y: 96, "font-size": 20, "text-anchor": "middle",
+          fill: stateColor, opacity: 0.65, "font-family": "Arial,sans-serif",
+        }));
+      }
       if (state === "asking") drawAskIndicator(svg, "streamdeck", 118, 18, 1, t);
     }
 
@@ -1804,7 +1939,6 @@
       renderPixooDevice(document.getElementById("sim-pixoo"), agent, state, t);
       renderMatrixUsageDevice(document.getElementById("sim-tc-usage"), state, t);
       renderMatrixAgentsDevice(document.getElementById("sim-tc-agents"), agent, state, t);
-      renderMatrixInfoDevice(document.getElementById("sim-tc-info"), agent, state, t);
       renderStreamDeckDevice(document.getElementById("sim-streamdeck"), agent, state, t);
       renderAppleWatchDevice(document.getElementById("sim-apple-watch"), agent, state, t);
       renderTuiDevice(document.getElementById("sim-tui"), agent, state, t);

@@ -40,6 +40,7 @@ private const val EINK_ANIM_CYCLE = 32
 private const val EINK_OCTOPUS_COLS = 14
 private const val EINK_OCTOPUS_ROWS = 5
 private const val EINK_PIXEL_ASPECT = 2.0f
+private const val EINK_OPENCODE_PIXEL_ASPECT = 1.2f  // OpenCode: near-square (10×9 grid)
 private const val EINK_PIXEL_GAP = 0.5f
 private val EINK_OCTOPUS_GRID = arrayOf(
     intArrayOf(0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0), // row 0: head (10w)
@@ -1061,9 +1062,9 @@ private fun drawEinkOpenCode(
             0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat())
     }
 
-    val bodyWidth = w * 0.12f * scaleFactor
+    val bodyWidth = w * 0.14f * scaleFactor
     val pixelW = bodyWidth / EINK_OPENCODE_COLS
-    val pixelH = pixelW * EINK_PIXEL_ASPECT
+    val pixelH = pixelW * EINK_OPENCODE_PIXEL_ASPECT
     val gridW = EINK_OPENCODE_COLS * pixelW
     val gridH = EINK_OPENCODE_ROWS * pixelH
     val startX = cx - gridW / 2f

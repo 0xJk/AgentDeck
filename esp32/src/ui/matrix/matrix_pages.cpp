@@ -126,35 +126,34 @@ static int formatResetCompact(const char* reset, char* out, int maxLen) {
 // Full-screen gauge: entire 32x8 IS the gauge, text overlaid
 // Usage fills from left (matches other dashboards)
 static void drawFullScreenGauge(CRGB* leds, float percent, const char* label,
-                                 const char* resetStr, bool is5h, int slideX) {
-    (void)is5h;
+                                 const char* resetStr, float animTime, int slideX) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
 
-    // Color based on usage level
+    // Color based on usage level (Pixoo-matched palette)
     CRGB fillColor;
-    if (percent < 50)       fillColor = CRGB(0, 100, 140);
-    else if (percent < 70)  fillColor = CRGB(0, 140, 80);
-    else if (percent < 90)  fillColor = CRGB(160, 120, 0);
-    else                    fillColor = CRGB(180, 0, 0);
+    if (percent < 50)       fillColor = CRGB(59, 130, 246);   // Blue
+    else if (percent < 70)  fillColor = CRGB(0, 200, 180);    // Teal
+    else if (percent < 90)  fillColor = CRGB(245, 158, 11);   // Amber
+    else {
+        float pulse = 0.7f + 0.3f * sinf(animTime * 6.0f);
+        fillColor = CRGB((uint8_t)(239 * pulse), (uint8_t)(68 * pulse), (uint8_t)(68 * pulse));
+    }
 
     // Fill entire screen: used portion = color, unused = dark
     int fillPx = (int)(percent / 100.0f * MATRIX_W);
     for (int x = 0; x < MATRIX_W; x++) {
         int sx = x + slideX;
         if (sx < 0 || sx >= MATRIX_W) continue;
-        CRGB c = (x < fillPx) ? fillColor : CRGB(8, 8, 8);
+        CRGB c = (x < fillPx) ? fillColor : CRGB(15, 15, 20);
         for (int y = 0; y < MATRIX_H; y++) {
             setPixel(leds, sx, y, c);
         }
     }
 
-    // Text colors adapt to ambient brightness
-    // Bright room: dark text on bright gauge background
-    // Dark room: bright text (gauge is dimmed by FastLED brightness)
     bool dim = isDimMode();
-    CRGB labelColor = dim ? CRGB(0, 150, 180) : CRGB(40, 40, 40);   // "5H"/"7D"
-    CRGB timeColor  = dim ? CRGB(220, 220, 220) : CRGB(0, 0, 0);    // reset time
+    CRGB labelColor = dim ? CRGB(80, 180, 220) : CRGB(40, 40, 40);
+    CRGB timeColor  = dim ? CRGB(220, 220, 220) : CRGB(0, 0, 0);
 
     MatrixFont::drawScrollText(leds, label, 1 + slideX, 1, labelColor, MATRIX_W, MATRIX_H);
 
@@ -170,6 +169,8 @@ static void drawFullScreenGauge(CRGB* leds, float percent, const char* label,
 // ================================================================
 void MatrixPages::renderUsage(CRGB* leds, float animTime) {
     lockState();
+    bool connected = g_state.wsConnected;
+    bool hasData = g_state.dataReceived;
     float pct5h = g_state.fiveHourPercent;
     float pct7d = g_state.sevenDayPercent;
     char reset5h[20], reset7d[20];
@@ -179,10 +180,22 @@ void MatrixPages::renderUsage(CRGB* leds, float animTime) {
     reset7d[sizeof(reset7d) - 1] = '\0';
     unlockState();
 
+    if (!connected) {
+        // Not connected — scrolling text like other devices ("Connecting...")
+        CRGB dimColor = CRGB(40, 25, 5);
+        const char* msg = "SEARCHING...";
+        int textW = MatrixFont::textWidth(msg);
+        int scrollPx = textW + MATRIX_W + 8;
+        int scrollX = MATRIX_W - ((int)(animTime * 1000) / (int)SCROLL_SPEED_MS) % scrollPx;
+        MatrixFont::drawScrollText(leds, msg, scrollX, 1, dimColor, MATRIX_W, MATRIX_H);
+        return;
+    }
+
     bool noData = (pct5h < 0);
     if (noData) {
-        // No data: dim "---" centered
-        MatrixFont::drawScrollText(leds, "---", 10, 2, CRGB(40, 40, 40), MATRIX_W, MATRIX_H);
+        // Connected but no usage data yet
+        CRGB dimColor = CRGB(30, 30, 40);
+        MatrixFont::drawScrollText(leds, "---", 10, 2, dimColor, MATRIX_W, MATRIX_H);
         return;
     }
 
@@ -191,19 +204,19 @@ void MatrixPages::renderUsage(CRGB* leds, float animTime) {
     float phase = fmodf(animTime, cycle);
 
     if (phase < 4.0f) {
-        drawFullScreenGauge(leds, pct5h, "5H", reset5h, true, 0);
+        drawFullScreenGauge(leds, pct5h, "5H", reset5h, animTime, 0);
     } else if (phase < 4.5f) {
         float t = (phase - 4.0f) / 0.5f;
         int offset = (int)(t * MATRIX_W);
-        drawFullScreenGauge(leds, pct5h, "5H", reset5h, true, -offset);
-        drawFullScreenGauge(leds, pct7d, "7D", reset7d, false, MATRIX_W - offset);
+        drawFullScreenGauge(leds, pct5h, "5H", reset5h, animTime, -offset);
+        drawFullScreenGauge(leds, pct7d, "7D", reset7d, animTime, MATRIX_W - offset);
     } else if (phase < 8.5f) {
-        drawFullScreenGauge(leds, pct7d, "7D", reset7d, false, 0);
+        drawFullScreenGauge(leds, pct7d, "7D", reset7d, animTime, 0);
     } else {
         float t = (phase - 8.5f) / 0.5f;
         int offset = (int)(t * MATRIX_W);
-        drawFullScreenGauge(leds, pct7d, "7D", reset7d, false, -offset);
-        drawFullScreenGauge(leds, pct5h, "5H", reset5h, true, MATRIX_W - offset);
+        drawFullScreenGauge(leds, pct7d, "7D", reset7d, animTime, -offset);
+        drawFullScreenGauge(leds, pct5h, "5H", reset5h, animTime, MATRIX_W - offset);
     }
 }
 
@@ -212,6 +225,7 @@ void MatrixPages::renderUsage(CRGB* leds, float animTime) {
 // ================================================================
 void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     lockState();
+    bool connected = g_state.wsConnected;
     uint8_t sessionCount = g_state.sessionCount;
     bool gatewayAvail = g_state.gatewayAvailable;
     bool gatewayError = g_state.gatewayHasError;
@@ -245,7 +259,8 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
         if (gatewayError) {
             cfColor = CRGB(40, 40, 40);  // SICK: gray
         } else if (cfState == CrayfishState::ROUTING) {
-            cfColor = CRGB(200, 30, 30);  // Bright red
+            float pulse = 0.75f + 0.25f * sinf(animTime * 12.0f);
+            cfColor = CRGB((uint8_t)(220 * pulse), (uint8_t)(40 * pulse), (uint8_t)(30 * pulse));
         } else if (cfState == CrayfishState::SITTING) {
             // Dark red pulse
             uint8_t r = 50 + (uint8_t)(30.0f * (0.5f + 0.5f * sinf(animTime * 1.5f)));
@@ -261,6 +276,17 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     int octoMaxX = cfX - 7;            // rightmost octopus start (5px sprite + 2px gap)
 
     if (octoCount == 0) {
+        if (!connected) {
+            // Not connected — scrolling text matching usage page
+            CRGB dimColor = CRGB(40, 25, 5);
+            const char* msg = "SEARCHING...";
+            int textW = MatrixFont::textWidth(msg);
+            int scrollPx = textW + MATRIX_W + 8;
+            int scrollX = MATRIX_W - ((int)(animTime * 1000) / (int)SCROLL_SPEED_MS) % scrollPx;
+            MatrixFont::drawScrollText(leds, msg, scrollX, 1, dimColor, MATRIX_W, MATRIX_H);
+            return;
+        }
+        // Connected but no sessions — dim bobbing octopus
         int bobY = 1 + (int)(0.3f * sinf(animTime * 1.0f));
         drawSprite(leds, 8, bobY, SPR_OCTOPUS, 5, 6, CRGB(30, 18, 14));
         return;
@@ -270,13 +296,16 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     auto octoColor = [&](const char* state, bool isCodex, int instanceIdx) -> CRGB {
         CRGB baseColor;
         if (strcmp(state, "processing") == 0) {
-            bool on = fmodf(animTime, 0.5f) < 0.25f;
-            if (isCodex) baseColor = on ? CRGB(100, 100, 240) : CRGB(30, 30, 80);
-            else         baseColor = on ? CRGB(200, 120, 90) : CRGB(50, 30, 22);
+            float pulse = 0.5f + 0.5f * sinf(animTime * 8.0f);
+            if (isCodex) {
+                baseColor = CRGB(30 + (uint8_t)(70 * pulse), 30 + (uint8_t)(70 * pulse), 80 + (uint8_t)(160 * pulse));
+            } else {
+                baseColor = CRGB(50 + (uint8_t)(150 * pulse), 30 + (uint8_t)(90 * pulse), 22 + (uint8_t)(68 * pulse));
+            }
         }
         else if (strstr(state, "awaiting")) {
-            bool on = fmodf(animTime, 1.0f) < 0.5f;
-            baseColor = on ? CRGB(200, 120, 0) : CRGB(40, 24, 0);  // amber for both
+            float pulse = 0.3f + 0.7f * sinf(animTime * 3.0f);
+            baseColor = CRGB((uint8_t)(200 * pulse), (uint8_t)(120 * pulse), 0);
         }
         else if (strcmp(state, "idle") == 0) {
             if (isCodex) baseColor = CRGB(30, 30, 80);
@@ -329,9 +358,8 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     }
 }
 
-// ================================================================
-// PAGE 3: INFO — Cycle through all sessions: "PROJECT · MODEL"
-// ================================================================
+// renderInfo removed — TC001 now only cycles USAGE + AGENTS
+#if 0
 void MatrixPages::renderInfo(CRGB* leds, float animTime) {
     lockState();
 
@@ -456,4 +484,5 @@ void MatrixPages::renderInfo(CRGB* leds, float animTime) {
         }
     }
 }
+#endif // renderInfo disabled
 #endif // BOARD_ULANZI_TC001

@@ -13,6 +13,7 @@
 		07B804BD8A367595E8FF639F /* ActivityPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6186E147F760B85461F02022 /* ActivityPanel.swift */; };
 		0AC3F569F362D121D985EA52 /* KelpField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0815111538C63CAF8766B367 /* KelpField.swift */; };
 		0B04CA71C040BE9955B8C032 /* AdbModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83589BA4C41B89C8EF1A46FD /* AdbModule.swift */; };
+		D200HHID0002A0B1C2D3E4F5 /* D200hHidModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200HHID0001A0B1C2D3E4F5 /* D200hHidModule.swift */; };
 		0B12EC87653840EF7BA4555C /* SessionAggregator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61E3177DE60C73B3A102F9FB /* SessionAggregator.swift */; };
 		1055170019B2376B38A0B8FE /* SessionAggregator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61E3177DE60C73B3A102F9FB /* SessionAggregator.swift */; };
 		10B201D2AF96C0838CCEC4CF /* SerialModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03F618D3253FD55D4DD7D5AF /* SerialModule.swift */; };
@@ -62,6 +63,7 @@
 		4D0E6511F2638CDF14C798AD /* MdnsModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D130EAC9287841A5BC8770DC /* MdnsModule.swift */; };
 		4D4A0A6C0120C440966AEFB3 /* DisplaySyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89F9A134A1BC3EDEE8309695 /* DisplaySyncService.swift */; };
 		4D7595686B60FDBDE4A5210D /* AdbModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83589BA4C41B89C8EF1A46FD /* AdbModule.swift */; };
+		D200HHID0003A0B1C2D3E4F5 /* D200hHidModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200HHID0001A0B1C2D3E4F5 /* D200hHidModule.swift */; };
 		4F6DEDF8FD3A71AFD059278D /* TimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7847FA7381FB8075331B0F12 /* TimelineTests.swift */; };
 		4FF0657D874D06594ED97850 /* BridgeDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31F34DE9E44936BAC6D96F19 /* BridgeDiscovery.swift */; };
 		50C1853357255E13C2F9EB93 /* DaemonService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80BD296835DE366BFDBB15B9 /* DaemonService.swift */; };
@@ -120,6 +122,7 @@
 		B5479F2C2CBAE673EB1C3D93 /* AgentState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15F55435772A15B8F0E92C1 /* AgentState.swift */; };
 		B777A61FBB6AD6F51B165DA5 /* SessionListPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40755F64E4C39A49B99D88CA /* SessionListPanel.swift */; };
 		B8830354996DCFC054A9AD5A /* TimelineRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8884FD5EE02A0EDAF5D6C448 /* TimelineRelay.swift */; };
+		377CB26F3E6A7530D47EE2AF /* SessionFocusRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25F78C7F038636BDFD0B37F4 /* SessionFocusRelay.swift */; };
 		BC49C2373BC5C90CE4076E5E /* TerrariumState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 593C80232028E1DBC0227E17 /* TerrariumState.swift */; };
 		BC74AE57E83DCC133989A7C9 /* TerrariumRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 481253E76BD28E883C65121F /* TerrariumRenderer.swift */; };
 		BC7898764CE415919C2E81AC /* BridgeEventParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C930EA1785B14EE276FC29A /* BridgeEventParser.swift */; };
@@ -129,6 +132,7 @@
 		C71587998379ED779ADFF54F /* ESP32Serial.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C62F7ABA6BDEE39F39DBDFA /* ESP32Serial.swift */; };
 		C8DE7EFB8EAFBD9E0BAD7852 /* CreatureLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DDD4BFFE8B182F5EEBC3365 /* CreatureLayout.swift */; };
 		C9A93A44534B81815553F80B /* TimelineRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8884FD5EE02A0EDAF5D6C448 /* TimelineRelay.swift */; };
+		4EE34429144D5C8DA98E3E62 /* SessionFocusRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25F78C7F038636BDFD0B37F4 /* SessionFocusRelay.swift */; };
 		CBB9FC921D8EFD210A80BC6D /* DisplayMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F43DCAC6100C73B98139EA /* DisplayMonitor.swift */; };
 		CCB2A2848DDAADBEB6F7BB53 /* OctopusCreature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 776467350B975D0CA1A18E84 /* OctopusCreature.swift */; };
 		D169DFD5EA54C323E1128E7B /* AgentState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15F55435772A15B8F0E92C1 /* AgentState.swift */; };
@@ -224,8 +228,10 @@
 		7FF390BEA92326B1152B55A9 /* HTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPServer.swift; sourceTree = "<group>"; };
 		80BD296835DE366BFDBB15B9 /* DaemonService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonService.swift; sourceTree = "<group>"; };
 		83589BA4C41B89C8EF1A46FD /* AdbModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdbModule.swift; sourceTree = "<group>"; };
+		D200HHID0001A0B1C2D3E4F5 /* D200hHidModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = D200hHidModule.swift; sourceTree = "<group>"; };
 		83E77BCD933FB80831B3E6FD /* AgentDeck.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AgentDeck.entitlements; sourceTree = "<group>"; };
 		8884FD5EE02A0EDAF5D6C448 /* TimelineRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineRelay.swift; sourceTree = "<group>"; };
+		25F78C7F038636BDFD0B37F4 /* SessionFocusRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionFocusRelay.swift; sourceTree = "<group>"; };
 		89F9A134A1BC3EDEE8309695 /* DisplaySyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplaySyncService.swift; sourceTree = "<group>"; };
 		8A5A10C1FD79BB64BD2BB8D5 /* ConnectionOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionOverlay.swift; sourceTree = "<group>"; };
 		8A702CCCE11B4450E9EED163 /* BridgeConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeConnection.swift; sourceTree = "<group>"; };
@@ -470,6 +476,7 @@
 				61E3177DE60C73B3A102F9FB /* SessionAggregator.swift */,
 				CF788F02F06C01E401DC8EA6 /* SessionRegistry.swift */,
 				8884FD5EE02A0EDAF5D6C448 /* TimelineRelay.swift */,
+				25F78C7F038636BDFD0B37F4 /* SessionFocusRelay.swift */,
 			);
 			path = Session;
 			sourceTree = "<group>";
@@ -519,6 +526,7 @@
 			isa = PBXGroup;
 			children = (
 				83589BA4C41B89C8EF1A46FD /* AdbModule.swift */,
+				D200HHID0001A0B1C2D3E4F5 /* D200hHidModule.swift */,
 				1C62F7ABA6BDEE39F39DBDFA /* ESP32Serial.swift */,
 				D130EAC9287841A5BC8770DC /* MdnsModule.swift */,
 				D1DDCB822B1DC56875875388 /* ModuleManager.swift */,
@@ -733,6 +741,7 @@
 				07B804BD8A367595E8FF639F /* ActivityPanel.swift in Sources */,
 				7DBB3B78D2F8A74614C9047E /* Adapter.swift in Sources */,
 				4D7595686B60FDBDE4A5210D /* AdbModule.swift in Sources */,
+				D200HHID0003A0B1C2D3E4F5 /* D200hHidModule.swift in Sources */,
 				10DE349A3E6CF8732C19FB99 /* AgentDeckApp.swift in Sources */,
 				B5479F2C2CBAE673EB1C3D93 /* AgentState.swift in Sources */,
 				70568489EF1BE34061D43FEA /* AgentStateHolder.swift in Sources */,
@@ -794,6 +803,7 @@
 				B1B90826D46626CD1211ED7A /* TerrariumView.swift in Sources */,
 				9ED5461741C1FC0A6ADC249F /* Timeline.swift in Sources */,
 				B8830354996DCFC054A9AD5A /* TimelineRelay.swift in Sources */,
+				377CB26F3E6A7530D47EE2AF /* SessionFocusRelay.swift in Sources */,
 				DCD31A20E9139F8661F0E321 /* TimelineStore.swift in Sources */,
 				C2EE2077BC999B5E03141F89 /* TimelineStripView.swift in Sources */,
 				22242F96E921D3043AD847E5 /* TimelineSummarizer.swift in Sources */,
@@ -814,6 +824,7 @@
 				590D75801E10021127334F88 /* ActivityPanel.swift in Sources */,
 				1D193B9524AA5E561A899882 /* Adapter.swift in Sources */,
 				0B04CA71C040BE9955B8C032 /* AdbModule.swift in Sources */,
+				D200HHID0002A0B1C2D3E4F5 /* D200hHidModule.swift in Sources */,
 				E082EDBFACADF5992BE8A9E0 /* AgentDeckApp.swift in Sources */,
 				D169DFD5EA54C323E1128E7B /* AgentState.swift in Sources */,
 				E5B1774D921E5B4C508D73A0 /* AgentStateHolder.swift in Sources */,
@@ -875,6 +886,7 @@
 				3F707E15A1A8E2707F36796D /* TerrariumView.swift in Sources */,
 				9E30D4D0BEE3CB402E8741D8 /* Timeline.swift in Sources */,
 				C9A93A44534B81815553F80B /* TimelineRelay.swift in Sources */,
+				4EE34429144D5C8DA98E3E62 /* SessionFocusRelay.swift in Sources */,
 				EA32929C78C6088451DDF476 /* TimelineStore.swift in Sources */,
 				447BEA00A4A2B8DA5DEC15AF /* TimelineStripView.swift in Sources */,
 				73859B0A0D1506EC122979DB /* TimelineSummarizer.swift in Sources */,

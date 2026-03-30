@@ -317,7 +317,11 @@ void setup() {
 #else
         "Unknown",
 #endif
+#if defined(BOARD_ULANZI_TC001)
+        SCREEN_W, SCREEN_H);
+#else
         g_screenW, g_screenH);
+#endif
 
 #ifndef BOARD_ULANZI_TC001
     // Init PSRAM

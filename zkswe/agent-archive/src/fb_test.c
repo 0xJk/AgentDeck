@@ -244,6 +244,13 @@ static MI_U32 g_gfx_page_override = 0;
 static int g_gfx_use_page_override = 0;
 static int g_do_copy_test = 0;
 
+static MI_PHY guess_bus_alias(MI_PHY cpu_addr) {
+    if (cpu_addr >= 0x30000000ULL && cpu_addr < 0x40000000ULL) {
+        return cpu_addr + 0x20000000ULL;
+    }
+    return cpu_addr;
+}
+
 static void backlight_on(void) {
     FILE *f = fopen("/sys/class/backlight/soc:backlight/bl_power", "w");
     if (f) {
@@ -460,7 +467,9 @@ static int run_gfx_probe(MiApi *api) {
     zkgui_fb0_offset = zkgui_pid > 0 ? find_fb0_offset_for_pid(zkgui_pid) : 0;
 
     memset(&surface, 0, sizeof(surface));
-    surface.phyAddr = g_gfx_bus_override ? g_gfx_bus_override : (zkgui_fb0_offset ? zkgui_fb0_offset : (MI_PHY)fix.smem_start);
+    surface.phyAddr = g_gfx_bus_override
+        ? g_gfx_bus_override
+        : (zkgui_fb0_offset ? zkgui_fb0_offset : guess_bus_alias((MI_PHY)fix.smem_start));
     surface.u32Width = g_gfx_width_override ? g_gfx_width_override : (var.xres ? var.xres : 540);
     surface.u32Height = g_gfx_height_override ? g_gfx_height_override : (var.yres_virtual ? var.yres_virtual : var.yres);
     surface.u32Stride = fix.line_length ? fix.line_length : surface.u32Width * 4;
@@ -476,6 +485,9 @@ static int run_gfx_probe(MiApi *api) {
            var.xres, var.yres, var.yres_virtual, var.bits_per_pixel);
     if (zkgui_fb0_offset) {
         printf("  zkgui fb0 map offset=0x%llx (preferred GFX bus addr)\n", zkgui_fb0_offset);
+    } else {
+        printf("  zkgui fb0 map not found, guessed bus alias=0x%llx from smem_start\n",
+               (unsigned long long)guess_bus_alias((MI_PHY)fix.smem_start));
     }
     printf("  surface phy=0x%llx w=%u h=%u stride=%u colorFmt=%u\n",
            surface.phyAddr, surface.u32Width, surface.u32Height,
@@ -539,9 +551,13 @@ static int run_gfx_probe(MiApi *api) {
 
         src_surface = surface;
         dst_surface = surface;
-        src_surface.phyAddr = (g_gfx_bus_override ? g_gfx_bus_override : (zkgui_fb0_offset ? zkgui_fb0_offset : (MI_PHY)fix.smem_start)) + page_size;
+        src_surface.phyAddr = (g_gfx_bus_override
+            ? g_gfx_bus_override
+            : (zkgui_fb0_offset ? zkgui_fb0_offset : guess_bus_alias((MI_PHY)fix.smem_start))) + page_size;
         src_surface.u32Height = 960;
-        dst_surface.phyAddr = g_gfx_bus_override ? g_gfx_bus_override : (zkgui_fb0_offset ? zkgui_fb0_offset : (MI_PHY)fix.smem_start);
+        dst_surface.phyAddr = g_gfx_bus_override
+            ? g_gfx_bus_override
+            : (zkgui_fb0_offset ? zkgui_fb0_offset : guess_bus_alias((MI_PHY)fix.smem_start));
         dst_surface.u32Height = 960;
 
         memset(&src_rect, 0, sizeof(src_rect));

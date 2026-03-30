@@ -5,9 +5,8 @@
 namespace Matrix {
 
 enum class Page : uint8_t {
-    USAGE,      // Rate limit battery gauges + reset times
+    USAGE,      // Rate limit gauges (5H/7D) with slide transition
     AGENTS,     // Octopus/crayfish sprites with state colors
-    INFO,       // Project + model scrolling text
     PAGE_COUNT
 };
 

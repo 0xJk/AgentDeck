@@ -3,6 +3,7 @@
 // Ported from bridge/src/daemon-server.ts — FULL wiring of all modules
 
 import Foundation
+import Network
 
 @MainActor
 final class DaemonServer {
@@ -20,12 +21,14 @@ final class DaemonServer {
     private let gatewayProbe = GatewayProbe()
     private let voiceAssistant = DaemonVoiceAssistant()
     private let timelineRelay: TimelineRelay
+    private let focusRelay: SessionFocusRelay
     private let timelineStore = DaemonTimelineStore()
     private let logStream = BridgeLogStream()
     private let usageAPI = UsageAPIClient.shared
     private var serialModule: SerialModule?
     private var pixooModule: PixooModule?
     private var adbModule: AdbModule?
+    private var d200hModule: D200hHidModule?
 
     // Gateway
     private var gatewayAdapter: OpenClawAdapter?
@@ -57,6 +60,7 @@ final class DaemonServer {
 
     init(port: Int?, debug: Bool) async throws {
         self.timelineRelay = TimelineRelay(selfPort: port ?? SessionRegistry.defaultPort)
+        self.focusRelay = SessionFocusRelay()
 
         let requestedPort = port ?? SessionRegistry.defaultPort
         var resolvedPort = UInt16(requestedPort)
@@ -90,26 +94,30 @@ final class DaemonServer {
     // MARK: - Start (non-blocking)
 
     func startServices() async {
-        // 1. Start WS server (required)
+        // 1. Setup HTTP routes + Bonjour, then start unified server
+        await setupHTTPRoutes()
+        await wsServer.setHTTPHandler(httpServer)
+
+        // Bonjour mDNS advertisement on the same listener
+        let txtRecord = NWTXTRecord([
+            "project": "daemon",
+            "agent": "daemon",
+            "port": "\(port)",
+            "ip": AuthManager.getLanIP() ?? "127.0.0.1",
+            "token": auth.token,
+            "v": "3",
+        ])
+        await wsServer.setBonjourService(NWListener.Service(
+            name: "daemon-\(port)",
+            type: "_agentdeck._tcp",
+            txtRecord: txtRecord
+        ))
+
         do {
             try await wsServer.start(port: port)
         } catch {
-            DaemonLogger.shared.error("Failed to start WS server: \(error)")
+            DaemonLogger.shared.error("Failed to start server: \(error)")
             return
-        }
-
-        // HTTP server on next available port (best-effort, not fatal)
-        var httpPort = port + 1
-        for offset: UInt16 in 1...10 {
-            do {
-                try await httpServer.start(port: port + offset)
-                httpPort = port + offset
-                break
-            } catch {
-                if offset == 10 {
-                    DaemonLogger.shared.error("HTTP server failed on all ports, hooks won't work via HTTP")
-                }
-            }
         }
 
         // 2. Register session
@@ -123,11 +131,11 @@ final class DaemonServer {
         registry.writeDaemonInfo(DaemonInfo(
             port: Int(port),
             pid: Int(ProcessInfo.processInfo.processIdentifier),
-            startedAt: ISO8601DateFormatter().string(from: Date())
+            startedAt: ISO8601DateFormatter().string(from: Date()),
+            httpPort: nil
         ))
 
-        // 3. Setup routes + handlers
-        await setupHTTPRoutes()
+        // 3. Setup WS handlers
         await setupWSHandlers()
 
         // 4. Wire state machine
@@ -158,6 +166,25 @@ final class DaemonServer {
         }
         await timelineRelay.start()
 
+        // 8b. Set up focus relay event callback — merge daemon metadata before broadcasting
+        await focusRelay.setBroadcast { [weak self] (box: SendableDict) in
+            Task { @MainActor in
+                guard let self else { return }
+                var event = box.value
+                if (event["type"] as? String) == "state_update" {
+                    // Preserve daemon-level metadata that session bridges don't have
+                    if event["modelCatalog"] == nil, !self.cachedModelCatalog.isEmpty {
+                        event["modelCatalog"] = self.cachedModelCatalog
+                    }
+                    event["gatewayAvailable"] = self.cachedGatewayAvailable
+                    if event["ollamaStatus"] == nil, let cached = self.cachedOllamaStatus {
+                        event["ollamaStatus"] = cached
+                    }
+                }
+                self.broadcastRaw(event)
+            }
+        }
+
         // 9. Start polling
         startAllPolling()
 
@@ -176,7 +203,7 @@ final class DaemonServer {
             // Route to gateway or session bridge
             if let gw = self.gatewayAdapter {
                 Task { await gw.sendRPC(method: "chat.send", params: ["message": text]) }
-                self.stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
+                _ = self.stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
                 self.broadcastStateUpdate()
             } else {
                 self.forwardCommandToSession(["type": "send_prompt", "text": text])
@@ -202,16 +229,23 @@ final class DaemonServer {
     private func startDeviceModules() async {
         let portInt = Int(port)
 
-        // mDNS
-        let mdns = MdnsModule(port: port, token: auth.token)
-        moduleManager.register(mdns)
+        // mDNS: Bonjour is attached to unified WebSocketServer listener — no separate module needed
 
-        // ADB + D200H
+        // ADB (reverse tunnel only — D200H uses HID now)
         let adb = AdbModule(daemonPort: portInt)
-        adb.stateProvider = { [weak self] in self?.lastStateEvent }
-        adb.usageProvider = { [weak self] in self?.buildUsageEvent() }
+        adb.commandHandler = { [weak self] cmd in
+            Task { @MainActor in self?.handleCommand(cmd) }
+        }
         self.adbModule = adb
         moduleManager.register(adb)
+
+        // D200H Deck Dock (HID protocol — IOKit)
+        let d200h = D200hHidModule()
+        d200h.commandHandler = { [weak self] cmd in
+            Task { @MainActor in self?.handleCommand(cmd) }
+        }
+        self.d200hModule = d200h
+        moduleManager.register(d200h)
 
         // Serial (ESP32)
         let serial = SerialModule()
@@ -229,10 +263,13 @@ final class DaemonServer {
         // Wire serial broadcast hook
         let serialRef = serial
         let pixooRef = pixoo
+        let d200hRef = d200h
         await wsServer.onBroadcast { data in
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            adb.handleBroadcast(json)
             serialRef.wireBroadcast(json)
             pixooRef.handleEvent(json)
+            d200hRef.handleBroadcast(json)
         }
 
         // Wire ESP32 WiFi auto-provisioning
@@ -343,6 +380,13 @@ final class DaemonServer {
 
     @MainActor
     private func handleClientConnect(_ conn: WebSocketConnection) {
+        let connectionEvent: [String: Any] = [
+            "type": "connection",
+            "status": "connected",
+            "sessionId": sessionId,
+        ]
+        if let data = connectionEvent.jsonData { conn.send(data) }
+
         let gwAlive = gatewayAdapter != nil
         let stateEvent = buildFullStateEvent(agentType: gwAlive ? "openclaw" : "daemon")
         lastStateEvent = stateEvent
@@ -373,41 +417,57 @@ final class DaemonServer {
 
         // Gateway adapter handles command if alive
         if let gw = gatewayAdapter {
+            let cmdBox = SendableDict(cmd)
             switch type {
-            case "respond": Task { await gw.sendRPC(method: "exec.approval.resolve", params: cmd) }
-                stateMachine.transition(trigger: "user_response", source: .user); broadcastStateUpdate()
+            case "respond": Task { await gw.sendRPC(method: "exec.approval.resolve", params: cmdBox.value) }
+                _ = stateMachine.transition(trigger: "user_response", source: .user); broadcastStateUpdate()
             case "interrupt": Task { await gw.sendRPC(method: "chat.abort", params: [:]) }
-                stateMachine.transition(trigger: "interrupt", source: .user); broadcastStateUpdate()
-            case "select_option": Task { await gw.sendRPC(method: "exec.approval.resolve", params: cmd) }
-                stateMachine.transition(trigger: "user_selection", source: .user); broadcastStateUpdate()
-            case "send_prompt": Task { await gw.sendRPC(method: "chat.send", params: cmd) }
-                stateMachine.transition(trigger: "user_prompt_submit", source: .hook); broadcastStateUpdate()
+                _ = stateMachine.transition(trigger: "interrupt", source: .user); broadcastStateUpdate()
+            case "select_option": Task { await gw.sendRPC(method: "exec.approval.resolve", params: cmdBox.value) }
+                _ = stateMachine.transition(trigger: "user_sㅈelection", source: .user); broadcastStateUpdate()
+            case "send_prompt": Task { await gw.sendRPC(method: "chat.send", params: cmdBox.value) }
+                _ = stateMachine.transition(trigger: "user_prompt_submit", source: .hook); broadcastStateUpdate()
             case "escape": Task { await gw.sendRPC(method: "chat.abort", params: [:]) }
-                stateMachine.transition(trigger: "interrupt", source: .user); broadcastStateUpdate()
+                _ = stateMachine.transition(trigger: "interrupt", source: .user); broadcastStateUpdate()
             default: break
             }
-            if type != "switch_agent" && type != "query_usage" { return }
+            if type != "switch_agent" && type != "query_usage" && type != "focus_session" { return }
         }
 
         switch type {
-        case "respond":
-            forwardCommandToSession(cmd)
-            if stateMachine.state == .awaitingPermission || stateMachine.state == .awaitingDiff {
-                stateMachine.transition(trigger: "user_response", source: .user); broadcastStateUpdate()
+        case "focus_session":
+            if let sessionId = cmd["sessionId"] as? String {
+                Task { await focusRelay.focus(sessionId: sessionId) }
             }
-        case "select_option":
-            forwardCommandToSession(cmd)
-            if stateMachine.state == .awaitingOption {
-                stateMachine.transition(trigger: "user_selection", source: .user); broadcastStateUpdate()
+            return
+        case "respond", "interrupt", "escape", "select_option", "send_prompt", "navigate_option", "switch_mode":
+            // Route to focused session if available, otherwise legacy forwarding
+            let cmdBox = SendableDict(cmd)
+            Task {
+                let routed = await self.focusRelay.routeCommand(cmdBox.value)
+                if !routed {
+                    await MainActor.run { self.forwardCommandToSession(cmdBox.value) }
+                }
             }
-        case "navigate_option", "send_prompt", "switch_mode", "escape":
-            forwardCommandToSession(cmd)
-        case "interrupt":
-            forwardCommandToSession(cmd)
-            stateMachine.transition(trigger: "interrupt", source: .user); broadcastStateUpdate()
+            // Update local state machine
+            switch type {
+            case "respond":
+                if stateMachine.state == .awaitingPermission || stateMachine.state == .awaitingDiff {
+                    _ = stateMachine.transition(trigger: "user_response", source: .user); broadcastStateUpdate()
+                }
+            case "select_option":
+                if stateMachine.state == .awaitingOption {
+                    _ = stateMachine.transition(trigger: "user_selection", source: .user); broadcastStateUpdate()
+                }
+            case "interrupt":
+                _ = stateMachine.transition(trigger: "interrupt", source: .user); broadcastStateUpdate()
+            default: break
+            }
+            return
         case "query_usage":
             Task { await fetchUsageRelayed() }
         case "switch_agent":
+            Task { await focusRelay.unfocus() }
             handleSwitchAgent(cmd["agent"] as? String ?? "")
         case "utility":
             let util = UtilityProxy()
@@ -438,14 +498,14 @@ final class DaemonServer {
 
         switch event {
         case "session_start":
-            stateMachine.transition(trigger: "session_start", source: .hook)
+            _ = stateMachine.transition(trigger: "session_start", source: .hook)
             if let p = json["project_name"] as? String { stateMachine.projectName = p }
         case "user_prompt_submit":
-            stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
+            _ = stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
         case "stop":
-            stateMachine.transition(trigger: "stop", source: .hook)
+            _ = stateMachine.transition(trigger: "stop", source: .hook)
         case "session_end":
-            stateMachine.transition(trigger: "session_end", source: .hook)
+            _ = stateMachine.transition(trigger: "session_end", source: .hook)
         case "tool_start":
             stateMachine.currentTool = json["tool_name"] as? String
             stateMachine.toolInput = json["tool_input"] as? String
@@ -488,7 +548,7 @@ final class DaemonServer {
                         DaemonLogger.shared.info("OpenClaw Gateway connected")
                         await self?.logStream.start()
                         if self?.stateMachine.state == .disconnected {
-                            self?.stateMachine.transition(trigger: "session_start", source: .hook)
+                            _ = self?.stateMachine.transition(trigger: "session_start", source: .hook)
                         }
                         self?.handleStateChanged()
                     } else {
@@ -510,7 +570,7 @@ final class DaemonServer {
         Task { await adapter.stop() }
         gatewayAdapter = nil
         cachedModelCatalog = []
-        stateMachine.transition(trigger: "session_end", source: .hook)
+        _ = stateMachine.transition(trigger: "session_end", source: .hook)
         broadcastSessionsList()
     }
 
@@ -519,10 +579,10 @@ final class DaemonServer {
         guard let type = event["type"] as? String else { return }
         switch type {
         case "gateway_chat":
-            stateMachine.transition(trigger: "spinner_start", source: .pty)
+            _ = stateMachine.transition(trigger: "spinner_start", source: .pty)
             broadcastStateUpdate()
         case "gateway_approval":
-            stateMachine.transition(trigger: "permission_prompt", source: .pty)
+            _ = stateMachine.transition(trigger: "permission_prompt", source: .pty)
             if let payload = event["payload"] as? [String: Any] {
                 stateMachine.question = payload["message"] as? String
             }
@@ -849,6 +909,7 @@ final class DaemonServer {
         initialUsageTask?.cancel()
 
         voiceAssistant.stop()
+        await focusRelay.stop()
         await timelineRelay.stop()
         await logStream.stop()
         await gatewayProbe.stop()

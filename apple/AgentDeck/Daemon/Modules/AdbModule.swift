@@ -1,19 +1,17 @@
 #if os(macOS)
-// AdbModule.swift — Android device ADB reverse + D200H Deck Dock support
-// Ported from bridge/src/modules/adb-module.ts + bridge/src/adb-reverse.ts
+// AdbModule.swift — Android device ADB reverse tunnel management
+// Sets up `adb reverse` for Android dashboard clients (Crema, Lenovo, Pantone).
+// D200H Deck Dock is now handled by D200hHidModule via HID protocol.
 
 import Foundation
 
 final class AdbModule: DeviceModule, @unchecked Sendable {
     let name = "adb"
+
     private let daemonPort: Int
     private var pollTask: Task<Void, Never>?
-    private var d200hPollTask: Task<Void, Never>?
 
-    // D200H state
-    private var d200hDetected = false
-    nonisolated(unsafe) var stateProvider: (() -> [String: Any]?)?
-    nonisolated(unsafe) var usageProvider: (() -> [String: Any]?)?
+    nonisolated(unsafe) var commandHandler: (([String: Any]) -> Void)?
 
     init(daemonPort: Int) {
         self.daemonPort = daemonPort
@@ -25,10 +23,8 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
             return
         }
 
-        // Initial reverse setup
         setupAdbReverse()
 
-        // Poll every 30s for USB reconnections + reverse tunnel check
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
@@ -37,22 +33,16 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
             }
         }
 
-        // D200H fast polling (0.5s) — catch the 4-second ADB window
-        d200hPollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard let self else { break }
-                self.checkD200H()
-            }
-        }
-
         DaemonLogger.shared.info("ADB module started (port \(daemonPort))")
     }
 
     func stop() async {
         pollTask?.cancel()
-        d200hPollTask?.cancel()
         cleanupAdbReverse()
+    }
+
+    func handleBroadcast(_ event: [String: Any]) {
+        // No-op — ADB reverse tunnel doesn't need state broadcasts
     }
 
     // MARK: - ADB Reverse
@@ -60,7 +50,7 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
     private func setupAdbReverse() {
         let devices = getConnectedDevices()
         for serial in devices {
-            _ = shell("adb", "-s", serial, "reverse", "tcp:\(daemonPort)", "tcp:\(daemonPort)")
+            _ = shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(daemonPort)", "tcp:\(daemonPort)")
             DaemonLogger.shared.debug("ADB", "Reverse tunnel set: \(serial)")
         }
     }
@@ -68,9 +58,9 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
     private func pollAdbReverse() {
         let devices = getConnectedDevices()
         for serial in devices {
-            if let existing = shell("adb", "-s", serial, "reverse", "--list"),
+            if let existing = shell(timeout: 5, "adb", "-s", serial, "reverse", "--list"),
                !existing.contains("tcp:\(daemonPort)") {
-                _ = shell("adb", "-s", serial, "reverse", "tcp:\(daemonPort)", "tcp:\(daemonPort)")
+                _ = shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(daemonPort)", "tcp:\(daemonPort)")
                 DaemonLogger.shared.debug("ADB", "Reverse re-established: \(serial)")
             }
         }
@@ -79,46 +69,14 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
     private func cleanupAdbReverse() {
         let devices = getConnectedDevices()
         for serial in devices {
-            _ = shell("adb", "-s", serial, "reverse", "--remove", "tcp:\(daemonPort)")
-        }
-    }
-
-    // MARK: - D200H Detection
-
-    /// D200H Deck Dock has a 4-second ADB window after USB connection.
-    /// Fast polling at 0.5s catches this window for initial state push.
-    private func checkD200H() {
-        let devices = getConnectedDevices()
-        for serial in devices {
-            if let model = shell("adb", "-s", serial, "shell", "getprop", "ro.product.model"),
-               model.trimmingCharacters(in: .whitespacesAndNewlines).contains("D200H") {
-                if !d200hDetected {
-                    d200hDetected = true
-                    DaemonLogger.shared.info("D200H Deck Dock detected: \(serial)")
-                    pushStateToD200H(serial: serial)
-                }
-                return
-            }
-        }
-        if d200hDetected {
-            d200hDetected = false
-            DaemonLogger.shared.debug("ADB", "D200H disconnected")
-        }
-    }
-
-    /// Push current state + usage to D200H via adb
-    private func pushStateToD200H(serial: String) {
-        if let state = stateProvider?(),
-           let data = try? JSONSerialization.data(withJSONObject: state),
-           let json = String(data: data, encoding: .utf8) {
-            _ = shell("adb", "-s", serial, "shell", "input", "text", json)
+            _ = shell(timeout: 3, "adb", "-s", serial, "reverse", "--remove", "tcp:\(daemonPort)")
         }
     }
 
     // MARK: - Helpers
 
     private func getConnectedDevices() -> [String] {
-        guard let output = shell("adb", "devices") else { return [] }
+        guard let output = shell(timeout: 5, "adb", "devices") else { return [] }
         return output.components(separatedBy: "\n")
             .dropFirst()
             .filter { $0.contains("\tdevice") }
@@ -126,26 +84,44 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
     }
 
     private func adbAvailable() -> Bool {
-        shell("which", "adb") != nil
+        shell(timeout: 2, "which", "adb") != nil
     }
 
     @discardableResult
-    private func shell(_ args: String...) -> String? {
+    private func shell(timeout: TimeInterval, _ args: String...) -> String? {
+        let result = runProcess(timeout: timeout, args)
+        guard result.status == 0 else { return nil }
+        return String(data: result.stdout, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func runProcess(timeout: TimeInterval, _ args: [String]) -> (status: Int32?, stdout: Data) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = args
-        let pipe = Pipe()
-        process.standardOutput = pipe
+
+        let stdoutPipe = Pipe()
+        process.standardOutput = stdoutPipe
         process.standardError = FileHandle.nullDevice
+
         do {
             try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
-            return nil
+            return (nil, Data())
         }
+
+        let group = DispatchGroup()
+        group.enter()
+        process.terminationHandler = { _ in group.leave() }
+
+        let waitResult = group.wait(timeout: .now() + timeout)
+        if waitResult == .timedOut {
+            process.terminate()
+            _ = group.wait(timeout: .now() + 1)
+        }
+
+        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        return (waitResult == .timedOut ? nil : process.terminationStatus, data)
     }
 }
 #endif

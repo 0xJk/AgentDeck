@@ -102,7 +102,6 @@ void render() {
     switch (currentPage) {
         case Page::USAGE:  MatrixPages::renderUsage(leds, animTime);  break;
         case Page::AGENTS: MatrixPages::renderAgents(leds, animTime); break;
-        case Page::INFO:   MatrixPages::renderInfo(leds, animTime);   break;
         default: break;
     }
 

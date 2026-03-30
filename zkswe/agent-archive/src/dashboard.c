@@ -5,18 +5,19 @@
 #include <stdio.h>
 
 /* Theme colors */
-static const Color C_BG        = {20, 20, 25, 255};
-static const Color C_IDLE      = {60, 50, 40, 255};
-static const Color C_PROC      = {160, 80, 20, 255};
-static const Color C_AWAIT     = {30, 140, 200, 255};
-static const Color C_ERR       = {40, 40, 180, 255};
-static const Color C_TEXT      = {220, 220, 220, 255};
-static const Color C_DIM       = {120, 120, 120, 255};
-static const Color C_ACCENT    = {200, 140, 40, 255};
-static const Color C_GREEN     = {60, 180, 60, 255};
-static const Color C_BAR_BG    = {50, 50, 55, 255};
-static const Color C_BAR_5H    = {180, 160, 40, 255};
-static const Color C_BAR_7D    = {160, 80, 40, 255};
+/* Theme colors - WHITE BACKGROUND FOR DIAGNOSIS */
+static const Color C_BG        = {255, 255, 255, 255};
+static const Color C_IDLE      = {200, 200, 200, 255};
+static const Color C_PROC      = {255, 120, 0, 255};
+static const Color C_AWAIT     = {0, 150, 255, 255};
+static const Color C_ERR       = {255, 0, 0, 255};
+static const Color C_TEXT      = {0, 0, 0, 255}; /* Black text on white */
+static const Color C_DIM       = {100, 100, 100, 255};
+static const Color C_ACCENT    = {255, 165, 0, 255};
+static const Color C_GREEN     = {0, 150, 0, 255};
+static const Color C_BAR_BG    = {220, 220, 220, 255};
+static const Color C_BAR_5H    = {255, 200, 0, 255};
+static const Color C_BAR_7D    = {255, 100, 0, 255};
 
 static Color state_color(const char *state) {
     if (strcmp(state, "PROCESSING") == 0) return C_PROC;
@@ -157,4 +158,10 @@ void dashboard_render(const DashState *s) {
         fb_draw_text_centered(cx, cy-12, s->agentType, 2, C_DIM);
         fb_draw_text_centered(cx, cy+10, "agentdeck", 3, C_ACCENT);
     }
+
+    /* --- Diagnostic Heartbeat --- */
+    static int heartbeat_x = 0;
+    heartbeat_x = (heartbeat_x + 10) % SCREEN_W;
+    fb_fill_rect(0, SCREEN_H - 10, SCREEN_W, SCREEN_H, C_TEXT); /* black bottom bar */
+    fb_fill_rect(heartbeat_x, SCREEN_H - 10, heartbeat_x + 40, SCREEN_H, C_ACCENT); /* moving orange dot */
 }
