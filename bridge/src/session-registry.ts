@@ -22,6 +22,7 @@ export interface DaemonInfo {
   port: number;
   pid: number;
   startedAt: string;
+  httpPort?: number;  // Swift daemon: HTTP server port (may differ from WS port)
 }
 
 export interface SessionEntry {

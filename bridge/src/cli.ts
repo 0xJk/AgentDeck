@@ -65,8 +65,9 @@ function buildPlist(): string {
 // ===== Helpers =====
 
 async function stopDaemon(port: number): Promise<void> {
-  const { findDaemonPort } = await import('./session-registry.js');
-  const targetPort = findDaemonPort() ?? port;
+  const { readDaemonInfo, findDaemonPort } = await import('./session-registry.js');
+  const info = readDaemonInfo();
+  const targetPort = info?.httpPort ?? info?.port ?? findDaemonPort() ?? port;
   try {
     await fetch(`http://127.0.0.1:${targetPort}/shutdown`, { method: 'POST' });
     log('Shutdown signal sent');
@@ -281,10 +282,11 @@ daemon
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .action(async (opts) => {
     const port = parseInt(opts.port, 10);
-    const { listActive } = await import('./session-registry.js');
+    const { listActive, readDaemonInfo } = await import('./session-registry.js');
+    const info = readDaemonInfo();
     const sessions = listActive();
     const d = sessions.find(s => s.agentType === 'daemon');
-    const targetPort = d?.port ?? port;
+    const targetPort = info?.httpPort ?? info?.port ?? d?.port ?? port;
     try {
       const res = await fetch(`http://127.0.0.1:${targetPort}/health`);
       const data = await res.json() as Record<string, unknown>;

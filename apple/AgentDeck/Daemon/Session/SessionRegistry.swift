@@ -8,6 +8,7 @@ struct DaemonInfo: Codable, Sendable {
     let port: Int
     let pid: Int
     let startedAt: String
+    let httpPort: Int?    // HTTP server port (may differ from WS port)
 }
 
 struct DaemonSessionEntry: Codable, Sendable, Identifiable {

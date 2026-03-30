@@ -8,8 +8,15 @@ import Security
 final class AuthManager: Sendable {
     static let shared = AuthManager()
 
-    static let agentDeckDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".agentdeck")
+    static let agentDeckDir: URL = {
+        // getpwuid returns the real home directory even inside the App Sandbox
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: dir))
+                .appendingPathComponent(".agentdeck")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".agentdeck")
+    }()
     static let tokenFile = agentDeckDir.appendingPathComponent("auth-token")
     private static let tokenLength = 32 // 32 hex chars = 16 bytes
 

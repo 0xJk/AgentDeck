@@ -49,7 +49,8 @@ program
   .option('-p, --port <port>', 'Server port', String(BRIDGE_WS_PORT))
   .action(async (opts) => {
     const port = parseInt(opts.port, 10);
-    const targetPort = findDaemonPort() ?? port;
+    const info = readDaemonInfo();
+    const targetPort = info?.httpPort ?? info?.port ?? findDaemonPort() ?? port;
     try {
       await fetch(`http://127.0.0.1:${targetPort}/shutdown`, { method: 'POST' });
       log('Shutdown signal sent');

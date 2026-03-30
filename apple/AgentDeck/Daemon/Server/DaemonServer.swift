@@ -252,6 +252,24 @@ final class DaemonServer {
         self.serialModule = serial
         moduleManager.register(serial)
 
+        // ESP32 state providers — initial state on connect + heartbeat
+        // nonisolated(unsafe) on ESP32Serial side allows MainActor closures to cross actor boundary
+        serial.serial.setStateProviderFn { [weak self] in
+            MainActor.assumeIsolated { self?.lastStateEvent }
+        }
+        serial.serial.setUsageProviderFn { [weak self] in
+            MainActor.assumeIsolated { self?.buildUsageEvent() }
+        }
+        serial.serial.setInitialStateProviderFn { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return [] }
+                var events: [[String: Any]] = []
+                if let state = self.lastStateEvent { events.append(state) }
+                if let usage = self.buildUsageEvent() { events.append(usage) }
+                return events
+            }
+        }
+
         // Pixoo
         let pixoo = PixooModule()
         self.pixooModule = pixoo

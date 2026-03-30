@@ -7,6 +7,7 @@ import Network
 
 actor HTTPServer {
     private var listener: NWListener?
+    private(set) var boundPort: UInt16?
     private var routes: [(method: String, path: String, handler: @Sendable (HTTPRequest) async -> HTTPResponse)] = []
 
     struct HTTPRequest: Sendable {
@@ -59,6 +60,7 @@ actor HTTPServer {
         let params = NWParameters.tcp
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         self.listener = listener
+        self.boundPort = port
 
         listener.newConnectionHandler = { [weak self] conn in
             Task { await self?.handleConnection(conn) }
@@ -98,7 +100,8 @@ actor HTTPServer {
         }
     }
 
-    private func route(_ request: HTTPRequest) async -> HTTPResponse {
+    /// Route a request to matching handler (used by WebSocketServer for HTTP delegation)
+    func route(_ request: HTTPRequest) async -> HTTPResponse {
         for route in routes {
             if route.method == request.method && route.path == request.path {
                 return await route.handler(request)
@@ -107,9 +110,9 @@ actor HTTPServer {
         return .notFound
     }
 
-    // MARK: - HTTP Parsing
+    // MARK: - HTTP Parsing (static — used by WebSocketServer for unified handling)
 
-    private static func parseHTTPRequest(_ data: Data, remoteIP: String) -> HTTPRequest {
+    static func parseHTTPRequest(_ data: Data, remoteIP: String) -> HTTPRequest {
         let text = String(data: data, encoding: .utf8) ?? ""
         let separator = "\r\n"
         let lines = text.components(separatedBy: separator)
@@ -160,7 +163,7 @@ actor HTTPServer {
         return HTTPRequest(method: method, path: path, headers: headers, body: body, queryParams: queryParams, remoteIP: remoteIP)
     }
 
-    private static func formatHTTPResponse(_ response: HTTPResponse) -> Data {
+    static func formatHTTPResponse(_ response: HTTPResponse) -> Data {
         let statusText: String
         switch response.status {
         case 200: statusText = "OK"
