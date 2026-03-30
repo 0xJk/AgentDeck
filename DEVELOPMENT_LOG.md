@@ -26,10 +26,15 @@ D200H 커스텀 펌웨어 개조 시도가 모두 실패:
 - **두 HID 인터페이스**: Interface 0 (Consumer, usagePage=12) = 디스플레이/명령, Interface 1 (Keyboard, usagePage=1) = 버튼 이벤트
 - **macOS 키보드 독점 문제**: 버튼 이벤트는 Keyboard 인터페이스를 통해 오는데 macOS가 독점 사용. Swift IOKit `IOHIDManager`로 해결 필요
 
+### 후속 작업 (완료, 2026-03-30 후반)
+- **D200hHidModule.swift** 구현: IOKit `IOHIDManager` + `kIOHIDOptionsTypeSeizeDevice`로 Keyboard 인터페이스 독점 열기 → 버튼 이벤트 수신. Consumer Control은 디스플레이 쓰기 + keep-alive. Core Graphics PNG 렌더링
+- **ADB 코드 정리**: `AdbModule.swift` 400→120줄 (ADB reverse tunnel만 유지), `adb-reverse.ts` 390→115줄, `adb-module.ts` D200H 코드 제거
+- **zkswe/agent/** → **zkswe/agent-archive/** 아카이브 (C 온디바이스 에이전트, GPIO/MI_GFX/HID 탐침 코드)
+- DaemonServer에 D200hHidModule 등록 + broadcast 배선
+
 ### 미완료
-- 버튼 이벤트 수신 (Swift IOKit 또는 node-hid macOS 권한)
-- daemon 실시간 통합 테스트
-- ADB D200H 코드 정리 + zkswe/agent/ 아카이브
+- `agentdeck daemon start` → D200H 자동 감지 → 화면 갱신 실시간 통합 테스트
+- macOS Xcode 빌드 검증 (IOKit framework linking)
 
 ---
 
