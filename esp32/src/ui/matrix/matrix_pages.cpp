@@ -123,22 +123,24 @@ static int formatResetCompact(const char* reset, char* out, int maxLen) {
     return ri;
 }
 
-// Full-screen gauge: entire 32x8 IS the gauge, text overlaid
-// Usage fills from left (matches other dashboards)
-static void drawFullScreenGauge(CRGB* leds, float percent, const char* label,
+// Gauge color matching Pixoo palette
+static CRGB gaugeColor(float percent, float animTime) {
+    if (percent >= 90) {
+        float pulse = 0.7f + 0.3f * sinf(animTime * 6.0f);
+        return CRGB((uint8_t)(239 * pulse), (uint8_t)(68 * pulse), (uint8_t)(68 * pulse));
+    }
+    if (percent >= 70) return CRGB(245, 158, 11);   // Amber
+    if (percent >= 50) return CRGB(0, 200, 180);     // Teal
+    return CRGB(59, 130, 246);                        // Blue
+}
+
+// Full-screen gauge: percent number (gauge color, left) + reset time (gray, right)
+static void drawFullScreenGauge(CRGB* leds, float percent,
                                  const char* resetStr, float animTime, int slideX) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
 
-    // Color based on usage level (Pixoo-matched palette)
-    CRGB fillColor;
-    if (percent < 50)       fillColor = CRGB(59, 130, 246);   // Blue
-    else if (percent < 70)  fillColor = CRGB(0, 200, 180);    // Teal
-    else if (percent < 90)  fillColor = CRGB(245, 158, 11);   // Amber
-    else {
-        float pulse = 0.7f + 0.3f * sinf(animTime * 6.0f);
-        fillColor = CRGB((uint8_t)(239 * pulse), (uint8_t)(68 * pulse), (uint8_t)(68 * pulse));
-    }
+    CRGB fillColor = gaugeColor(percent, animTime);
 
     // Fill entire screen: used portion = color, unused = dark
     int fillPx = (int)(percent / 100.0f * MATRIX_W);
@@ -151,15 +153,18 @@ static void drawFullScreenGauge(CRGB* leds, float percent, const char* label,
         }
     }
 
+    // Percentage in gauge color (left) — replaces old "5H"/"7D" label
+    char pctBuf[5];
+    snprintf(pctBuf, sizeof(pctBuf), "%d%%", (int)(percent + 0.5f));
     bool dim = isDimMode();
-    CRGB labelColor = dim ? CRGB(80, 180, 220) : CRGB(40, 40, 40);
-    CRGB timeColor  = dim ? CRGB(220, 220, 220) : CRGB(0, 0, 0);
+    CRGB pctColor = dim ? fillColor : CRGB(0, 0, 0);
+    MatrixFont::drawScrollText(leds, pctBuf, 1 + slideX, 1, pctColor, MATRIX_W, MATRIX_H);
 
-    MatrixFont::drawScrollText(leds, label, 1 + slideX, 1, labelColor, MATRIX_W, MATRIX_H);
-
+    // Reset time in muted gray (right-aligned)
     char timeBuf[8];
     if (formatResetCompact(resetStr, timeBuf, sizeof(timeBuf)) > 0) {
         int tw = MatrixFont::textWidth(timeBuf);
+        CRGB timeColor = dim ? CRGB(0xA0, 0xA0, 0xA0) : CRGB(0x30, 0x30, 0x40);
         MatrixFont::drawScrollText(leds, timeBuf, MATRIX_W - tw - 1 + slideX, 1, timeColor, MATRIX_W, MATRIX_H);
     }
 }
@@ -170,7 +175,6 @@ static void drawFullScreenGauge(CRGB* leds, float percent, const char* label,
 void MatrixPages::renderUsage(CRGB* leds, float animTime) {
     lockState();
     bool connected = g_state.wsConnected;
-    bool hasData = g_state.dataReceived;
     float pct5h = g_state.fiveHourPercent;
     float pct7d = g_state.sevenDayPercent;
     char reset5h[20], reset7d[20];
@@ -181,7 +185,6 @@ void MatrixPages::renderUsage(CRGB* leds, float animTime) {
     unlockState();
 
     if (!connected) {
-        // Not connected — scrolling text like other devices ("Connecting...")
         CRGB dimColor = CRGB(40, 25, 5);
         const char* msg = "SEARCHING...";
         int textW = MatrixFont::textWidth(msg);
@@ -191,32 +194,30 @@ void MatrixPages::renderUsage(CRGB* leds, float animTime) {
         return;
     }
 
-    bool noData = (pct5h < 0);
-    if (noData) {
-        // Connected but no usage data yet
+    if (pct5h < 0) {
         CRGB dimColor = CRGB(30, 30, 40);
         MatrixFont::drawScrollText(leds, "---", 10, 2, dimColor, MATRIX_W, MATRIX_H);
         return;
     }
 
     // Cycle: 4s show 5H → 0.5s slide → 4s show 7D → 0.5s slide back
-    float cycle = 9.0f;  // total cycle
+    float cycle = 9.0f;
     float phase = fmodf(animTime, cycle);
 
     if (phase < 4.0f) {
-        drawFullScreenGauge(leds, pct5h, "5H", reset5h, animTime, 0);
+        drawFullScreenGauge(leds, pct5h, reset5h, animTime, 0);
     } else if (phase < 4.5f) {
         float t = (phase - 4.0f) / 0.5f;
         int offset = (int)(t * MATRIX_W);
-        drawFullScreenGauge(leds, pct5h, "5H", reset5h, animTime, -offset);
-        drawFullScreenGauge(leds, pct7d, "7D", reset7d, animTime, MATRIX_W - offset);
+        drawFullScreenGauge(leds, pct5h, reset5h, animTime, -offset);
+        drawFullScreenGauge(leds, pct7d, reset7d, animTime, MATRIX_W - offset);
     } else if (phase < 8.5f) {
-        drawFullScreenGauge(leds, pct7d, "7D", reset7d, animTime, 0);
+        drawFullScreenGauge(leds, pct7d, reset7d, animTime, 0);
     } else {
         float t = (phase - 8.5f) / 0.5f;
         int offset = (int)(t * MATRIX_W);
-        drawFullScreenGauge(leds, pct7d, "7D", reset7d, animTime, -offset);
-        drawFullScreenGauge(leds, pct5h, "5H", reset5h, animTime, MATRIX_W - offset);
+        drawFullScreenGauge(leds, pct7d, reset7d, animTime, -offset);
+        drawFullScreenGauge(leds, pct5h, reset5h, animTime, MATRIX_W - offset);
     }
 }
 
@@ -254,7 +255,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     unlockState();
 
     // === Crayfish: fixed at right (x=27, y=1) ===
-    if (gatewayAvail) {
+    if (connected && gatewayAvail) {
         CRGB cfColor;
         if (gatewayError) {
             cfColor = CRGB(40, 40, 40);  // SICK: gray
@@ -272,7 +273,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     }
 
     // === Octopuses: left area (x 0 to cfX-2) ===
-    int cfX = gatewayAvail ? 27 : 32;  // crayfish position (or off-screen)
+    int cfX = (connected && gatewayAvail) ? 27 : 32;  // crayfish position (or off-screen)
     int octoMaxX = cfX - 7;            // rightmost octopus start (5px sprite + 2px gap)
 
     if (octoCount == 0) {
@@ -286,6 +287,8 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
             MatrixFont::drawScrollText(leds, msg, scrollX, 1, dimColor, MATRIX_W, MATRIX_H);
             return;
         }
+        // Gateway alive → crayfish already rendered, no phantom octopus needed
+        if (gatewayAvail) return;
         // Connected but no sessions — dim bobbing octopus
         int bobY = 1 + (int)(0.3f * sinf(animTime * 1.0f));
         drawSprite(leds, 8, bobY, SPR_OCTOPUS, 5, 6, CRGB(30, 18, 14));

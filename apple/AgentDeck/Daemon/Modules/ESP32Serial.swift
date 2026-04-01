@@ -3,6 +3,7 @@
 // Ported from bridge/src/esp32-serial.ts
 
 import Foundation
+import Darwin
 
 /// Manages USB serial connections to ESP32 devices (CH340/CP210x/native USB).
 /// Newline-delimited JSON protocol, heartbeat, WiFi provisioning.
@@ -33,9 +34,23 @@ actor ESP32Serial {
         var wifiConnected: Bool?
     }
 
+    private struct PortFailure {
+        let error: String
+        let isPermanent: Bool  // true for EACCES (Operation not permitted)
+        var failCount: Int
+        var lastAttempt: Date
+    }
+
     private var connections: [SerialConnection] = []
     private var pollTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var lastDetectedPorts: [String] = []
+    private var lastOpenError: String?
+    private var lastReadError: String?
+    private var lastWriteError: String?
+    private var failedPorts: [String: PortFailure] = [:]
+    private static let permanentBlockDuration: TimeInterval = 300  // 5 minutes
+    private static let transientMaxBackoff: TimeInterval = 60
 
     nonisolated(unsafe) private var stateProvider: (() -> [String: Any]?)?
     nonisolated(unsafe) private var usageProvider: (() -> [String: Any]?)?
@@ -43,6 +58,29 @@ actor ESP32Serial {
     var onMessage: (@Sendable (String, [String: Any]) -> Void)?
 
     var connectionCount: Int { connections.filter(\.connected).count }
+
+    func statusSnapshot() -> sending [String: Any] {
+        [
+            "connectionCount": connections.filter(\.connected).count,
+            "detectedPorts": lastDetectedPorts,
+            "lastOpenError": lastOpenError as Any,
+            "lastReadError": lastReadError as Any,
+            "lastWriteError": lastWriteError as Any,
+            "connections": connections.map { conn in
+                [
+                    "port": conn.port,
+                    "connected": conn.connected,
+                    "provisionSent": conn.provisionSent,
+                    "deviceInfo": [
+                        "board": conn.deviceInfo?.board as Any,
+                        "version": conn.deviceInfo?.version as Any,
+                        "wifiConfigured": conn.deviceInfo?.wifiConfigured as Any,
+                        "wifiConnected": conn.deviceInfo?.wifiConnected as Any,
+                    ] as [String: Any],
+                ] as [String: Any]
+            },
+        ]
+    }
 
     nonisolated func setStateProviderFn(_ provider: @escaping () -> [String: Any]?) { stateProvider = provider }
     nonisolated func setUsageProviderFn(_ provider: @escaping () -> [String: Any]?) { usageProvider = provider }
@@ -79,6 +117,7 @@ actor ESP32Serial {
             try? conn.readHandle?.close()
         }
         connections.removeAll()
+        failedPorts.removeAll()
         DaemonLogger.shared.debug("ESP32", "Serial bridge stopped")
     }
 
@@ -117,7 +156,7 @@ actor ESP32Serial {
 
     private func detectPorts() -> [String] {
         do {
-            let output = try shellSync("ls /dev/cu.usb* 2>/dev/null || true")
+            let output = try shellSync("ls /dev/cu.usb* /dev/cu.wchusbserial* 2>/dev/null || true")
             return output.split(separator: "\n").map(String.init).filter { port in
                 guard !Self.excludePatterns.contains(where: { port.localizedCaseInsensitiveContains($0) }) else { return false }
                 let range = NSRange(port.startIndex..., in: port)
@@ -133,11 +172,27 @@ actor ESP32Serial {
         connections.removeAll { !$0.connected }
 
         let ports = detectPorts()
+        lastDetectedPorts = ports
+        let now = Date()
+
         for port in ports {
-            if !connections.contains(where: { $0.port == port }) {
-                if let conn = openPort(port) {
-                    connections.append(conn)
+            // Skip if already connected
+            if connections.contains(where: { $0.port == port }) { continue }
+
+            // Check failure blocklist
+            if let failure = failedPorts[port] {
+                if failure.isPermanent {
+                    // Only retry permanent failures after 5 minutes
+                    if now.timeIntervalSince(failure.lastAttempt) < Self.permanentBlockDuration { continue }
+                } else {
+                    // Exponential backoff for transient errors: 10s * 2^(n-1), cap 60s
+                    let backoff = min(10.0 * pow(2.0, Double(failure.failCount - 1)), Self.transientMaxBackoff)
+                    if now.timeIntervalSince(failure.lastAttempt) < backoff { continue }
                 }
+            }
+
+            if let conn = openPort(port) {
+                connections.append(conn)
             }
         }
     }
@@ -145,20 +200,71 @@ actor ESP32Serial {
     // MARK: - Port Open
 
     private func openPort(_ port: String) -> SerialConnection? {
-        guard let writeHandle = FileHandle(forWritingAtPath: port) else {
-            DaemonLogger.shared.debug("ESP32", "Failed to open write: \(port)")
+        let descriptor = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            let errNo = errno
+            let message = String(cString: strerror(errNo))
+            let isPermanent = (errNo == EACCES)
+            let existing = failedPorts[port]
+            let count = (existing?.failCount ?? 0) + 1
+            failedPorts[port] = PortFailure(error: message, isPermanent: isPermanent, failCount: count, lastAttempt: Date())
+
+            if isPermanent {
+                if count == 1 {
+                    DaemonLogger.shared.error("ESP32: Permission denied opening \(port) — serial entitlement missing or App Sandbox. Suppressing for 5 min.")
+                }
+            } else {
+                DaemonLogger.shared.debug("ESP32", "Failed to open serial: \(port) (\(message)) [attempt \(count)]")
+            }
+
+            lastOpenError = "failed to open serial handle for \(port): \(message)"
             return nil
         }
+        failedPorts.removeValue(forKey: port)
 
-        let readHandle = FileHandle(forReadingAtPath: port)
+        // Configure termios: raw mode (no echo, no canonical, no signal chars)
+        let isCDC = port.contains("usbmodem")
+        var options = termios()
+        tcgetattr(descriptor, &options)
+        cfmakeraw(&options)
+        options.c_cflag |= UInt(CLOCAL | CREAD)
+        if !isCDC {
+            cfsetispeed(&options, speed_t(B115200))
+            cfsetospeed(&options, speed_t(B115200))
+        }
+        // Non-blocking read: return immediately with whatever is available
+        withUnsafeMutablePointer(to: &options.c_cc) { ptr in
+            let cc = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
+            cc[Int(VMIN)] = 0
+            cc[Int(VTIME)] = 0
+        }
+        tcsetattr(descriptor, TCSANOW, &options)
+
+        // Clear O_NONBLOCK after termios config (FileHandle needs blocking reads)
+        let flags = fcntl(descriptor, F_GETFL)
+        _ = fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK)
+
+        let writeFD = dup(descriptor)
+        if writeFD < 0 {
+            let message = String(cString: strerror(errno))
+            close(descriptor)
+            lastOpenError = "failed to dup write handle for \(port): \(message)"
+            return nil
+        }
+        let readFD = dup(descriptor)
+        close(descriptor)
+        guard readFD >= 0 else {
+            let message = String(cString: strerror(errno))
+            close(writeFD)
+            lastOpenError = "failed to dup read handle for \(port): \(message)"
+            return nil
+        }
+        let writeHandle = FileHandle(fileDescriptor: writeFD, closeOnDealloc: true)
+        let readHandle = FileHandle(fileDescriptor: readFD, closeOnDealloc: true)
+
+        lastOpenError = nil
 
         var conn = SerialConnection(port: port, writeHandle: writeHandle, readHandle: readHandle)
-
-        // Configure baud rate for UART ports (not CDC)
-        let isCDC = port.contains("usbmodem")
-        if !isCDC {
-            _ = try? shellSync("stty -f \(port) 115200 cs8 -cstopb -parenb -hupcl")
-        }
 
         DaemonLogger.shared.debug("ESP32", "Opened: \(port) [\(isCDC ? "CDC" : "UART")]")
 
@@ -179,9 +285,7 @@ actor ESP32Serial {
         }
 
         // Start reading in background
-        if let readHandle {
-            startReading(port: port, handle: readHandle)
-        }
+        startReading(port: port, handle: readHandle)
 
         return conn
     }
@@ -189,8 +293,22 @@ actor ESP32Serial {
     private func startReading(port: String, handle: FileHandle) {
         handle.readabilityHandler = { [weak self] fh in
             let data = fh.availableData
-            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                Task { await self?.markReadFailure(port: port, message: "EOF on \(port)") }
+                return
+            }
+            guard let str = String(data: data, encoding: .utf8) else {
+                Task { await self?.markReadFailure(port: port, message: "non-UTF8 read on \(port)") }
+                return
+            }
             Task { await self?.handleReadData(port: port, data: str) }
+        }
+    }
+
+    private func markReadFailure(port: String, message: String) {
+        lastReadError = message
+        if let idx = connections.firstIndex(where: { $0.port == port }) {
+            connections[idx].connected = false
         }
     }
 
@@ -260,17 +378,24 @@ actor ESP32Serial {
         guard conn.connected, let handle = conn.writeHandle else { return }
         do {
             try handle.write(contentsOf: Data((json + "\n").utf8))
+            lastWriteError = nil
         } catch {
             conn.connected = false
+            lastWriteError = "write failed for \(conn.port): \(error.localizedDescription)"
         }
     }
 
     /// Strip fields ESP32 doesn't need (reduce payload for small RX buffers)
     private func prepareForSerial(_ event: [String: Any]) -> [String: Any] {
         var e = event
-        if event["type"] as? String == "usage_update" {
-            e.removeValue(forKey: "ollamaStatus")
-            e.removeValue(forKey: "tokenStatus")
+        let type = event["type"] as? String
+
+        // Global strips — large metadata daemon has but small devices don't use
+        e.removeValue(forKey: "modelCatalog")
+        e.removeValue(forKey: "ollamaStatus")
+        e.removeValue(forKey: "tokenStatus")
+
+        if type == "usage_update" {
             e.removeValue(forKey: "extraUsageEnabled")
             e.removeValue(forKey: "extraUsageMonthlyLimit")
             e.removeValue(forKey: "extraUsageUsedCredits")
@@ -280,11 +405,24 @@ actor ESP32Serial {
             e.removeValue(forKey: "sessionPercent")
             e.removeValue(forKey: "resetTime")
             e.removeValue(forKey: "resetDate")
-        }
-        if event["type"] as? String == "state_update" {
+        } else if type == "state_update" {
             e.removeValue(forKey: "agentCapabilities")
             e.removeValue(forKey: "billingType")
             e.removeValue(forKey: "remoteUrl")
+            // Keep gatewayAvailable and gatewayHasError — ESP32 needs them for crayfish rendering
+        } else if type == "sessions_list" {
+            // Keep only essential session info to avoid hitting serial limits
+            if let sessions = e["sessions"] as? [[String: Any]] {
+                e["sessions"] = sessions.map { s in
+                    [
+                        "id": s["id"] ?? "",
+                        "projectName": s["projectName"] ?? "",
+                        "agentType": s["agentType"] ?? "",
+                        "state": s["state"] ?? "",
+                        "alive": s["alive"] ?? true
+                    ]
+                }
+            }
         }
         return e
     }
