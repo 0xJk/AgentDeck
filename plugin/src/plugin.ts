@@ -12,6 +12,7 @@ import {
   OPENCODE_CAPABILITIES,
   CODEX_CLI_CAPABILITIES,
   CLAUDE_CODE_CAPABILITIES,
+  OPENCLAW_GATEWAY_PORT,
   type AgentType,
   type BillingType,
   type DeckSlotConfig,
@@ -22,8 +23,6 @@ import {
 } from '@agentdeck/shared';
 
 import { ConnectionManager } from './connection-manager.js';
-import { LayoutManager } from './layout-manager.js';
-import { setExpandCallback } from './expanded-actions.js';
 import { updateUsageModeData, setUsageRefreshCallback } from './utility-modes/usage.js';
 import { updatePermissionModeData, setPermissionModeSwitchCallback } from './utility-modes/permission-mode.js';
 import {
@@ -33,50 +32,9 @@ import {
 } from './encoder-takeover.js';
 import { setVoiceTextExitCallback } from './encoder-registry.js';
 import { dlog, dinfo } from './log.js';
-import { readFileSync, existsSync } from 'fs';
+import { existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { homedir } from 'os';
-
-// Keypad button actions
-import {
-  ResponseButtonAction,
-  initResponseButtons,
-  updateResponseState,
-  setResponseSetupRequired,
-} from './actions/response-button.js';
-import {
-  StopButtonAction,
-  initStopButton,
-  updateStopState,
-  overrideStopButton,
-} from './actions/stop-button.js';
-import {
-  ModeButtonAction,
-  initModeButton,
-  updateModeButton,
-  overrideModeButton,
-} from './actions/mode-button.js';
-import {
-  SessionButtonAction,
-  initSessionButton,
-  updateSessionButton,
-  overrideSessionButton,
-  setSessionSetupRequired,
-} from './actions/session-button.js';
-
-// Keypad button actions (usage)
-import {
-  UsageButtonAction,
-  initUsageButton,
-  updateUsageButton,
-  updateUsageModelCatalog,
-  overrideUsageButton,
-  setUsageBridgeConnected,
-  setUsageCapabilities,
-  setUsageState,
-  setRemoteUrl,
-  setPairingUrl,
-} from './actions/usage-button.js';
 
 // Encoder actions
 import {
@@ -135,8 +93,6 @@ function detectSetupState(): void {
 
 function propagateSetupRequired(value: boolean): void {
   setupRequired = value;
-  setSessionSetupRequired(value);
-  setResponseSetupRequired(value);
   setUtilitySetupRequired(value);
   setOptionSetupRequired(value);
 }
@@ -169,32 +125,10 @@ function capsForProxiedAgent(): import('@agentdeck/shared').AgentCapabilities {
   return connMgr.getCapabilities() ?? CLAUDE_CODE_CAPABILITIES;
 }
 
-// ---- Expanded mode state ----
-let expandedMode = false;
-
-export function enterExpandedMode(): void {
-  expandedMode = true;
-  broadcastStateUpdate();
-}
-
-export function exitExpandedMode(): void {
-  expandedMode = false;
-  broadcastStateUpdate();
-}
-
-// Wire up expand callback
-setExpandCallback(enterExpandedMode);
-
 // ---- Instances ----
 const connMgr = new ConnectionManager();
-const layoutManager = new LayoutManager();
 
 // ---- Initialize action modules ----
-initResponseButtons(connMgr, layoutManager);
-initStopButton(connMgr);
-initModeButton(connMgr);
-initSessionButton(connMgr, () => broadcastStateUpdate());
-initUsageButton(connMgr);
 initOptionDial(connMgr);
 initVoiceDial(connMgr);
 initUtilityDial();
@@ -240,6 +174,29 @@ initSessionSlots((result) => {
         connMgr.send({ type: 'select_option', index: result.optionIndex });
       }
       break;
+
+    case 'send-prompt':
+      if (result.promptText) {
+        connMgr.send({ type: 'send_prompt', text: result.promptText });
+      }
+      break;
+
+    case 'open-gateway':
+      import('./utility-modes/macos.js').then(({ openOrFocusBrowserTab }) => {
+        void openOrFocusBrowserTab(`http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}`).catch(() => {});
+      });
+      break;
+
+    case 'switch-model': {
+      const mgr = getSessionSlotManager();
+      mgr.startModelSwitch();
+      connMgr.send({ type: 'send_prompt', text: '/model' });
+      // Refresh to show loading state immediately
+      if (isInDetailView()) {
+        updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string);
+      }
+      break;
+    }
 
     case 'stop':
       connMgr.send({ type: 'interrupt' });
@@ -291,23 +248,6 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
     proxiedAgentType = ev.agentType;
   }
 
-  // Update capabilities from state_update (Bridge sends agentCapabilities on client connect)
-  // When daemon proxies OpenClaw, it doesn't send agentCapabilities — derive from proxiedAgentType
-  if (ev.agentCapabilities) {
-    setUsageCapabilities(ev.agentCapabilities);
-  } else if (proxiedAgentType === 'openclaw') {
-    setUsageCapabilities(OPENCLAW_CAPABILITIES);
-  } else if (proxiedAgentType === 'opencode') {
-    setUsageCapabilities(OPENCODE_CAPABILITIES);
-  } else if (proxiedAgentType === 'codex-cli') {
-    setUsageCapabilities(CODEX_CLI_CAPABILITIES);
-  }
-
-  // Update model catalog if present
-  if (ev.modelCatalog) {
-    updateUsageModelCatalog(ev.modelCatalog);
-  }
-
   // Capture question from state_update
   if (ev.question !== undefined) {
     currentQuestion = ev.question;
@@ -328,14 +268,6 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   // Capture session status (OpenClaw)
   if (ev.sessionStatus !== undefined) {
     currentSessionStatus = ev.sessionStatus;
-  }
-  // Capture remote URL for QR display
-  if (ev.remoteUrl !== undefined) {
-    setRemoteUrl(ev.remoteUrl);
-  }
-  // Capture pairing URL for QR code (authenticated WS URL)
-  if (ev.pairingUrl !== undefined) {
-    setPairingUrl(ev.pairingUrl);
   }
   // Voice assistant state piggybacked on state_update
   if (ev.voiceAssistantState !== undefined) {
@@ -375,25 +307,14 @@ connMgr.on('prompt_options', (ev: PromptOptionsEvent) => {
   dlog('Plugin', `prompt_options: type=${ev.promptType} count=${ev.options.length} q=${ev.question ? `"${ev.question.slice(0, 40)}"` : '-'}`);
   currentOptions = ev.options;
   if (ev.question) currentQuestion = ev.question;
+  if (isInDetailView()) {
+    updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string);
+  }
   broadcastStateUpdate();
 });
 
 connMgr.on('usage_update', (ev: UsageEvent) => {
   dlog('Plugin', `usage_update: 5h=${ev.fiveHourPercent ?? '-'}% 7d=${ev.sevenDayPercent ?? '-'}% extra=${ev.extraUsageEnabled ? 'on' : 'off'} tokens=${ev.inputTokens + ev.outputTokens}`);
-  updateUsageButton(currentState, {
-    sessionDurationSec: ev.sessionDurationSec,
-    inputTokens: ev.inputTokens,
-    outputTokens: ev.outputTokens,
-    estimatedCostUsd: ev.estimatedCostUsd,
-    fiveHourPercent: ev.fiveHourPercent,
-    fiveHourResetsAt: ev.fiveHourResetsAt,
-    sevenDayPercent: ev.sevenDayPercent,
-    sevenDayResetsAt: ev.sevenDayResetsAt,
-    extraUsageEnabled: ev.extraUsageEnabled,
-    extraUsageMonthlyLimit: ev.extraUsageMonthlyLimit,
-    extraUsageUsedCredits: ev.extraUsageUsedCredits,
-    extraUsageUtilization: ev.extraUsageUtilization,
-  }, currentBillingType, ev.usageStale);
 
   // v4: Feed usage data to E1 utility mode
   updateUsageModeData({
@@ -456,7 +377,6 @@ connMgr.on('voice_assistant_state', (ev: VoiceAssistantStateEvent) => {
   dlog('Plugin', `voice_assistant_state: ${ev.state} text=${ev.text ? `"${ev.text.slice(0, 40)}"` : '-'}`);
   currentVoiceAssistantState = ev.state;
   updateVoiceAssistantIndicator(ev.state, ev.text);
-  // Also update session button to show/clear VA overlay
   broadcastStateUpdate();
 });
 
@@ -516,9 +436,6 @@ connMgr.on('display_state', (ev: { type: 'display_state'; displayOn: boolean }) 
 connMgr.on('connected', () => {
   dinfo('Plugin', `connected (agentType=${proxiedAgentType} prevState=${currentState})`);
   setDaemonConnected(true);
-  setUsageBridgeConnected(true);
-  const connCaps = capsForProxiedAgent();
-  setUsageCapabilities(connCaps);
   // Request fresh usage data immediately on connect (covers sleep/wake recovery)
   connMgr.send({ type: 'query_usage' });
 });
@@ -526,8 +443,6 @@ connMgr.on('connected', () => {
 connMgr.on('disconnected', () => {
   dinfo('Plugin', `disconnected (agentType=${proxiedAgentType} prevState=${currentState})`);
   setDaemonConnected(false);
-  setUsageBridgeConnected(false);
-  setUsageCapabilities(null);
   proxiedAgentType = null;
   currentVoiceAssistantState = 'disabled';
   updateVoiceAssistantIndicator('disabled');
@@ -553,45 +468,10 @@ function broadcastStateUpdate(): void {
   // Skip rendering while display is dimmed (Mac display asleep)
   if (displayDimmed) return;
 
-  // Auto-exit expanded mode on non-interactive state transitions
-  if (expandedMode && !isInteractiveState(currentState)) {
-    expandedMode = false;
-  }
-
-  dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length} expanded=${expandedMode} takeover=${isEncoderTakeoverActive()}`);
+  dlog('Plugin', `broadcast: state=${currentState} mode=${currentMode} opts=${currentOptions.length} takeover=${isEncoderTakeoverActive()}`);
 
   const agentType = proxiedAgentType;
   const caps = capsForProxiedAgent();
-
-  if (expandedMode && currentOptions.length > 4) {
-    // Expanded mode: all 7 keypad slots show options
-    const configs = layoutManager.getExpandedLayout(currentState, currentOptions);
-    overrideModeButton(configs[0]);
-    overrideSessionButton(configs[1]);
-    overrideUsageButton(configs[2]);
-    updateResponseState(currentState, currentMode as any, currentOptions, configs.slice(3, 7), agentType, currentNavigable, caps);
-    // With 7 options filling slots 0-6, stop button (slot 7) shows normal ESC/STOP
-    overrideStopButton(null);
-    updateStopState(currentState);
-  } else {
-    // Normal mode: clear overrides, render normally
-    overrideModeButton(null);
-    overrideSessionButton(null);
-    overrideUsageButton(null);
-    setUsageState(currentState);
-    updateModeButton(currentState, currentMode, caps);
-    updateSessionButton(currentState, currentMode, currentProjectName, currentTool, currentModelName, agentType, currentEffortLevel, currentVoiceAssistantState, currentGatewayHasError);
-    updateResponseState(currentState, currentMode as any, currentOptions, undefined, agentType, currentNavigable, caps);
-
-    // Stop slot: may show 4th option or MORE button
-    const stopOverride = layoutManager.getStopSlotOverride(currentState, currentOptions);
-    if (stopOverride) {
-      overrideStopButton(stopOverride);
-    } else {
-      overrideStopButton(null);
-      updateStopState(currentState);
-    }
-  }
 
   // Encoder actions — manage takeover lifecycle
   const shouldTakeover = isInteractiveState(currentState) && currentOptions.length > 0;
@@ -636,11 +516,6 @@ function broadcastStateUpdate(): void {
 }
 
 // ---- Register actions ----
-streamDeck.actions.registerAction(new ResponseButtonAction());
-streamDeck.actions.registerAction(new StopButtonAction());
-streamDeck.actions.registerAction(new ModeButtonAction());
-streamDeck.actions.registerAction(new SessionButtonAction());
-streamDeck.actions.registerAction(new UsageButtonAction());
 streamDeck.actions.registerAction(new ResponseDialAction());
 streamDeck.actions.registerAction(new VoiceDialAction());
 streamDeck.actions.registerAction(new UtilityDialAction());
@@ -652,11 +527,6 @@ streamDeck.actions.registerAction(new SessionSlotButtonAction());
 // UUID suffix → actionType mapping
 const UUID_TO_ACTION_TYPE: Record<string, string> = {
   'session-slot': 'session-slot',
-  'response-button': 'response-button',
-  'stop-button': 'stop-button',
-  'mode-button': 'mode-button',
-  'session-button': 'session-button',
-  'usage-button': 'usage-button',
   'response-dial': 'option-dial',
   'voice-dial': 'voice-dial',
   'utility-dial': 'utility-dial',
