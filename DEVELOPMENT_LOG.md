@@ -2,6 +2,187 @@
 
 ---
 
+## 2026-04-02 — Swift Daemon ESP32 Serial 통신 수정
+
+### 문제
+Swift daemon에서 ESP32 3대 (Round AMOLED, IPS 3.5", Ulanzi TC001)가 모두 화면이 꺼져 있었다. 시리얼 포트 4개가 connected 상태였지만 `deviceInfo`가 전부 null — device_info 응답을 수신/파싱 못함.
+
+### 해결
+3중 버그:
+1. **FileHandle.readabilityHandler 미작동**: macOS의 dispatch source가 시리얼 포트 fd에서 제대로 트리거되지 않음 → DispatchQueue + `Darwin.read()` 50ms polling으로 교체
+2. **Swift actor executor 경합**: read 스레드에서 `Task { await actor.handleReadData() }` 호출 시 actor 접근이 대기 상태에 빠짐 → `NSLock` 기반 `pendingReads` 큐 + heartbeat 주기에 `drainPendingReads()` 호출로 교체
+3. **CR 줄바꿈 미인식**: `cfmakeraw`가 `ICRNL`(CR→LF 입력 변환)을 비활성화하여 ESP32의 `Serial.println()`이 보내는 `\r`이 `\n`으로 변환되지 않음 → `handleReadData`에서 `\r\n`/`\r` → `\n` 정규화 추가
+
+추가: pyserial과 동일하게 `O_NONBLOCK` 유지, `dup()` 대신 단일 fd 사용, 초기 device_info 응답을 동기 read로 수신 후 큐에 전달
+
+### 핵심 설계 결정
+- **pyserial 동작을 reference로**: pyserial은 `O_NONBLOCK` 유지 + `VMIN=0,VTIME=0` 설정. Swift 코드도 이를 따라야 ESP32와 정상 통신 가능
+- **Actor isolation 우회**: Swift actor의 cooperative scheduling이 시리얼 read 처리량을 감당 못함. `nonisolated(unsafe)` + `NSLock`으로 thread-safe queue 구성
+
+---
+
+## 2026-04-02 — Codex Web Auth Status Surface in Bridge + Apple Monitor
+
+### 문제
+Codex / ChatGPT 웹 인증으로 Codex를 쓰는 경우, 공식 OpenAI usage/cost API는 web auth token을 받지 않아 실시간 리밋 게이지를 직접 표시할 수 없었다. 대신 앱에서는 해당 계정이 실제로 연결돼 있는지, 어떤 플랜인지조차 보이지 않았다.
+
+### 해결
+- `bridge/src/codex-auth.ts`: `~/.codex/auth.json`을 읽어 `auth_mode`, `last_refresh`, JWT payload의 `chatgpt_plan_type`, `chatgpt_account_id`, `chatgpt_subscription_active_until`을 추출
+- `shared/src/protocol.ts` / `bridge/src/usage-event.ts`: `usage_update`에 `codexAuthMode`, `codexWebAuthConnected`, `codexPlanType`, `codexAccountId`, `codexSubscriptionActiveUntil`, `codexLastRefreshAt` 필드 추가
+- `bridge/src/bridge-core.ts`: usage broadcast 시 Codex web-auth 메타데이터를 함께 실어 나르도록 연결
+- `apple/AgentDeck/Model/*.swift`, `AgentStateHolder.swift`: 새 usage 필드를 상태에 반영
+- `TankStatusPanel.swift`: `Codex Web` 연결 점, `Plan`, `Until` 표시 추가
+
+### 핵심 설계 결정
+- **실시간 usage와 web-auth 상태를 분리**: ChatGPT/Codex web auth는 공식 usage endpoint를 호출할 수 없으므로, 리밋 수치가 아니라 계정 상태를 따로 노출
+- **JWT payload best-effort 파싱**: auth.json top-level 값이 비어 있어도 access/id token payload에서 plan/account/subscription 메타데이터를 복구
+
+### 검증
+- `pnpm --filter @agentdeck/plugin typecheck`
+- 결과: 통과
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS ...`
+- 결과: Swift 쪽 신규 필드 컴파일은 진행됐고, 최종 실패는 DerivedData dependency file 생성 환경 문제
+
+---
+
+## 2026-04-01 — Plugin v4 Cleanup + Session-Slot UI Overhaul
+
+### 문제
+1. v3 keypad actions (5개) 가 manifest에 남아 SD 앱 action list에 불필요 항목 노출
+2. Session-slot 버튼의 agent watermark 거의 안 보임 (opacity 0.06)
+3. OpenClaw 세션이 Claude Code와 동일한 상태 라벨/색상 사용
+4. ESC/STOP 버튼이 IDLE 시 완전히 사라짐
+5. No-daemon 시 "Empty" 표시 버그 (willAppear에서 daemonConnected 미체크)
+6. 플러그인 아이콘이 컬러 앱 아이콘 — SD 컨벤션(투명+흰색 모노크롬)과 불일치
+
+### 해결
+1. v3 actions 5개 + expanded-actions + LayoutManager 클래스 + 14 PNGs + PI html 삭제 (manifest 10→5 actions)
+2. `dimColor()` 방식 — 색상 50% 어둡게 + opacity 3배 → 선명하면서 텍스트 비침
+3. OpenClaw: IDLE→STANDBY(cyan), PROCESSING→ROUTING(green), 중복 라벨 제거
+4. ESC/STOP slot 4에 항상 표시 (active=bright, idle=dimmed)
+5. willAppear에서 `daemonConnected` 체크 추가, slot 0에 ▶ START 버튼
+6. rsvg-convert로 투명배경+흰색 terrarium SVG 아이콘 생성
+
+### 핵심 설계 결정
+- **Detail view 2×4 grid**: 0=BACK, 4=ESC/STOP (아래), 1=INFO, 2/3/5/6=content, 7=pagination
+- **OpenClaw presets**: STATUS(send_prompt), MODEL(dynamic icon+switch animation), GATEWAY(browser)
+- **Model switch feedback**: `startModelSwitch()` → loading icon → `checkModelSwitchDone()` (modelName 변경 감지 or 12s timeout)
+- **SD MCP 평가**: `@elgato/mcp-server`는 "AI가 미리 배치된 버튼 트리거"만 가능. 우리 동적 SVG/인코더 LCD 대비 이점 없음 → 통합 불요
+
+---
+
+## 2026-04-01 — TC001 Phantom Octopus + ESP32 Serial Gateway Relay Bug
+
+### 문제
+1. TC001에 OpenClaw만 실행 중인데 유령 문어 표시
+2. 모든 ESP32 기기에서 가재(OpenClaw) 미표시 — Pixoo/D200H와 불일치
+
+### 해결
+1. `matrix_pages.cpp` renderAgents(): `octoCount==0 && gatewayAvail` 시 fallback 문어 스킵. 미연결 시 가재도 숨김 (`connected && gatewayAvail` 체크)
+2. `ESP32Serial.swift` prepareForSerial(): `gatewayAvailable`/`gatewayHasError`를 state_update에서 삭제하고 있었음 → 유지하도록 수정. `sessions_list`에서 `alive`/`id` 필드 누락도 수정
+
+### 핵심 설계 결정
+- **시리얼 페이로드 최적화 시 기능 필수 필드 삭제 주의**: ESP32Serial이 시리얼 크기 최적화를 위해 필드를 삭제할 때, 렌더링에 필수인 `gatewayAvailable`까지 삭제. 최적화 대상 필드를 화이트리스트가 아닌 블랙리스트로 관리해야 이런 사고 방지
+- **TC001 USAGE 페이지 Pixoo HUD 통일**: "5H"/"7D" 라벨 → 퍼센트 숫자(게이지색) + 리셋 시간(뮤트 그레이). 글리프도 Pixoo `PIXEL_FONT` (filled/blocky) 스타일로 교체 — LED 매트릭스에서 가독성 향상
+
+---
+
+## 2026-04-01 — Swift Daemon Gateway State Machine Idle Recovery
+
+### 문제
+Swift daemon이 OpenClaw Gateway에 WebSocket 연결은 성공하지만 `/health`에서 `state: "disconnected"`로 표시됨. Gateway 프로세스는 정상 동작 중.
+
+### 원인 분석
+1. **핵심**: `handleGatewayEvent`의 `gateway_chat` 핸들러가 payload의 `state` 필드(delta/final/aborted/error)를 구분하지 않고 모든 chat 이벤트에 `spinner_start`만 트리거. Node.js bridge는 `final`/`aborted`/`error` 시 `idle` 이벤트를 emit하여 SM을 processing → idle로 복귀시킴.
+2. **연쇄**: chat이 processing에 고착 → WS 일시 끊김 → probe가 disconnectGatewayAdapter() 호출 → SM: disconnected → 재연결 시 핸드셰이크 타이밍에 따라 idle 복구 실패 가능
+3. **부수**: `onConnectionChanged(false)` 핸들러가 SM을 전환하지 않아 상태 불일치 발생. `gateway.connected`가 adapter 존재 여부만 체크하여 실제 WS 인증 상태 미반영.
+
+### 해결
+- chat state 분기: delta→processing, final/aborted/error→idle
+- approval resolved 이벤트 전파 + SM 전환
+- WS disconnect 시 SM → disconnected 전환 추가
+- health의 gateway.connected를 실제 WS isConnected 상태 반영
+
+### 핵심 설계 결정
+- Swift daemon의 Gateway 이벤트 처리는 Node.js bridge의 `openclaw.ts` 어댑터 로직과 1:1 대응해야 함. SM 전환 누락 시 상태 드리프트가 누적되어 진단이 어려워짐.
+- Actor의 `isConnectedSnapshot`을 async getter로 노출하여 health endpoint에서 안전하게 조회.
+
+---
+
+## 2026-03-30 — Swift Daemon Runtime Parity: Gateway/Auth, Module Health, Pixoo Preview
+
+### 문제
+Swift daemon이 macOS 앱 안에서 빌드되고 기동되더라도, Node daemon 대비 런타임 parity가 부족했다. 특히 OpenClaw gateway 인증이 미구현이었고, Pixoo preview는 stub이었고, ADB/ESP32/D200H 상태를 앱에서 진단하기 어려웠다.
+
+### 해결
+- `OpenClawAdapter.swift`: `connect.challenge -> connect` 흐름 추가, `device.json`/`device-auth.json` 로드, Ed25519 서명 기반 device auth 구현, `sessions.list` 후 active `sessionKey` 추적, `chat.send`/`chat.abort`/`exec.approval.resolve`에 session/run/approval 문맥 자동 보강
+- `DaemonServer.swift`: `/health`와 `/status`에 `gateway`/`adb`/`serial`/`pixoo`/`d200h` 상태 노출, `/pixoo/frame`을 실제 BMP 응답으로 구현, `/pixoo`를 polling preview 페이지로 전환
+- `PixooModule.swift`: 마지막 프레임과 push 오류 상태 보존
+- `AdbModule.swift`: 감지 디바이스, reverse 준비 개수, 최근 에러 상태 보존
+- `ESP32Serial.swift` / `SerialModule.swift`: 감지 포트, 포트별 연결/device_info, 최근 open/read/write 실패를 health 스냅샷으로 노출
+- `D200hHidModule.swift`: manager 초기화 상태와 keyboard seize 흐름 정리, 상태 스냅샷 추가
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataParity8 build CODE_SIGNING_ALLOWED=NO`
+- 결과: `BUILD SUCCEEDED`
+
+### 남은 갭
+- OpenClaw handshake는 이제 구현됐지만, 실제 gateway와의 실기 인증 성공 여부는 런타임 검증 필요
+- `/pixoo/stream` SSE는 현재 HTTP server 구조상 미구현, 대신 `/pixoo` polling preview로 대체
+- ADB reverse, ESP32 serial, Pixoo push는 health/preview는 보강됐지만 실제 장치 연결 상태에서 확인 필요
+
+### 추가 구현 (같은 날 후속)
+- `HTTPServer.swift` / `WebSocketServer.swift`: long-lived HTTP stream route 지원 추가
+- `DaemonServer.swift`: `/pixoo/stream` SSE 구현, `/pixoo`를 SSE 우선 + polling fallback preview로 전환
+- `OpenClawAdapter.swift`: 연결 성공 후 `openclaw models list --json` 실행으로 model catalog fetch, default model 추출
+- `DaemonServer.swift`: `gateway_health` 이벤트를 `cachedGatewayHasError`에 반영해 daemon 상태 갱신
+
+## 2026-03-31 — Swift Pixoo 렌더러를 CLI 규칙에 더 가깝게 정렬
+
+### 문제
+Swift Pixoo는 전송은 되더라도 기존 CLI daemon의 Pixoo 화면과 같은 규칙을 따르지 않았다. 특히 Swift 전용 보조 오버레이(세션 점, 단순 막대 HUD)와 event-triggered stale frame 전송 때문에 “무언가 뜨지만 완전히 다른 화면”처럼 보일 수 있었다.
+
+### 해결
+- `PixooModule.swift`: 이벤트 때 즉시 프레임을 굽는 대신, push tick마다 현재 `DashboardState`를 재구성해 매번 새 프레임을 렌더하도록 변경
+- `PixooRenderer.swift`: 임시 텍스트 HUD/세션 점 오버레이 제거
+- `PixooRenderer.swift`: Swift terrarium off-screen 렌더링을 공통 베이스로 유지하되, Pixoo camera cycle(overview/left/right/active tracking)과 usage HUD를 Node Pixoo 쪽 규칙에 맞게 보강
+- `PixooRenderer.swift`: Node `pixoo-sprites.ts`의 3x5 픽셀 폰트를 Swift로 포팅해 하단 usage percent/reset HUD를 right-aligned bitmap text로 표시
+- `PixooRenderer.swift`: high-usage danger flash를 추가해 90%+ 구간에서 Node Pixoo와 유사한 붉은 경고 펄스를 화면 전체에 입힘
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataPixooHud build CODE_SIGNING_ALLOWED=NO`
+- 결과: `BUILD SUCCEEDED`
+
+### 후속 정렬 (같은 날)
+- `PixooRenderer.swift`를 더 이상 Swift terrarium 캡처 기반으로 두지 않고, `bridge/src/pixoo/pixoo-renderer.ts` / `pixoo-camera.ts` / `pixoo-sprites.ts` 구조를 따르는 direct 64×64 pixel renderer로 재작성
+- water/terrain/seaweed/light-ray/caustics/bubble/data-particle/tetra-school/camera-director/crayfish-HUD 경로를 Swift 안에 직접 포팅
+- 활성 크리처 카메라 타게팅 순서를 `Dictionary` 임의 순서가 아니라 `creatureOrder` 기반의 stable insertion order로 정렬해 Node `Map` 순서와 더 가깝게 맞춤
+- primary 세션 상태를 현재 `DashboardState`로 다시 덮어써 daemon/sibling poll stale 상태 때문에 Pixoo가 늦게 반응하는 문제를 완화
+
+### 추가 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataPixooPort3 build CODE_SIGNING_ALLOWED=NO`
+- 결과: `BUILD SUCCEEDED`
+
+## 2026-03-31 — Daemon Runtime Root Cause 정리: registry race, external-daemon promotion, OpenClaw CLI path
+
+### 문제
+- 앱 프로세스는 살아 있는데 daemon registry(`daemon.json`)와 실제 리스너 상태가 어긋나는 경우가 있었다.
+- 동시에 실행된 AgentDeck 인스턴스 중 하나가 daemon owner, 다른 하나가 external daemon client일 때 owner가 내려가면 남은 앱이 daemon을 다시 승격하지 못해 전체 기기 연결이 끊길 수 있었다.
+- `openclaw-gateway`는 붙어도 `openclaw` CLI binary를 찾지 못해 model catalog / log stream이 비는 상태가 있었다.
+
+### 해결
+- `SessionRegistry.swift`: `sessions.json` / `daemon.json` 쓰기를 `replaceItemAt` 기반 원자 교체로 정리해 기존 파일이 있을 때 `moveItem` 실패로 갱신이 누락되는 문제를 줄임
+- `DaemonServer.swift`: startup singleton guard에서 health probe가 아직 준비되지 않았더라도 포트가 이미 점유된 경우 곧바로 stale registry로 삭제하지 않고 startup race로 간주
+- `DaemonService.swift`: health monitor 추가
+  - external daemon이 사라지면 현재 앱이 자동으로 daemon owner로 승격
+  - local in-process daemon이 비정상 종료되면 자동 재시작
+- `LocalSessionDiscovery.swift`: sandbox container 경로 대신 실제 home(`getpwuid`) 기준으로 `~/.agentdeck/sessions.json` 읽기
+- `OpenClawAdapter.swift` / `BridgeLogStream.swift`: `~/Library/pnpm/openclaw`, `~/.local/bin/openclaw`, `~/bin/openclaw`까지 탐색하도록 경로 해상도 확장
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataRootCause build CODE_SIGNING_ALLOWED=NO`
+- 결과: `BUILD SUCCEEDED`
+
 ## 2026-03-30 — StreamDeck v4 Session-per-Button + Swift Daemon Gap Analysis
 
 ### 문제
@@ -3923,3 +4104,36 @@ ESP32 디바이스 3대(86 Box, IPS 3.5", Round AMOLED) 모두 "No WiFi" 표시.
 - JTAG으로 firmware만 올리고 bootloader/partitions 빠뜨리면 부팅 불가 (검은 화면, 시리얼 무출력)
 - `serial-module.ts` auto-detect에 `tty.usbmodem` 없으면 Native USB 보드 완전 무시됨
 - 포트 매핑 변경 시 memory 문서 먼저 확인 — 추측 스왑 금지
+
+## 2026-03-31 — Swift Pixoo 렌더러를 임시 HUD에서 Terrarium 파이프라인으로 교체
+
+### 문제
+Swift daemon의 Pixoo는 HTTP 전송 자체는 되기 시작했지만, CLI daemon과 전혀 다른 단순 텍스트 HUD를 그리고 있었다. 그래서 Pixoo 장치에는 "뭔가 뜨지만 완전히 엉뚱한 화면"이 나왔다.
+
+### 원인
+`apple/AgentDeck/Daemon/Modules/PixooRenderer.swift`가 `bridge/src/pixoo/pixoo-renderer.ts` parity가 아니라, 초기 bring-up용 64x64 텍스트 HUD였다. 또한 `PixooModule`은 이벤트가 올 때만 프레임을 한 번 만들고, 이후 push loop는 그 정지 프레임만 반복 전송했다.
+
+### 해결
+- `PixooRenderer.swift`: 기존 텍스트 HUD 삭제
+- `PixooRenderer.swift`: macOS Dashboard와 같은 `TerrariumRenderer`를 off-screen `ImageRenderer`로 64x64 RGB 프레임으로 렌더
+- `PixooModule.swift`: 이벤트는 캐시만 갱신하고, 실제 Pixoo push 시점마다 현재 상태로 프레임 재렌더
+- `PixooModule.swift`: `DashboardState`를 캐시된 `state_update` / `usage_update` / `sessions_list`에서 재구성해 Terrarium 상태 매핑에 사용
+
+### 현재 상태
+- Pixoo는 더 이상 임시 텍스트 화면을 그리지 않고, Dashboard terrarium 기반 장면을 전송한다
+- Pixoo HTTP transport(custom channel / PicID sync / connection-close per request)와 렌더링 경로가 모두 교체됐다
+- CLI `pixoo-renderer.ts`와 1:1 완전 동일 포트는 아니지만, "임시 HUD" 단계는 제거됨
+## 2026-04-01 — Plugin V4 Recovery and Daemon Startup Race Fixes
+
+- Fixed Stream Deck v4 `START` button behavior to stop launching the CLI daemon.
+  - The button now tries to open the installed `AgentDeck` macOS app.
+  - If the app is not installed, it opens the GitHub repository page instead.
+- Restored detail-view usability for interactive prompts with more than four options.
+  - Added paging for detail-view option slots using slot 7 as a `NEXT` pager when needed.
+  - Option selection now preserves the original prompt option index across pages.
+- Hardened model-switch UI recovery in the v4 plugin.
+  - Added timeout/state-based cleanup so the `MODEL` preset does not remain stuck in loading forever.
+  - `prompt_options` now refreshes detail view state immediately, not only `state_update`.
+- Fixed a daemon startup race in the macOS app lifecycle.
+  - When `DaemonServer` reports `alreadyRunning(port:)` during local startup, `DaemonService` now retries health probing for a short period before declaring the registry stale.
+  - This avoids false-negative external-daemon detection during normal startup overlap.
