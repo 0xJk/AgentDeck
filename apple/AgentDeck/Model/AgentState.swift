@@ -125,6 +125,8 @@ struct DashboardState: Sendable {
     var fiveHourResetsAt: String?
     var sevenDayPercent: Double?
     var sevenDayResetsAt: String?
+    var previousFiveHourPercent: Double?
+    var previousSevenDayPercent: Double?
     var extraUsageEnabled: Bool?
     var extraUsageMonthlyLimit: Double?
     var extraUsageUsedCredits: Double?

@@ -1,5 +1,11 @@
+let preferredMlxModelsUrl: string | null = null;
+
 export async function fetchMlxModels(): Promise<string[] | null> {
-  for (const url of ['http://127.0.0.1:8800/v1/models', 'http://127.0.0.1:8800/models']) {
+  const candidates = preferredMlxModelsUrl
+    ? [preferredMlxModelsUrl, 'http://127.0.0.1:8800/v1/models', 'http://127.0.0.1:8800/models']
+    : ['http://127.0.0.1:8800/v1/models', 'http://127.0.0.1:8800/models'];
+
+  for (const url of Array.from(new Set(candidates))) {
     try {
       const resp = await fetch(url, {
         signal: AbortSignal.timeout(2000),
@@ -12,6 +18,7 @@ export async function fetchMlxModels(): Promise<string[] | null> {
           : null))
         .filter((m): m is string => m != null)
         .filter((m) => !m.toLowerCase().includes('nanollava'));
+      preferredMlxModelsUrl = url;
       return Array.from(new Set(models));
     } catch {
       // try next endpoint

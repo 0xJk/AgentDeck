@@ -30,7 +30,7 @@ import {
   removeDaemonInfo,
   readDaemonInfo,
 } from './session-registry.js';
-import { fetchUsageFromApi, hasOAuthToken, type ApiUsageData } from './usage-api.js';
+import { fetchUsageFromApi, hasOAuthToken, resetConsecutiveFailures, type ApiUsageData } from './usage-api.js';
 import { isLocalConnection, validateToken } from './auth.js';
 import { getLastFrame, renderPreviewFrame, onFrameRendered, offFrameRendered } from './pixoo/pixoo-bridge.js';
 import { handlePixooWake } from './pixoo/pixoo-client.js';
@@ -338,12 +338,23 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   core.wireTimeline(bridgeLogStream);
   core.wireDisplayMonitor();
 
-  // System wake recovery — re-publish mDNS, reconnect devices
+  // System wake recovery — re-publish mDNS, reconnect devices, refresh usage
   core.onSystemWake(() => {
     log('[daemon] System wake detected — recovering devices');
     triggerMdnsRecovery();
     handleESP32Wake();
     handlePixooWake();
+    // Reset backoff from pre-sleep failures and fetch fresh usage after network stabilizes
+    resetConsecutiveFailures();
+    setTimeout(() => {
+      fetchUsageRelayed(port).then((usage) => {
+        if (usage) core.updateApiUsage(usage);
+        else {
+          core.oauthConnected = hasOAuthToken();
+          if (core.cachedApiUsage) core.apiUsageStale = true;
+        }
+      });
+    }, 4000);
   });
 
   // Subscribe to sibling session bridges' timelines + modelCatalog relay
@@ -426,6 +437,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       const events: BridgeEvent[] = [];
       if (lastStateEvent) events.push(lastStateEvent);
       events.push(core.buildUsage());
+      events.push({ type: 'display_state', displayOn: core.displayMonitor.isDisplayOn() } as BridgeEvent);
       // Sessions list (async enrichment runs synchronously from cache here)
       core.broadcastSessionsList().catch(() => {});
       return events;

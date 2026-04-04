@@ -91,13 +91,19 @@ struct ControlTowerPanel: View {
                 Text("AgentDeck Control Tower")
                     .font(.system(size: 13, weight: .semibold))
                 let sessionCount = sortedSessions.count
+                let activeCount = activeSessions.count
                 let attentionCount = attentionSessions.count
-                HStack(spacing: 6) {
+                HStack(spacing: 0) {
                     Text("\(sessionCount) session\(sessionCount == 1 ? "" : "s")")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                    if activeCount > 0 {
+                        Text(" · \(activeCount) active")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.cyan)
+                    }
                     if attentionCount > 0 {
-                        Text("\(attentionCount) need attention")
+                        Text(" · \(attentionCount) attention")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.orange)
                     }
@@ -133,26 +139,7 @@ struct ControlTowerPanel: View {
     private var attentionSection: some View {
         SectionContainer(title: "ATTENTION", titleColor: .orange) {
             ForEach(attentionSessions) { session in
-                HStack(spacing: 8) {
-                    sessionDot(session)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(session.projectName ?? "Unknown")
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                        HStack(spacing: 4) {
-                            Text(sessionState(session).displayLabel)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.orange)
-                            if let type = session.agentType {
-                                Text(agentTypeLabel(type))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 2)
+                sessionRow(session, stateLabel: sessionState(session).displayLabel, stateLabelColor: .orange)
             }
             Button {
                 openDashboard()
@@ -171,31 +158,7 @@ struct ControlTowerPanel: View {
     private var activeSection: some View {
         SectionContainer(title: "PROCESSING", titleColor: .cyan) {
             ForEach(activeSessions) { session in
-                HStack(spacing: 8) {
-                    sessionDot(session)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(session.projectName ?? "Unknown")
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                        HStack(spacing: 4) {
-                            if let type = session.agentType {
-                                Text(agentTypeLabel(type))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                            // Show currentTool if this is the primary session
-                            if session.id == stateHolder.state.sessionId,
-                               let tool = stateHolder.state.currentTool {
-                                Text(tool)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 2)
+                sessionRow(session, extraDetail: currentToolFor(session))
             }
         }
     }
@@ -204,29 +167,101 @@ struct ControlTowerPanel: View {
 
     private var idleSection: some View {
         SectionContainer(title: "IDLE", titleColor: .green) {
-            if idleSessions.count > 3 {
-                let names = idleSessions.compactMap(\.projectName).joined(separator: ", ")
-                Text(names.isEmpty ? "\(idleSessions.count) sessions" : names)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            } else {
-                ForEach(idleSessions) { session in
-                    HStack(spacing: 8) {
-                        sessionDot(session)
-                        Text(session.projectName ?? "Unknown")
-                            .font(.system(size: 12))
-                            .lineLimit(1)
-                        Spacer()
-                        if let type = session.agentType {
-                            Text(agentTypeLabel(type))
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
+            ForEach(idleSessions) { session in
+                sessionRow(session)
+            }
+        }
+    }
+
+    // MARK: - Unified Session Row
+
+    @ViewBuilder
+    private func sessionRow(
+        _ session: SessionInfo,
+        stateLabel: String? = nil,
+        stateLabelColor: Color? = nil,
+        extraDetail: String? = nil
+    ) -> some View {
+        HStack(spacing: 8) {
+            sessionIcon(session)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.projectName ?? "Unknown")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                // Subtitle: agentType · modelName · Xm ago
+                HStack(spacing: 0) {
+                    if let stateLabel {
+                        Text(stateLabel)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(stateLabelColor ?? .secondary)
+                        Text(" · ")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 1)
+                    if let type = session.agentType {
+                        Text(agentTypeLabel(type))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let model = session.modelName {
+                        Text(" · ")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(shortModelName(model))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let time = relativeTimeString(from: session.startedAt) {
+                        Text(" · \(time)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let extra = extraDetail {
+                        Text(" · ")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(extra)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
+            Spacer()
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            stateHolder.sendCommand(.focusSession(sessionId: session.id))
+            openDashboard()
+        }
+    }
+
+    // MARK: - Session Icon (Creature SF Symbol)
+
+    private func sessionIcon(_ session: SessionInfo) -> some View {
+        let state = sessionState(session)
+        let color: Color = switch state {
+        case .processing: .cyan
+        case .awaitingPermission, .awaitingOption, .awaitingDiff: .orange
+        case .idle: .green
+        case .disconnected: .gray
+        }
+        let symbol = agentTypeSymbol(session.agentType)
+        return Image(systemName: symbol)
+            .font(.system(size: 10))
+            .foregroundStyle(color)
+            .frame(width: 14, height: 14)
+    }
+
+    private func agentTypeSymbol(_ type: String?) -> String {
+        switch type {
+        case "claude-code": return "water.waves"
+        case "openclaw": return "ladybug.fill"
+        case "codex-cli": return "cloud.fill"
+        case "opencode": return "terminal.fill"
+        case "daemon": return "server.rack"
+        default: return "circle.fill"
         }
     }
 
@@ -368,41 +403,52 @@ struct ControlTowerPanel: View {
                 }
             }
             if let pct5h = stateHolder.state.fiveHourPercent {
-                HStack(spacing: 6) {
-                    Text("5h")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20, alignment: .trailing)
-                    Text(gaugeString(pct5h))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(gaugeColor(pct5h))
-                    if let reset = stateHolder.state.fiveHourResetsAt {
-                        Text(formatResetTime(reset))
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                rateLimitGauge(
+                    label: "5h",
+                    percent: pct5h,
+                    previousPercent: stateHolder.state.previousFiveHourPercent,
+                    resetTime: stateHolder.state.fiveHourResetsAt
+                )
             }
             if let pct7d = stateHolder.state.sevenDayPercent {
-                HStack(spacing: 6) {
-                    Text("7d")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20, alignment: .trailing)
-                    Text(gaugeString(pct7d))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(gaugeColor(pct7d))
-                    if let reset = stateHolder.state.sevenDayResetsAt {
-                        Text(formatResetTime(reset))
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                rateLimitGauge(
+                    label: "7d",
+                    percent: pct7d,
+                    previousPercent: stateHolder.state.previousSevenDayPercent,
+                    resetTime: stateHolder.state.sevenDayResetsAt
+                )
             }
             if stateHolder.state.fiveHourPercent == nil && stateHolder.state.sevenDayPercent == nil {
                 Text("No data")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func rateLimitGauge(label: String, percent: Double, previousPercent: Double?, resetTime: String?) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, alignment: .trailing)
+            Text(gaugeString(percent))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(gaugeColor(percent))
+            // Trend arrow
+            let arrow = trendArrow(percent, previousPercent)
+            if !arrow.isEmpty {
+                Text(arrow)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(arrow == "↑" ? .red : .green)
+            }
+            if let reset = resetTime {
+                let formatted = formatResetTime(reset)
+                if !formatted.isEmpty {
+                    Text(formatted)
+                        .font(.system(size: 10, weight: percent >= 70 ? .semibold : .regular))
+                        .foregroundStyle(percent >= 70 ? .orange : .secondary)
+                }
             }
         }
     }
@@ -527,19 +573,6 @@ struct ControlTowerPanel: View {
 
     // MARK: - Helpers
 
-    private func sessionDot(_ session: SessionInfo) -> some View {
-        let state = sessionState(session)
-        let color: Color = switch state {
-        case .processing: .cyan
-        case .awaitingPermission, .awaitingOption, .awaitingDiff: .orange
-        case .idle: .green
-        case .disconnected: .gray
-        }
-        return Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
-    }
-
     private func agentTypeLabel(_ type: String) -> String {
         switch type {
         case "claude-code": "Claude"
@@ -549,6 +582,45 @@ struct ControlTowerPanel: View {
         case "daemon": "Daemon"
         default: type
         }
+    }
+
+    /// Shorten model names for compact display (e.g., "claude-opus-4-6-20261001" → "opus-4")
+    private func shortModelName(_ name: String) -> String {
+        // Strip common prefixes
+        var s = name
+        for prefix in ["claude-", "gpt-", "o1-", "o3-"] {
+            if s.hasPrefix(prefix) { s = String(s.dropFirst(prefix.count)) }
+        }
+        // Strip date suffixes (e.g., -20261001)
+        if let range = s.range(of: #"-\d{8}$"#, options: .regularExpression) {
+            s = String(s[s.startIndex..<range.lowerBound])
+        }
+        return s
+    }
+
+    /// Get current tool name for a session (only available for primary session)
+    private func currentToolFor(_ session: SessionInfo) -> String? {
+        if session.id == stateHolder.state.sessionId {
+            return stateHolder.state.currentTool
+        }
+        return nil
+    }
+
+    /// Convert ISO 8601 startedAt to relative time string (e.g., "2m", "1h", "3d")
+    private func relativeTimeString(from isoString: String?) -> String? {
+        guard let isoString, !isoString.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: isoString)
+                ?? ISO8601DateFormatter().date(from: isoString) else { return nil }
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 { return "<1m" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h" }
+        let days = hours / 24
+        return "\(days)d"
     }
 
     private func openDashboard() {
@@ -574,6 +646,15 @@ struct ControlTowerPanel: View {
         if percent >= 90 { return .red }
         if percent >= 70 { return .orange }
         return .green
+    }
+
+    /// Returns "↑" if usage increased, "↓" if decreased, "" if no significant change
+    private func trendArrow(_ current: Double?, _ previous: Double?) -> String {
+        guard let current, let previous else { return "" }
+        let diff = current - previous
+        if diff > 1 { return "↑" }
+        if diff < -1 { return "↓" }
+        return ""
     }
 
     private func formatResetTime(_ isoString: String?) -> String {

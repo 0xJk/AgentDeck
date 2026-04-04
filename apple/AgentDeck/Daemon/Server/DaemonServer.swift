@@ -44,6 +44,8 @@ final class DaemonServer {
     private var cachedModelCatalog: [[String: Any]] = []
     private var cachedOllamaStatus: [String: Any]?
     private var cachedMlxModels: [String] = []
+    private var preferredMlxModelsEndpoint: String?
+    private var cachedDisplayOn = true
     private var cachedGatewayAvailable = false
     private var cachedPairingUrl: String?
     private var lastStateEvent: [String: Any]?
@@ -197,6 +199,7 @@ final class DaemonServer {
         await displayMonitor.start()
         await displayMonitor.setOnStateChanged { [weak self] displayOn in
             Task { @MainActor in
+                self?.cachedDisplayOn = displayOn
                 self?.broadcastRaw(["type": "display_state", "displayOn": displayOn] as [String: Any])
             }
         }
@@ -325,6 +328,12 @@ final class DaemonServer {
                 Task { await server.moduleManager.wakeAll() }
                 // Broadcast full state so reconnected devices get fresh data
                 Task { @MainActor in server.broadcastStateUpdate() }
+                // Refresh usage after network stabilizes (clears stale "!" indicator)
+                Task {
+                    try? await Task.sleep(for: .seconds(4))
+                    await server.fetchUsageRelayed()
+                    await MainActor.run { server.broadcastUsage() }
+                }
             }, Unmanaged.passUnretained(self).toOpaque(), &notifier)
         }
 
@@ -405,6 +414,7 @@ final class DaemonServer {
             var events: [[String: Any]] = []
             if let state = self.lastStateEvent { events.append(state) }
             if let usage = self.buildUsageEvent() { events.append(usage) }
+            events.append(["type": "display_state", "displayOn": self.cachedDisplayOn])
             return events
         }
 
@@ -1747,10 +1757,11 @@ final class DaemonServer {
     @MainActor
     private func probeMLX() async {
         let previous = cachedMlxModels
-        let candidates = [
+        let fallbackCandidates = [
             "http://127.0.0.1:8800/v1/models",
             "http://127.0.0.1:8800/models",
         ]
+        let candidates = Array(Set(([preferredMlxModelsEndpoint].compactMap { $0 }) + fallbackCandidates))
         var resolved: [String] = []
 
         for endpoint in candidates {
@@ -1770,7 +1781,10 @@ final class DaemonServer {
                     if let name = row["name"] as? String, !name.isEmpty { return name }
                     return nil
                 }.filter { !$0.lowercased().contains("nanollava") })).sorted()
-                if !resolved.isEmpty { break }
+                if !resolved.isEmpty {
+                    preferredMlxModelsEndpoint = endpoint
+                    break
+                }
             } catch {
                 continue
             }
@@ -1835,6 +1849,7 @@ final class DaemonServer {
         if let a = s.agentType { d["agentType"] = a }
         if let st = s.state { d["state"] = st }
         if let mn = s.modelName { d["modelName"] = mn }
+        if let sa = s.startedAt { d["startedAt"] = sa }
         return d
     }
 }

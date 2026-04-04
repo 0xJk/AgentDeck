@@ -178,6 +178,8 @@ actor ESP32Serial {
     func handleWake() async {
         DaemonLogger.shared.info("ESP32 serial wake recovery — closing \(connections.count) stale connection(s)")
         await stop()
+        // Delay 2s to let USB bus stabilize after wake
+        try? await Task.sleep(for: .seconds(2))
         start()
     }
 

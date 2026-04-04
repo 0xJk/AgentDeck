@@ -458,6 +458,9 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         state.costLimit = e.costLimit ?? state.costLimit
         state.resetTime = e.resetTime ?? state.resetTime
         state.resetDate = e.resetDate ?? state.resetDate
+        // Save previous values for trend indicators before overwriting
+        if e.fiveHourPercent != nil { state.previousFiveHourPercent = state.fiveHourPercent }
+        if e.sevenDayPercent != nil { state.previousSevenDayPercent = state.sevenDayPercent }
         state.fiveHourPercent = e.fiveHourPercent ?? state.fiveHourPercent
         state.fiveHourResetsAt = e.fiveHourResetsAt ?? state.fiveHourResetsAt
         state.sevenDayPercent = e.sevenDayPercent ?? state.sevenDayPercent

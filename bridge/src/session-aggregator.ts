@@ -10,6 +10,7 @@ export interface EnrichedSession {
   alive: boolean;
   state?: string;
   modelName?: string;
+  startedAt?: string;
 }
 
 /**
@@ -28,6 +29,7 @@ export async function enrichSessionsWithState(
       projectName: s.projectName,
       agentType: s.agentType as AgentType | undefined,
       alive: true,
+      startedAt: s.startedAt,
     };
     if (s.id === ownSessionId) return { ...base, state: ownState };
     try {

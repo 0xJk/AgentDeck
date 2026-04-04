@@ -16,6 +16,7 @@ export interface UsageModeData {
   extraUsageUtilization?: number;
   extraUsageMonthlyLimit?: number;
   extraUsageUsedCredits?: number;
+  subscriptions?: { name: string; until?: string }[];
 }
 
 let sharedData: UsageModeData = {};
@@ -53,9 +54,14 @@ export function formatResetTime(iso?: string): string {
     const now = Date.now();
     const diff = d.getTime() - now;
     if (diff <= 0) return 'now';
-    const h = Math.floor(diff / 3600000);
+    const totalH = Math.floor(diff / 3600000);
     const m = Math.floor((diff % 3600000) / 60000);
-    return h > 0 ? `${h}h${m}m` : `${m}m`;
+    if (totalH >= 24) {
+      const days = Math.floor(totalH / 24);
+      const remainH = totalH % 24;
+      return remainH > 0 ? `${days}d${remainH}h` : `${days}d`;
+    }
+    return totalH > 0 ? `${totalH}h${m}m` : `${m}m`;
   } catch { return ''; }
 }
 

@@ -353,6 +353,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
       const events: BridgeEvent[] = [];
       if (lastStateEvent) events.push(lastStateEvent);
       events.push(core.buildUsage());
+      events.push({ type: 'display_state', displayOn: core.displayMonitor.isDisplayOn() } as BridgeEvent);
       core.broadcastSessionsList().catch(() => {});
       return events;
     });

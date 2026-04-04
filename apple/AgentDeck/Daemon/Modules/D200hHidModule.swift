@@ -142,21 +142,29 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     }
 
     func handleWake() async {
-        guard let manager = hidManager else { return }
-        DaemonLogger.shared.info("D200H wake recovery — forcing IOKit re-enumeration")
+        guard hidManager != nil else { return }
+        DaemonLogger.shared.info("D200H wake recovery — full teardown + restart")
 
-        // Clean up stale HID references (USB may have re-enumerated)
-        disconnect()
-
-        // Cycle IOHIDManager run loop scheduling to force device re-enumeration
-        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        // Fully destroy IOHIDManager — unschedule/re-schedule alone doesn't
+        // re-fire matching callbacks for already-matched devices
+        await stop()
 
         // Wait for D200H firmware to boot into HID mode (~4s after USB re-power)
         try? await Task.sleep(for: .seconds(5))
 
-        // Re-schedule — fires matching callback for already-present devices
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
-        DaemonLogger.shared.debug("D200H", "IOHIDManager re-scheduled after wake")
+        // Create fresh IOHIDManager with new callbacks
+        await start()
+
+        if connected {
+            DaemonLogger.shared.info("D200H reconnected after wake")
+        } else {
+            // Retry once more — USB re-enumeration can be slow after deep sleep
+            DaemonLogger.shared.info("D200H not found after wake, retrying...")
+            await stop()
+            try? await Task.sleep(for: .seconds(3))
+            await start()
+            DaemonLogger.shared.info("D200H wake retry result: connected=\(connected)")
+        }
     }
 
     // MARK: - Broadcast Handler
@@ -747,12 +755,12 @@ private enum D200hRenderer {
     static let cDetailBg    = rgb(15, 23, 42)       // #0f172a detail/info bg
     static let cDark        = rgb(26, 26, 26)       // #1a1a1a nav buttons
 
-    // State indicator colors
-    static let cStateIdle   = rgb(34, 197, 94)      // #22c55e green-500
-    static let cStateProc   = rgb(234, 179, 8)       // #eab308 yellow-500
-    static let cStateAwait  = rgb(249, 115, 22)      // #f97316 orange-500
-    static let cStatePerm   = rgb(239, 68, 68)       // #ef4444 red-500
-    static let cStateDisco  = rgb(107, 114, 128)     // #6b7280 gray-500
+    // State indicator colors — canonical palette from shared/src/state-colors.ts
+    static let cStateIdle   = rgb(34, 197, 94)       // #22c55e green
+    static let cStateProc   = rgb(59, 130, 246)      // #3b82f6 blue
+    static let cStateAwait  = rgb(245, 158, 11)      // #f59e0b amber
+    static let cStatePerm   = rgb(245, 158, 11)      // #f59e0b amber
+    static let cStateDisco  = rgb(107, 114, 128)     // #6b7280 gray
 
     // UI elements
     static let cActiveBar   = rgb(59, 130, 246)      // #3b82f6 blue-500 left indicator
@@ -770,15 +778,8 @@ private enum D200hRenderer {
     static let cEscActive   = rgb(45, 24, 16)        // #2d1810
     static let cEscInact    = rgb(26, 19, 8)         // #1a1308
 
-    // State → indicator color
+    // State → indicator color (no agent-type overrides — purely semantic)
     static func stateColor(_ state: String, agent: String = "") -> CGColor {
-        if agent == "openclaw" {
-            switch state {
-            case "idle": return rgb(6, 182, 212)     // #06b6d4 cyan-400
-            case "processing": return cStateIdle
-            default: break
-            }
-        }
         switch state {
         case "idle": return cStateIdle
         case "processing": return cStateProc

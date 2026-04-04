@@ -78,12 +78,12 @@ export function sgr(code: number): string {
 // ===== Named Colors =====
 
 export const colors = {
-  // State colors
-  idle: sgr(32),        // green
-  processing: sgr(33),  // yellow
-  awaiting: sgr(35),    // magenta
-  disconnected: sgr(31),// red
-  error: sgr(31),       // red
+  // State colors — aligned with shared/state-colors.ts canonical palette
+  idle: sgr(32),                                                          // green  (#22c55e)
+  processing: terminalCaps.trueColor ? fg(59, 130, 246) : sgr(34),       // blue   (#3b82f6)
+  awaiting: terminalCaps.trueColor ? fg(245, 158, 11) : sgr(33),         // amber  (#f59e0b)
+  disconnected: sgr(90),                                                  // gray   (#6b7280)
+  error: sgr(31),                                                         // red
 
   // UI colors
   header: `${BOLD}${sgr(36)}`,   // bold cyan

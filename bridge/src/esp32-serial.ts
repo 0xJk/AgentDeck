@@ -471,10 +471,12 @@ export function handleESP32Wake(): void {
     try { conn.reader?.destroy(); } catch { /* ignore */ }
   }
   connections = [];
-  // Immediate re-poll (don't wait for next 10s cycle)
-  pollForDevices().catch(err => {
-    debug('ESP32', `Wake poll failed: ${err.message}`);
-  });
+  // Delay re-poll 2s to let USB bus stabilize after wake
+  setTimeout(() => {
+    pollForDevices().catch(err => {
+      debug('ESP32', `Wake poll failed: ${err.message}`);
+    });
+  }, 2000);
 }
 
 /**

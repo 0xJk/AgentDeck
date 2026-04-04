@@ -49,6 +49,12 @@ export function getTokenStatus(): TokenStatus {
   return lastTokenStatus;
 }
 
+/** Reset error tracking on system wake — fresh start without pre-sleep backoff */
+export function resetConsecutiveFailures(): void {
+  consecutiveFailures = 0;
+  lastFetchFailed = false;
+}
+
 /** Backoff interval based on consecutive failures: 0→0, 1→45s, 2→90s, 3→180s, 4+→300s */
 export function getBackoffMs(): number {
   if (consecutiveFailures <= 0) return 0;

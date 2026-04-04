@@ -266,6 +266,7 @@ export interface SessionInfo {
   alive: boolean;
   state?: string;  // sibling's current state from /health query
   modelName?: string;  // sibling's current model from /health query
+  startedAt?: string;  // ISO 8601 session start time
 }
 
 export interface SessionsListEvent {

@@ -333,6 +333,7 @@ connMgr.on('usage_update', (ev: UsageEvent) => {
     extraUsageUtilization: ev.extraUsageUtilization,
     extraUsageMonthlyLimit: ev.extraUsageMonthlyLimit,
     extraUsageUsedCredits: ev.extraUsageUsedCredits,
+    subscriptions: ev.subscriptions,
   };
   updateUsageModeData(usageData);
   updateUsageDialData(usageData);

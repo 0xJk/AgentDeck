@@ -1,11 +1,14 @@
 /**
- * Agent logo SVG paths for watermark rendering on session button.
+ * Agent logo SVG paths for icon and watermark rendering on session buttons.
  *
  * Each logo is a centered path designed for a 144x144 button canvas.
- * Used at low opacity (0.05–0.12) as background watermarks.
+ * Two rendering modes:
+ *   agentLogoIcon()      — prominent icon at top of button (primary identification)
+ *   agentLogoWatermark()  — low-opacity background mark
  */
 
 import type { AgentType } from '@agentdeck/shared';
+import { dimColor, agentBrandColor } from '@agentdeck/shared';
 
 /**
  * Claude Code Antigravity robot — official logo from claudecode.svg.
@@ -32,41 +35,85 @@ const OC_ANTENNA_R = 'M75 15 Q85 5 90 8';
 export const CODEX_LOGO_PATH =
   'M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.673 1.275.01.01.024.017.037.021a.09.09 0 00.043 0 4.55 4.55 0 013.046.275l.047.022.116.057a4.581 4.581 0 012.188 2.399c.209.51.313 1.041.315 1.595a4.24 4.24 0 01-.134 1.223.123.123 0 00.03.115c.594.607.988 1.33 1.183 2.17.289 1.425-.007 2.71-.887 3.854l-.136.166a4.548 4.548 0 01-2.201 1.388.123.123 0 00-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838-1.187-.006-2.239-.44-3.157-1.302a.107.107 0 00-.105-.024c-.388.125-.78.143-1.204.138a4.441 4.441 0 01-1.945-.466 4.544 4.544 0 01-1.61-1.335c-.152-.202-.303-.392-.414-.617a5.81 5.81 0 01-.37-.961 4.582 4.582 0 01-.014-2.298.124.124 0 00.006-.056.085.085 0 00-.027-.048 4.467 4.467 0 01-1.034-1.651 3.896 3.896 0 01-.251-1.192 5.189 5.189 0 01.141-1.6c.337-1.112.982-1.985 1.933-2.618.212-.141.413-.251.601-.33.215-.089.43-.164.646-.227a.098.098 0 00.065-.066 4.51 4.51 0 01.829-1.615 4.535 4.535 0 011.837-1.388z';
 
-/**
- * Render an agent logo as an SVG watermark group for the 144x144 button canvas.
- * Returns an SVG `<g>` element positioned at button center with the logo at ~72px.
- *
- * Simulator spec: centered mark, 72px target size.
- */
-/**
- * Mix a hex color toward black by the given ratio (0=original, 1=black).
- * Used to create muted watermark tones that are visible but don't fight text.
- */
-function dimColor(hex: string, ratio: number): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const dr = Math.round(r * (1 - ratio));
-  const dg = Math.round(g * (1 - ratio));
-  const db = Math.round(b * (1 - ratio));
-  return `#${dr.toString(16).padStart(2, '0')}${dg.toString(16).padStart(2, '0')}${db.toString(16).padStart(2, '0')}`;
-}
+// ===== Prominent agent icon (top of button, primary identification) =====
 
-export function agentLogoWatermark(
+/**
+ * Render agent logo as a visible icon at top-center of button.
+ * Uses agent brand color (not state color) for consistent identification.
+ * @param agent Agent type
+ * @param size Target size in px (default 48)
+ * @param opacity Icon opacity (default 0.7)
+ */
+export function agentLogoIcon(
   agent: AgentType,
-  color: string,
-  opacity = 0.12,
+  size = 48,
+  opacity = 0.7,
 ): string {
-  // High opacity + dimmed colors → clearly visible mark that doesn't fight white text
-  const markOpacity = Math.min(opacity * 4, 0.9);
-  const fill = dimColor(color, 0.5);
+  const brandColor = agentBrandColor(agent);
 
   if (agent === 'claude-code') {
-    // 24x24 viewBox → scale(3) = 72px, translate(-12,-12) centers at origin
+    // 24x24 viewBox → scale to target size
+    const s = size / 24;
+    return `<g transform="translate(72,${size / 2 + 4}) scale(${s.toFixed(2)}) translate(-12,-12)" opacity="${opacity}"><path d="${CLAUDE_LOGO_PATH}" fill="${brandColor}" fill-rule="evenodd"/></g>`;
+  }
+  if (agent === 'codex-cli') {
+    const s = size / 24;
+    return [
+      `<defs><linearGradient id="cx-i" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#B1A7FF"/><stop offset="48%" stop-color="#7A9DFF"/><stop offset="100%" stop-color="${brandColor}"/></linearGradient></defs>`,
+      `<g transform="translate(72,${size / 2 + 4}) scale(${s.toFixed(2)}) translate(-12,-12)" opacity="${opacity}"><path d="${CODEX_LOGO_PATH}" fill="url(#cx-i)"/></g>`,
+    ].join('');
+  }
+  if (agent === 'opencode') {
+    const half = size / 2;
+    const ring = size * 0.18;
+    const inner = size * 0.5;
+    const cy = size / 2 + 4;
+    return [
+      `<g opacity="${opacity}">`,
+      `<rect x="${72 - half}" y="${cy - half}" width="${size}" height="${size}" rx="4" fill="${dimColor(brandColor, 0.3)}"/>`,
+      `<rect x="${72 - half + ring}" y="${cy - half + ring}" width="${size - ring * 2}" height="${size - ring * 2}" rx="2" fill="${dimColor('#4B4646', 0.2)}"/>`,
+      `<rect x="${72 - inner / 2}" y="${cy - inner / 2}" width="${inner}" height="${inner}" rx="2" fill="${dimColor('#4B4646', 0.2)}"/>`,
+      `</g>`,
+    ].join('');
+  }
+  // OpenClaw lobster
+  const ocScale = size / 120;
+  const cy = size / 2 + 4;
+  return [
+    `<defs><linearGradient id="oc-i" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="${brandColor}"/><stop offset="100%" stop-color="#991b1b"/></linearGradient></defs>`,
+    `<g transform="translate(${72 - 60 * ocScale},${cy - 60 * ocScale}) scale(${ocScale.toFixed(3)})" opacity="${opacity}">`,
+    `<path d="${OC_BODY}" fill="url(#oc-i)"/>`,
+    `<path d="${OC_CLAW_L}" fill="url(#oc-i)"/>`,
+    `<path d="${OC_CLAW_R}" fill="url(#oc-i)"/>`,
+    `<path d="${OC_ANTENNA_L}" stroke="${brandColor}" stroke-width="3" stroke-linecap="round" fill="none"/>`,
+    `<path d="${OC_ANTENNA_R}" stroke="${brandColor}" stroke-width="3" stroke-linecap="round" fill="none"/>`,
+    `<circle cx="45" cy="35" r="6" fill="#0a0a14"/>`,
+    `<circle cx="75" cy="35" r="6" fill="#0a0a14"/>`,
+    `<circle cx="46" cy="34" r="2.5" fill="#00e5cc" opacity="0.7"/>`,
+    `<circle cx="76" cy="34" r="2.5" fill="#00e5cc" opacity="0.7"/>`,
+    `</g>`,
+  ].join('');
+}
+
+// ===== Low-opacity watermark (background mark) =====
+
+/**
+ * Render agent logo as a background watermark.
+ * Uses brand color dimmed for subtle identification.
+ */
+export function agentLogoWatermark(
+  agent: AgentType,
+  _color?: string,
+  opacity = 0.12,
+): string {
+  const brandColor = agentBrandColor(agent);
+  const markOpacity = Math.min(opacity * 4, 0.9);
+  const fill = dimColor(brandColor, 0.5);
+
+  if (agent === 'claude-code') {
     return `<g transform="translate(72,72) scale(3) translate(-12,-12)" opacity="${markOpacity}"><path d="${CLAUDE_LOGO_PATH}" fill="${fill}" fill-rule="evenodd"/></g>`;
   }
   if (agent === 'codex-cli') {
-    // 24x24 viewBox → scale(3) = 72px — use brand gradient dimmed
     return [
       `<defs><linearGradient id="cx-g" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="${dimColor('#B1A7FF', 0.5)}"/><stop offset="48%" stop-color="${dimColor('#7A9DFF', 0.5)}"/><stop offset="100%" stop-color="${dimColor('#3941FF', 0.5)}"/></linearGradient></defs>`,
       `<g transform="translate(72,72) scale(3) translate(-12,-12)" opacity="${markOpacity}"><path d="${CODEX_LOGO_PATH}" fill="url(#cx-g)"/></g>`,
@@ -85,7 +132,7 @@ export function agentLogoWatermark(
       `</g>`,
     ].join('');
   }
-  // OpenClaw lobster: brand reds dimmed for watermark
+  // OpenClaw lobster
   const ocFill1 = dimColor('#ff4d4d', 0.4);
   const ocFill2 = dimColor('#991b1b', 0.4);
   return [

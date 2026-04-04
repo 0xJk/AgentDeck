@@ -24,13 +24,15 @@ enum TimelineSummarizer {
     // MARK: - MLX (port 8800)
 
     private static func queryMLX(_ text: String) async -> String? {
-        let url = URL(string: "http://127.0.0.1:\(mlxPort)/v1/chat/completions")!
+        let url = URL(string: "http://127.0.0.1:\(mlxPort)/chat/completions")!
         let truncated = String(text.prefix(2000))
         let body: [String: Any] = [
+            "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
             "messages": [
                 ["role": "system", "content": summarySystemPrompt],
                 ["role": "user", "content": truncated],
             ],
+            "enable_thinking": false,
             "max_tokens": 100,
             "temperature": 0.3,
         ]

@@ -36,11 +36,15 @@ final class ModuleManager {
         }
     }
 
-    /// Notify all modules of system wake — each module handles recovery independently
+    /// Notify all modules of system wake — each module handles recovery independently (parallel)
     func wakeAll() async {
-        for module in modules {
-            DaemonLogger.shared.debug("Modules", "Wake recovery: \(module.name)")
-            await module.handleWake()
+        await withTaskGroup(of: Void.self) { group in
+            for module in modules {
+                group.addTask {
+                    DaemonLogger.shared.debug("Modules", "Wake recovery: \(module.name)")
+                    await module.handleWake()
+                }
+            }
         }
     }
 }

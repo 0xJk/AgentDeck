@@ -3,39 +3,18 @@
  *
  * Renders: session list buttons, detail view info/options/nav buttons.
  * 144x144 canvas matching SD+ button spec.
+ *
+ * Agent identification: creature icon (agentLogoIcon) at top of button.
+ * State colors: unified palette from shared/state-colors (no agent overrides).
  */
 import type { SessionInfo, PromptOption, AgentType } from '@agentdeck/shared';
-import { State } from '@agentdeck/shared';
+import { State, stateColor } from '@agentdeck/shared';
 import type { SessionSlotConfig } from '../session-slot-manager.js';
-import { agentLogoWatermark } from './agent-logos.js';
+import { agentLogoIcon, agentLogoWatermark } from './agent-logos.js';
 import { wrapTextByWidth, measureTextWidth } from './text-utils.js';
 
 const SIZE = 144;
 const MAX_TEXT_PX = 124; // 144 - 10px padding each side
-
-// State colors
-const STATE_COLORS: Record<string, string> = {
-  idle: '#22c55e',        // green
-  processing: '#eab308',  // yellow
-  awaiting_option: '#f97316',    // orange
-  awaiting_permission: '#ef4444', // red
-  awaiting_diff: '#f97316',      // orange
-  disconnected: '#6b7280', // gray
-};
-
-function stateColor(state?: string, agentType?: AgentType): string {
-  if (!state) return STATE_COLORS.disconnected;
-  // Claude Code: terracotta/orange brand identity
-  if (agentType === 'claude-code') {
-    if (state === 'idle') return '#f97316';
-  }
-  // OpenClaw: cyan standby, green routing
-  if (agentType === 'openclaw') {
-    if (state === 'idle') return '#06b6d4';
-    if (state === 'processing') return '#22c55e';
-  }
-  return STATE_COLORS[state] ?? STATE_COLORS.idle;
-}
 
 function stateLabel(state?: string, agentType?: AgentType): string {
   if (!state) return 'OFFLINE';
@@ -52,15 +31,6 @@ function stateLabel(state?: string, agentType?: AgentType): string {
     case 'awaiting_diff':
       return 'AWAITING';
     default: return state.toUpperCase();
-  }
-}
-
-function agentLabel(agentType?: AgentType): string {
-  switch (agentType) {
-    case 'openclaw': return 'OpenClaw';
-    case 'codex-cli': return 'Codex CLI';
-    case 'opencode': return 'OpenCode';
-    default: return 'Claude Code';
   }
 }
 
@@ -88,13 +58,10 @@ export function renderSessionSlot(
 ): string {
   const isAwaiting = session.state?.startsWith('awaiting') ?? false;
   const agent = (session.agentType as AgentType) || 'claude-code';
-  const sColor = stateColor(session.state, agent);
+  const sColor = stateColor(session.state);
   const bgColor = isActive ? '#1e3a5f' : (isAwaiting ? '#2d1810' : '#1a1a2e');
 
-  // Agent type label — skip if same as project name (e.g. OpenClaw/OpenClaw)
-  const agentText = agentLabel(agent);
   const nameForDisplay = displayName ?? session.projectName;
-  const showAgentLabel = agentText.toLowerCase() !== nameForDisplay.toLowerCase();
 
   // Project name (main text, bold)
   const projectName = truncate(nameForDisplay, 16);
@@ -102,13 +69,12 @@ export function renderSessionSlot(
 
   // Model name
   const modelText = session.modelName ? truncate(session.modelName, 16) : '';
-  const modelFontSize = 12;
 
   // State indicator
   const stateLbl = stateLabel(session.state, agent);
 
-  // Agent watermark — higher opacity for better visibility
-  const watermark = agentLogoWatermark(agent, sColor, 0.18);
+  // Agent creature icon — primary identification element
+  const icon = agentLogoIcon(agent, 48, 0.7);
 
   // AWAITING pulse glow border
   let glowBorder = '';
@@ -126,25 +92,21 @@ export function renderSessionSlot(
     ? `<rect x="0" y="16" width="3" height="112" rx="1.5" fill="#3b82f6" opacity="0.8"/>`
     : '';
 
-  // Vertical layout (144px canvas):
-  //   agent label: y=30 (if shown)
-  //   project name: y=62 (with label) or y=56 (without)
-  //   model name:   y=84
-  //   state:        y=116
-  const projY = showAgentLabel ? 62 : 56;
-
+  // Layout (144px canvas):
+  //   y=4~52:   Agent creature icon (48px, brand-colored)
+  //   y=68:     Project name (bold, white)
+  //   y=86:     Model name (slate)
+  //   y=112:    State dot + label (state-colored)
   const elements = [
-    watermark,
+    icon,
     glowBorder,
     activeBorder,
-    // Agent type (top)
-    showAgentLabel ? `<text x="72" y="30" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="${sColor}" opacity="0.7">${escXml(agentText)}</text>` : '',
-    // Project name (center)
-    `<text x="72" y="${projY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${projFontSize}" font-weight="bold" fill="#ffffff">${escXml(projectName)}</text>`,
+    // Project name
+    `<text x="72" y="68" text-anchor="middle" font-family="Arial,sans-serif" font-size="${projFontSize}" font-weight="bold" fill="#ffffff">${escXml(projectName)}</text>`,
     // Model name
-    modelText ? `<text x="72" y="84" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#94a3b8">${escXml(modelText)}</text>` : '',
+    modelText ? `<text x="72" y="86" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#94a3b8">${escXml(modelText)}</text>` : '',
     // State dot + label (centered, bottom)
-    `<text x="72" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="600" fill="${sColor}">\u25CF ${escXml(stateLbl)}</text>`,
+    `<text x="72" y="112" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="600" fill="${sColor}">\u25CF ${escXml(stateLbl)}</text>`,
   ].join('');
 
   return svgFrame(bgColor, elements);
@@ -212,39 +174,33 @@ export function renderDetailInfo(session: SessionInfo | undefined, state: State,
   if (!session) return renderEmptySlot();
 
   const agent = (session.agentType as AgentType) || 'claude-code';
-  const sColor = stateColor(session.state, agent);
-  const agentText = agentLabel(agent);
+  const sColor = stateColor(session.state);
   const stateLbl = stateLabel(session.state, agent);
   const isOpenClaw = agent === 'openclaw';
   const nameForDisplay = displayName ?? session.projectName;
-  const showAgentLabel = agentText.toLowerCase() !== nameForDisplay.toLowerCase();
 
   // Detail info layout (144px canvas):
-  //   agent label: y=28 (if shown)
-  //   project name: y=54 (with label) or y=46 (without)
-  //   model:        y=76
-  //   mode:         y=94
-  //   tool:         y=108
-  //   state:        y=132
-  const detailProjY = showAgentLabel ? 54 : 46;
-
+  //   watermark: brand-colored background mark
+  //   y=46:     project name (bold, white)
+  //   y=70:     model (slate, skip for OpenClaw)
+  //   y=88:     mode (purple, skip for OpenClaw)
+  //   y=104:    tool (yellow)
+  //   y=130:    state dot + label (state-colored)
   const elements = [
-    // Agent type
-    showAgentLabel ? `<text x="72" y="28" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="${sColor}" opacity="0.8">${escXml(agentText)}</text>` : '',
     // Project name (bold, large)
-    `<text x="72" y="${detailProjY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="#ffffff">${escXml(truncate(nameForDisplay, 12))}</text>`,
+    `<text x="72" y="46" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="#ffffff">${escXml(truncate(nameForDisplay, 12))}</text>`,
     // Model (skip for OpenClaw)
-    modelName && !isOpenClaw ? `<text x="72" y="76" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#94a3b8">${escXml(truncate(modelName, 16))}</text>` : '',
+    modelName && !isOpenClaw ? `<text x="72" y="70" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#94a3b8">${escXml(truncate(modelName, 16))}</text>` : '',
     // Mode (skip for OpenClaw)
-    mode && mode !== 'default' && !isOpenClaw ? `<text x="72" y="94" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#a78bfa">${escXml(mode.toUpperCase())}</text>` : '',
+    mode && mode !== 'default' && !isOpenClaw ? `<text x="72" y="88" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#a78bfa">${escXml(mode.toUpperCase())}</text>` : '',
     // Tool (if processing)
-    tool ? `<text x="72" y="108" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#fbbf24">\u25B6 ${escXml(truncate(tool, 16))}</text>` : '',
+    tool ? `<text x="72" y="104" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#fbbf24">\u25B6 ${escXml(truncate(tool, 16))}</text>` : '',
     // State (centered, bottom)
-    `<text x="72" y="132" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="600" fill="${sColor}">\u25CF ${escXml(stateLbl)}</text>`,
+    `<text x="72" y="130" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="600" fill="${sColor}">\u25CF ${escXml(stateLbl)}</text>`,
   ].join('');
 
-  // Agent watermark in detail info panel
-  const detailWatermark = agentLogoWatermark(agent, sColor, 0.12);
+  // Agent watermark in detail info panel (brand-colored)
+  const detailWatermark = agentLogoWatermark(agent, undefined, 0.12);
 
   return svgFrame('#0f172a', detailWatermark + elements);
 }
@@ -275,7 +231,6 @@ export function renderOptionButton(option: PromptOption, index: number): string 
 
 export function renderPresetButton(label: string, iconSvg: string, color: string, textColor: string, subtitle?: string, loading?: boolean): string {
   if (loading) {
-    // Loading state — icon area only, no label needed
     return svgFrame(color, iconSvg);
   }
   const labelEl = `<text x="72" y="100" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="${textColor}">${escXml(label)}</text>`;

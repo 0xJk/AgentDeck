@@ -116,6 +116,8 @@ struct SessionInfo: Codable, Sendable, Identifiable {
     var agentType: String?
     var alive: Bool = true
     var state: String?
+    var modelName: String?
+    var startedAt: String?
 }
 
 // MARK: - Bridge Events (Bridge → Client)
