@@ -72,6 +72,7 @@ struct DashboardState {
     char bridgeIp[16];
     uint16_t bridgePort;
     char authToken[40];
+    uint32_t lastMessageMs;   // millis() of last JSON received (serial OR ws); 0 = never
 
     // Agent
     AgentState state;

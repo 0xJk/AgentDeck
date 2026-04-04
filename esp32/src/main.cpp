@@ -67,7 +67,9 @@ static void networkTask(void* param) {
     Net::wsInit();
 
     Net::BridgeInfo bridge;
-    bool bridgeFound = false;
+    char currentBridgeIp[16] = {0};  // IP we're currently trying to connect to
+    uint16_t currentBridgePort = 0;
+    uint32_t lastMdnsRefreshMs = 0;
 
     while (true) {
         // === Always poll serial (USB JSON from bridge) ===
@@ -76,10 +78,19 @@ static void networkTask(void* param) {
         // === WiFi portal (non-blocking, processes captive portal if active) ===
         Net::wifiLoop();
 
-        // === WiFi WebSocket (parallel to serial) ===
-        if (!bridgeFound || !Net::wsConnected()) {
-            if (Net::wifiConnected() && Net::mdnsPoll(bridge)) {
-                Serial.printf("[Net] Bridge found via mDNS: %s:%d\n", bridge.ip, bridge.port);
+        // === Continuous mDNS discovery ===
+        // Even if we already connected, keep polling so we detect IP changes
+        // (DHCP renewal, daemon restart on different host) and can re-target WS.
+        if (Net::wifiConnected() && Net::mdnsPoll(bridge)) {
+            bool ipChanged = (strcmp(currentBridgeIp, bridge.ip) != 0) || (currentBridgePort != bridge.port);
+            if (ipChanged || !Net::wsConnected()) {
+                if (ipChanged) {
+                    Serial.printf("[Net] Bridge (re)discovered via mDNS: %s:%d\n", bridge.ip, bridge.port);
+                    strncpy(currentBridgeIp, bridge.ip, sizeof(currentBridgeIp) - 1);
+                    currentBridgePort = bridge.port;
+                    // New endpoint: tear down old WS so wsConnect rebinds cleanly
+                    if (Net::wsConnected()) Net::wsDisconnect();
+                }
                 lockState();
                 strncpy(g_state.bridgeIp, bridge.ip, sizeof(g_state.bridgeIp) - 1);
                 g_state.bridgePort = bridge.port;
@@ -87,7 +98,21 @@ static void networkTask(void* param) {
                 unlockState();
 
                 Net::wsConnect(bridge.ip, bridge.port, bridge.token);
-                bridgeFound = true;
+            }
+        }
+
+        // === Long-disconnect recovery: kick mDNS cache when WS has been
+        //     stuck at max backoff for >15s. This handles the case where the
+        //     cached bridge IP is gone (daemon moved, mDNS advertiser is
+        //     stale) and we need a fresh query to find the new endpoint. ===
+        if (!Net::wsConnected() && !Net::serialConnected() && Net::wifiConnected()) {
+            uint32_t now = millis();
+            uint32_t sinceLastAttempt = now - Net::wsLastAttemptMs();
+            bool saturated = (Net::wsBackoffMs() >= WS_RECONNECT_MAX_MS);
+            if (saturated && sinceLastAttempt > 15000 && (now - lastMdnsRefreshMs) > 20000) {
+                Serial.println("[Net] Long disconnect — forcing mDNS refresh");
+                Net::mdnsRefresh();
+                lastMdnsRefreshMs = now;
             }
         }
 

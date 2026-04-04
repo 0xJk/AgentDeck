@@ -37,8 +37,10 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
             Serial.printf("[WS] Connected to %s:%d\n", savedIp, savedPort);
             connected = true;
             reconnectMs = WS_RECONNECT_MIN_MS;
+            ws.setReconnectInterval(reconnectMs);
             lockState();
             g_state.wsConnected = true;
+            g_state.lastMessageMs = millis();
             unlockState();
             // Request initial state
             Net::wsSendCommand("query_usage");
@@ -46,6 +48,9 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
 
         case WStype_TEXT:
             Protocol::parseMessage((const char*)payload, length);
+            lockState();
+            g_state.lastMessageMs = millis();
+            unlockState();
             break;
 
         case WStype_PING:
@@ -99,14 +104,28 @@ void wsDisconnect() {
 void wsLoop() {
     ws.loop();
 
-    // Exponential backoff reconnection
+    // Exponential backoff reconnection. The library's internal reconnect timer
+    // is driven by setReconnectInterval(); we must push updated values into it
+    // whenever our backoff grows, otherwise it sticks at whatever was set at
+    // wsConnect() time.
     if (!connected && savedIp[0] != '\0') {
         uint32_t now = millis();
         if (now - lastReconnectAttempt > reconnectMs) {
             lastReconnectAttempt = now;
-            reconnectMs = min(reconnectMs * 2, WS_RECONNECT_MAX_MS);
+            uint32_t next = reconnectMs * 2;
+            if (next > WS_RECONNECT_MAX_MS) next = WS_RECONNECT_MAX_MS;
+            reconnectMs = next;
+            ws.setReconnectInterval(reconnectMs);
         }
     }
+}
+
+uint32_t wsLastAttemptMs() {
+    return lastReconnectAttempt;
+}
+
+uint32_t wsBackoffMs() {
+    return reconnectMs;
 }
 
 bool wsConnected() {

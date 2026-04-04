@@ -5,8 +5,11 @@
 #include "state/agent_state.h"
 #include "../../../boards/board_config.h"
 #include "net/wifi_manager.h"
+#include "net/serial_client.h"
+#include "net/ws_client.h"
 #include <WiFi.h>
 #include <cmath>
+#include <cstdio>
 
 extern DashboardState g_state;
 namespace Matrix { extern float smoothBrightness; }
@@ -16,6 +19,83 @@ using Matrix::smoothBrightness;
 
 // Is the display in low-brightness mode? (dark room)
 static bool isDimMode() { return smoothBrightness < 40; }
+
+// Forward declarations (definitions follow below)
+static inline int xyToIdx(int x, int y);
+
+// Format an age (ms) compactly: "3s" / "45s" / "5m" / "2h" / "3d"
+static void formatAgeCompact(uint32_t ageMs, char* out, size_t outSize) {
+    uint32_t s = ageMs / 1000;
+    if (s < 60)        snprintf(out, outSize, "%lus", (unsigned long)s);
+    else if (s < 3600) snprintf(out, outSize, "%lum", (unsigned long)(s / 60));
+    else if (s < 86400)snprintf(out, outSize, "%luh", (unsigned long)(s / 3600));
+    else               snprintf(out, outSize, "%lud", (unsigned long)(s / 86400));
+}
+
+// Build a disconnect status line. Returns color for rendering.
+// Called with state lock NOT held; reads g_state internally.
+static CRGB buildDisconnectMsg(char* out, size_t outSize) {
+    bool wifiNow = Net::wifiConnected();
+    bool serialNow = Net::serialConnected();  // USB JSON within timeout
+    bool wsNow = Net::wsConnected();
+
+    lockState();
+    uint32_t lastMs = g_state.lastMessageMs;
+    unlockState();
+
+    bool everGotData = (lastMs != 0);
+    uint32_t now = millis();
+    uint32_t ageMs = everGotData ? (now - lastMs) : 0;
+
+    // Critical: never connected at all
+    if (!everGotData) {
+        if (!wifiNow) {
+            snprintf(out, outSize, "CONNECT WIFI");
+            return CRGB(80, 20, 10);  // red-orange
+        }
+        snprintf(out, outSize, "FINDING BRIDGE");
+        return CRGB(40, 25, 5);  // warm amber (original SEARCHING color)
+    }
+
+    // Had data before — lost connection. Describe what's blocking recovery.
+    char age[12];
+    formatAgeCompact(ageMs, age, sizeof(age));
+
+    if (!wifiNow && !serialNow) {
+        // No WiFi and USB/daemon dead — worst case
+        snprintf(out, outSize, "NO WIFI %s", age);
+        return CRGB(80, 10, 10);  // red
+    }
+    if (wifiNow && !wsNow) {
+        // WiFi up but WS can't reach daemon — most common case
+        snprintf(out, outSize, "DAEMON DOWN %s", age);
+        return CRGB(80, 20, 10);  // red-orange
+    }
+    // Fallback (shouldn't happen if caller gates on !connected)
+    snprintf(out, outSize, "OFFLINE %s", age);
+    return CRGB(60, 20, 10);
+}
+
+// Render a scrolling disconnect status message across the whole matrix.
+static void renderDisconnectStatus(CRGB* leds, float animTime) {
+    char msg[48];
+    CRGB color = buildDisconnectMsg(msg, sizeof(msg));
+    if (isDimMode()) {
+        color = CRGB(color.r / 2, color.g / 2, color.b / 2);
+    }
+    int textW = MatrixFont::textWidth(msg);
+    int scrollPx = textW + MATRIX_W + 8;
+    int scrollX = MATRIX_W - ((int)(animTime * 1000) / (int)SCROLL_SPEED_MS) % scrollPx;
+    MatrixFont::drawScrollText(leds, msg, scrollX, 1, color, MATRIX_W, MATRIX_H);
+
+    // Top-right corner pixel: blinking red dot to make disconnect obvious
+    // even when the scrolling text is off-screen between cycles.
+    bool blink = ((uint32_t)(animTime * 2.0f) & 1) == 0;
+    if (blink) {
+        int idx = xyToIdx(MATRIX_W - 1, 0);
+        if (idx >= 0) leds[idx] = CRGB(60, 0, 0);
+    }
+}
 
 static inline int xyToIdx(int x, int y) {
     if (x < 0 || x >= MATRIX_W || y < 0 || y >= MATRIX_H) return -1;
@@ -201,12 +281,7 @@ void MatrixPages::renderUsage(CRGB* leds, float animTime) {
     unlockState();
 
     if (!connected) {
-        CRGB dimColor = CRGB(40, 25, 5);
-        const char* msg = "SEARCHING...";
-        int textW = MatrixFont::textWidth(msg);
-        int scrollPx = textW + MATRIX_W + 8;
-        int scrollX = MATRIX_W - ((int)(animTime * 1000) / (int)SCROLL_SPEED_MS) % scrollPx;
-        MatrixFont::drawScrollText(leds, msg, scrollX, 1, dimColor, MATRIX_W, MATRIX_H);
+        renderDisconnectStatus(leds, animTime);
         return;
     }
 
@@ -241,6 +316,17 @@ void MatrixPages::renderUsage(CRGB* leds, float animTime) {
 // PAGE 2: AGENTS — Crayfish fixed right + octopus scroll
 // ================================================================
 void MatrixPages::renderAgents(CRGB* leds, float animTime) {
+    // Disconnect check first — never render stale creature/session sprites
+    // when we've lost connection. The user explicitly wants a clear status
+    // screen instead of last-known data.
+    lockState();
+    bool connectedFast = g_state.wsConnected;
+    unlockState();
+    if (!connectedFast) {
+        renderDisconnectStatus(leds, animTime);
+        return;
+    }
+
     lockState();
     bool connected = g_state.wsConnected;
     uint8_t sessionCount = g_state.sessionCount;
@@ -303,12 +389,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
 
     if (agentCount == 0) {
         if (!connected) {
-            CRGB dimColor = CRGB(40, 25, 5);
-            const char* msg = "SEARCHING...";
-            int textW = MatrixFont::textWidth(msg);
-            int scrollPx = textW + MATRIX_W + 8;
-            int scrollX = MATRIX_W - ((int)(animTime * 1000) / (int)SCROLL_SPEED_MS) % scrollPx;
-            MatrixFont::drawScrollText(leds, msg, scrollX, 1, dimColor, MATRIX_W, MATRIX_H);
+            renderDisconnectStatus(leds, animTime);
             return;
         }
         if (gatewayAvail) return;

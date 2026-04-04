@@ -69,7 +69,12 @@ void serialLoop() {
                 // Only parse lines that look like JSON objects
                 if (serialBuf[0] == '{') {
                     Protocol::parseMessage(serialBuf, serialBufPos);
-                    lastSerialJsonMs = millis();
+                    uint32_t nowMs = millis();
+                    lastSerialJsonMs = nowMs;
+
+                    lockState();
+                    g_state.lastMessageMs = nowMs;
+                    unlockState();
 
                     if (!hasReceivedJson) {
                         hasReceivedJson = true;

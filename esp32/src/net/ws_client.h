@@ -63,4 +63,14 @@ void wsSendInterrupt();
  */
 void wsSendEscape();
 
+/**
+ * Timestamp (millis) of last reconnect attempt. Zero if never attempted.
+ */
+uint32_t wsLastAttemptMs();
+
+/**
+ * Current exponential backoff interval (capped at WS_RECONNECT_MAX_MS).
+ */
+uint32_t wsBackoffMs();
+
 }  // namespace Net
