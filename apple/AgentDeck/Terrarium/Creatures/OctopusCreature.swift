@@ -1,24 +1,60 @@
-// OctopusCreature.swift — 14×5 pixel grid octopus mascot
+// OctopusCreature.swift — SVG path octopus mascot (Antigravity robot)
 // Ported from android OctopusCreature.kt
 
 import SwiftUI
 
 final class OctopusCreature: Creature {
-    // MARK: - Pixel Grid
+    // MARK: - SVG Path (claudecode.svg Antigravity, viewBox 0 0 24 24)
 
-    // Cell types: 0=transparent, 1=body, 2=eye, 3=left arm, 4=right arm, 5=left leg, 6=right leg
-    private static let grid: [[Int]] = [
-        [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-        [0, 0, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1, 0, 0],
-        [3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4, 4],
-        [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-        [0, 0, 0, 5, 0, 5, 0, 0, 6, 0, 6, 0, 0, 0],
-    ]
+    private static let svgViewBox: CGFloat = 24.0
 
-    private static let gridCols = 14
-    private static let gridRows = 5
-    private static let pixelAspect: Float = 2.0
-    private static let pixelGap: Float = 0.5
+    /// Antigravity robot CGPath — fill-rule EvenOdd makes eyes transparent cutouts.
+    private nonisolated(unsafe) static let robotPath: CGPath = {
+        let p = CGMutablePath()
+        // Outer body
+        p.move(to: CGPoint(x: 20.998, y: 10.949))
+        p.addLine(to: CGPoint(x: 24, y: 10.949))
+        p.addLine(to: CGPoint(x: 24, y: 14.051))
+        p.addLine(to: CGPoint(x: 21, y: 14.051))
+        p.addLine(to: CGPoint(x: 21, y: 17.079))
+        p.addLine(to: CGPoint(x: 19.513, y: 17.079))
+        p.addLine(to: CGPoint(x: 19.513, y: 20))
+        p.addLine(to: CGPoint(x: 18, y: 20))
+        p.addLine(to: CGPoint(x: 18, y: 17.079))
+        p.addLine(to: CGPoint(x: 16.513, y: 17.079))
+        p.addLine(to: CGPoint(x: 16.513, y: 20))
+        p.addLine(to: CGPoint(x: 15, y: 20))
+        p.addLine(to: CGPoint(x: 15, y: 17.079))
+        p.addLine(to: CGPoint(x: 9, y: 17.079))
+        p.addLine(to: CGPoint(x: 9, y: 20))
+        p.addLine(to: CGPoint(x: 7.488, y: 20))
+        p.addLine(to: CGPoint(x: 7.488, y: 17.079))
+        p.addLine(to: CGPoint(x: 6, y: 17.079))
+        p.addLine(to: CGPoint(x: 6, y: 20))
+        p.addLine(to: CGPoint(x: 4.487, y: 20))
+        p.addLine(to: CGPoint(x: 4.487, y: 17.079))
+        p.addLine(to: CGPoint(x: 3, y: 17.079))
+        p.addLine(to: CGPoint(x: 3, y: 14.05))
+        p.addLine(to: CGPoint(x: 0, y: 14.05))
+        p.addLine(to: CGPoint(x: 0, y: 10.95))
+        p.addLine(to: CGPoint(x: 3, y: 10.95))
+        p.addLine(to: CGPoint(x: 3, y: 5))
+        p.addLine(to: CGPoint(x: 20.998, y: 5))
+        p.closeSubpath()
+        // Left eye cutout
+        p.move(to: CGPoint(x: 6, y: 10.949))
+        p.addLine(to: CGPoint(x: 7.488, y: 10.949))
+        p.addLine(to: CGPoint(x: 7.488, y: 8.102))
+        p.addLine(to: CGPoint(x: 6, y: 8.102))
+        p.closeSubpath()
+        // Right eye cutout
+        p.move(to: CGPoint(x: 16.51, y: 10.949))
+        p.addLine(to: CGPoint(x: 18, y: 10.949))
+        p.addLine(to: CGPoint(x: 18, y: 8.102))
+        p.addLine(to: CGPoint(x: 16.51, y: 8.102))
+        p.closeSubpath()
+        return p
+    }()
 
     // Starburst arm lengths
     private static let starburstArmLengths: [Float] = [1.0, 0.75, 0.95, 0.70, 1.0, 0.80, 0.90, 0.72, 0.98, 0.78]
@@ -182,8 +218,8 @@ final class OctopusCreature: Creature {
 
         let bodyAlpha: Float = visualState == .sleeping ? 0.4 : 1.0
 
-        // Draw pixel body
-        drawPixelBody(context: &context, cx: centerX, cy: centerY, bodyRadius: bodyRadius, alpha: bodyAlpha)
+        // Draw SVG robot body
+        drawSvgBody(context: &context, cx: centerX, cy: centerY, bodyRadius: bodyRadius, alpha: bodyAlpha)
 
         // WORKING: starburst sparkle
         if visualState == .working {
@@ -204,88 +240,47 @@ final class OctopusCreature: Creature {
         }
     }
 
-    // MARK: - Tentacle/Arm Animation
+    // MARK: - SVG Body Drawing
 
-    private func tentacleOffset(isLeft: Bool, pixelH: Float) -> Float {
-        guard visualState != .sleeping else { return 0 }
-        let phase: Float = isLeft ? .pi : 0
-        let (speed, amplitude): (Float, Float) = switch visualState {
-        case .working: (TerrariumTiming.tentacleSpeedWorking, TerrariumTiming.tentacleAmpWorking)
-        case .floating: (TerrariumTiming.tentacleSpeedFloating, TerrariumTiming.tentacleAmpFloating)
-        case .asking: (TerrariumTiming.tentacleSpeedAsking, TerrariumTiming.tentacleAmpAsking)
-        case .sleeping: (0, 0)
-        }
-        return sin(time * speed + phase) * pixelH * amplitude
-    }
-
-    private func armOffset(isLeft: Bool, pixelH: Float) -> Float {
-        guard visualState != .sleeping else { return 0 }
-        let phase: Float = isLeft ? 0 : .pi
-        let (speed, amplitude): (Float, Float) = switch visualState {
-        case .working: (TerrariumTiming.armSpeedWorking, TerrariumTiming.armAmpWorking)
-        case .floating: (TerrariumTiming.armSpeedFloating, TerrariumTiming.armAmpFloating)
-        case .asking: (0.8, 0.04)
-        case .sleeping: (0, 0)
-        }
-        return sin(time * speed + phase) * pixelH * amplitude
-    }
-
-    // MARK: - Pixel Body Drawing
-
-    private func drawPixelBody(context: inout GraphicsContext, cx: Float, cy: Float,
-                                bodyRadius: Float, alpha: Float) {
-        let pixelW = bodyRadius * 2 / Float(Self.gridCols)
-        let pixelH = pixelW * Self.pixelAspect
-        let gridW = Float(Self.gridCols) * pixelW
-        let gridH = Float(Self.gridRows) * pixelH
-        let startX = cx - gridW / 2
-        let startY = cy - gridH / 2
-
+    private func drawSvgBody(context: inout GraphicsContext, cx: Float, cy: Float,
+                              bodyRadius: Float, alpha: Float) {
         let bodyColor = bodyColorForState()
-        let gap = Self.pixelGap
+        // Scale SVG 24×24 viewbox so robot width = bodyRadius * 2
+        let totalScale = CGFloat(bodyRadius * 2) / Self.svgViewBox
 
-        for row in 0..<Self.gridRows {
-            for col in 0..<Self.gridCols {
-                let cell = Self.grid[row][col]
-                guard cell != 0 else { continue }
+        // Subtle breath scale when not sleeping
+        let breathScale: CGFloat = switch visualState {
+        case .sleeping: 1.0
+        case .working: CGFloat(1.0 + sin(time * 2) * 0.015)
+        default: CGFloat(1.0 + sin(time * 0.6) * 0.008)
+        }
 
-                let px = startX + Float(col) * pixelW
-                var py = startY + Float(row) * pixelH
+        let s = totalScale * breathScale
+        // Center the 24×24 viewbox at (cx, cy)
+        let offsetX = CGFloat(cx) - Self.svgViewBox / 2 * s
+        let offsetY = CGFloat(cy) - Self.svgViewBox / 2 * s
 
-                // Arm Y-offset (bob up/down)
-                if cell == 3 { py += armOffset(isLeft: true, pixelH: pixelH) }
-                if cell == 4 { py += armOffset(isLeft: false, pixelH: pixelH) }
+        // Transform: scale then translate
+        var t = CGAffineTransform(scaleX: s, y: s)
+            .concatenating(CGAffineTransform(translationX: offsetX, y: offsetY))
 
-                switch cell {
-                case 2: // Eye
-                    if visualState == .sleeping {
-                        // Narrow bar for sleeping eyes
-                        let rect = CGRect(x: CGFloat(px + gap), y: CGFloat(py + pixelH * 0.4),
-                                          width: CGFloat(pixelW - gap * 2), height: CGFloat(pixelH * 0.2))
-                        context.fill(Path(rect),
-                                     with: .color(TerrariumColors.claudeEye.opacity(Double(alpha) * 0.6)))
-                    } else {
-                        let rect = CGRect(x: CGFloat(px + gap), y: CGFloat(py + gap),
-                                          width: CGFloat(pixelW - gap * 2), height: CGFloat(pixelH - gap * 2))
-                        context.fill(Path(rect),
-                                     with: .color(TerrariumColors.claudeEye.opacity(Double(alpha))))
-                    }
+        if let transformed = Self.robotPath.copy(using: &t) {
+            context.fill(Path(transformed),
+                         with: .color(bodyColor.opacity(Double(alpha))),
+                         style: FillStyle(eoFill: true))
+        }
 
-                case 5, 6: // Tentacles — stretch height, stay connected
-                    let stretch = tentacleOffset(isLeft: cell == 5, pixelH: pixelH)
-                    let stretchedH = max(pixelH * 0.3, pixelH + stretch - gap)
-                    let rect = CGRect(x: CGFloat(px + gap), y: CGFloat(py),
-                                      width: CGFloat(pixelW - gap * 2), height: CGFloat(stretchedH))
-                    context.fill(Path(rect),
-                                 with: .color(bodyColor.opacity(Double(alpha))))
-
-                default: // Body + arms
-                    let rect = CGRect(x: CGFloat(px + gap), y: CGFloat(py + gap),
-                                      width: CGFloat(pixelW - gap * 2), height: CGFloat(pixelH - gap * 2))
-                    context.fill(Path(rect),
-                                 with: .color(bodyColor.opacity(Double(alpha))))
-                }
-            }
+        // Sleeping: cover top half of eye cutouts (half-closed effect)
+        if visualState == .sleeping {
+            // Left eye
+            let lx = 6 * s + offsetX
+            let ly = 8.102 * s + offsetY
+            context.fill(Path(CGRect(x: lx, y: ly, width: 1.488 * s, height: 1.4 * s)),
+                         with: .color(bodyColor.opacity(Double(alpha) * 0.7)))
+            // Right eye
+            let rx = 16.51 * s + offsetX
+            context.fill(Path(CGRect(x: rx, y: ly, width: 1.49 * s, height: 1.4 * s)),
+                         with: .color(bodyColor.opacity(Double(alpha) * 0.7)))
         }
     }
 
@@ -359,9 +354,7 @@ final class OctopusCreature: Creature {
 
     private func drawNameTag(context: inout GraphicsContext, name: String,
                              cx: CGFloat, cy: CGFloat, bodyRadius: CGFloat) {
-        let pixelW = bodyRadius * 2 / CGFloat(Self.gridCols)
-        let gridH = CGFloat(Self.gridRows) * pixelW * CGFloat(Self.pixelAspect)
-        let hatY = cy - gridH / 2 - bodyRadius * 0.15
+        let hatY = cy - bodyRadius - bodyRadius * 0.15
         let fontSize = bodyRadius * 0.3
         let padding: CGFloat = bodyRadius * 0.2
 

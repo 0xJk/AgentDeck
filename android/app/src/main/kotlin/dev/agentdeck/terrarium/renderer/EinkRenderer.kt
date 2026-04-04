@@ -41,14 +41,7 @@ private const val EINK_CLAUDE_VIEWBOX = 24f
 private const val EINK_OPENCODE_PIXEL_ASPECT = 1.2f  // OpenCode: near-square (10×9 grid)
 private const val EINK_PIXEL_GAP = 0.5f
 
-private val einkClaudeRobotPath: android.graphics.Path by lazy {
-    @Suppress("DEPRECATION")
-    android.util.PathParser.createPathFromPathData(
-        "M20.998,10.949L24,10.949L24,14.051L21,14.051L21,17.079L19.513,17.079L19.513,20L18,20L18,17.079L16.513,17.079L16.513,20L15,20L15,17.079L9,17.079L9,20L7.488,20L7.488,17.079L6,17.079L6,20L4.487,20L4.487,17.079L3,17.079L3,14.05L0,14.05L0,10.95L3,10.95L3,5L20.998,5L20.998,10.949zM6,10.949L7.488,10.949L7.488,8.102L6,8.102L6,10.949zM16.51,10.949L18,10.949L18,8.102L16.51,8.102L16.51,10.949z"
-    ).apply {
-        fillType = android.graphics.Path.FillType.EVEN_ODD
-    }
-}
+// Claude Code robot rendered via drawRect in drawEinkOctopus (no SVG Path — e-ink Canvas compat)
 
 // OpenCode nested-square grid (simulator SSOT) — 10x9
 // Cell values: 8=outer frame (#F1ECEC), 9=inner square (#4B4646), 0=gap
@@ -170,17 +163,21 @@ fun EinkTerrariumView(
         }
         val frameInterval = if (einkColorEnabled) 5000L else EINK_ANIM_FRAME_MS
         while (isActive) {
-            val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
-                .also { reusableBitmap = it }
-            animFrame = (animFrame + 1) % EINK_ANIM_CYCLE
-            val s = currentState
-            val streaming = s.tetra == TetraVisualState.STREAMING
-            val agentSlots = dev.agentdeck.terrarium.layoutOctopuses(s.agents.size.coerceAtLeast(1))
-            fishSchool.update(streaming, agentSlots, s.crayfish == CrayfishVisualState.ROUTING)
-            renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, animFrame, bmp,
-                skipDither = einkColorEnabled, fishSchool = fishSchool)
-            hostView.postInvalidate()
-            onFrameRendered?.invoke(true)
+            try {
+                val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
+                    .also { reusableBitmap = it }
+                animFrame = (animFrame + 1) % EINK_ANIM_CYCLE
+                val s = currentState
+                val streaming = s.tetra == TetraVisualState.STREAMING
+                val agentSlots = dev.agentdeck.terrarium.layoutOctopuses(s.agents.size.coerceAtLeast(1))
+                fishSchool.update(streaming, agentSlots, s.crayfish == CrayfishVisualState.ROUTING)
+                renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, animFrame, bmp,
+                    skipDither = einkColorEnabled, fishSchool = fishSchool)
+                hostView.postInvalidate()
+                onFrameRendered?.invoke(true)
+            } catch (e: Exception) {
+                android.util.Log.e("EinkAnim", "Animation loop crash", e)
+            }
             delay(frameInterval)
         }
     }
@@ -238,7 +235,7 @@ private fun renderEinkFrame(
     val canvas = android.graphics.Canvas(bitmap)
     val paint = Paint().apply { isAntiAlias = false }
 
-    Log.d("EinkFrame", "octopus=${state.octopus} agents=${state.agents.size} agentsStates=${state.agents.map{it.visualState}} frame=$animFrame")
+    Log.d("EinkFrame", "agents=${state.agents.size} clouds=${state.cloudCreatures.size} oc=${state.openCodeCreatures.size} cf=${state.crayfish} frame=$animFrame")
 
     // Water background — entire frame is the aquarium (no inner border)
     canvas.drawColor(einkPick(GRAY_WATER_BG, COLOR_WATER_BG))
@@ -645,9 +642,10 @@ private fun drawEinkOctopus(
             0.02f * kotlin.math.sin(animFrame * kotlin.math.PI / 8).toFloat())
     }
 
-    // SVG robot body — scale from 24×24 viewBox to bodyWidth
-    val bodyWidth = w * 0.11f * scaleFactor
-    val svgScale = bodyWidth / EINK_CLAUDE_VIEWBOX
+    // 12×8 pixel grid Claude Code robot — matches ESP32 octopus.cpp SSOT
+    val bodyWidth = w * 0.10f * scaleFactor
+    val cellW = bodyWidth / 12f
+    val cellH = cellW  // square cells
 
     // SLEEPING: dimmer body
     val bodyColor = if (state == OctopusVisualState.SLEEPING) {
@@ -659,12 +657,31 @@ private fun drawEinkOctopus(
     paint.style = Paint.Style.FILL
     paint.color = bodyColor
 
-    canvas.save()
-    // Position: center the 24×24 SVG at (cx, cy)
-    canvas.translate(cx - EINK_CLAUDE_VIEWBOX / 2f * svgScale, cy - EINK_CLAUDE_VIEWBOX / 2f * svgScale)
-    canvas.scale(svgScale, svgScale)
-    canvas.drawPath(einkClaudeRobotPath, paint)
-    canvas.restore()
+    val startX = cx - 6f * cellW
+    val startY = cy - 4f * cellH
+
+    // ESP32 SSOT grid: 0=transparent, 1=body
+    val grid = arrayOf(
+        intArrayOf(0,0,1,1,1,1,1,1,1,1,0,0),
+        intArrayOf(0,0,1,1,0,1,1,0,1,1,0,0),  // eye cutouts
+        intArrayOf(1,1,1,1,0,1,1,0,1,1,1,1),
+        intArrayOf(1,1,1,1,1,1,1,1,1,1,1,1),
+        intArrayOf(1,1,1,1,1,1,1,1,1,1,1,1),
+        intArrayOf(0,1,1,1,1,1,1,1,1,1,1,0),
+        intArrayOf(0,0,1,0,1,0,0,1,0,1,0,0),  // pegs
+        intArrayOf(0,0,1,0,1,0,0,1,0,1,0,0),
+    )
+
+    for (row in grid.indices) {
+        for (col in grid[row].indices) {
+            if (grid[row][col] == 0) continue
+            canvas.drawRect(
+                startX + col * cellW, startY + row * cellH,
+                startX + (col + 1) * cellW, startY + (row + 1) * cellH,
+                paint,
+            )
+        }
+    }
 
     // Name tag FIRST (behind bubble) — multi-session only
     val nameTagY = cy - bodyWidth / 2f
@@ -854,32 +871,32 @@ private fun drawEinkCloud(
         einkPick(GRAY_CLOUD_BODY, COLOR_CLOUD_BODY)
     }
 
-    // Build unified cloud path (all lobes + center merged) — no internal seam lines
-    val cloudPath = android.graphics.Path()
+    // Cloud body — individual circles (no Path.op/drawPath — e-ink Canvas compat)
+    paint.style = Paint.Style.FILL
+    paint.color = bodyColor
+
+    // Central fill
+    canvas.drawCircle(cx, cy, bodyRadius * 0.32f * breathScale, paint)
+    // 6 lobes
     for (i in EINK_CLOUD_LOBE_OFFSETS.indices) {
         val (dx, dy) = EINK_CLOUD_LOBE_OFFSETS[i]
         val lobeRadius = bodyRadius * EINK_CLOUD_LOBE_RADII[i] * breathScale
         val lobeCx = cx + bodyRadius * dx
         val lobeCy = cy + bodyRadius * dy
-        val lobePath = android.graphics.Path()
-        lobePath.addCircle(lobeCx, lobeCy, lobeRadius, android.graphics.Path.Direction.CW)
-        cloudPath.op(lobePath, android.graphics.Path.Op.UNION)
+        canvas.drawCircle(lobeCx, lobeCy, lobeRadius, paint)
     }
-    // Central fill to cover gaps between lobes
-    val centerPath = android.graphics.Path()
-    centerPath.addCircle(cx, cy, bodyRadius * 0.32f * breathScale, android.graphics.Path.Direction.CW)
-    cloudPath.op(centerPath, android.graphics.Path.Op.UNION)
 
-    // Fill cloud body
-    paint.style = Paint.Style.FILL
-    paint.color = bodyColor
-    canvas.drawPath(cloudPath, paint)
-
-    // Stroke only the outer contour (unified path = no internal overlap lines)
+    // Outline — draw each lobe circle stroke (internal seams visible but acceptable on e-ink)
     paint.style = Paint.Style.STROKE
     paint.strokeWidth = 1.5f * scaleFactor
     paint.color = einkPick(GRAY_CLOUD_PROMPT, COLOR_CLOUD_PROMPT)
-    canvas.drawPath(cloudPath, paint)
+    for (i in EINK_CLOUD_LOBE_OFFSETS.indices) {
+        val (dx, dy) = EINK_CLOUD_LOBE_OFFSETS[i]
+        val lobeRadius = bodyRadius * EINK_CLOUD_LOBE_RADII[i] * breathScale
+        val lobeCx = cx + bodyRadius * dx
+        val lobeCy = cy + bodyRadius * dy
+        canvas.drawCircle(lobeCx, lobeCy, lobeRadius, paint)
+    }
 
     // ">_" terminal prompt text inside cloud body
     if (state != OctopusVisualState.SLEEPING) {
@@ -930,8 +947,8 @@ private fun drawEinkCloud(
 
 /** E-ink crayfish — front-facing SVG path rendering with claw/antenna animation. */
 /**
- * E-ink OpenCode creature — nested-square logo pixel grid rendering.
- * Cell 8 = outer frame, cell 9 = inner square, cell 0 = transparent.
+ * E-ink OpenCode creature — nested-square logo with smooth rounded rects.
+ * Outer frame (#F1ECEC) + inner square (#4B4646).
  * Geometric and clean — no organic features.
  */
 private fun drawEinkOpenCode(
@@ -964,15 +981,13 @@ private fun drawEinkOpenCode(
     }
     val cy = h * centerYFraction + bobY
 
-    val bodyWidth = w * 0.11f * scaleFactor
-    val pixelW = bodyWidth / EINK_OPENCODE_COLS
-    val pixelH = pixelW * EINK_OPENCODE_PIXEL_ASPECT
-    val gridW = EINK_OPENCODE_COLS * pixelW
-    val gridH = EINK_OPENCODE_ROWS * pixelH
-    val startX = cx - gridW / 2f
-    val startY = cy - gridH / 2f
-
-    val gap = EINK_PIXEL_GAP
+    val bodyWidth = w * 0.065f * scaleFactor
+    val outerSize = bodyWidth * 1.6f
+    val outerHalf = outerSize / 2f
+    val cornerR = outerSize * 0.06f
+    val innerSize = outerSize * 0.50f
+    val innerHalf = innerSize / 2f
+    val innerCornerR = innerSize * 0.04f
 
     val outerColor = if (state == OctopusVisualState.SLEEPING) {
         einkPick(GRAY_OPENCODE_SLEEP, COLOR_OPENCODE_SLEEP)
@@ -985,32 +1000,46 @@ private fun drawEinkOpenCode(
         einkPick(GRAY_OPENCODE_INNER, COLOR_OPENCODE_INNER)
     }
 
+    // Outer frame (rounded rect)
     paint.style = Paint.Style.FILL
-    for (row in 0 until EINK_OPENCODE_ROWS) {
-        for (col in 0 until EINK_OPENCODE_COLS) {
-            val cell = EINK_OPENCODE_GRID[row][col]
-            if (cell == 0) continue
+    paint.color = outerColor
+    canvas.drawRoundRect(
+        cx - outerHalf, cy - outerHalf, cx + outerHalf, cy + outerHalf,
+        cornerR, cornerR, paint,
+    )
 
-            val px = startX + col * pixelW
-            val py = startY + row * pixelH
-            paint.color = when (cell) {
-                8 -> outerColor
-                9 -> innerColor
-                else -> outerColor
-            }
-            canvas.drawRect(px + gap, py + gap, px + pixelW - gap, py + pixelH - gap, paint)
-        }
+    // Inner square (rounded rect)
+    paint.color = innerColor
+    canvas.drawRoundRect(
+        cx - innerHalf, cy - innerHalf, cx + innerHalf, cy + innerHalf,
+        innerCornerR, innerCornerR, paint,
+    )
+
+    // Working state: subtle border glow
+    if (state == OctopusVisualState.WORKING) {
+        val glowAlpha = (kotlin.math.sin(animFrame * kotlin.math.PI / 8) * 0.15f + 0.15f).toFloat()
+        paint.color = outerColor
+        paint.alpha = (glowAlpha * 255).toInt()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f * scaleFactor
+        canvas.drawRoundRect(
+            cx - outerHalf - 2f, cy - outerHalf - 2f,
+            cx + outerHalf + 2f, cy + outerHalf + 2f,
+            cornerR + 2f, cornerR + 2f, paint,
+        )
+        paint.style = Paint.Style.FILL
+        paint.alpha = 255
     }
 
     // Name tag (behind bubble)
     if (displayName != null) {
-        drawEinkNameTag(canvas, paint, cx, startY, scaleFactor, displayName, w)
+        drawEinkNameTag(canvas, paint, cx, cy - outerHalf, scaleFactor, displayName, w)
     }
 
     // ASKING: speech bubble with "?" beside body
     if (state == OctopusVisualState.ASKING) {
-        val bubbleR = gridW * 0.25f * scaleFactor
-        val bubbleX = cx + gridW * 0.6f
+        val bubbleR = outerSize * 0.25f * scaleFactor
+        val bubbleX = cx + outerSize * 0.6f
         val bubbleY = cy
 
         paint.color = einkPick(GRAY_AIR, COLOR_AIR)
@@ -1107,16 +1136,21 @@ private fun drawEinkCrayfish(
         canvas.rotate(-10f, EINK_SVG_VIEWBOX / 2f, EINK_SVG_VIEWBOX / 2f)
     }
 
-    // 1. Body — filled with body color (lighter when sick)
+    // 1. Body — oval (no drawPath — e-ink Canvas compat)
     paint.style = Paint.Style.FILL
     paint.color = if (state == CrayfishVisualState.SICK) {
         einkPick(GRAY_CRAY_SICK, COLOR_CRAY_SICK)
     } else {
         einkPick(GRAY_CRAY_BODY, COLOR_CRAY_BODY)
     }
-    canvas.drawPath(einkCrayfishBodyPath, paint)
+    canvas.drawOval(RectF(20f, 15f, 100f, 100f), paint)
+    // Legs (3 pairs)
+    for (lx in listOf(45f, 55f, 65f)) {
+        canvas.drawRect(lx - 3f, 95f, lx + 3f, 110f, paint)
+        canvas.drawRect(lx + 15f - 3f, 95f, lx + 15f + 3f, 110f, paint)
+    }
 
-    // 2. Left claw with rotation — darker claw color
+    // 2. Left claw — oval with rotation
     paint.color = if (state == CrayfishVisualState.SICK) {
         einkPick(GRAY_CRAY_BODY, COLOR_CRAY_SICK)
     } else {
@@ -1124,32 +1158,24 @@ private fun drawEinkCrayfish(
     }
     canvas.save()
     canvas.rotate(-clawAngle, 20f, 45f)
-    canvas.drawPath(einkCrayfishLeftClawPath, paint)
+    canvas.drawOval(RectF(2f, 38f, 30f, 65f), paint)
     canvas.restore()
 
-    // 3. Right claw with rotation
+    // 3. Right claw — oval with rotation
     canvas.save()
     canvas.rotate(clawAngle, 100f, 45f)
-    canvas.drawPath(einkCrayfishRightClawPath, paint)
+    canvas.drawOval(RectF(90f, 38f, 118f, 65f), paint)
     canvas.restore()
 
-    // 4. Antennae — stroked with body color
+    // 4. Antennae — lines
     paint.color = einkPick(GRAY_CRAY_BODY, COLOR_CRAY_BODY)
     paint.style = Paint.Style.STROKE
     paint.strokeWidth = 3f
     paint.strokeCap = Paint.Cap.ROUND
+    canvas.drawLine(45f + antennaWiggle, 20f, 30f + antennaWiggle * 2f, 0f, paint)
+    canvas.drawLine(75f - antennaWiggle, 20f, 90f - antennaWiggle * 2f, 0f, paint)
 
-    canvas.save()
-    canvas.translate(antennaWiggle, 0f)
-    canvas.drawPath(einkCrayfishLeftAntennaPath, paint)
-    canvas.restore()
-
-    canvas.save()
-    canvas.translate(-antennaWiggle, 0f)
-    canvas.drawPath(einkCrayfishRightAntennaPath, paint)
-    canvas.restore()
-
-    // 5. Eyes — white circles on black body
+    // 5. Eyes — white circles on body
     paint.style = Paint.Style.FILL
     paint.color = android.graphics.Color.WHITE
     canvas.drawCircle(45f, 35f, 6f, paint)
