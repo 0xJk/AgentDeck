@@ -5,6 +5,15 @@
 import Foundation
 import Darwin
 
+/// Thread-safe token to signal read threads to stop.
+/// Shared between actor (invalidate) and read dispatch queue (check).
+final class ReadToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _active = true
+    var isActive: Bool { lock.withLock { _active } }
+    func invalidate() { lock.withLock { _active = false } }
+}
+
 /// Manages USB serial connections to ESP32 devices (CH340/CP210x/native USB).
 /// Newline-delimited JSON protocol, heartbeat, WiFi provisioning.
 actor ESP32Serial {
@@ -25,6 +34,8 @@ actor ESP32Serial {
         var readBuffer = ""
         var deviceInfo: DeviceInfo?
         var provisionSent = false
+        let readToken = ReadToken()
+        let openedAt = Date()
     }
 
     struct DeviceInfo {
@@ -50,6 +61,7 @@ actor ESP32Serial {
     private var lastWriteError: String?
     private var failedPorts: [String: PortFailure] = [:]
     private static let permanentBlockDuration: TimeInterval = 300  // 5 minutes
+    private static let deviceInfoTimeoutSec: TimeInterval = 30  // reconnect if no device_info after 30s
 
     /// Thread-safe queue for incoming serial data (read thread → actor)
     private struct PendingRead: @unchecked Sendable {
@@ -147,18 +159,40 @@ actor ESP32Serial {
         DaemonLogger.shared.debug("ESP32", "Serial bridge started")
     }
 
-    func stop() {
+    func stop() async {
         pollTask?.cancel()
         heartbeatTask?.cancel()
         drainTask?.cancel()
-        for var conn in connections {
-            conn.connected = false
+        // Wait for tasks to actually finish so no in-flight pollForDevices() opens new ports
+        await pollTask?.value
+        await heartbeatTask?.value
+        await drainTask?.value
+        pollTask = nil
+        heartbeatTask = nil
+        drainTask = nil
+        closeAllConnections()
+        DaemonLogger.shared.debug("ESP32", "Serial bridge stopped")
+    }
+
+    /// Wake recovery — full stop + restart to avoid FD leaks
+    func handleWake() async {
+        DaemonLogger.shared.info("ESP32 serial wake recovery — closing \(connections.count) stale connection(s)")
+        await stop()
+        start()
+    }
+
+    /// Close all connections, invalidate read tokens, release FDs
+    private func closeAllConnections() {
+        for conn in connections {
+            conn.readToken.invalidate()
             try? conn.writeHandle?.close()
-            try? conn.readHandle?.close()
+            // readHandle is the same FileHandle — no separate close needed
         }
         connections.removeAll()
         failedPorts.removeAll()
-        DaemonLogger.shared.debug("ESP32", "Serial bridge stopped")
+        lastOpenError = nil
+        lastReadError = nil
+        lastWriteError = nil
     }
 
     // MARK: - Broadcast
@@ -238,6 +272,14 @@ actor ESP32Serial {
     // MARK: - Port Open
 
     private func openAndRegisterPort(_ port: String) {
+        // Close any existing connection to the same port first (prevents FD leak on restart/wake race)
+        if let existingIdx = connections.firstIndex(where: { $0.port == port }) {
+            let old = connections.remove(at: existingIdx)
+            old.readToken.invalidate()
+            try? old.writeHandle?.close()
+            DaemonLogger.shared.debug("ESP32", "Closed stale connection to \(port) before reopening")
+        }
+
         guard let conn = openPort(port) else { return }
         // IMPORTANT: append to connections array BEFORE starting read thread,
         // otherwise handleReadData won't find the connection by port name
@@ -246,7 +288,7 @@ actor ESP32Serial {
             DaemonLogger.shared.throttledDebug("ESP32", key: "missing-read:\(port)", "No read handle for \(port), skipping", minInterval: 60)
             return
         }
-        startReading(port: port, handle: readHandle)
+        startReading(port: port, handle: readHandle, token: conn.readToken)
     }
 
     private func openPort(_ port: String) -> SerialConnection? {
@@ -333,7 +375,7 @@ actor ESP32Serial {
         return conn
     }
 
-    private func startReading(port: String, handle: FileHandle) {
+    private func startReading(port: String, handle: FileHandle, token: ReadToken) {
         // Use a dedicated thread for serial reading — FileHandle.readabilityHandler
         // uses dispatch sources which don't reliably trigger for serial port fds.
         let fd = handle.fileDescriptor
@@ -345,7 +387,7 @@ actor ESP32Serial {
             let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: bufSize)
             defer { buf.deallocate() }
 
-            while true {
+            while token.isActive {
                 let n = Darwin.read(fd, buf, bufSize)
                 if n > 0 {
                     if let str = String(bytes: UnsafeBufferPointer(start: buf, count: n), encoding: .utf8) {
@@ -371,6 +413,7 @@ actor ESP32Serial {
     private func markReadFailure(port: String, message: String) {
         lastReadError = message
         if let idx = connections.firstIndex(where: { $0.port == port }) {
+            connections[idx].readToken.invalidate()
             connections[idx].connected = false
         }
     }
@@ -419,6 +462,20 @@ actor ESP32Serial {
         drainPendingReads()
         guard !connections.isEmpty else { return }
 
+        // Check for connections that never received device_info — reconnect them
+        let now = Date()
+        for i in connections.indices.reversed() where connections[i].connected {
+            if connections[i].deviceInfo == nil,
+               now.timeIntervalSince(connections[i].openedAt) > Self.deviceInfoTimeoutSec {
+                let port = connections[i].port
+                DaemonLogger.shared.info("ESP32 \(port): no device_info after \(Int(Self.deviceInfoTimeoutSec))s — reconnecting")
+                connections[i].readToken.invalidate()
+                connections[i].connected = false
+                try? connections[i].writeHandle?.close()
+                // Will be pruned + reopened on next pollForDevices() cycle
+            }
+        }
+
         var sentData = false
 
         if let event = stateProvider?() {
@@ -466,6 +523,7 @@ actor ESP32Serial {
             }
             lastWriteError = nil
         } catch {
+            conn.readToken.invalidate()
             conn.connected = false
             lastWriteError = "write failed for \(conn.port): \(error.localizedDescription)"
         }
