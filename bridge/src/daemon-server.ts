@@ -422,7 +422,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   const deviceModules = createDefaultModules('daemon' as any);
   const startedModules = await initModules(
     deviceModules,
-    { mdns: true, adb: 'auto', serial: 'auto', pixoo: 'auto' },
+    { mdns: true, adb: 'auto', serial: 'auto', pixoo: 'auto', d200h: 'auto' },
     { port, authToken: core.authToken, projectName: 'AgentDeck', wsServer: core.wsServer },
   );
 
