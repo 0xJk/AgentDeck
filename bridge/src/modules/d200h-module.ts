@@ -13,7 +13,7 @@
 
 import type { DeviceModule, BridgeContext } from './types.js';
 import { buildZipPackets, buildBrightnessPacket, buildSmallWindowPacket, parseIncoming, CMD } from '../d200h/hid-protocol.js';
-import { renderDashboardZip, stateHash } from '../d200h/image-renderer.js';
+import { renderDashboardZip, stateHash, initRenderer } from '../d200h/image-renderer.js';
 import { debug } from '../logger.js';
 
 const TAG = 'd200h';
@@ -85,6 +85,9 @@ export class D200hModule implements DeviceModule {
 
   async start(ctx: BridgeContext): Promise<void> {
     debug(TAG, 'Starting D200H HID module');
+
+    // Initialize SVG renderer (loads resvg-js if available)
+    await initRenderer();
 
     // Wire command handler
     this.commandHandler = (cmd) => ctx.wsServer.dispatchCommand(cmd);

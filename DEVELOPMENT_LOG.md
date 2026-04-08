@@ -2,6 +2,309 @@
 
 ---
 
+## 2026-04-08 — D200H Text Bake Experiment: Session-Mode ShowTitle Toggle + PNG Text Overlay
+
+### 문제
+Stream Deck와 D200H 사이의 가장 큰 시각 차이는 여전히 텍스트 레이어였다.
+
+- Stream Deck는 세션 버튼 하나의 캔버스 안에 `project / model / state`를 모두 그린다.
+- D200H Swift 경로는 펌웨어 안전성을 우선해 PNG는 icon-only로 유지하고, 텍스트는 native label에 맡기고 있었다.
+
+이 구조는 안정적이지만, 버튼 레이아웃이 Stream Deck와 다르게 느껴지는 핵심 원인이었다.
+
+### 해결
+- `apple/AgentDeck/App/AppPreferences.swift`
+  - `d200hBakeSessionText`
+  - `d200hHideNativeSessionLabels`
+  - 두 실험 설정을 추가하고 기본값을 `true`로 둬, 현재 사용 환경에서는 바로 Stream Deck parity 시도를 하도록 함
+- `apple/AgentDeck/UI/Settings/SettingsScreen.swift`
+  - D200H Helper 섹션에 위 두 옵션을 노출
+  - 세션 PNG에 텍스트를 굽는 실험과 session-mode `ShowTitle: 0` 동작을 앱에서 바로 제어 가능하게 함
+- `apple/AgentDeck/Daemon/Modules/D200hHidModule.swift`
+  - label style packet을 고정 `ShowTitle: 1`에서 벗어나 **현재 모드별 동적 제어**로 변경
+    - `sessionList` + 실험 on: `ShowTitle: 0`
+    - `optionSelect`: `ShowTitle: 1`
+  - 따라서 세션 그리드에서는 native label을 숨기고, 옵션 화면에서는 다시 켜서 기존 조작성을 유지
+  - session tile에 `textOverlay: .sessionTile`을 추가해 PNG 안에:
+    - project name
+    - model name
+    - `● STATE`
+    를 직접 렌더
+  - usage merged button도 session mode에서 native label을 끄는 경우 숫자를 잃지 않도록 `.usageStat` overlay를 추가
+  - full-render 캐시 키를 `title`만 보던 구조에서 `model/state/overlay/border`까지 포함하도록 넓혀, text-bake 경로에서 상태 변화가 누락되지 않게 함
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataD200HTextBake build CODE_SIGNING_ALLOWED=NO`
+  - 최종 `BUILD SUCCEEDED`
+
+### 핵심 판단
+- 이제 Swift 앱은 **세션 모드에 한해** Stream Deck와 훨씬 더 유사한 “single-canvas session button” 실험을 직접 수행할 수 있다.
+- 다만 이건 아직 **firmware acceptance 실험 단계**다.
+  - 코드상/빌드상으로는 성립했지만
+  - 실제 D200H stock firmware가 이 richer PNG를 안정적으로 계속 받아줄지는 실기기 확인이 필요하다
+- 만약 이 경로가 실기기에서 안정적으로 먹히면, `완전 동일 UI`에 가장 가까운 stock-firmware 경로가 열린다.
+- 반대로 여기서 화면 복귀/무시가 다시 나타나면, 그때는 vendor payload semantics를 더 맞추거나 takeover로 넘어갈 근거가 훨씬 선명해진다.
+
+---
+
+## 2026-04-08 — D200H Stream Deck Parity Pass: Press Flash + Awaiting Glow
+
+### 문제
+D200H Swift 렌더는 브랜드 로고와 상태색을 Stream Deck 쪽에 가깝게 맞춘 뒤에도, 체감상 두 가지 큰 차이가 남아 있었다.
+
+1. 버튼을 눌렀을 때 `showOk`/`showAlert`에 준하는 즉시 피드백이 없어, ZIP 재렌더 전까지 눌림 확인이 비었다.
+2. `awaiting` 보더가 단순 alpha pulse라서 Stream Deck SVG의 gaussian glow보다 훨씬 딱딱하게 보였다.
+
+이 차이는 펌웨어-safe icon-first 경로를 유지하더라도 바로 줄일 수 있는 영역이었다.
+
+### 해결
+- `apple/AgentDeck/Daemon/Modules/D200hHidModule.swift`
+  - 버튼 입력 처리에 `press flash` 단계 추가:
+    - 눌린 버튼을 즉시 밝게 만든 `PARTIAL_UPDATE`를 먼저 전송
+    - 약 `90ms` 후 실제 command resolution / local handling 수행
+    - 화면 전환이 없는 버튼은 현재 상태 partial ZIP으로 자동 복원
+  - flash는 단순 배경 변경이 아니라:
+    - 배경 밝기 상승
+    - 아이콘 밝기 상승
+    - 보더를 밝은 solid highlight로 승격
+  - option 모드의 merged `BACK` 버튼(slot 13)도 partial ZIP으로 flash 가능하도록 `renderPartialZip()`이 merged button partial을 지원
+  - 렌더 경로 중복을 줄이기 위해 현재 화면 상태 계산을 `currentDisplayRenderState()`로 분리
+  - `awaitingPulse` 렌더에 CoreGraphics shadow blur를 추가해 Stream Deck의 glow border 감각에 더 가깝게 조정
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataD200HParity build CODE_SIGNING_ALLOWED=NO`
+  - 최종 `BUILD SUCCEEDED`
+
+### 핵심 판단
+- 이 변경으로 D200H는 단순히 “비슷한 정적 타일”이 아니라, `눌림 반응`과 `awaiting animation`까지 Stream Deck에 더 가까운 촉감을 갖게 됐다.
+- 다만 **완전 동일 UI는 아직 아니다.**
+  - 현재 경로는 여전히 stock firmware safe path를 우선해 PNG 내부 텍스트를 비워 두고 native label을 사용한다.
+  - 따라서 Stream Deck의 `project / model / state` 3단 텍스트를 같은 캔버스에 완전히 재현하려면 vendor-accepted richer PNG 조합을 더 찾거나, stock firmware 우회가 필요하다.
+
+---
+
+## 2026-04-08 — D200H Session Semantics Pass: Gateway Tile, Back Merge, Stock-like Actions
+
+### 문제
+현재 Swift D200H 경로는 화면 출력 자체는 살아 있었지만, 세 가지 구조 문제가 남아 있었다.
+
+1. 세션 버튼을 눌러 실제로는 mode 전환/명령 라우팅이 일어나도 로그에는 `pressed (unmapped)`가 같이 찍혀 디버깅을 오염시켰다.
+2. `sessions_list`에 주입된 virtual OpenClaw session(`openclaw-gateway`)을 일반 sibling session처럼 `focus_session`으로 처리해 `Session openclaw-gateway not found`가 남았다.
+3. option 모드에서 입력상 slot 13은 `BACK`인데, 렌더는 여전히 usage merged button 경로를 타고 있어 시각/입력이 어긋날 수 있었다.
+
+부가적으로 `sessions_list`는 sibling health에서 `currentTool/options/navigable`를 버리고 있었고, D200H manifest도 `Action/ActionParam` 없이 `Text + Icon`만 보내고 있었다.
+
+### 해결
+- `apple/AgentDeck/Daemon/Modules/D200hHidModule.swift`
+  - 버튼 resolution을 `command / handled / unmapped`로 분리해, 내부적으로 처리된 버튼이 더 이상 `unmapped`로 로그되지 않게 함.
+  - `openclaw-gateway`는 virtual gateway session으로 취급:
+    - D200H UI에서는 project 이름을 `Gateway`로 정규화
+    - session 버튼을 눌러도 `focus_session`을 보내지 않고 local option-select만 진입
+  - full ZIP renderer를 mode-aware로 변경:
+    - session list 모드에서는 기존 usage merged button 유지
+    - option 모드에서는 slot 13 merged button을 실제 `BACK` 시각으로 렌더
+  - manifest builder에 stock-like `Action` + `ActionParam.Path`를 추가:
+    - session tiles: `agentdeck://session/<id>`
+    - option controls: `agentdeck://back`, `agentdeck://option/...`, `agentdeck://interrupt`, `agentdeck://escape`, `agentdeck://more`
+    - usage merged slots는 계속 `Action: ""`로 clock widget 캐시를 지움
+  - native label은 `title` 중심으로 더 보수적으로 사용해 icon-first 성향을 유지
+- `apple/AgentDeck/Daemon/Server/DaemonServer.swift`
+  - sibling `/health` probe 결과에서 `currentTool`, `options`, `navigable`까지 세션에 보존
+  - virtual OpenClaw session에도 동일 필드를 넣어 D200H option view가 gateway 상태를 더 잘 반영하도록 함
+  - `sessionToDict()`도 위 필드를 `sessions_list`에 포함
+- `apple/AgentDeck/Daemon/Session/SessionRegistry.swift`
+  - enriched session 필드에 `currentTool`, `options`, `navigable` 추가
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataD200HReview build CODE_SIGNING_ALLOWED=NO`
+  - 최종 `BUILD SUCCEEDED`
+
+### 핵심 판단
+- 이 수정으로 D200H는 단순히 “보이기만 하는” 단계를 넘어, session semantics도 Stream Deck 쪽과 더 비슷한 구조를 갖게 됐다.
+- 아직 vendor protocol cloning이 끝난 것은 아니지만, manifest도 이제 `icon + action semantics`를 함께 보내기 시작했기 때문에 stock firmware 쪽 accepted shape에 더 가까워졌다.
+
+---
+
+## 2026-04-08 — D200H Protocol Cloning Gate: Stock Icon Evidence + Compare Tooling
+
+### 문제
+사용자는 D200H를 단순 safe-path 아이콘 기기가 아니라, 가능한 한 Stream Deck 수준의 시각 밀도와 동작으로 끌어올리길 원했다. 이 시점에서 판단해야 할 것은 두 가지였다.
+
+1. stock firmware 위에서 vendor protocol을 복제하는 경로가 아직 유효한가
+2. 아니면 device takeover를 주 경로로 승격해야 하는가
+
+하지만 오늘 작업 환경에는 `UlanziStudio.app`가 설치되어 있지 않아 live `IOHIDDeviceSetReport` 캡처를 바로 뜰 수 없었다.
+
+### 해결
+- `zkswe/recon/build-ulanzi-hid-capture.sh`로 vendor HID interpose capture 도구를 다시 빌드해, live capture 준비 상태는 유지했다.
+- `zkswe/recon/d200h_zip_tool.py`를 보강했다:
+  - `profile` 서브커맨드 추가
+  - ZIP뿐 아니라 `manifest0_json.txt` 같은 manifest dump도 직접 분석 가능
+  - `Action`, `State`, `ViewParam.Text`, `ViewParam.Icon` 분포와 PNG 크기 통계를 바로 출력
+  - `compare`는 이제 ZIP과 manifest source를 섞어 비교 가능
+- 기존 stock dump를 기준으로 stock firmware의 허용 범위를 수치로 고정했다:
+  - `zkswe/recon/dumps/20260327_214855/manifest0_json.txt`
+  - `zkswe/recon/dumps/20260327_214855/res_listing.txt`
+- 분석 결과:
+  - stock `manifest0.json`: 버튼 19개, `Text` 비어 있음 19개, `system.open` 액션 18개, `smallwindow.window` 1개
+  - stock 기본 icon: 14종, 참조된 PNG 크기 `29255`~`35837` bytes, 평균 `32154.8` bytes
+  - 즉 stock firmware는 "텍스트를 거의 쓰지 않는 icon-first 버튼"을 기본값으로 삼고 있고, rich PNG도 충분히 싣고 있다
+- 우리 최신 AgentDeck D200H dump는 여전히 작은 PNG + label fallback 비중이 높다:
+  - partial update 기준 `text='OpenClaw'`, `icon='icons/btn0.png'`, PNG 약 `4.6KB`
+  - stock의 기본 icon 밀도와는 아직 차이가 크다
+
+### 검증
+- `bash zkswe/recon/build-ulanzi-hid-capture.sh` 성공
+- `python3 zkswe/recon/d200h_zip_tool.py profile zkswe/recon/dumps/20260327_214855/manifest0_json.txt --res-listing zkswe/recon/dumps/20260327_214855/res_listing.txt`
+  - stock manifest/action/text/icon 분포 출력 확인
+  - stock icon 파일 크기 통계 확인
+- `python3 zkswe/recon/d200h_zip_tool.py compare zkswe/recon/dumps/20260327_214855/manifest0_json.txt <latest AgentDeck partial_update zip>`
+  - stock은 `Action`/`ActionParam`/icon-only 구조
+  - AgentDeck은 `Action=<none>` + `Text='OpenClaw'` 경향
+- `python3 -m py_compile zkswe/recon/d200h_zip_tool.py` 성공
+
+### 핵심 결론
+- **protocol cloning은 아직 죽지 않았다. 오히려 주 경로로 유지해야 한다.**
+  - stock firmware 자체가 rich icon을 충분히 사용한다는 증거가 나왔다.
+  - 따라서 현재 한계는 "D200H 패널의 본질적 한계"보다 "우리가 아직 vendor-accepted payload semantics를 정확히 못 맞춘 상태"에 가깝다.
+- **takeover는 계속 연구 트랙으로 유지한다.**
+  - MI_GFX visible target, boot timing, ADB 안정성, 14-key 입력 매핑까지 모두 제품화 수준으로 정리되지 않았다.
+  - takeover는 자유도 상한은 높지만, 당장 Stream Deck 수준 제품을 만드는 가장 빠른 길은 아니다.
+
+### takeover 승격 조건
+- 다음 조건을 충족해도 stock firmware가 richer button image를 계속 무시하면 takeover를 주 경로로 승격한다:
+  1. vendor payload live capture 확보
+  2. manifest semantics를 stock 쪽에 더 가깝게 정렬
+     - icon-first
+     - `Text` 최소화
+     - `Action` / `ActionParam` 채움
+  3. richer PNG 크기와 ZIP 구조를 vendor/stock 허용 범위에 맞춤
+- 반대로 위 정렬만으로 full-image button acceptance가 살아나면, takeover는 백업 경로로 남긴다.
+
+---
+
+## 2026-04-08 — D200H Stream Deck Brand Renderer Port
+
+### 문제
+D200H Swift 경로는 펌웨어 안전성을 위해 PNG에서 텍스트를 거의 제거한 뒤 너무 단순한 기하 아이콘만 남겨, Stream Deck 구현과 같은 시각 언어가 사라져 있었다. 특히 세션 버튼이 상태색으로만 칠해진 러프한 심볼에 머물러 실제 Stream Deck 세션 슬롯의 브랜드 로고/배지 인상을 재현하지 못했다.
+
+### 해결
+- `apple/AgentDeck/Daemon/Modules/D200hHidModule.swift`에서 세션 로고 색을 상태색이 아니라 **에이전트 브랜드색**으로 분리:
+  - Claude Code `#C07058`
+  - OpenClaw `#ff4d4d`
+  - Codex CLI `#6366f1`
+  - OpenCode `#F1ECEC`
+- D200H PNG 렌더에 Stream Deck renderer 기준 브랜드 path를 직접 이식:
+  - Claude robot
+  - Codex knot/clover
+  - OpenCode nested-square
+  - OpenClaw body/claws/antennae/eyes
+- `CGPath`용 SVG path parser를 추가해 TypeScript `agent-logos.ts`와 같은 path 데이터를 Swift PNG 렌더에서도 재사용 가능하게 함.
+- 세션 타일 상단에 **brand badge**를 추가하고, 그 안에 실제 로고를 배치해 Stream Deck 세션 슬롯의 상단 시그니처 구조를 모사.
+- 빠른 액션 아이콘도 Stream Deck 구현에 맞춰 정리:
+  - `GO ON` 삼각형
+  - `REVIEW` 문서 라인 아이콘
+  - `COMMIT` 원형 + 체크
+  - `CLEAR` X
+- 텍스트는 여전히 `manifest ViewParam.Text`에 남겨 PNG를 텍스트-free로 유지했다. 즉 미감을 올리되, 과거처럼 텍스트가 들어간 PNG 때문에 `SET_BUTTONS`가 거부되는 경로로는 되돌리지 않았다.
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -derivedDataPath /tmp/AgentDeckDerivedDataD200HBoundaryFix build CODE_SIGNING_ALLOWED=NO` 성공.
+- 새 Swift 앱 런타임 dump 확인:
+  - `20260408-133756-150-set_buttons-L-37674b-OPENCLAW_OPENCLAW__.zip`
+  - 전체 ZIP `37674 bytes / 37 packets`
+  - `icons/btn0.png = 3649 bytes`
+  - `icons/btn1.png = 6257 bytes`
+  - `icons/btn13L.png = 2754 bytes`
+- 실제 추출 PNG 육안 확인 결과:
+  - 기존의 단순 사각/타원 심볼 대신 브랜드 로고와 배지가 보임
+  - usage 버튼도 기존과 같은 safe path를 유지
+
+### 남은 한계
+- 현재 stock firmware safe path에서는 **Stream Deck의 3단 텍스트 레이어(project/model/state)를 PNG 내부에 그대로 넣는 방식**까지는 복원하지 않았다.
+- 따라서 지금은 “브랜드/배경/상태 장식은 Stream Deck에 상당히 근접”, “텍스트 구조는 D200H native label 제약 안에서 동작” 상태다.
+- 여기서 더 나아가 완전히 동일한 버튼 캔버스를 원하면 다음 둘 중 하나가 필요하다:
+  - Ulanzi 전송 규약을 더 정확히 역공학해서 richer PNG/manifest 조합을 재현
+  - stock firmware를 우회하고 자체 렌더러로 takeover
+
+---
+
+## 2026-04-07 — macOS AgentDeck.app D200H bundled helper 승격
+
+### 문제
+Swift `AgentDeck.app` 안의 샌드박스 daemon은 D200H HID open에서 `kIOReturnNotPermitted`가 발생해 기기가 기본 펌웨어 화면으로 복귀했다. 사용자는 CLI를 수동 실행하거나 UlanziStudio/공식 SDK에 의존하지 않고, **앱 하나로 D200H를 정상 운용**하길 원했다.
+
+### 해결
+- `apple/scripts/copy-adb.sh`에서 앱 번들 `Contents/Helpers/`에 D200H helper runtime을 함께 복사:
+  - `node`
+  - `agentdeck-d200h-helper`
+  - `agentdeck-runtime/bridge/dist`
+  - 필요한 `node_modules`
+- `DaemonService`에 `startBundledD200HHelper()` 추가. 앱이 로컬 daemon을 내리고 번들 helper를 직접 띄운 뒤 `/health`가 올라오면 해당 daemon에 클라이언트로 재연결한다.
+- D200H 상태 헬스에 `sandboxEnabled`, `usbEntitlementPresent`, `lastOpenError`를 포함시켜 Swift 쪽이 권한 실패를 명시적으로 감지하도록 했다.
+- 로컬 Swift daemon health check에서 `USB entitlement 없음` 또는 `kIOReturnNotPermitted`가 보이면 사용자가 CLI를 만지지 않아도 **앱이 자동으로 번들 D200H helper로 승격**되게 했다.
+- Settings에 `Auto-switch D200H to bundled helper` 토글과 수동 강제 전환 버튼 추가.
+- D200H 역공학용 도구 추가:
+  - Swift daemon이 실제로 만든 `SET_BUTTONS` / `PARTIAL_UPDATE` ZIP을 `~/.agentdeck/d200h-dumps/`에 dedupe dump
+  - `zkswe/recon/ulanzi_hid_capture.c` + `build-ulanzi-hid-capture.sh`로 macOS `IOHIDDeviceSetReport` interpose 캡처
+  - `zkswe/recon/d200h_zip_tool.py`로 raw packet → ZIP 재구성 및 ZIP/manifest 비교
+- Swift/Node ZIP builder 결함 수정:
+  - 기존 dummy-file padding 방식은 앞쪽 PNG data에 걸린 invalid boundary byte를 절대 고칠 수 없었음
+  - dump 분석 결과 실제로 `16376`, `23544`, `30712` 같은 boundary offset에 `0x00`가 반복적으로 남아 있었음
+  - 해결: ZIP local header extra field padding을 엔트리별로 조정하는 방식으로 전환
+  - 검증: 새 dump `20260406-161556-747-set_buttons-L-45019b-OPENCLAW_OPENCLAW__.json` 기준 invalid boundary byte `bad=0`
+
+### 핵심 설계 결정
+- **"CLI fallback"이 아니라 "app-owned helper"**: 사용자는 `AgentDeck.app`만 실행한다. helper는 앱 번들 내부 자산으로 배포·기동되고, 제어권도 AgentDeck에 남긴다.
+- **Ulanzi SDK/Studio 비채택 유지**: 공식 SDK는 UlanziStudio 플러그인 모델이라 호스트 제어권이 Ulanzi 앱에 묶인다. 우리의 목적은 AgentDeck이 직접 D200H 상태/렌더/입력을 소유하는 구조다.
+- **자동 승격 조건은 D200H 권한 실패 신호에 한정**: 단순 연결 지연이 아니라 `sandbox + no USB entitlement` 또는 `open denied`일 때만 helper로 넘어가 불필요한 전환을 막는다.
+- **공식 앱은 runtime dependency가 아니라 protocol oracle**: UlanziStudio를 제품 경로로 쓰지 않고, 필요할 때 `IOHIDDeviceSetReport` 캡처 대상으로만 활용해 vendor ZIP/manifest 규약을 복제한다.
+
+---
+
+## 2026-04-08 — D200H Swift 렌더 경량화 + ZIP 스펙 정합성 + Consumer 입력 fallback
+
+### 문제
+Swift D200H 경로를 다시 실기 로그 기준으로 점검한 결과, 단순 HID open 실패만이 아니라 payload 자체에도 문제가 있었다.
+
+1. 버튼 텍스트를 PNG에 직접 굽는 경로가 다시 들어와 ZIP/PNG 크기가 커졌다.
+2. boundary padding을 위해 ZIP local/central header extra 영역에 raw `0x41` filler를 바로 넣어, Python `zipfile`이 손상으로 판정하는 비정상 extra field를 만들고 있었다.
+3. 현재 macOS 앱 빌드에서는 Keyboard HID 인터페이스가 `kIOReturnNotPermitted`로 막히지만 Consumer 인터페이스는 열리는 경우가 있어, 화면은 갱신돼도 입력이 죽을 수 있었다.
+
+### 해결
+- Swift `D200hHidModule.swift` 렌더 경량화:
+  - 일반 버튼 PNG를 `icon-only`로 축소
+  - 버튼 라벨은 manifest `ViewParam.Text`로 다시 이동
+  - usage merged slot도 커스텀 gauge/text PNG 대신 icon-only half PNG + native text(`5H xx%`, `7D yy%`)로 단순화
+- ZIP extra field 정합성 수정:
+  - boundary shift는 계속 local header extra field padding으로 수행
+  - 단, extra bytes를 raw filler가 아니라 `header(0x4141) + length + payload` 형식의 유효한 ZIP extra field로 생성
+  - 같은 수정 적용: Swift `D200hHidModule.swift` + Node `bridge/src/d200h/image-renderer.ts`
+- Consumer input fallback:
+  - Swift 구현도 Node와 동일하게 Consumer Control 인터페이스에 input callback을 등록
+  - Keyboard interface open이 막혀도 button report가 Consumer 쪽으로 들어오면 입력을 받을 수 있게 준비
+
+### 검증
+- `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataD200HZipSpec build CODE_SIGNING_ALLOWED=NO`
+- `pnpm --filter @agentdeck/bridge build`
+- 새 Swift dump 기준:
+  - `~/.agentdeck/d200h-dumps/20260408-132027-552-set_buttons-L-33219b-OPENCLAW_OPENCLAW__.zip`
+  - boundary invalid byte `bad=0`
+  - Python `zipfile.ZipFile(...)`로 정상 파싱
+  - `icons/btn0.png` 약 `2274 bytes`까지 감소
+  - 전체 `SET_BUTTONS` ZIP `33219 bytes / 33 packets`
+- 런타임 health 기준:
+  - Consumer interface 연결 + 반복 `SET_BUTTONS` 송신 유지
+  - sessions relay 연결 후 `sessionsCount: 2`
+  - Keyboard interface는 여전히 `kIOReturnNotPermitted` 가능성 잔존
+
+### 핵심 설계 결정
+- **D200H는 텍스트보다 native label을 우선한다.** PNG는 icon-only로 유지해 펌웨어 허용 범위에 맞춘다.
+- **boundary fix만으로는 부족하다.** ZIP도 표준 파서가 읽을 수 있는 형태여야 reverse-engineering / oracle 비교가 가능하다.
+- **입력 fallback도 Consumer-first로 준비한다.** Keyboard HID 권한이 막히는 macOS 빌드가 실제로 존재하므로 Consumer callback을 항상 붙여 두는 쪽이 안전하다.
+
+---
+
 ## 2026-04-05 — CLAUDE.md 재구성 + D200H Node daemon 활성화
 
 ### 문제

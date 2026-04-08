@@ -36,6 +36,15 @@ private let CMD_IN_BUTTON: UInt16      = 0x0101
 private let CMD_IN_DEVICE_INFO: UInt16 = 0x0303
 
 private let ANIM_INTERVAL: UInt64 = 250_000_000  // 250ms = 4fps animation
+private let PRESS_FLASH_DURATION: UInt64 = 90_000_000
+
+private func d200hBakeSessionTextEnabled() -> Bool {
+    AppPreferences.shared.d200hBakeSessionText
+}
+
+private func d200hHideNativeSessionLabelsEnabled() -> Bool {
+    d200hBakeSessionTextEnabled() && AppPreferences.shared.d200hHideNativeSessionLabels
+}
 
 // MARK: - D200hHidModule
 
@@ -81,6 +90,8 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     private var lastFullSlots: [ButtonSlot] = []  // cache for partial update diff
     private var animatedButtonIds: [Int] = []      // buttons needing animation
     private var partialUpdateSupported = true       // fallback if PARTIAL_UPDATE fails
+    private var pressDispatchTasks: [Int: Task<Void, Never>] = [:]
+    private var lastLabelStyleShowTitle: Bool?
     private lazy var usbEntitlementPresent: Bool = Self.hasEntitlement("com.apple.security.device.usb")
     private lazy var sandboxEnabled: Bool = Self.hasEntitlement("com.apple.security.app-sandbox")
 
@@ -146,6 +157,8 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         pollTask?.cancel()
         heartbeatTask?.cancel()
         animationTask?.cancel()
+        pressDispatchTasks.values.forEach { $0.cancel() }
+        pressDispatchTasks.removeAll()
         disconnect()
 
         if let manager = hidManager {
@@ -217,6 +230,8 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             "writeFail": writeFailCount,
             "lastWriteError": lastWriteError,
             "lastOpenError": lastOpenError,
+            "nativeLabelsVisible": shouldShowNativeLabels(for: currentMode),
+            "bakeSessionText": d200hBakeSessionTextEnabled(),
             "mode": currentMode == .sessionList ? "sessions" : "options",
             "sessionsCount": cachedSessionsList.count,
             "lastStateHash": lastStateHash,
@@ -301,7 +316,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
 
     private func initializeDevice() {
         writePacket(buildBrightnessPacket(100))
-        writePacket(buildLabelStylePacket())
+        syncLabelStyleIfNeeded(force: true)
 
         // Force full render (clear hash so updateDisplay always sends)
         lastStateHash = ""
@@ -379,12 +394,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 buttonPressCount += 1
                 lastButtonIndex = buttonIndex
                 lastButtonPressUptimeNs = now
-                if let cmd = resolveButtonCommand(buttonIndex) {
-                    DaemonLogger.shared.debug("D200H", "Button \(buttonIndex) pressed -> \(cmd["type"] ?? "")")
-                    commandHandler?(cmd)
-                } else {
-                    DaemonLogger.shared.debug("D200H", "Button \(buttonIndex) pressed (unmapped)")
-                }
+                scheduleButtonDispatch(buttonIndex)
             }
         } else if command == CMD_IN_DEVICE_INFO {
             if let jsonStr = String(data: data[8...], encoding: .ascii)?.components(separatedBy: "\0").first,
@@ -397,29 +407,31 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
 
     // MARK: - Dynamic Button Command Resolution
 
-    private func resolveButtonCommand(_ index: Int) -> [String: Any]? {
+    private func resolveButtonCommand(_ index: Int) -> ButtonResolution {
         let sessions = buildSessionList()
 
         switch currentMode {
         case .sessionList:
             // Slot 13 = usage monitor (big merged button, no action)
-            if index == 13 { return nil }
+            if index == 13 { return .unmapped }
             // Slots 0-12 are sessions (13 per page)
-            guard index <= 12 else { return nil }
+            guard index <= 12 else { return .unmapped }
             let startIdx = sessionPage * 13
             let sessionIdx = startIdx + index
-            guard sessionIdx < sessions.count else { return nil }
+            guard sessionIdx < sessions.count else { return .unmapped }
             let session = sessions[sessionIdx]
 
             // Focus this session and enter detail view
             focusedSessionId = session.id
-            commandHandler?(["type": "focus_session", "sessionId": session.id])
             currentMode = .optionSelect
             optionPage = 0
             lastStateHash = ""  // force re-render on mode change
             debugLog("BUTTON \(index) → optionSelect session=\(session.id)")
             updateDisplay()
-            return nil
+            if session.isVirtualGateway {
+                return .handled(note: "option_select_virtual_gateway")
+            }
+            return .command(["type": "focus_session", "sessionId": session.id])
 
         case .optionSelect:
             guard let focusId = focusedSessionId,
@@ -427,7 +439,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 currentMode = .sessionList
                 lastStateHash = ""
                 updateDisplay()
-                return nil
+                return .handled(note: "reset_to_sessions")
             }
 
             switch index {
@@ -435,22 +447,22 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 currentMode = .sessionList
                 lastStateHash = ""
                 updateDisplay()
-                return nil
+                return .handled(note: "back")
 
             case 1:  // Info display, no action
-                return nil
+                return .handled(note: "info")
 
             case 2...9:  // Option buttons or Quick Actions
                 if session.options.isEmpty && session.isIdle {
                     // Quick actions: GO ON, REVIEW, COMMIT, CLEAR
                     let actions = ["go on", "/review", "/commit", "/clear"]
                     let qaIdx = index - 2
-                    guard qaIdx < actions.count else { return nil }
-                    return ["type": "send_prompt", "text": actions[qaIdx]]
+                    guard qaIdx < actions.count else { return .unmapped }
+                    return .command(["type": "send_prompt", "text": actions[qaIdx]])
                 }
 
                 let optIdx = optionPage * 8 + (index - 2)
-                guard optIdx < session.options.count else { return nil }
+                guard optIdx < session.options.count else { return .unmapped }
                 let opt = session.options[optIdx]
                 let shortcut = opt["shortcut"] as? String ?? ""
                 let label = opt["label"] as? String ?? ""
@@ -460,28 +472,29 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 updateDisplay()
 
                 if session.navigable {
-                    return ["type": "select_option", "index": optIdx]
+                    return .command(["type": "select_option", "index": optIdx])
                 } else {
                     let key = shortcut.isEmpty ? String(label.prefix(1)).lowercased() : shortcut
-                    return ["type": "respond", "response": key]
+                    return .command(["type": "respond", "response": key])
                 }
 
             case 10:  // STOP/ESC combined
                 if session.isProcessing {
-                    return ["type": "interrupt"]
+                    return .command(["type": "interrupt"])
                 } else {
                     currentMode = .sessionList
                     lastStateHash = ""
                     updateDisplay()
-                    return ["type": "escape"]
+                    return .command(["type": "escape"])
                 }
 
             case 11:  // MORE
                 let totalOptPages = max(1, (session.options.count + 7) / 8)
                 optionPage = (optionPage + 1) % totalOptPages
                 updateDisplay()
-                return nil
-            default: return nil
+                return .handled(note: "more")
+            default:
+                return .unmapped
             }
         }
     }
@@ -492,12 +505,29 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         DaemonLogger.shared.debug("D200H", msg)
     }
 
-    private func updateDisplay(animationOnly: Bool = false) {
-        guard connected, managerOpened else {
-            debugLog("updateDisplay SKIP: connected=\(connected) managerOpened=\(managerOpened)")
-            return
+    private func shouldShowNativeLabels(for mode: DisplayMode) -> Bool {
+        switch mode {
+        case .sessionList:
+            return !d200hHideNativeSessionLabelsEnabled()
+        case .optionSelect:
+            return true
         }
+    }
 
+    private func syncLabelStyleIfNeeded(force: Bool = false) {
+        let showTitle = shouldShowNativeLabels(for: currentMode)
+        guard force || lastLabelStyleShowTitle != showTitle else { return }
+        writePacket(buildLabelStylePacket(showTitle: showTitle))
+        lastLabelStyleShowTitle = showTitle
+    }
+
+    private struct DisplayRenderState {
+        let sessions: [D200hSessionInfo]
+        let slots: [ButtonSlot]
+        let animatedButtonIds: [Int]
+    }
+
+    private func currentDisplayRenderState() -> DisplayRenderState {
         let allSessions = buildSessionList()
 
         var slots: [ButtonSlot]
@@ -505,13 +535,14 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
 
         switch currentMode {
         case .sessionList:
-            let (s, anim) = D200hRenderer.computeSessionListSlots(
-                sessions: allSessions, stateEvent: cachedStateEvent, usageEvent: cachedUsageEvent,
-                page: sessionPage, animFrame: animFrame
+            let (computedSlots, _) = D200hRenderer.computeSessionListSlots(
+                sessions: allSessions,
+                stateEvent: cachedStateEvent,
+                usageEvent: cachedUsageEvent,
+                page: sessionPage,
+                animFrame: animFrame
             )
-            slots = s
-            updateAnimationTimer(needsAnimation: anim)
-            // Track which buttons have border animation (slots 0-12 = sessions)
+            slots = computedSlots
             let startIdx = sessionPage * 13
             for i in 0..<13 {
                 let sessionIdx = startIdx + i
@@ -526,33 +557,116 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                let session = allSessions.first(where: { $0.id == focusId }) {
                 slots = D200hRenderer.computeOptionSelectSlots(session: session, page: optionPage)
             } else {
-                // Session disappeared — stay in option view with last known state
-                // User must press BACK to return to session list
                 slots = [ButtonSlot](repeating: .dim, count: 14)
                 slots[0] = ButtonSlot(title: "← BACK", subtitle: "", bg: D200hRenderer.cDark, enabled: true, borderStyle: .none, icon: .back, iconColor: rgb(226, 232, 240))
                 slots[10] = ButtonSlot(title: "✖ ESC", subtitle: "", bg: D200hRenderer.cEscActive, enabled: true, borderStyle: .none, icon: .back, iconColor: rgb(226, 232, 240))
             }
         }
 
-        animatedButtonIds = animButtonIds
+        return DisplayRenderState(sessions: allSessions, slots: slots, animatedButtonIds: animButtonIds)
+    }
+
+    private func sendPartialUpdate(slots: [ButtonSlot], buttonIds: [Int], sessions: [D200hSessionInfo]) {
+        guard connected, managerOpened, partialUpdateSupported else { return }
+        let zip = D200hRenderer.renderPartialZip(
+            slots: slots,
+            buttonIds: buttonIds,
+            optionMode: currentMode == .optionSelect,
+            sessions: sessions,
+            sessionPage: sessionPage,
+            focusedSessionId: focusedSessionId
+        )
+        dumpZipForAnalysisIfNeeded(zip, command: "partial_update", mode: currentMode, slots: slots)
+        let packets = buildZipPackets(zip, command: CMD_PARTIAL_UPDATE)
+        for packet in packets { writePacket(packet) }
+    }
+
+    private func scheduleButtonDispatch(_ buttonIndex: Int) {
+        sendPressFlash(buttonIndex)
+
+        pressDispatchTasks[buttonIndex]?.cancel()
+        pressDispatchTasks[buttonIndex] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: PRESS_FLASH_DURATION)
+            guard let self, !Task.isCancelled else { return }
+
+            let modeBefore = self.currentMode
+            let focusBefore = self.focusedSessionId
+            let sessionPageBefore = self.sessionPage
+            let optionPageBefore = self.optionPage
+
+            switch self.resolveButtonCommand(buttonIndex) {
+            case .command(let cmd):
+                DaemonLogger.shared.debug("D200H", "Button \(buttonIndex) pressed -> \(cmd["type"] ?? "")")
+                self.commandHandler?(cmd)
+            case .handled(let note):
+                DaemonLogger.shared.debug("D200H", "Button \(buttonIndex) handled locally -> \(note)")
+            case .unmapped:
+                DaemonLogger.shared.debug("D200H", "Button \(buttonIndex) pressed (unmapped)")
+            }
+
+            let displayChanged = modeBefore != self.currentMode
+                || focusBefore != self.focusedSessionId
+                || sessionPageBefore != self.sessionPage
+                || optionPageBefore != self.optionPage
+
+            if !displayChanged {
+                self.restoreButtonAfterFlash(buttonIndex)
+            }
+
+            self.pressDispatchTasks[buttonIndex] = nil
+        }
+    }
+
+    private func sendPressFlash(_ buttonIndex: Int) {
+        let state = currentDisplayRenderState()
+        guard buttonIndex < state.slots.count else { return }
+        guard state.slots[buttonIndex].enabled else { return }
+        if buttonIndex == 13 && currentMode != .optionSelect { return }
+
+        var flashSlots = state.slots
+        flashSlots[buttonIndex] = flashSlots[buttonIndex].pressedFlash()
+        sendPartialUpdate(slots: flashSlots, buttonIds: [buttonIndex], sessions: state.sessions)
+    }
+
+    private func restoreButtonAfterFlash(_ buttonIndex: Int) {
+        let state = currentDisplayRenderState()
+        guard buttonIndex < state.slots.count else { return }
+        if buttonIndex == 13 && currentMode != .optionSelect { return }
+        sendPartialUpdate(slots: state.slots, buttonIds: [buttonIndex], sessions: state.sessions)
+    }
+
+    private func updateDisplay(animationOnly: Bool = false) {
+        guard connected, managerOpened else {
+            debugLog("updateDisplay SKIP: connected=\(connected) managerOpened=\(managerOpened)")
+            return
+        }
+
+        syncLabelStyleIfNeeded()
+
+        let renderState = currentDisplayRenderState()
+        let allSessions = renderState.sessions
+        let slots = renderState.slots
+        animatedButtonIds = renderState.animatedButtonIds
+        updateAnimationTimer(needsAnimation: !animatedButtonIds.isEmpty)
 
         // Decide: full update or partial animation
         if animationOnly && partialUpdateSupported && !animatedButtonIds.isEmpty && !lastFullSlots.isEmpty {
-            // PARTIAL_UPDATE — only re-render animated buttons
-            let zip = D200hRenderer.renderPartialZip(slots: slots, buttonIds: animatedButtonIds)
-            dumpZipForAnalysisIfNeeded(zip, command: "partial_update", mode: currentMode, slots: slots)
-            let packets = buildZipPackets(zip, command: CMD_PARTIAL_UPDATE)
-            for packet in packets { writePacket(packet) }
+            sendPartialUpdate(slots: slots, buttonIds: animatedButtonIds, sessions: allSessions)
         } else {
             // Skip if content unchanged (prevents flooding device with repeated ZIPs)
             let modeKey = currentMode == .sessionList ? "L" : "O"
-            let contentKey = "\(modeKey)|\(slots.map { $0.title }.joined(separator: ","))"
+            let contentKey = "\(modeKey)|labels=\(shouldShowNativeLabels(for: currentMode) ? 1 : 0)|baked=\(d200hBakeSessionTextEnabled() ? 1 : 0)|\(slots.map(\.cacheKey).joined(separator: ","))"
             if contentKey == lastStateHash { return }
             lastStateHash = contentKey
 
             let zip = D200hRenderer.renderFullZip(
-                slots: slots, sessions: allSessions,
-                stateEvent: cachedStateEvent, usageEvent: cachedUsageEvent
+                slots: slots,
+                sessions: allSessions,
+                stateEvent: cachedStateEvent,
+                usageEvent: cachedUsageEvent,
+                optionMode: currentMode == .optionSelect,
+                sessionPage: sessionPage,
+                focusedSessionId: focusedSessionId
             )
             dumpZipForAnalysisIfNeeded(zip, command: "set_buttons", mode: currentMode, slots: slots)
             let packets = buildZipPackets(zip)
@@ -633,6 +747,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         keyboardDevice = nil
         connected = false
         lastStateHash = ""
+        lastLabelStyleShowTitle = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
     }
@@ -782,12 +897,12 @@ private func buildBrightnessPacket(_ brightness: Int) -> Data {
 
 private let CMD_SET_LABEL_STYLE: UInt16 = 0x000b
 
-private func buildLabelStylePacket() -> Data {
+private func buildLabelStylePacket(showTitle: Bool) -> Data {
     let style: [String: Any] = [
         "Align": "bottom",
         "Color": 0xFFFFFF,
         "FontName": "Roboto",
-        "ShowTitle": 1,
+        "ShowTitle": showTitle ? 1 : 0,
         "Size": 14,
         "Weight": 72,
     ]
@@ -798,6 +913,12 @@ private func buildLabelStylePacket() -> Data {
 private func buildSmallWindowPacket(mode: Int, cpu: Int, mem: Int, time: String, gpu: Int) -> Data {
     let str = "\(mode)|\(cpu)|\(mem)|\(time)|\(gpu)"
     return buildPacket(command: CMD_SET_SMALL_WINDOW, payload: Data(str.utf8))
+}
+
+private enum ButtonResolution {
+    case command([String: Any])
+    case handled(note: String)
+    case unmapped
 }
 
 // MARK: - Session Data
@@ -812,22 +933,33 @@ private struct D200hSessionInfo {
     let options: [[String: Any]]
     let navigable: Bool
     let modelName: String
+    let isVirtualGateway: Bool
 
     var isIdle: Bool { state == "idle" }
     var isProcessing: Bool { state == "processing" }
     var isAwaiting: Bool { state.hasPrefix("awaiting") }
 
     static func parse(_ dict: [String: Any]) -> D200hSessionInfo {
-        D200hSessionInfo(
-            id: dict["id"] as? String ?? "",
-            projectName: dict["projectName"] as? String ?? dict["agentType"] as? String ?? "",
+        let id = dict["id"] as? String ?? ""
+        let rawProjectName = dict["projectName"] as? String ?? dict["agentType"] as? String ?? ""
+        let isVirtualGateway = id == "openclaw-gateway"
+        let normalizedProjectName: String
+        if isVirtualGateway && (rawProjectName.isEmpty || rawProjectName.caseInsensitiveCompare("OpenClaw") == .orderedSame) {
+            normalizedProjectName = "Gateway"
+        } else {
+            normalizedProjectName = rawProjectName
+        }
+        return D200hSessionInfo(
+            id: id,
+            projectName: normalizedProjectName,
             agentType: dict["agentType"] as? String ?? "",
             state: dict["state"] as? String ?? "idle",
             port: dict["port"] as? Int ?? 0,
             currentTool: dict["currentTool"] as? String ?? "",
             options: dict["options"] as? [[String: Any]] ?? [],
             navigable: dict["navigable"] as? Bool ?? false,
-            modelName: dict["modelName"] as? String ?? ""
+            modelName: dict["modelName"] as? String ?? "",
+            isVirtualGateway: isVirtualGateway
         )
     }
 }
@@ -835,6 +967,12 @@ private struct D200hSessionInfo {
 // MARK: - Button Slot Definition
 
 private struct ButtonSlot {
+    enum TextOverlayStyle {
+        case none
+        case sessionTile
+        case usageStat
+    }
+
     let title: String
     let subtitle: String
     let bg: CGColor
@@ -842,17 +980,21 @@ private struct ButtonSlot {
     let borderStyle: BorderStyle
     let icon: IconGlyph
     let iconColor: CGColor?
+    let statusColor: CGColor?
+    let textOverlay: TextOverlayStyle
     // Native text candidates for manifest ViewParam.Text
     let agentLabel: String    // "CLAUDE CODE", "OPENCLAW" etc.
     let modelName: String     // "opus-4", "gpt-4o" etc.
     let stateLabel: String    // "WORKING", "IDLE" etc.
 
     init(title: String, subtitle: String, bg: CGColor, enabled: Bool, borderStyle: BorderStyle,
-         icon: IconGlyph, iconColor: CGColor?,
+         icon: IconGlyph, iconColor: CGColor?, statusColor: CGColor? = nil, textOverlay: TextOverlayStyle = .none,
          agentLabel: String = "", modelName: String = "", stateLabel: String = "") {
         self.title = title; self.subtitle = subtitle; self.bg = bg
         self.enabled = enabled; self.borderStyle = borderStyle
         self.icon = icon; self.iconColor = iconColor
+        self.statusColor = statusColor
+        self.textOverlay = textOverlay
         self.agentLabel = agentLabel; self.modelName = modelName; self.stateLabel = stateLabel
     }
 
@@ -881,6 +1023,50 @@ private struct ButtonSlot {
     }
 
     static let dim = ButtonSlot(title: "", subtitle: "", bg: rgb(17, 17, 17), enabled: false, borderStyle: .none, icon: .none, iconColor: nil)
+
+    var cacheKey: String {
+        let borderKey: String
+        switch borderStyle {
+        case .none: borderKey = "n"
+        case .awaitingPulse: borderKey = "a"
+        case .processingDash: borderKey = "p"
+        case .solid: borderKey = "s"
+        }
+
+        let overlayKey: String
+        switch textOverlay {
+        case .none: overlayKey = "n"
+        case .sessionTile: overlayKey = "t"
+        case .usageStat: overlayKey = "u"
+        }
+
+        return "\(title)|\(subtitle)|\(modelName)|\(stateLabel)|\(enabled ? 1 : 0)|\(borderKey)|\(overlayKey)"
+    }
+
+    func pressedFlash() -> ButtonSlot {
+        let baseBorderColor: CGColor
+        switch borderStyle {
+        case .awaitingPulse(let color, _), .processingDash(let color, _), .solid(let color):
+            baseBorderColor = blendColor(color, toward: (1, 1, 1), ratio: 0.45)
+        case .none:
+            baseBorderColor = rgb(248, 250, 252)
+        }
+
+        return ButtonSlot(
+            title: title,
+            subtitle: subtitle,
+            bg: blendColor(bg, toward: (1, 1, 1), ratio: 0.18),
+            enabled: enabled,
+            borderStyle: .solid(color: baseBorderColor),
+            icon: icon,
+            iconColor: iconColor.map { blendColor($0, toward: (1, 1, 1), ratio: 0.18) },
+            statusColor: statusColor.map { blendColor($0, toward: (1, 1, 1), ratio: 0.10) },
+            textOverlay: textOverlay,
+            agentLabel: agentLabel,
+            modelName: modelName,
+            stateLabel: stateLabel
+        )
+    }
 }
 
 // MARK: - Agent Controller Renderer (SD+ Style)
@@ -917,6 +1103,8 @@ private enum D200hRenderer {
     static let cStopInact   = rgb(26, 10, 10)        // #1a0a0a
     static let cEscActive   = rgb(45, 24, 16)        // #2d1810
     static let cEscInact    = rgb(26, 19, 8)         // #1a1308
+    static var sessionTextOverlayEnabled: Bool { d200hBakeSessionTextEnabled() }
+    static var hidesNativeSessionLabels: Bool { d200hHideNativeSessionLabelsEnabled() }
 
     // State → indicator color (no agent-type overrides — purely semantic)
     static func stateColor(_ state: String, agent: String = "") -> CGColor {
@@ -1030,6 +1218,8 @@ private enum D200hRenderer {
                 bg: bg, enabled: true, borderStyle: border,
                 icon: sessionGlyph(for: session.agentType),
                 iconColor: brandColor,
+                statusColor: sColor,
+                textOverlay: sessionTextOverlayEnabled ? .sessionTile : .none,
                 agentLabel: agentLbl,
                 modelName: String(session.modelName.prefix(14)),
                 stateLabel: stateLbl
@@ -1167,7 +1357,8 @@ private enum D200hRenderer {
     /// Full dashboard ZIP (all 13 buttons) — used for layout changes
     static func renderFullZip(
         slots: [ButtonSlot], sessions: [D200hSessionInfo],
-        stateEvent: [String: Any]?, usageEvent: [String: Any]?
+        stateEvent: [String: Any]?, usageEvent: [String: Any]?,
+        optionMode: Bool, sessionPage: Int, focusedSessionId: String?
     ) -> Data {
         var manifest: [String: Any] = [:]
         var files: [(name: String, data: Data)] = []
@@ -1178,38 +1369,45 @@ private enum D200hRenderer {
             let iconPath = "icons/btn\(key.id).png"
             let colRow = "\(key.col)_\(key.row)"
             let png = renderButtonPng(slot)
-            let label = manifestText(for: slot)
-            manifest[colRow] = [
-                "State": 0,
-                "ViewParam": [["Text": label, "Icon": iconPath]],
-            ] as [String: Any]
+            let label = manifestText(for: slot, optionMode: optionMode, slotId: key.id)
+            let actionPath = actionPath(for: slot, slotId: key.id, optionMode: optionMode, sessions: sessions, sessionPage: sessionPage, focusedSessionId: focusedSessionId)
+            manifest[colRow] = manifestEntry(text: label, iconPath: iconPath, actionPath: actionPath)
             files.append((iconPath, png))
         }
 
-        // Slot 13: big merged button spans col3+col4 at row2.
-        // Render as two halves (left=3_2, right=4_2) from one wide canvas.
-        let usagePct5 = usageEvent?["fiveHourPercent"] as? Double ?? stateEvent?["fiveHourPercent"] as? Double ?? 0
-        let usagePct7 = usageEvent?["sevenDayPercent"] as? Double ?? stateEvent?["sevenDayPercent"] as? Double ?? 0
-        let (leftPng, rightPng) = renderUsageMergedButton(pct5: usagePct5, pct7: usagePct7)
-        // Explicitly clear Action to override any cached clock widget from D200H firmware
-        manifest["3_2"] = [
-            "State": 0,
-            "Action": "",
-            "ViewParam": [[
-                "Text": usageText(window: "5H", percent: usagePct5),
-                "Icon": "icons/btn13L.png"
-            ]]
-        ] as [String: Any]
-        manifest["4_2"] = [
-            "State": 0,
-            "Action": "",
-            "ViewParam": [[
-                "Text": usageText(window: "7D", percent: usagePct7),
-                "Icon": "icons/btn13R.png"
-            ]]
-        ] as [String: Any]
-        files.append(("icons/btn13L.png", leftPng))
-        files.append(("icons/btn13R.png", rightPng))
+        if !optionMode {
+            // Slot 13: big merged usage button spans col3+col4 at row2.
+            let usagePct5 = usageEvent?["fiveHourPercent"] as? Double ?? stateEvent?["fiveHourPercent"] as? Double ?? 0
+            let usagePct7 = usageEvent?["sevenDayPercent"] as? Double ?? stateEvent?["sevenDayPercent"] as? Double ?? 0
+            let (leftPng, rightPng) = renderUsageMergedButton(pct5: usagePct5, pct7: usagePct7)
+            manifest["3_2"] = manifestEntry(
+                text: hidesNativeSessionLabels ? "" : usageText(window: "5H", percent: usagePct5),
+                iconPath: "icons/btn13L.png",
+                clearAction: true
+            )
+            manifest["4_2"] = manifestEntry(
+                text: hidesNativeSessionLabels ? "" : usageText(window: "7D", percent: usagePct7),
+                iconPath: "icons/btn13R.png",
+                clearAction: true
+            )
+            files.append(("icons/btn13L.png", leftPng))
+            files.append(("icons/btn13R.png", rightPng))
+        } else {
+            let mergedSlot = slots[13]
+            let (leftPng, rightPng) = renderMirroredMergedButton(mergedSlot)
+            manifest["3_2"] = manifestEntry(
+                text: manifestText(for: mergedSlot, optionMode: optionMode, slotId: 13),
+                iconPath: "icons/btn13L.png",
+                actionPath: "agentdeck://back"
+            )
+            manifest["4_2"] = manifestEntry(
+                text: "",
+                iconPath: "icons/btn13R.png",
+                actionPath: "agentdeck://back"
+            )
+            files.append(("icons/btn13L.png", leftPng))
+            files.append(("icons/btn13R.png", rightPng))
+        }
 
         if let manifestData = try? JSONSerialization.data(withJSONObject: manifest) {
             files.append(("manifest.json", manifestData))
@@ -1218,23 +1416,41 @@ private enum D200hRenderer {
     }
 
     /// Partial ZIP (only specified buttons) — used for animation frames
-    static func renderPartialZip(slots: [ButtonSlot], buttonIds: [Int]) -> Data {
+    static func renderPartialZip(
+        slots: [ButtonSlot], buttonIds: [Int],
+        optionMode: Bool, sessions: [D200hSessionInfo], sessionPage: Int, focusedSessionId: String?
+    ) -> Data {
         var manifest: [String: Any] = [:]
         var files: [(name: String, data: Data)] = []
 
         for btnId in buttonIds {
-            if btnId == 13 { continue } // Slot 13 is merged usage button, updated via full ZIP only
+            if btnId == 13 {
+                guard optionMode, btnId < slots.count else { continue }
+                let mergedSlot = slots[13]
+                let (leftPng, rightPng) = renderMirroredMergedButton(mergedSlot)
+                manifest["3_2"] = manifestEntry(
+                    text: manifestText(for: mergedSlot, optionMode: optionMode, slotId: 13),
+                    iconPath: "icons/btn13L.png",
+                    actionPath: "agentdeck://back"
+                )
+                manifest["4_2"] = manifestEntry(
+                    text: "",
+                    iconPath: "icons/btn13R.png",
+                    actionPath: "agentdeck://back"
+                )
+                files.append(("icons/btn13L.png", leftPng))
+                files.append(("icons/btn13R.png", rightPng))
+                continue
+            }
             guard btnId < keyDefs.count, btnId < slots.count else { continue }
             let key = keyDefs[btnId]
             let slot = slots[btnId]
             let iconPath = "icons/btn\(key.id).png"
             let colRow = "\(key.col)_\(key.row)"
             let png = renderButtonPng(slot)
-            let label = manifestText(for: slot)
-            manifest[colRow] = [
-                "State": 0,
-                "ViewParam": [["Text": label, "Icon": iconPath]],
-            ] as [String: Any]
+            let label = manifestText(for: slot, optionMode: optionMode, slotId: key.id)
+            let actionPath = actionPath(for: slot, slotId: key.id, optionMode: optionMode, sessions: sessions, sessionPage: sessionPage, focusedSessionId: focusedSessionId)
+            manifest[colRow] = manifestEntry(text: label, iconPath: iconPath, actionPath: actionPath)
             files.append((iconPath, png))
         }
 
@@ -1252,22 +1468,26 @@ private enum D200hRenderer {
     ) -> (left: Data, right: Data) {
         let borderColor = usageBorderColor(pct5: pct5, pct7: pct7)
         let leftSlot = ButtonSlot(
-            title: "",
-            subtitle: "",
+            title: hidesNativeSessionLabels ? "5H" : "",
+            subtitle: hidesNativeSessionLabels ? "\(Int(pct5.rounded()))%" : "",
             bg: cDetailBg,
             enabled: false,
             borderStyle: .solid(color: borderColor),
             icon: .usage,
-            iconColor: borderColor
+            iconColor: borderColor,
+            statusColor: borderColor,
+            textOverlay: hidesNativeSessionLabels ? .usageStat : .none
         )
         let rightSlot = ButtonSlot(
-            title: "",
-            subtitle: "",
+            title: hidesNativeSessionLabels ? "7D" : "",
+            subtitle: hidesNativeSessionLabels ? "\(Int(pct7.rounded()))%" : "",
             bg: cDetailBg,
             enabled: false,
             borderStyle: .solid(color: borderColor),
             icon: .usage,
-            iconColor: borderColor
+            iconColor: borderColor,
+            statusColor: borderColor,
+            textOverlay: hidesNativeSessionLabels ? .usageStat : .none
         )
         return (renderButtonPng(leftSlot), renderButtonPng(rightSlot))
     }
@@ -1283,14 +1503,76 @@ private enum D200hRenderer {
         "\(window) \(Int(percent.rounded()))%"
     }
 
-    private static func manifestText(for slot: ButtonSlot) -> String {
-        for raw in [slot.title, slot.subtitle, slot.stateLabel, slot.agentLabel] where !raw.isEmpty {
+    private static func manifestText(for slot: ButtonSlot, optionMode: Bool, slotId: Int) -> String {
+        if slot.textOverlay != .none {
+            return ""
+        }
+        let rawCandidates: [String]
+        if optionMode {
+            rawCandidates = slotId == 13 ? [slot.title] : [slot.title, slot.subtitle]
+        } else {
+            rawCandidates = [slot.title]
+        }
+
+        for raw in rawCandidates where !raw.isEmpty {
             let sanitized = sanitizeNativeText(raw)
             if !sanitized.isEmpty {
                 return String(sanitized.prefix(18))
             }
         }
         return ""
+    }
+
+    private static func manifestEntry(
+        text: String, iconPath: String, actionPath: String? = nil, clearAction: Bool = false
+    ) -> [String: Any] {
+        var entry: [String: Any] = [
+            "State": 0,
+            "ViewParam": [[
+                "Text": text,
+                "Icon": iconPath,
+            ]],
+        ]
+        if clearAction {
+            entry["Action"] = ""
+        } else if let actionPath {
+            entry["Action"] = "com.ulanzi.ulanzideck.system.open"
+            entry["ActionParam"] = ["Path": actionPath]
+        }
+        return entry
+    }
+
+    private static func actionPath(
+        for slot: ButtonSlot, slotId: Int, optionMode: Bool,
+        sessions: [D200hSessionInfo], sessionPage: Int, focusedSessionId: String?
+    ) -> String? {
+        if !optionMode {
+            guard slot.enabled else { return nil }
+            let sessionIdx = sessionPage * 13 + slotId
+            guard sessionIdx < sessions.count else { return nil }
+            return "agentdeck://session/\(sessions[sessionIdx].id)"
+        } else {
+            guard slot.enabled else { return nil }
+            switch slotId {
+            case 0, 13:
+                return "agentdeck://back"
+            case 1:
+                return nil
+            case 2...9:
+                return "agentdeck://option/\(focusedSessionId ?? "session")/\(slotId)"
+            case 10:
+                return slot.title.contains("STOP") ? "agentdeck://interrupt" : "agentdeck://escape"
+            case 11:
+                return "agentdeck://more"
+            default:
+                return nil
+            }
+        }
+    }
+
+    private static func renderMirroredMergedButton(_ slot: ButtonSlot) -> (left: Data, right: Data) {
+        let png = renderButtonPng(slot)
+        return (png, png)
     }
 
     private static func sanitizeNativeText(_ raw: String) -> String {
@@ -1414,6 +1696,7 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     switch slot.borderStyle {
     case .awaitingPulse(let color, let frame):
         let opacity = 0.3 + 0.65 * abs(sin(Double(frame) * 0.3))
+        ctx.setShadow(offset: .zero, blur: 8, color: color.copy(alpha: CGFloat(opacity) * 0.55))
         ctx.setStrokeColor(color)
         ctx.setAlpha(CGFloat(opacity) * 0.8)
         ctx.setLineWidth(5.5)
@@ -1423,6 +1706,7 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         ctx.setLineWidth(2.5)
         ctx.addPath(innerPath)
         ctx.strokePath()
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
         ctx.setAlpha(1.0)
 
     case .processingDash(let color, let frame):
@@ -1461,7 +1745,8 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         }
     }
 
-    // 5. Keep PNG text-free for firmware safety, but port the Stream Deck icon language.
+    // 5. Port the Stream Deck icon language. Text overlays remain opt-in because
+    // D200H stock firmware can be selective about rich PNG payloads.
     if slot.icon != .none {
         let iconColor = slot.iconColor ?? rgb(241, 245, 249)
         let iconRect: CGRect
@@ -1480,8 +1765,17 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         )
     }
 
+    switch slot.textOverlay {
+    case .sessionTile:
+        drawSessionTextOverlay(ctx, slot: slot)
+    case .usageStat:
+        drawUsageTextOverlay(ctx, slot: slot)
+    case .none:
+        break
+    }
+
     // 6. Status dot for animated states
-    if slot.enabled && isBrandTile {
+    if slot.enabled && isBrandTile && slot.textOverlay != .sessionTile {
         let dotR: CGFloat = 5
         let dotX: CGFloat = pad + 12
         let dotY: CGFloat = s - pad - 16
@@ -1513,6 +1807,35 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     }
 
     return pngData
+}
+
+private func drawSessionTextOverlay(_ ctx: CGContext, slot: ButtonSlot) {
+    let projectName = String(slot.title.prefix(16))
+    let model = String(slot.modelName.prefix(16))
+    let state = String(slot.stateLabel.prefix(18))
+    let projectFont = ctFont(projectName.count > 10 ? 18 : 22, bold: true)
+
+    drawText(projectName, ctx: ctx, y: 108, color: rgb(255, 255, 255), font: projectFont, leftBound: 18, rightBound: 178)
+    if !model.isEmpty {
+        drawText(model, ctx: ctx, y: 132, color: rgb(148, 163, 184), font: ctFont(13), leftBound: 18, rightBound: 178, alpha: 0.96)
+    }
+    if !state.isEmpty {
+        let stateColor = slot.statusColor ?? rgb(148, 163, 184)
+        drawText("● \(state)", ctx: ctx, y: 158, color: stateColor, font: ctFont(15, bold: true), leftBound: 18, rightBound: 178)
+    }
+}
+
+private func drawUsageTextOverlay(_ ctx: CGContext, slot: ButtonSlot) {
+    let title = String(slot.title.prefix(4))
+    let value = String(slot.subtitle.prefix(8))
+    let accent = slot.statusColor ?? rgb(34, 197, 94)
+
+    if !title.isEmpty {
+        drawText(title, ctx: ctx, y: 120, color: rgb(148, 163, 184), font: ctFont(13, bold: true), leftBound: 28, rightBound: 168)
+    }
+    if !value.isEmpty {
+        drawText(value, ctx: ctx, y: 148, color: accent, font: ctFont(19, bold: true), leftBound: 24, rightBound: 172)
+    }
 }
 
 private func drawButtonIcon(_ ctx: CGContext, glyph: ButtonSlot.IconGlyph, color: CGColor, rect: CGRect) {

@@ -23,6 +23,10 @@
     "./states": {
       "types": "./dist/states.d.ts",
       "import": "./dist/states.js"
+    },
+    "./svg-renderers": {
+      "types": "./dist/svg-renderers/index.d.ts",
+      "import": "./dist/svg-renderers/index.js"
     }
   },
   "scripts": {

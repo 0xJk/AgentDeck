@@ -8,3 +8,4 @@ export * from './format-utils.js';
 export * from './timeline-summarizer.js';
 export * from './session-utils.js';
 export * from './state-colors.js';
+export * from './svg-renderers/index.js';

@@ -24,6 +24,9 @@ struct DaemonSessionEntry: Codable, Sendable, Identifiable {
     // Enriched fields (from /health probe, not persisted to sessions.json)
     var state: String?
     var modelName: String?
+    var currentTool: String?
+    var options: [[String: AnyCodable]]?
+    var navigable: Bool?
 }
 
 final class SessionRegistry: Sendable {

@@ -186,8 +186,17 @@ final class DaemonService: ObservableObject {
 
         if let health = await registry.probeDaemonHealth(port: targetPort),
            health["mode"] as? String == "daemon" {
-            externalDaemonProcess = nil
-            await connectToExternalDaemon(port: targetPort)
+            let remotePid = health["pid"] as? Int
+            let myPid = Int(ProcessInfo.processInfo.processIdentifier)
+            if remotePid != myPid {
+                // Genuine external helper already running — connect as client
+                externalDaemonProcess = nil
+                await connectToExternalDaemon(port: targetPort)
+                return
+            }
+            // Self-detection — local daemon IS us. Don't kill the whole
+            // daemon just because one module (D200H) lacks USB entitlement.
+            DaemonLogger.shared.info("D200H promotion: skipping self-detected daemon on port \(targetPort)")
             return
         }
 

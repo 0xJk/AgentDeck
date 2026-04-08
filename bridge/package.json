@@ -8,7 +8,10 @@
     "url": "https://github.com/puritysb/AgentDeck.git",
     "directory": "bridge"
   },
-  "files": ["dist", "!dist/__tests__"],
+  "files": [
+    "dist",
+    "!dist/__tests__"
+  ],
   "main": "./dist/index.js",
   "bin": {
     "agentdeck": "./dist/cli.js"
@@ -31,10 +34,11 @@
     "ws": "^8.18.0"
   },
   "optionalDependencies": {
-    "node-pty": "^1.0.0",
-    "node-hid": "^3.1.0",
     "@picovoice/porcupine-node": "^4.0.0",
-    "@picovoice/pvrecorder-node": "^1.2.0"
+    "@picovoice/pvrecorder-node": "^1.2.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "node-hid": "^3.1.0",
+    "node-pty": "^1.0.0"
   },
   "compatibleClaudeCode": ">=2.1.50",
   "devDependencies": {
