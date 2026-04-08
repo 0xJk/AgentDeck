@@ -74,9 +74,12 @@ jobs:
             -scheme AgentDeck_iOS \
             -destination 'generic/platform=iOS' \
             -archivePath $RUNNER_TEMP/AgentDeck_iOS.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
+            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
+            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }} \
             MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=R22679GY5Z \
             ENABLE_PREVIEWS=NO
 
@@ -85,7 +88,11 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath $RUNNER_TEMP/AgentDeck_iOS.xcarchive \
             -exportOptionsPlist apple/ExportOptions.plist \
-            -exportPath $RUNNER_TEMP/export_ios
+            -exportPath $RUNNER_TEMP/export_ios \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
+            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
+            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }}
 
       - name: Upload iOS to TestFlight
         run: |
@@ -103,6 +110,7 @@ jobs:
           rm -rf ~/private_keys
 
   build-macos:
+    if: false  # TODO: needs "Mac Installer Distribution" cert + cloud signing permission
     runs-on: macos-15
     timeout-minutes: 30
 
@@ -167,9 +175,12 @@ jobs:
             -scheme AgentDeck_macOS \
             -destination 'generic/platform=macOS' \
             -archivePath $RUNNER_TEMP/AgentDeck_macOS.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
+            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
+            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }} \
             MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=R22679GY5Z
 
       - name: Export macOS pkg
@@ -177,7 +188,11 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath $RUNNER_TEMP/AgentDeck_macOS.xcarchive \
             -exportOptionsPlist apple/ExportOptions-macOS.plist \
-            -exportPath $RUNNER_TEMP/export_macos
+            -exportPath $RUNNER_TEMP/export_macos \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8 \
+            -authenticationKeyID ${{ secrets.ASC_API_KEY_ID }} \
+            -authenticationKeyIssuerID ${{ secrets.ASC_ISSUER_ID }}
 
       - name: Upload macOS to App Store Connect
         run: |
@@ -195,7 +210,7 @@ jobs:
           rm -rf ~/private_keys
 
   release:
-    needs: [build-ios, build-macos]
+    needs: [build-ios]
     runs-on: ubuntu-latest
     steps:
       - name: Create GitHub Release
