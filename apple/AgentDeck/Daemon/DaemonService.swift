@@ -4,6 +4,7 @@
 import Foundation
 import ServiceManagement
 import Combine
+import IOKit
 
 /// Manages the daemon lifecycle within the main app process.
 /// On macOS, starts WS server, mDNS, hook server, etc. as part of the app.
@@ -11,6 +12,7 @@ import Combine
 final class DaemonService: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isUsingExternalDaemon = false
+    @Published private(set) var ownsExternalDaemon = false
     @Published private(set) var port: UInt16 = 0
     @Published private(set) var connectedClients = 0
     @Published private(set) var errorMessage: String?
@@ -32,9 +34,11 @@ final class DaemonService: ObservableObject {
     private var localFailureCount = 0
     private var signalSource: DispatchSourceSignal?
     private var sigintSource: DispatchSourceSignal?
+    private var externalDaemonProcess: Process?
     private var listenerFailureRetries = 0
     private var squatterCleanupAttempted = false
     private var fallbackAttempted = false
+    private var d200hHelperPromotionAttempted = false
     private var sessionOverridePort: Int?
     /// Ports that NWListener has observed to fail `.failed(EADDRINUSE)` this
     /// launch. These may still look bindable via raw BSD sockets (NECP is a
@@ -84,6 +88,7 @@ final class DaemonService: ObservableObject {
                 self.port = daemon.port
                 self.isRunning = true
                 self.isUsingExternalDaemon = false
+                self.ownsExternalDaemon = false
                 self.localFailureCount = 0
                 self.externalFailureCount = 0
                 self.errorMessage = nil
@@ -148,6 +153,7 @@ final class DaemonService: ObservableObject {
         listenerFailureRetries = 0
         squatterCleanupAttempted = false
         fallbackAttempted = false
+        d200hHelperPromotionAttempted = false
         sessionOverridePort = nil
         failedBindPorts.removeAll()
         isOnFallbackPort = false
@@ -161,11 +167,77 @@ final class DaemonService: ObservableObject {
         healthMonitorTask?.cancel()
         healthMonitorTask = nil
         await server?.shutdown()
+        await stopOwnedExternalDaemonIfNeeded()
         server = nil
         isRunning = false
         isUsingExternalDaemon = false
+        ownsExternalDaemon = false
+        d200hHelperPromotionAttempted = false
         port = 0
         readyUrl = nil
+    }
+
+    func startBundledD200HHelper() async {
+        errorMessage = nil
+        bindFailureReason = nil
+
+        let targetPort = effectivePort
+        let registry = SessionRegistry.shared
+
+        if let health = await registry.probeDaemonHealth(port: targetPort),
+           health["mode"] as? String == "daemon" {
+            externalDaemonProcess = nil
+            await connectToExternalDaemon(port: targetPort)
+            return
+        }
+
+        await stop()
+
+        let process = Process()
+        if let bundledHelper = Self.resolveBundledD200HHelper() {
+            process.executableURL = URL(fileURLWithPath: bundledHelper)
+            process.arguments = ["-p", String(targetPort)]
+        } else if let launch = Self.resolveRepoNodeDaemonLaunch() {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["node", launch.cliPath, "start", "-p", String(targetPort)]
+            process.currentDirectoryURL = URL(fileURLWithPath: launch.repoRoot, isDirectory: true)
+            process.environment = Self.helperEnvironment()
+        } else {
+            errorMessage = "Bundled D200H helper unavailable: no bundled helper or local bridge build found."
+            return
+        }
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+            externalDaemonProcess = process
+            DaemonLogger.shared.info("Spawned managed D200H helper on port \(targetPort)")
+        } catch {
+            externalDaemonProcess = nil
+            errorMessage = "Failed to start bundled D200H helper: \(error.localizedDescription)"
+            return
+        }
+
+        for _ in 0..<20 {
+            if let health = await registry.probeDaemonHealth(port: targetPort),
+               health["mode"] as? String == "daemon" {
+                await connectToExternalDaemon(port: targetPort)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+
+        let stderrData = stderrPipe.fileHandleForReading.availableData
+        let stderrText = String(data: stderrData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        errorMessage = stderrText?.isEmpty == false
+            ? "Bundled D200H helper failed: \(stderrText!)"
+            : "Bundled D200H helper did not become healthy on port \(targetPort)."
+        await stopOwnedExternalDaemonIfNeeded()
     }
 
     private func connectToExternalDaemon(port knownPort: Int? = nil) async {
@@ -179,6 +251,7 @@ final class DaemonService: ObservableObject {
             self.server = nil
             self.isRunning = false
             self.isUsingExternalDaemon = false
+            self.ownsExternalDaemon = false
             self.port = 0
             self.readyUrl = nil
             self.errorMessage = "External daemon detected, but port lookup failed"
@@ -218,6 +291,7 @@ final class DaemonService: ObservableObject {
         self.port = UInt16(resolvedPort)
         self.isRunning = false
         self.isUsingExternalDaemon = true
+        self.ownsExternalDaemon = (externalDaemonProcess?.isRunning == true)
         self.localFailureCount = 0
         self.externalFailureCount = 0
         self.errorMessage = nil
@@ -225,6 +299,58 @@ final class DaemonService: ObservableObject {
         self.startHealthMonitor()
         DaemonLogger.shared.info("External daemon detected on port \(resolvedPort) — connecting as client")
         self.onReady?(wsUrl)
+    }
+
+    private func stopOwnedExternalDaemonIfNeeded() async {
+        guard let process = externalDaemonProcess else { return }
+        let currentPort = Int(port)
+        if process.isRunning, currentPort > 0 {
+            let url = URL(string: "http://127.0.0.1:\(currentPort)/shutdown")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 1
+            _ = try? await URLSession.shared.data(for: request)
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        if process.isRunning {
+            process.terminate()
+        }
+        externalDaemonProcess = nil
+    }
+
+    private static func helperEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let prefixes = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "\(home)/.local/bin",
+            "\(home)/Library/pnpm",
+            "\(home)/.npm-global/bin",
+        ]
+        let existing = env["PATH"] ?? ""
+        env["PATH"] = (prefixes + [existing]).joined(separator: ":")
+        return env
+    }
+
+    private static func resolveBundledD200HHelper() -> String? {
+        let helperPath = Bundle.main.bundlePath + "/Contents/Helpers/agentdeck-d200h-helper"
+        guard FileManager.default.isExecutableFile(atPath: helperPath) else { return nil }
+        return helperPath
+    }
+
+    private static func resolveRepoNodeDaemonLaunch() -> (repoRoot: String, cliPath: String)? {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .path
+        let cliPath = "\(repoRoot)/bridge/dist/cli.js"
+        guard FileManager.default.fileExists(atPath: cliPath) else { return nil }
+        return (repoRoot, cliPath)
     }
 
     /// Called when a running daemon's NWListener enters `.failed` state post-bind
@@ -394,6 +520,15 @@ final class DaemonService: ObservableObject {
         guard isRunning else { return }
 
         if daemonAlive {
+            if preferencesSuggestBundledD200HHelperPromotion(from: health) {
+                let reason = d200hHelperPromotionReason(from: health)
+                guard !d200hHelperPromotionAttempted, !isStarting else { return }
+                d200hHelperPromotionAttempted = true
+                DaemonLogger.shared.info("Promoting D200H to bundled helper: \(reason)")
+                errorMessage = reason
+                await startBundledD200HHelper()
+                return
+            }
             localFailureCount = 0
             return
         }
@@ -410,6 +545,40 @@ final class DaemonService: ObservableObject {
         readyUrl = nil
         errorMessage = nil
         start()
+    }
+
+    private func preferencesSuggestBundledD200HHelperPromotion(from health: [String: Any]?) -> Bool {
+        guard AppPreferences.shared.autoUseBundledD200HHelper else { return false }
+        guard let modules = health?["modules"] as? [String: Any],
+              let d200h = modules["d200h"] as? [String: Any] else { return false }
+        guard (d200h["connected"] as? Bool) != true else { return false }
+
+        let sandboxEnabled = d200h["sandboxEnabled"] as? Bool ?? false
+        let usbEntitlementPresent = d200h["usbEntitlementPresent"] as? Bool ?? true
+        let lastOpenError = d200h["lastOpenError"] as? Int32 ?? 0
+        let managerOpened = d200h["managerOpened"] as? Bool ?? false
+
+        return (sandboxEnabled && !usbEntitlementPresent) ||
+            (managerOpened && lastOpenError == kIOReturnNotPermitted)
+    }
+
+    private func d200hHelperPromotionReason(from health: [String: Any]?) -> String {
+        guard let modules = health?["modules"] as? [String: Any],
+              let d200h = modules["d200h"] as? [String: Any] else {
+            return "D200H helper promotion requested."
+        }
+
+        let sandboxEnabled = d200h["sandboxEnabled"] as? Bool ?? false
+        let usbEntitlementPresent = d200h["usbEntitlementPresent"] as? Bool ?? true
+        let lastOpenError = d200h["lastOpenError"] as? Int32 ?? 0
+
+        if sandboxEnabled && !usbEntitlementPresent {
+            return "Swift daemon build lacks usable D200H USB entitlement. AgentDeck will switch D200H to the bundled helper."
+        }
+        if lastOpenError == kIOReturnNotPermitted {
+            return "Swift daemon was denied D200H HID access (kIOReturnNotPermitted). AgentDeck will switch D200H to the bundled helper."
+        }
+        return "Swift daemon cannot open D200H HID. AgentDeck will switch D200H to the bundled helper."
     }
 
     // MARK: - Signal Handling

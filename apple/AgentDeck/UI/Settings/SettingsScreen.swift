@@ -279,6 +279,35 @@ struct SettingsScreen: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("D200H Helper")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white)
+                Text("AgentDeck.app can keep D200H under app control by launching its bundled helper when the sandboxed Swift daemon is denied HID access.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(TerrariumHUD.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle(isOn: $preferences.autoUseBundledD200HHelper) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-switch D200H to bundled helper")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white)
+                        Text("Recommended when Swift HID open fails with missing USB entitlement or kIOReturnNotPermitted.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(TerrariumHUD.subtext)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Button("Switch D200H to Bundled Helper Now") {
+                    Task { await daemonService.startBundledD200HHelper() }
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .onAppear {
             if portInput.isEmpty {
@@ -292,7 +321,9 @@ struct SettingsScreen: View {
             return "Local daemon on port \(daemonService.port)"
         }
         if daemonService.isUsingExternalDaemon {
-            return "External daemon on port \(daemonService.port)"
+            return daemonService.ownsExternalDaemon
+                ? "Bundled D200H helper on port \(daemonService.port)"
+                : "External daemon on port \(daemonService.port)"
         }
         if daemonService.bindFailureReason != nil {
             return "Daemon bind failed"

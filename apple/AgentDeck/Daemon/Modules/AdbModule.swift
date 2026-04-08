@@ -9,6 +9,9 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
     let name = "adb"
 
     private let daemonPort: Int
+    /// Android apps always connect to the well-known port (9120).
+    /// When daemon binds a fallback port, ADB reverse maps 9120→actual port.
+    private let androidPort: Int = 9120
     private var pollTask: Task<Void, Never>?
     private var lastKnownDevices: [String] = []
     private var lastError: String?
@@ -65,10 +68,12 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
         lastKnownDevices = devices
         reverseReadyCount = 0
         for serial in devices {
-            if shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(daemonPort)", "tcp:\(daemonPort)") != nil {
+            // Map Android-side well-known port (9120) → actual daemon port.
+            // Android apps always connect to localhost:9120.
+            if shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(androidPort)", "tcp:\(daemonPort)") != nil {
                 reverseReadyCount += 1
                 lastError = nil
-                DaemonLogger.shared.debug("ADB", "Reverse tunnel set: \(serial)")
+                DaemonLogger.shared.debug("ADB", "Reverse tunnel set: \(serial) (android:\(androidPort) → daemon:\(daemonPort))")
             } else {
                 lastError = "adb reverse failed for \(serial)"
             }
@@ -81,10 +86,10 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
         reverseReadyCount = 0
         for serial in devices {
             if let existing = shell(timeout: 5, "adb", "-s", serial, "reverse", "--list"),
-               existing.contains("tcp:\(daemonPort)") {
+               existing.contains("tcp:\(androidPort)") {
                 reverseReadyCount += 1
             } else {
-                if shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(daemonPort)", "tcp:\(daemonPort)") != nil {
+                if shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(androidPort)", "tcp:\(daemonPort)") != nil {
                     reverseReadyCount += 1
                     lastError = nil
                     DaemonLogger.shared.debug("ADB", "Reverse re-established: \(serial)")
@@ -98,7 +103,7 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
     private func cleanupAdbReverse() {
         let devices = getConnectedDevices()
         for serial in devices {
-            _ = shell(timeout: 3, "adb", "-s", serial, "reverse", "--remove", "tcp:\(daemonPort)")
+            _ = shell(timeout: 3, "adb", "-s", serial, "reverse", "--remove", "tcp:\(androidPort)")
         }
     }
 

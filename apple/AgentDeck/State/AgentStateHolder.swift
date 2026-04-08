@@ -588,7 +588,12 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             waterfallStage = .idle
             discovery.stopSearching()
             failedBridgeIds.removeAll()
-            if connection.url != url || connection.status == .disconnected {
+            if connection.url != url {
+                // Force-disconnect any in-progress reconnect loop on the old URL
+                // before switching to the new one (e.g. daemon restarted on a different port).
+                connection.disconnect()
+                connectTo(url: url)
+            } else if connection.status == .disconnected {
                 connectTo(url: url)
             }
         }

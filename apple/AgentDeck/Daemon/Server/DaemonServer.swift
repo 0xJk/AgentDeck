@@ -132,18 +132,26 @@ final class DaemonServer {
                 }
             } else if !(await registry.isPortBindable(requestedPort)) {
                 // No health response + port not bindable → likely TIME_WAIT from dead process.
-                // Wait briefly for the kernel to release the port before falling back.
+                // Retry several times before falling back to a different port.
                 DaemonLogger.shared.info("Port \(requestedPort) not bindable, no health response — waiting for TIME_WAIT clearance")
-                try? await Task.sleep(for: .seconds(2))
-                if !(await registry.isPortBindable(requestedPort)) {
-                    // Still blocked — check one more time if an actual daemon appeared
+                var reclaimed = false
+                for attempt in 1...3 {
+                    try? await Task.sleep(for: .seconds(5))
+                    if await registry.isPortBindable(requestedPort) {
+                        DaemonLogger.shared.info("Port \(requestedPort) reclaimed after \(attempt * 5)s")
+                        reclaimed = true
+                        break
+                    }
+                    // Check if a real daemon appeared while we waited
                     if let health = await registry.probeDaemonHealth(port: requestedPort),
                        health["mode"] as? String == "daemon" {
                         throw DaemonError.alreadyRunning(port: requestedPort)
                     }
-                    // No daemon, port stuck — use fallback port
+                }
+                if !reclaimed {
+                    // Port still stuck after 15s — use fallback port
                     if let alt = await registry.findAvailablePort() {
-                        DaemonLogger.shared.info("Port \(requestedPort) still blocked, using fallback port \(alt)")
+                        DaemonLogger.shared.info("Port \(requestedPort) still blocked after 15s, using fallback port \(alt)")
                         resolvedPort = UInt16(alt)
                     } else {
                         throw DaemonError.noPortAvailable

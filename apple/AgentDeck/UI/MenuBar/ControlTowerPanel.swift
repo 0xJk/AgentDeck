@@ -127,7 +127,7 @@ struct ControlTowerPanel: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
             } else if daemonService.isUsingExternalDaemon {
-                Text(verbatim: "ext :\(daemonService.port)")
+                Text(verbatim: daemonService.ownsExternalDaemon ? "d2h :\(daemonService.port)" : "ext :\(daemonService.port)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
