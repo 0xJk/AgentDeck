@@ -475,7 +475,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                     return .command(["type": "select_option", "index": optIdx])
                 } else {
                     let key = shortcut.isEmpty ? String(label.prefix(1)).lowercased() : shortcut
-                    return .command(["type": "respond", "response": key])
+                    return .command(["type": "respond", "value": key])
                 }
 
             case 10:  // STOP/ESC combined
@@ -677,8 +677,26 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     }
 
     private func buildSessionList() -> [D200hSessionInfo] {
-        // sessions_list from daemon already includes all sessions — no manual insertion needed
-        cachedSessionsList.map { D200hSessionInfo.parse($0) }
+        // sessions_list from daemon already sorted by sortSessions().
+        // Apply display name deduplication (matching SD+ plugin's assignDisplayNames).
+        var parsed = cachedSessionsList.map { D200hSessionInfo.parse($0) }
+        // Count duplicates by (projectName, agentType) pair
+        var counts: [String: Int] = [:]
+        for s in parsed {
+            let key = "\(s.projectName):\(s.agentType)"
+            counts[key, default: 0] += 1
+        }
+        // Assign sequential suffixes to duplicates
+        var seq: [String: Int] = [:]
+        for i in parsed.indices {
+            let key = "\(parsed[i].projectName):\(parsed[i].agentType)"
+            let n = (seq[key] ?? 0) + 1
+            seq[key] = n
+            if (counts[key] ?? 1) > 1 {
+                parsed[i] = parsed[i].withDisplayName("\(parsed[i].projectName) #\(n)")
+            }
+        }
+        return parsed
     }
 
     // MARK: - Animation Timer
@@ -926,6 +944,7 @@ private enum ButtonResolution {
 private struct D200hSessionInfo {
     let id: String
     let projectName: String
+    let displayName: String  // projectName with #N suffix if duplicated
     let agentType: String
     let state: String
     let port: Int
@@ -938,6 +957,14 @@ private struct D200hSessionInfo {
     var isIdle: Bool { state == "idle" }
     var isProcessing: Bool { state == "processing" }
     var isAwaiting: Bool { state.hasPrefix("awaiting") }
+
+    func withDisplayName(_ name: String) -> D200hSessionInfo {
+        D200hSessionInfo(
+            id: id, projectName: projectName, displayName: name, agentType: agentType,
+            state: state, port: port, currentTool: currentTool, options: options,
+            navigable: navigable, modelName: modelName, isVirtualGateway: isVirtualGateway
+        )
+    }
 
     static func parse(_ dict: [String: Any]) -> D200hSessionInfo {
         let id = dict["id"] as? String ?? ""
@@ -952,6 +979,7 @@ private struct D200hSessionInfo {
         return D200hSessionInfo(
             id: id,
             projectName: normalizedProjectName,
+            displayName: normalizedProjectName,
             agentType: dict["agentType"] as? String ?? "",
             state: dict["state"] as? String ?? "idle",
             port: dict["port"] as? Int ?? 0,
@@ -986,16 +1014,18 @@ private struct ButtonSlot {
     let agentLabel: String    // "CLAUDE CODE", "OPENCLAW" etc.
     let modelName: String     // "opus-4", "gpt-4o" etc.
     let stateLabel: String    // "WORKING", "IDLE" etc.
+    let resetTime: String     // "2h15m", "now" — for usage stat overlay
 
     init(title: String, subtitle: String, bg: CGColor, enabled: Bool, borderStyle: BorderStyle,
          icon: IconGlyph, iconColor: CGColor?, statusColor: CGColor? = nil, textOverlay: TextOverlayStyle = .none,
-         agentLabel: String = "", modelName: String = "", stateLabel: String = "") {
+         agentLabel: String = "", modelName: String = "", stateLabel: String = "", resetTime: String = "") {
         self.title = title; self.subtitle = subtitle; self.bg = bg
         self.enabled = enabled; self.borderStyle = borderStyle
         self.icon = icon; self.iconColor = iconColor
         self.statusColor = statusColor
         self.textOverlay = textOverlay
         self.agentLabel = agentLabel; self.modelName = modelName; self.stateLabel = stateLabel
+        self.resetTime = resetTime
     }
 
     enum BorderStyle {
@@ -1040,7 +1070,7 @@ private struct ButtonSlot {
         case .usageStat: overlayKey = "u"
         }
 
-        return "\(title)|\(subtitle)|\(modelName)|\(stateLabel)|\(enabled ? 1 : 0)|\(borderKey)|\(overlayKey)"
+        return "\(title)|\(subtitle)|\(modelName)|\(stateLabel)|\(resetTime)|\(enabled ? 1 : 0)|\(borderKey)|\(overlayKey)"
     }
 
     func pressedFlash() -> ButtonSlot {
@@ -1064,7 +1094,8 @@ private struct ButtonSlot {
             textOverlay: textOverlay,
             agentLabel: agentLabel,
             modelName: modelName,
-            stateLabel: stateLabel
+            stateLabel: stateLabel,
+            resetTime: resetTime
         )
     }
 }
@@ -1181,7 +1212,7 @@ private enum D200hRenderer {
             let bg = sessionBg(session.state)
             let sColor = stateColor(session.state, agent: session.agentType)
             let brandColor = agentBrandColor(session.agentType)
-            let projName = session.projectName.isEmpty ? session.agentType : String(session.projectName.prefix(14))
+            let projName = session.displayName.isEmpty ? session.agentType : String(session.displayName.prefix(14))
 
             let border: ButtonSlot.BorderStyle
             if session.isAwaiting {
@@ -1264,16 +1295,27 @@ private enum D200hRenderer {
         // Slot 0: ← BACK
         slots[0] = ButtonSlot(title: "← BACK", subtitle: "", bg: cDark, enabled: true, borderStyle: .none, icon: .back, iconColor: rgb(226, 232, 240))
 
-        // Slot 1: Session info
-        let name = session.projectName.isEmpty ? session.agentType : String(session.projectName.prefix(12))
+        // Slot 1: Session info (full tile with creature icon + model + state, matching SD+ renderDetailInfo)
+        let name = session.displayName.isEmpty ? session.agentType : String(session.displayName.prefix(12))
         let sColor = stateColor(session.state, agent: session.agentType)
         let brandColor = agentBrandColor(session.agentType)
         let tool = session.currentTool.isEmpty ? "" : "▶ \(session.currentTool)"
+        let detailStateLbl: String
+        switch session.state {
+        case "processing": detailStateLbl = session.agentType == "openclaw" ? "ROUTING" : "WORKING"
+        case _ where session.state.hasPrefix("awaiting"): detailStateLbl = "AWAITING"
+        case "idle": detailStateLbl = session.agentType == "openclaw" ? "STANDBY" : "IDLE"
+        default: detailStateLbl = ""
+        }
         slots[1] = ButtonSlot(title: name, subtitle: tool,
                               bg: cDetailBg, enabled: false,
                               borderStyle: .solid(color: sColor),
                               icon: sessionGlyph(for: session.agentType),
-                              iconColor: brandColor)
+                              iconColor: brandColor,
+                              statusColor: sColor,
+                              textOverlay: .sessionTile,
+                              modelName: String(session.modelName.prefix(14)),
+                              stateLabel: detailStateLbl)
 
         // Slots 2-9: Options or Quick Actions
         let options = session.options
@@ -1379,7 +1421,9 @@ private enum D200hRenderer {
             // Slot 13: big merged usage button spans col3+col4 at row2.
             let usagePct5 = usageEvent?["fiveHourPercent"] as? Double ?? stateEvent?["fiveHourPercent"] as? Double ?? 0
             let usagePct7 = usageEvent?["sevenDayPercent"] as? Double ?? stateEvent?["sevenDayPercent"] as? Double ?? 0
-            let (leftPng, rightPng) = renderUsageMergedButton(pct5: usagePct5, pct7: usagePct7)
+            let reset5 = usageEvent?["fiveHourResetsAt"] as? String ?? stateEvent?["fiveHourResetsAt"] as? String
+            let reset7 = usageEvent?["sevenDayResetsAt"] as? String ?? stateEvent?["sevenDayResetsAt"] as? String
+            let (leftPng, rightPng) = renderUsageMergedButton(pct5: usagePct5, pct7: usagePct7, reset5: reset5, reset7: reset7)
             manifest["3_2"] = manifestEntry(
                 text: hidesNativeSessionLabels ? "" : usageText(window: "5H", percent: usagePct5),
                 iconPath: "icons/btn13L.png",
@@ -1462,41 +1506,46 @@ private enum D200hRenderer {
 
     // MARK: - Usage Merged Button (slot 13, 2 columns wide)
 
-    /// Render usage as two icon-only buttons and rely on device-native labels for the numbers.
+    /// Render usage as two buttons with percentage, gauge color, and reset time.
     private static func renderUsageMergedButton(
-        pct5: Double, pct7: Double
+        pct5: Double, pct7: Double,
+        reset5: String? = nil, reset7: String? = nil
     ) -> (left: Data, right: Data) {
-        let borderColor = usageBorderColor(pct5: pct5, pct7: pct7)
+        let color5 = pctColor(pct5)
+        let color7 = pctColor(pct7)
+        let reset5Str = formatResetTime(reset5)
+        let reset7Str = formatResetTime(reset7)
         let leftSlot = ButtonSlot(
-            title: hidesNativeSessionLabels ? "5H" : "",
-            subtitle: hidesNativeSessionLabels ? "\(Int(pct5.rounded()))%" : "",
+            title: "5H",
+            subtitle: "\(Int(pct5.rounded()))%",
             bg: cDetailBg,
             enabled: false,
-            borderStyle: .solid(color: borderColor),
+            borderStyle: .solid(color: color5),
             icon: .usage,
-            iconColor: borderColor,
-            statusColor: borderColor,
-            textOverlay: hidesNativeSessionLabels ? .usageStat : .none
+            iconColor: color5,
+            statusColor: color5,
+            textOverlay: .usageStat,
+            resetTime: reset5Str
         )
         let rightSlot = ButtonSlot(
-            title: hidesNativeSessionLabels ? "7D" : "",
-            subtitle: hidesNativeSessionLabels ? "\(Int(pct7.rounded()))%" : "",
+            title: "7D",
+            subtitle: "\(Int(pct7.rounded()))%",
             bg: cDetailBg,
             enabled: false,
-            borderStyle: .solid(color: borderColor),
+            borderStyle: .solid(color: color7),
             icon: .usage,
-            iconColor: borderColor,
-            statusColor: borderColor,
-            textOverlay: hidesNativeSessionLabels ? .usageStat : .none
+            iconColor: color7,
+            statusColor: color7,
+            textOverlay: .usageStat,
+            resetTime: reset7Str
         )
         return (renderButtonPng(leftSlot), renderButtonPng(rightSlot))
     }
 
-    private static func usageBorderColor(pct5: Double, pct7: Double) -> CGColor {
-        let maxPct = max(pct5, pct7)
-        if maxPct > 80 { return rgb(239, 68, 68) }
-        if maxPct > 50 { return rgb(245, 158, 11) }
-        return rgb(34, 197, 94)
+    private static func pctColor(_ pct: Double) -> CGColor {
+        if pct > 80 { return rgb(239, 68, 68) }   // red
+        if pct > 50 { return rgb(245, 158, 11) }   // amber
+        return rgb(34, 197, 94)                      // green
     }
 
     private static func usageText(window: String, percent: Double) -> String {
@@ -1751,9 +1800,11 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         let iconColor = slot.iconColor ?? rgb(241, 245, 249)
         let iconRect: CGRect
         if isBrandTile {
-            let badgeRect = CGRect(x: 44, y: 18, width: s - 88, height: 78)
+            let badgeRect = CGRect(x: 44, y: 14, width: s - 88, height: 74)
             drawSessionBadge(ctx, rect: badgeRect, brandColor: iconColor, backgroundColor: slot.bg)
             iconRect = badgeRect.insetBy(dx: 18, dy: 10)
+        } else if slot.textOverlay == .usageStat {
+            iconRect = CGRect(x: 58, y: 18, width: s - 116, height: 52)
         } else {
             iconRect = CGRect(x: 48, y: 56, width: s - 96, height: 64)
         }
@@ -1815,13 +1866,13 @@ private func drawSessionTextOverlay(_ ctx: CGContext, slot: ButtonSlot) {
     let state = String(slot.stateLabel.prefix(18))
     let projectFont = ctFont(projectName.count > 10 ? 18 : 22, bold: true)
 
-    drawText(projectName, ctx: ctx, y: 108, color: rgb(255, 255, 255), font: projectFont, leftBound: 18, rightBound: 178)
+    drawText(projectName, ctx: ctx, y: 96, color: rgb(255, 255, 255), font: projectFont, leftBound: 18, rightBound: 178)
     if !model.isEmpty {
-        drawText(model, ctx: ctx, y: 132, color: rgb(148, 163, 184), font: ctFont(13), leftBound: 18, rightBound: 178, alpha: 0.96)
+        drawText(model, ctx: ctx, y: 118, color: rgb(148, 163, 184), font: ctFont(13), leftBound: 18, rightBound: 178, alpha: 0.96)
     }
     if !state.isEmpty {
         let stateColor = slot.statusColor ?? rgb(148, 163, 184)
-        drawText("● \(state)", ctx: ctx, y: 158, color: stateColor, font: ctFont(15, bold: true), leftBound: 18, rightBound: 178)
+        drawText("● \(state)", ctx: ctx, y: 146, color: stateColor, font: ctFont(15, bold: true), leftBound: 18, rightBound: 178)
     }
 }
 
@@ -1831,10 +1882,13 @@ private func drawUsageTextOverlay(_ ctx: CGContext, slot: ButtonSlot) {
     let accent = slot.statusColor ?? rgb(34, 197, 94)
 
     if !title.isEmpty {
-        drawText(title, ctx: ctx, y: 120, color: rgb(148, 163, 184), font: ctFont(13, bold: true), leftBound: 28, rightBound: 168)
+        drawText(title, ctx: ctx, y: 100, color: rgb(148, 163, 184), font: ctFont(13, bold: true), leftBound: 28, rightBound: 168)
     }
     if !value.isEmpty {
-        drawText(value, ctx: ctx, y: 148, color: accent, font: ctFont(19, bold: true), leftBound: 24, rightBound: 172)
+        drawText(value, ctx: ctx, y: 130, color: accent, font: ctFont(22, bold: true), leftBound: 24, rightBound: 172)
+    }
+    if !slot.resetTime.isEmpty {
+        drawText("↻ \(slot.resetTime)", ctx: ctx, y: 158, color: rgb(100, 116, 139), font: ctFont(11), leftBound: 28, rightBound: 168)
     }
 }
 
