@@ -161,7 +161,14 @@ final class JellyfishCreature: Creature {
 
         // Name tag
         if let name = displayName {
-            drawNameTag(context: &context, name: name, cx: cx, cy: cy, bodyW: CGFloat(bodyWidth))
+            drawNameTag(
+                context: &context,
+                name: name,
+                cx: cx,
+                cy: cy,
+                bodyW: CGFloat(bodyWidth),
+                canvasWidth: size.width
+            )
         }
     }
 
@@ -379,24 +386,14 @@ final class JellyfishCreature: Creature {
     // MARK: - Name Tag
 
     private func drawNameTag(context: inout GraphicsContext, name: String,
-                             cx: CGFloat, cy: CGFloat, bodyW: CGFloat) {
-        let tagY = cy - bodyW * 0.55
-        // Match octopus font size: bodyRadius(0.055w) * 0.3 — use absolute reference
-        let fontSize = bodyW * 0.22
-        let padding = bodyW * 0.12
-
-        let text = Text(name)
-            .font(.system(size: fontSize, weight: .medium, design: .default))
-            .foregroundColor(TerrariumColors.hudText.opacity(0.86))
-        let resolved = context.resolve(text)
-        let textSize = resolved.measure(in: CGSize(width: 500, height: 100))
-        let tagW = max(bodyW * 0.9, textSize.width + padding * 2)
-        let tagH = max(bodyW * 0.22, textSize.height + padding * 0.6)
-
-        let bgRect = CGRect(x: cx - tagW / 2, y: tagY - tagH, width: tagW, height: tagH)
-        context.fill(Path(roundedRect: bgRect, cornerRadius: 4),
-                     with: .color(TerrariumColors.jellyfishNameBg))
-
-        context.draw(resolved, at: CGPoint(x: cx, y: tagY - tagH / 2))
+                             cx: CGFloat, cy: CGFloat, bodyW: CGFloat, canvasWidth: CGFloat) {
+        drawTerrariumNameTag(
+            context: &context,
+            name: name,
+            cx: cx,
+            bodyTopY: cy - bodyW * 0.6,
+            bodyMetric: terrariumNameTagMetric(canvasWidth: canvasWidth, scale: scale),
+            backgroundColor: TerrariumColors.jellyfishNameBg
+        )
     }
 }

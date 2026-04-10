@@ -37,6 +37,7 @@ enum TetraVisualState {
 struct JellyfishCreatureState: Identifiable {
     let id: String
     let projectName: String?
+    let modelName: String?
     let state: JellyfishVisualState
     let homeX: Float
     let homeY: Float
@@ -64,6 +65,7 @@ struct AgentCreatureState: Identifiable {
 struct OpenCodeCreatureState: Identifiable {
     let id: String
     let projectName: String?
+    let modelName: String?
     let state: OpenCodeVisualState
     let homeX: Float
     let homeY: Float
@@ -142,7 +144,7 @@ extension DashboardState {
             creatures.append(AgentCreatureState(
                 id: sibling.id,
                 projectName: sibling.projectName,
-                modelName: nil,
+                modelName: sibling.modelName,
                 state: sibState,
                 homeX: s.x,
                 homeY: s.y,
@@ -193,6 +195,7 @@ extension DashboardState {
             jellyfishCreatures.append(JellyfishCreatureState(
                 id: sessionId ?? "jf-primary",
                 projectName: projectName,
+                modelName: modelName,
                 state: mapToJellyfishState(state),
                 homeX: s.x, homeY: s.y, scale: s.scale
             ))
@@ -205,6 +208,7 @@ extension DashboardState {
             jellyfishCreatures.append(JellyfishCreatureState(
                 id: sibling.id,
                 projectName: sibling.projectName,
+                modelName: sibling.modelName,
                 state: mapSiblingToJellyfishState(sibling.state),
                 homeX: s.x, homeY: s.y, scale: s.scale
             ))
@@ -227,6 +231,7 @@ extension DashboardState {
             openCodeCreatures.append(OpenCodeCreatureState(
                 id: sessionId ?? "oc-primary",
                 projectName: projectName,
+                modelName: modelName,
                 state: mapToOpenCodeState(state),
                 homeX: s.x, homeY: s.y, scale: s.scale
             ))
@@ -239,6 +244,7 @@ extension DashboardState {
             openCodeCreatures.append(OpenCodeCreatureState(
                 id: sibling.id,
                 projectName: sibling.projectName,
+                modelName: sibling.modelName,
                 state: mapSiblingToOpenCodeState(sibling.state),
                 homeX: s.x, homeY: s.y, scale: s.scale
             ))

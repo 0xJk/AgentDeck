@@ -235,8 +235,14 @@ final class OctopusCreature: Creature {
 
         // Name tag
         if let name = displayName {
-            drawNameTag(context: &context, name: name, cx: CGFloat(centerX),
-                        cy: CGFloat(centerY), bodyRadius: CGFloat(bodyRadius))
+            drawNameTag(
+                context: &context,
+                name: name,
+                cx: CGFloat(centerX),
+                cy: CGFloat(centerY),
+                bodyRadius: CGFloat(bodyRadius),
+                canvasWidth: size.width
+            )
         }
     }
 
@@ -353,28 +359,15 @@ final class OctopusCreature: Creature {
     // MARK: - Name Tag
 
     private func drawNameTag(context: inout GraphicsContext, name: String,
-                             cx: CGFloat, cy: CGFloat, bodyRadius: CGFloat) {
-        let hatY = cy - bodyRadius - bodyRadius * 0.15
-        let fontSize = bodyRadius * 0.3
-        let padding: CGFloat = bodyRadius * 0.2
-
-        // Measure text width to size background dynamically
-        let text = Text(name)
-            .font(.system(size: fontSize, weight: .medium, design: .default))
-            .foregroundColor(TerrariumColors.hudText.opacity(0.86))
-        let resolved = context.resolve(text)
-        let textSize = resolved.measure(in: CGSize(width: 500, height: 100))
-        let hatWidth = max(bodyRadius * 1.8, textSize.width + padding * 2)
-        let hatHeight = max(bodyRadius * 0.5, textSize.height + padding * 0.6)
-
-        // Background pill
-        let bgRect = CGRect(x: cx - hatWidth / 2, y: hatY - hatHeight,
-                            width: hatWidth, height: hatHeight)
-        context.fill(Path(roundedRect: bgRect, cornerRadius: 4),
-                     with: .color(TerrariumColors.claudeNameBg))
-
-        // Name text
-        context.draw(resolved, at: CGPoint(x: cx, y: hatY - hatHeight / 2))
+                             cx: CGFloat, cy: CGFloat, bodyRadius: CGFloat, canvasWidth: CGFloat) {
+        drawTerrariumNameTag(
+            context: &context,
+            name: name,
+            cx: cx,
+            bodyTopY: cy - bodyRadius,
+            bodyMetric: terrariumNameTagMetric(canvasWidth: canvasWidth, scale: scale),
+            backgroundColor: TerrariumColors.claudeNameBg
+        )
     }
 }
 

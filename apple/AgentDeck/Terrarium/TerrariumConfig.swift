@@ -104,6 +104,62 @@ enum TerrariumColors {
     }
 }
 
+enum TerrariumNameTagStyle {
+    // Use the current OpenCode name tag as the SSOT across all creature types.
+    static let referenceBodyWidthFraction: CGFloat = 0.044
+    static let gapRatio: CGFloat = 0.15
+    static let fontRatio: CGFloat = 0.31
+    static let minWidthRatio: CGFloat = 1.1
+    static let minHeightRatio: CGFloat = 0.22
+    static let paddingRatio: CGFloat = 0.12
+    static let textMeasureWidth: CGFloat = 500
+    static let textMeasureHeight: CGFloat = 100
+    static let cornerRadius: CGFloat = 4
+}
+
+func terrariumNameTagMetric(canvasWidth: CGFloat, scale: Float) -> CGFloat {
+    canvasWidth * TerrariumNameTagStyle.referenceBodyWidthFraction * CGFloat(scale)
+}
+
+func drawTerrariumNameTag(
+    context: inout GraphicsContext,
+    name: String,
+    cx: CGFloat,
+    bodyTopY: CGFloat,
+    bodyMetric: CGFloat,
+    backgroundColor: Color
+) {
+    let tagBottomY = bodyTopY - bodyMetric * TerrariumNameTagStyle.gapRatio
+    let fontSize = bodyMetric * TerrariumNameTagStyle.fontRatio
+    let padding = bodyMetric * TerrariumNameTagStyle.paddingRatio
+
+    let text = Text(name)
+        .font(.system(size: fontSize, weight: .medium, design: .default))
+        .foregroundColor(TerrariumColors.hudText.opacity(0.86))
+    let resolved = context.resolve(text)
+    let textSize = resolved.measure(
+        in: CGSize(
+            width: TerrariumNameTagStyle.textMeasureWidth,
+            height: TerrariumNameTagStyle.textMeasureHeight
+        )
+    )
+    let tagWidth = max(bodyMetric * TerrariumNameTagStyle.minWidthRatio, textSize.width + padding * 2)
+    let tagHeight = max(bodyMetric * TerrariumNameTagStyle.minHeightRatio, textSize.height + padding * 0.6)
+
+    let backgroundRect = CGRect(
+        x: cx - tagWidth / 2,
+        y: tagBottomY - tagHeight,
+        width: tagWidth,
+        height: tagHeight
+    )
+    context.fill(
+        Path(roundedRect: backgroundRect, cornerRadius: TerrariumNameTagStyle.cornerRadius),
+        with: .color(backgroundColor)
+    )
+
+    context.draw(resolved, at: CGPoint(x: cx, y: tagBottomY - tagHeight / 2))
+}
+
 // MARK: - Layout
 
 enum TerrariumLayout {
