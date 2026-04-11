@@ -92,10 +92,16 @@ fun agentIcon(agentType: String?): String = when (agentType) {
 
 fun mapSessionState(session: dev.agentdeck.net.SessionInfo): AgentState {
     if (!session.alive) return AgentState.DISCONNECTED
+    // alive=true → never DISCONNECTED. The wire may carry "disconnected" for
+    // sessions whose state machine has not yet transitioned (e.g. OpenClaw
+    // gateway adapter alive but daemon stateMachine still in .disconnected
+    // because the connect-time session_start hook only fires from
+    // .disconnected and may have raced). Treat any non-active state as IDLE.
     return when (session.state) {
         "processing" -> AgentState.PROCESSING
-        "idle" -> AgentState.IDLE
-        "awaiting_permission", "awaiting_option", "awaiting_diff" -> AgentState.AWAITING_PERMISSION
+        "awaiting_permission" -> AgentState.AWAITING_PERMISSION
+        "awaiting_option" -> AgentState.AWAITING_OPTION
+        "awaiting_diff" -> AgentState.AWAITING_DIFF
         else -> AgentState.IDLE
     }
 }
