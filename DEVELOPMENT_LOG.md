@@ -2,6 +2,112 @@
 
 ---
 
+## 2026-04-12 — macOS Dashboard Display-Sleep Freeze Recovery
+
+### 문제
+모니터를 끄고 장시간 자리를 비웠다가 돌아오면 AgentDeck macOS 대시보드가 freeze 된 것처럼 보이고 한참 동안 갱신되지 않았다. Daemon 은 이미 IOKit `kIOMessageSystemHasPoweredOn` 핸들러가 있어 wake 시 Bonjour 재광고/모듈 wake/세션 prune 을 수행 (`DaemonServer.swift:351-382`) 하고 있었지만, 대시보드는 죽은 WebSocket 을 붙들고 있어 비대칭 상태가 만들어졌다.
+
+### 원인 (두 가지가 겹침)
+1. **Dashboard 가 wake 사실을 모른다** — `AgentStateHolder.handleForegroundReturn()` 은 SwiftUI `scenePhase` 변화에만 반응한다. macOS 에서 모니터 sleep / 시스템 idle 은 `scenePhase` 를 `.background` 로 떨어뜨리지 않으므로 foreground-return 경로 (`AgentStateHolder.swift:177-228`) 가 영원히 트리거되지 않는다.
+2. **WebSocket read timeout 부재** — `BridgeConnection` 의 `URLSessionConfiguration` 에 `timeoutIntervalForResource` 가 설정되지 않아 half-open socket 에서 `ws.receive { … }` 가 무한 대기.
+3. 회복은 결국 `staleDataMonitor` (10s tick, 20s threshold) 가 AppNap 해제 후 돌면서 일어났지만, AppNap 해제 → 첫 tick → threshold → waterfall → daemon `/health` → bridge connect 까지 최악 수십 초가 걸려 사용자에게는 freeze 로 보였다.
+
+### 해결
+- `apple/AgentDeck/State/AgentStateHolder.swift`
+  - Daemon 의 IOKit 패턴을 미러링한 `startSystemWakeListener()` / `stopSystemWakeListener()` / `handleSystemWake()` 추가.
+  - Wake 감지 즉시 `connection.forceDisconnectAndRestart()` → `connectTo(preferredLocalBridgeUrl)` 또는 `restartWaterfall()`.
+  - Swift IOKit import 에서 `kIOMessageSystemHasPoweredOn` 이 private 이라, DaemonServer 와 동일하게 `0xe0000300` raw 상수를 파일 로컬로 선언 (이름 충돌 피하려고 `_AgentStateHolder` suffix).
+  - `init()` 에서 `startStaleDataMonitor()` 옆에 등록, `deinit` 에서 `IOObjectRelease` + `IONotificationPortDestroy` 정리.
+- `apple/AgentDeck/Net/BridgeConnection.swift`
+  - macOS 한정 `config.timeoutIntervalForResource = 30` 추가. 살아있는 소켓은 `pingIntervalSec` 트래픽으로 갱신되므로 영향 없고, wake 후 dead socket 은 30s 내 receive failure → `handleDisconnect` → reconnect.
+
+### 검증
+- 빌드: `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataWakeFix build CODE_SIGNING_ALLOWED=NO` → `BUILD SUCCEEDED`.
+- 실기 검증은 다음 세션에서: `pmset sleepnow` / `pmset displaysleepnow` → wake → Console.app 에서
+  - `[Lifecycle] system wake — force reconnect`
+  - `[BridgeConnection] connecting to ws://127.0.0.1:9120/...`
+  - `[BridgeConnection] first message received — connected!`
+
+### 핵심 설계 결정
+- macOS 에서 "lifecycle" 신호는 SwiftUI `scenePhase` 만으로는 부족하다. 디스플레이 sleep / 시스템 idle 은 scenePhase 를 흔들지 않으므로, **power management 이벤트는 IOKit 을 직접 들어야 한다**. Daemon 이 이미 하고 있던 것을 대시보드에도 동일 패턴으로 추가해 양쪽 생명주기가 대칭이 되게 만들었다.
+- half-open WebSocket 탐지는 ping 타이머 한 축 + URLSession resource timeout 한 축으로 이중화. Ping 타이머가 AppNap 으로 느려지는 상황에서도 resource timeout 이 안전망이 된다.
+- AppNap 자체를 `ProcessInfo.beginActivity` 로 끄는 옵션은 보류. 이번 두 가지 수정만으로 증상이 사라지는지 먼저 확인하고, 추가 필요 시 결정한다. Sleep 자체를 막지 않는 `.userInitiated` 만 쓰는 식으로 최소 개입 경로를 남겨둔다.
+- Swift IOKit module 에서 `kIOMessageSystemHasPoweredOn` 이 private 으로 올라오는 것은 기존 DaemonServer 에서도 같은 raw 값 상수 우회를 쓰고 있다 (`DaemonServer.swift:10`). 중복 정의를 피하려고 공통 헬퍼를 만들고 싶은 유혹이 있지만, 두 곳만 쓰고 의미가 명확하므로 지금은 그대로 둔다.
+
+---
+
+## 2026-04-11 — D200H 런타임 Refresh + Preview Workflow
+
+### 문제
+macOS 앱을 다시 빌드해도 D200H 화면이 바뀌지 않는 것처럼 보였다. 실제 확인 결과 D200H ZIP dump는 Swift 경로에서 계속 생성되고 있었지만, 실행 중인 AgentDeck 번들이 빌드한 산출물과 달라질 수 있었다. 특히 Codex 샌드박스 안에서 `open /tmp/.../AgentDeck.app`를 실행하면 LaunchServices가 번들을 못 보고 `kLSNoExecutableErr`를 반환했지만, 승인된 GUI 실행에서는 정상적으로 열렸다.
+
+### 해결
+- `DaemonServer.swift`
+  - `POST /d200h/refresh` endpoint 추가. D200H 모듈의 상태 hash를 비우고 다음 `updateDisplay()`가 full `set_buttons`를 다시 보내도록 함.
+- `D200hHidModule.swift`
+  - `forceFullRefresh(reason:)` 추가.
+  - 세션 캐시가 아직 비어 있고 직전 full slot도 없으면 blank `set_buttons`를 보내지 않고 `refreshSkipped: "no_cached_sessions"`로 반환하도록 guard 추가.
+- `scripts/d200h-preview-dump.mjs`
+  - 최신 `*-set_buttons-*.zip` 또는 지정 ZIP을 추출해 `d200h-contact-sheet.png`, `preview.html`, `manifest.json`을 생성.
+- `.agents/workflows/d200h-preview.md`, `package.json`
+  - 반복 진단 명령을 `pnpm d200h:preview -- --out /tmp/agentdeck-d200h-preview`로 고정.
+
+### 검증
+- 새 guard 빌드:
+  - `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataD200HRefreshGuard build CODE_SIGNING_ALLOWED=NO`
+  - 결과: `BUILD SUCCEEDED`
+- 실행 중인 runtime 확인:
+  - `/health` 응답 pid: `44757`
+  - 실제 실행 번들: `/Users/puritysb/Library/Developer/Xcode/DerivedData/AgentDeck-dqyrhbwpqboxgiabhllzxkkjxqzy/Build/Products/Debug/AgentDeck.app`
+  - `d200h.connected=true`, `sessionsCount=4`, `writeFail=0`
+- 강제 refresh:
+  - `curl -sv -X POST http://127.0.0.1:9120/d200h/refresh`
+  - 결과: `200 OK`, `status=ok`, `sessionsCount=4`, `writeFail=0`
+- ZIP preview:
+  - `pnpm d200h:preview -- --out /tmp/agentdeck-d200h-preview-final`
+  - 대상 dump: `~/.agentdeck/d200h-dumps/20260411-083358-107-set_buttons-L-62661b-GATEWAY_OPENCLAW_AGENTDECK_AGENTDECK.zip`
+  - `btn0.png`, `btn1.png`, `btn2.png`, `btn13L.png` 모두 196×196 PNG.
+  - contact sheet에서 세션 아이콘/상태 점/텍스트가 top-down 좌표로 정상 배치됨.
+
+### 핵심 판단
+- D200H가 안 바뀌는 것처럼 보일 때 먼저 봐야 하는 순서:
+  1. `ps`/`/health`의 pid와 app bundle path가 방금 빌드한 산출물인지 확인.
+  2. `POST /d200h/refresh`로 full `set_buttons`를 강제 전송.
+  3. `pnpm d200h:preview`로 최신 ZIP의 실제 PNG 좌표를 확인.
+  4. ZIP preview는 정상인데 실기기만 다르면 그때부터 firmware apply/cache 문제로 보고 Ulanzi SDK/Studio capture를 protocol oracle로만 사용.
+- Ulanzi SDK는 AGPL-3.0이고 UlanziStudio host runtime에 묶이므로 AgentDeck 런타임 종속성으로 채택하지 않는다. 현 단계의 근본 해결책은 stock HID ZIP 경로 유지 + dump/preview/force refresh 관측성 강화다.
+
+---
+
+## 2026-04-11 — D200H Swift Button Coordinate + Dump Retention Fix
+
+### 문제
+D200H에서 세션 버튼의 아이콘/상태 점이 Stream Deck 기준 위치와 다르게 깨져 보였다. 최신 `partial_update` dump를 추출해 확인한 결과, 텍스트는 `drawText()`에서 top-down 좌표로 뒤집어 렌더링되는데 브랜드 아이콘/상태 점/좌측 인디케이터는 CoreGraphics 기본 좌표계 그대로 그려져 아래쪽으로 뒤집혀 있었다. 그 결과 아이콘이 텍스트 뒤쪽 하단에 겹치고 상태 점도 우상단이 아니라 우하단에 찍혔다.
+
+또한 awaiting/processing animation이 `partial_update` ZIP을 짧은 간격으로 계속 dump하면서, full `set_buttons` dump가 몇 초 만에 prune 되어 실기기 분석 증거가 사라졌다.
+
+### 해결
+- `D200hHidModule.swift`
+  - `drawInTopDownCoordinates()` 헬퍼를 추가해 버튼 아이콘, 상태 점, 세션 좌측 인디케이터를 텍스트와 같은 top-down 좌표계에서 렌더링하도록 수정.
+  - `partial_update` dump를 5초 단위로 throttle.
+  - dump prune 정책을 command별로 분리:
+    - `set_buttons` 최근 12개 보존
+    - `partial_update` 최근 24개 보존
+
+### 검증
+- 최신 dump에서 문제 재현:
+  - `/tmp/d200h-latest.zip`
+  - `icons/btn1.png`가 196×196 PNG이며, 아이콘/상태 점이 하단에 뒤집혀 보임.
+- Xcode 빌드 시도:
+  - `xcodebuild -project apple/AgentDeck.xcodeproj -scheme AgentDeck_macOS -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/AgentDeckDerivedDataD200HVisualFix build CODE_SIGNING_ALLOWED=NO`
+  - 실패 원인은 이 변경과 무관한 기존 local worktree 상태: `apple/AgentDeck/Terrarium/Creatures/JellyfishCreature.swift`가 삭제되어 있는데 Xcode project와 `TerrariumRenderer.swift`는 아직 `JellyfishCreature`를 참조.
+
+### 핵심 판단
+- 이번 깨짐은 D200H stock firmware 문제가 아니라 Swift CoreGraphics 렌더러 내부 좌표계 불일치다.
+- 장기적으로는 Swift에서 Stream Deck SVG를 손으로 재구현하지 말고, shared SVG renderer → deterministic rasterizer 경로를 D200H도 사용해야 한다. 단 Node `@resvg/resvg-js` 경로는 `loadSystemFonts: false`일 때 텍스트가 누락되는 것을 확인했으므로, font bundling 또는 system font loading 정책까지 같이 정해야 한다.
+
+---
+
 ## 2026-04-11 — Terrarium 크리처/태그 렌더링 버그 일괄 수정
 
 ### 문제
@@ -5357,4 +5463,3 @@ errorMessage는 `"... Reverted to local daemon."` 으로 명시해 사용자가 
 ### 핵심 설계 결정
 - **stop() 후 spawn 실패 = local daemon 복구 의무**: helper promotion은 "최선의 노력" 경로이지 fail-stop이 아님. fall-through fallback이 항상 local daemon이어야 함.
 - **무한 promotion 방지**: 기존 `d200hHelperPromotionAttempted` 플래그 유지로 충분. `restart()` 시점에만 false로 리셋되므로 사용자 의도가 명시적으로 표현될 때까지 1회만 시도.
-
