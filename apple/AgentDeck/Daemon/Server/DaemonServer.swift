@@ -319,7 +319,7 @@ final class DaemonServer {
                 _ = self.stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
                 self.broadcastStateUpdate()
             } else {
-                self.forwardCommandToSession(["type": "send_prompt", "text": text])
+                self.forwardCommandToSession(AgentCommand.sendPrompt(text: text).dictionary)
             }
         }
         voiceAssistant.onStateChanged = { [weak self] state, text, responseText in
@@ -573,6 +573,12 @@ final class DaemonServer {
         await httpServer.get("/devices") { [weak self] _ in
             let devices = await self?.buildDevicesPayload().value ?? ["devices": []]
             return .json(devices)
+        }
+
+        await httpServer.post("/d200h/refresh") { [weak self] _ in
+            let payload = await self?.forceD200hRefreshPayload().value
+                ?? ["status": "error", "error": "daemon unavailable"]
+            return .json(payload)
         }
 
         await httpServer.get("/diag") { [weak self] request in
@@ -878,6 +884,17 @@ final class DaemonServer {
     }
 
     @MainActor
+    private func forceD200hRefreshPayload() -> SendableDict {
+        guard let d200hModule else {
+            return SendableDict(["status": "error", "error": "d200h module unavailable"])
+        }
+        return SendableDict([
+            "status": "ok",
+            "d200h": d200hModule.forceFullRefresh(reason: "HTTP /d200h/refresh"),
+        ])
+    }
+
+    @MainActor
     private func buildDiagPayload(tail: Int) async -> SendableDict {
         let modules = await buildModuleHealth().value["modules"] as? [String: Any] ?? [:]
         let recentLog = DaemonLogger.shared.recentLines(limit: tail)
@@ -1024,7 +1041,7 @@ final class DaemonServer {
             handleSwitchAgent(cmd["agent"] as? String ?? "")
         case "mode_toggle":
             // D200H button 0: cycle mode via focused session (sends Shift+Tab to PTY)
-            let modeCmd = SendableDict(["type": "switch_mode"])
+            let modeCmd = SendableDict(AgentCommand.switchMode(mode: nil).dictionary)
             Task {
                 let routed = await self.focusRelay.routeCommand(modeCmd.value)
                 if !routed {
@@ -1387,7 +1404,7 @@ final class DaemonServer {
 
     @MainActor
     private func refreshSessions() async {
-        let sessions = registry.listActive().filter { $0.id != sessionId }
+        let sessions = await registry.listActiveAndReachable().filter { $0.id != sessionId }
         cachedSessions = DashboardDataRules.sortSessions(await enrichSessionsWithState(sessions))
         broadcastSessionsList()
     }
@@ -1462,7 +1479,7 @@ final class DaemonServer {
 
     @MainActor
     private func fetchUsageRelayed() async {
-        let sessions = registry.listActive().filter { $0.agentType != "daemon" && $0.id != sessionId }
+        let sessions = await registry.listActiveAndReachable().filter { $0.agentType != "daemon" && $0.id != sessionId }
         DaemonLogger.shared.sampledDebug("Daemon", key: "usage-relay:start", every: 10, "fetchUsageRelayed: \(sessions.count) siblings")
 
         // Tier 1: HTTP relay from sibling

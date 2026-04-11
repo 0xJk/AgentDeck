@@ -87,6 +87,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     private var lastOpenError: Int32 = 0
     private var lastDumpedSetButtonsZip = Data()
     private var lastDumpedPartialZip = Data()
+    private var lastPartialDumpAt = Date.distantPast
     private var lastFullSlots: [ButtonSlot] = []  // cache for partial update diff
     private var animatedButtonIds: [Int] = []      // buttons needing animation
     private var partialUpdateSupported = true       // fallback if PARTIAL_UPDATE fails
@@ -135,14 +136,50 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             module.handleDeviceRemoved(device)
         }, selfPtr)
 
-        // Schedule on main run loop — fires matching callback for already-present devices
+        // Schedule on main run loop
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
 
-        // Don't call IOHIDManagerOpen here. In a sandboxed app, HID access also
-        // requires the USB entitlement, and opening the manager up front doesn't
-        // buy us anything over opening the matched interfaces individually.
-        // Instead, open each device individually in handleDeviceAttached.
-        managerOpened = true
+        // IOHIDManager must be opened for device matching callbacks to fire for
+        // already-present devices. Without this, the schedule + matching dict is
+        // configured but no enumeration callback ever runs, leaving connected=false
+        // even when a D200H is plugged in.
+        let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        if openResult == kIOReturnSuccess {
+            managerOpened = true
+            DaemonLogger.shared.info("D200H IOHIDManagerOpen succeeded (sandbox=\(sandboxEnabled), usbEntitlement=\(usbEntitlementPresent))")
+        } else {
+            lastOpenError = openResult
+            managerOpened = false
+            if openResult == kIOReturnNotPermitted {
+                DaemonLogger.shared.info("""
+                D200H IOHIDManagerOpen denied (kIOReturnNotPermitted, 0x\(String(openResult, radix: 16))).
+                Sandboxed build lacks usable USB/HID authorization — falling back to stock firmware.
+                """)
+            } else {
+                DaemonLogger.shared.info("D200H IOHIDManagerOpen failed: 0x\(String(openResult, radix: 16)) (\(openResult))")
+            }
+        }
+
+        // Enumeration diagnostic: list every HID device IOKit currently sees,
+        // then filter to D200H VID/PID. This distinguishes "no D200H plugged
+        // in" from "IOKit sees it but matching callback never fired".
+        if let devicesSet = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> {
+            var allCount = 0
+            var d200hCount = 0
+            for device in devicesSet {
+                allCount += 1
+                let vid = hidDeviceProperty(device, kIOHIDVendorIDKey) ?? 0
+                let pid = hidDeviceProperty(device, kIOHIDProductIDKey) ?? 0
+                if vid == D200H_VID && pid == D200H_PID {
+                    d200hCount += 1
+                    let usagePage = hidDeviceProperty(device, kIOHIDPrimaryUsagePageKey) ?? 0
+                    DaemonLogger.shared.info("D200H IOKit device found: VID=0x\(String(vid, radix: 16)) PID=0x\(String(pid, radix: 16)) usagePage=\(usagePage)")
+                }
+            }
+            DaemonLogger.shared.info("D200H IOKit enumeration: matched=\(allCount) (D200H=\(d200hCount)). If D200H=0 but device is physically plugged in, the sandbox is blocking enumeration or USB enumeration itself failed.")
+        } else {
+            DaemonLogger.shared.info("D200H IOKit enumeration returned no devices (IOHIDManagerCopyDevices=nil) — nothing matches VID=0x\(String(D200H_VID, radix: 16))/PID=0x\(String(D200H_PID, radix: 16))")
+        }
 
         // If device was already attached during scheduling, run deferred initialization now
         if connected {
@@ -213,6 +250,21 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             updateDisplay()
         default: break
         }
+    }
+
+    func forceFullRefresh(reason: String) -> [String: Any] {
+        debugLog("Force full refresh requested: \(reason)")
+        guard !cachedSessionsList.isEmpty || !lastFullSlots.isEmpty else {
+            var snapshot = statusSnapshot()
+            snapshot["refreshSkipped"] = "no_cached_sessions"
+            debugLog("Force full refresh skipped: no cached sessions")
+            return snapshot
+        }
+        lastStateHash = ""
+        lastFullSlots = []
+        syncLabelStyleIfNeeded(force: true)
+        updateDisplay()
+        return statusSnapshot()
     }
 
     func statusSnapshot() -> [String: Any] {
@@ -431,7 +483,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             if session.isVirtualGateway {
                 return .handled(note: "option_select_virtual_gateway")
             }
-            return .command(["type": "focus_session", "sessionId": session.id])
+            return .command(AgentCommand.focusSession(sessionId: session.id).dictionary)
 
         case .optionSelect:
             guard let focusId = focusedSessionId,
@@ -458,7 +510,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                     let actions = ["go on", "/review", "/commit", "/clear"]
                     let qaIdx = index - 2
                     guard qaIdx < actions.count else { return .unmapped }
-                    return .command(["type": "send_prompt", "text": actions[qaIdx]])
+                    return .command(AgentCommand.sendPrompt(text: actions[qaIdx]).dictionary)
                 }
 
                 let optIdx = optionPage * 8 + (index - 2)
@@ -472,20 +524,20 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 updateDisplay()
 
                 if session.navigable {
-                    return .command(["type": "select_option", "index": optIdx])
+                    return .command(AgentCommand.selectOption(index: optIdx).dictionary)
                 } else {
                     let key = shortcut.isEmpty ? String(label.prefix(1)).lowercased() : shortcut
-                    return .command(["type": "respond", "value": key])
+                    return .command(AgentCommand.respond(value: key).dictionary)
                 }
 
             case 10:  // STOP/ESC combined
                 if session.isProcessing {
-                    return .command(["type": "interrupt"])
+                    return .command(AgentCommand.interrupt.dictionary)
                 } else {
                     currentMode = .sessionList
                     lastStateHash = ""
                     updateDisplay()
-                    return .command(["type": "escape"])
+                    return .command(AgentCommand.escape.dictionary)
                 }
 
             case 11:  // MORE
@@ -773,12 +825,15 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     private func dumpZipForAnalysisIfNeeded(_ zip: Data, command: String, mode: DisplayMode, slots: [ButtonSlot]) {
         guard !zip.isEmpty else { return }
 
+        let now = Date()
         if command == "set_buttons" {
             guard zip != lastDumpedSetButtonsZip else { return }
             lastDumpedSetButtonsZip = zip
         } else {
             guard zip != lastDumpedPartialZip else { return }
+            guard now.timeIntervalSince(lastPartialDumpAt) >= 5 else { return }
             lastDumpedPartialZip = zip
+            lastPartialDumpAt = now
         }
 
         let fm = FileManager.default
@@ -790,7 +845,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
 
-        let stamp = formatter.string(from: Date())
+        let stamp = formatter.string(from: now)
         let modeKey = mode == .sessionList ? "L" : "O"
         let slotPreview = slots
             .prefix(4)
@@ -817,13 +872,13 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             "packetCount": buildZipPackets(zip, command: command == "partial_update" ? CMD_PARTIAL_UPDATE : CMD_SET_BUTTONS).count,
             "slotTitles": slots.map(\.title),
             "boundaryBytes": boundaryInfo,
-            "createdAt": ISO8601DateFormatter().string(from: Date()),
+            "createdAt": ISO8601DateFormatter().string(from: now),
         ]
         if let data = try? JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: metaURL, options: .atomic)
         }
 
-        pruneDumpFiles(in: dumpDir, keepingMostRecent: 24)
+        pruneDumpFiles(in: dumpDir, keepingMostRecentSetButtons: 12, keepingMostRecentPartial: 24)
         DaemonLogger.shared.debug("D200H", "Dumped \(command) ZIP for analysis: \(zipURL.path)")
     }
 
@@ -837,7 +892,11 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         return String(joined.prefix(36)).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
     }
 
-    private func pruneDumpFiles(in dir: URL, keepingMostRecent limit: Int) {
+    private func pruneDumpFiles(
+        in dir: URL,
+        keepingMostRecentSetButtons setButtonsLimit: Int,
+        keepingMostRecentPartial partialLimit: Int
+    ) {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: [.contentModificationDateKey],
@@ -847,17 +906,31 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         let grouped = Dictionary(grouping: urls) { url in
             url.deletingPathExtension().lastPathComponent
         }
-        let orderedGroups = grouped.values.sorted { lhs, rhs in
-            let leftDate = (try? lhs[0].resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let rightDate = (try? rhs[0].resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return leftDate > rightDate
+
+        func newestDate(in group: [URL]) -> Date {
+            group
+                .compactMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+                .max() ?? .distantPast
         }
-        guard orderedGroups.count > limit else { return }
-        for group in orderedGroups.suffix(from: limit) {
-            for url in group {
-                try? FileManager.default.removeItem(at: url)
+
+        func prune(_ groups: [[URL]], keeping limit: Int) {
+            let orderedGroups = groups.sorted { newestDate(in: $0) > newestDate(in: $1) }
+            guard orderedGroups.count > limit else { return }
+            for group in orderedGroups.suffix(from: limit) {
+                for url in group {
+                    try? FileManager.default.removeItem(at: url)
+                }
             }
         }
+
+        prune(
+            grouped.values.filter { $0.first?.lastPathComponent.contains("-set_buttons-") == true },
+            keeping: setButtonsLimit
+        )
+        prune(
+            grouped.values.filter { $0.first?.lastPathComponent.contains("-partial_update-") == true },
+            keeping: partialLimit
+        )
     }
 }
 
@@ -1786,10 +1859,12 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     if slot.enabled && isBrandTile {
         switch slot.borderStyle {
         case .awaitingPulse, .processingDash, .solid:
-            ctx.setFillColor(rgb(59, 130, 246))
-            ctx.setAlpha(0.7)
-            ctx.fill(CGRect(x: pad + 1, y: pad + 24, width: 4, height: s - pad * 2 - 48))
-            ctx.setAlpha(1.0)
+            drawInTopDownCoordinates(ctx) {
+                ctx.setFillColor(rgb(59, 130, 246))
+                ctx.setAlpha(0.7)
+                ctx.fill(CGRect(x: pad + 1, y: pad + 24, width: 4, height: s - pad * 2 - 48))
+                ctx.setAlpha(1.0)
+            }
         case .none: break
         }
     }
@@ -1829,9 +1904,11 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         let dotX: CGFloat = s - pad - 20
         let dotY: CGFloat = pad + 20
         let dotColor = slot.statusColor ?? rgb(148, 163, 184)
-        
-        ctx.setFillColor(dotColor)
-        ctx.fillEllipse(in: CGRect(x: dotX - dotR, y: dotY - dotR, width: dotR * 2, height: dotR * 2))
+
+        drawInTopDownCoordinates(ctx) {
+            ctx.setFillColor(dotColor)
+            ctx.fillEllipse(in: CGRect(x: dotX - dotR, y: dotY - dotR, width: dotR * 2, height: dotR * 2))
+        }
     }
 
     guard let image = ctx.makeImage() else { return Data() }
@@ -1854,6 +1931,15 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     }
 
     return pngData
+}
+
+private func drawInTopDownCoordinates(_ ctx: CGContext, _ draw: () -> Void) {
+    let s = CGFloat(ICON_SIZE)
+    ctx.saveGState()
+    ctx.translateBy(x: 0, y: s)
+    ctx.scaleBy(x: 1, y: -1)
+    draw()
+    ctx.restoreGState()
 }
 
 private func drawSessionTextOverlay(_ ctx: CGContext, slot: ButtonSlot) {
@@ -1893,95 +1979,97 @@ private func drawUsageTextOverlay(_ ctx: CGContext, slot: ButtonSlot) {
 }
 
 private func drawButtonIcon(_ ctx: CGContext, glyph: ButtonSlot.IconGlyph, color: CGColor, rect: CGRect) {
-    if isSessionBrandGlyph(glyph) {
-        drawBrandGlyph(ctx, glyph: glyph, color: color, rect: rect)
-        return
-    }
-
-    ctx.saveGState()
-    ctx.setStrokeColor(color)
-    ctx.setFillColor(color)
-    ctx.setLineWidth(4)
-    ctx.setLineCap(.round)
-    ctx.setLineJoin(.round)
-
-    let midX = rect.midX
-    let midY = rect.midY
-
-    switch glyph {
-    case .none:
-        break
-    case .claudeCode, .codexCli, .openCode, .openClaw:
-        break
-    case .usage:
-        let barW: CGFloat = 10
-        let spacing: CGFloat = 9
-        let startX = midX - (barW * 1.5 + spacing)
-        let heights: [CGFloat] = [12, 22, 32]
-        for (index, barH) in heights.enumerated() {
-            let x = startX + CGFloat(index) * (barW + spacing)
-            let barRect = CGRect(x: x, y: midY - 16, width: barW, height: barH)
-            ctx.addPath(CGPath(roundedRect: barRect, cornerWidth: 2, cornerHeight: 2, transform: nil))
-            ctx.fillPath()
+    drawInTopDownCoordinates(ctx) {
+        if isSessionBrandGlyph(glyph) {
+            drawBrandGlyph(ctx, glyph: glyph, color: color, rect: rect)
+            return
         }
-    case .back:
-        ctx.move(to: CGPoint(x: midX - 20, y: midY))
-        ctx.addLine(to: CGPoint(x: midX + 16, y: midY))
-        ctx.move(to: CGPoint(x: midX - 20, y: midY))
-        ctx.addLine(to: CGPoint(x: midX - 6, y: midY + 14))
-        ctx.move(to: CGPoint(x: midX - 20, y: midY))
-        ctx.addLine(to: CGPoint(x: midX - 6, y: midY - 14))
-        ctx.strokePath()
-    case .stop:
-        ctx.fill(CGRect(x: midX - 15, y: midY - 15, width: 30, height: 30))
-    case .more:
-        ctx.move(to: CGPoint(x: midX - 16, y: midY + 12))
-        ctx.addLine(to: CGPoint(x: midX - 2, y: midY))
-        ctx.addLine(to: CGPoint(x: midX - 16, y: midY - 12))
-        ctx.move(to: CGPoint(x: midX + 2, y: midY + 12))
-        ctx.addLine(to: CGPoint(x: midX + 16, y: midY))
-        ctx.addLine(to: CGPoint(x: midX + 2, y: midY - 12))
-        ctx.strokePath()
-    case .goOn:
-        ctx.move(to: CGPoint(x: midX - 10, y: midY - 18))
-        ctx.addLine(to: CGPoint(x: midX + 18, y: midY))
-        ctx.addLine(to: CGPoint(x: midX - 10, y: midY + 18))
-        ctx.closePath()
-        ctx.fillPath()
-    case .review:
-        ctx.setLineWidth(2.5)
-        ctx.stroke(CGRect(x: midX - 18, y: midY - 22, width: 36, height: 44))
-        ctx.setAlpha(0.6)
-        ctx.move(to: CGPoint(x: midX - 10, y: midY - 10))
-        ctx.addLine(to: CGPoint(x: midX + 10, y: midY - 10))
-        ctx.move(to: CGPoint(x: midX - 10, y: midY))
-        ctx.addLine(to: CGPoint(x: midX + 6, y: midY))
-        ctx.move(to: CGPoint(x: midX - 10, y: midY + 10))
-        ctx.addLine(to: CGPoint(x: midX + 2, y: midY + 10))
-        ctx.setAlpha(1.0)
-        ctx.strokePath()
-    case .commit:
-        ctx.setLineWidth(2.5)
-        ctx.strokeEllipse(in: CGRect(x: midX - 22, y: midY - 22, width: 44, height: 44))
-        ctx.move(to: CGPoint(x: midX - 10, y: midY + 1))
-        ctx.addLine(to: CGPoint(x: midX - 2, y: midY + 9))
-        ctx.addLine(to: CGPoint(x: midX + 12, y: midY - 8))
-        ctx.strokePath()
-    case .clear:
-        ctx.move(to: CGPoint(x: midX - 16, y: midY - 16))
-        ctx.addLine(to: CGPoint(x: midX + 16, y: midY + 16))
-        ctx.move(to: CGPoint(x: midX + 16, y: midY - 16))
-        ctx.addLine(to: CGPoint(x: midX - 16, y: midY + 16))
-        ctx.strokePath()
-    case .tool:
-        ctx.move(to: CGPoint(x: midX - 18, y: midY - 10))
-        ctx.addLine(to: CGPoint(x: midX - 2, y: midY + 6))
-        ctx.strokePath()
-        ctx.strokeEllipse(in: CGRect(x: midX - 26, y: midY - 18, width: 16, height: 16))
-        ctx.fillEllipse(in: CGRect(x: midX + 6, y: midY + 2, width: 14, height: 14))
-    }
 
-    ctx.restoreGState()
+        ctx.saveGState()
+        ctx.setStrokeColor(color)
+        ctx.setFillColor(color)
+        ctx.setLineWidth(4)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+
+        let midX = rect.midX
+        let midY = rect.midY
+
+        switch glyph {
+        case .none:
+            break
+        case .claudeCode, .codexCli, .openCode, .openClaw:
+            break
+        case .usage:
+            let barW: CGFloat = 10
+            let spacing: CGFloat = 9
+            let startX = midX - (barW * 1.5 + spacing)
+            let heights: [CGFloat] = [12, 22, 32]
+            for (index, barH) in heights.enumerated() {
+                let x = startX + CGFloat(index) * (barW + spacing)
+                let barRect = CGRect(x: x, y: midY - 16, width: barW, height: barH)
+                ctx.addPath(CGPath(roundedRect: barRect, cornerWidth: 2, cornerHeight: 2, transform: nil))
+                ctx.fillPath()
+            }
+        case .back:
+            ctx.move(to: CGPoint(x: midX - 20, y: midY))
+            ctx.addLine(to: CGPoint(x: midX + 16, y: midY))
+            ctx.move(to: CGPoint(x: midX - 20, y: midY))
+            ctx.addLine(to: CGPoint(x: midX - 6, y: midY + 14))
+            ctx.move(to: CGPoint(x: midX - 20, y: midY))
+            ctx.addLine(to: CGPoint(x: midX - 6, y: midY - 14))
+            ctx.strokePath()
+        case .stop:
+            ctx.fill(CGRect(x: midX - 15, y: midY - 15, width: 30, height: 30))
+        case .more:
+            ctx.move(to: CGPoint(x: midX - 16, y: midY + 12))
+            ctx.addLine(to: CGPoint(x: midX - 2, y: midY))
+            ctx.addLine(to: CGPoint(x: midX - 16, y: midY - 12))
+            ctx.move(to: CGPoint(x: midX + 2, y: midY + 12))
+            ctx.addLine(to: CGPoint(x: midX + 16, y: midY))
+            ctx.addLine(to: CGPoint(x: midX + 2, y: midY - 12))
+            ctx.strokePath()
+        case .goOn:
+            ctx.move(to: CGPoint(x: midX - 10, y: midY - 18))
+            ctx.addLine(to: CGPoint(x: midX + 18, y: midY))
+            ctx.addLine(to: CGPoint(x: midX - 10, y: midY + 18))
+            ctx.closePath()
+            ctx.fillPath()
+        case .review:
+            ctx.setLineWidth(2.5)
+            ctx.stroke(CGRect(x: midX - 18, y: midY - 22, width: 36, height: 44))
+            ctx.setAlpha(0.6)
+            ctx.move(to: CGPoint(x: midX - 10, y: midY - 10))
+            ctx.addLine(to: CGPoint(x: midX + 10, y: midY - 10))
+            ctx.move(to: CGPoint(x: midX - 10, y: midY))
+            ctx.addLine(to: CGPoint(x: midX + 6, y: midY))
+            ctx.move(to: CGPoint(x: midX - 10, y: midY + 10))
+            ctx.addLine(to: CGPoint(x: midX + 2, y: midY + 10))
+            ctx.setAlpha(1.0)
+            ctx.strokePath()
+        case .commit:
+            ctx.setLineWidth(2.5)
+            ctx.strokeEllipse(in: CGRect(x: midX - 22, y: midY - 22, width: 44, height: 44))
+            ctx.move(to: CGPoint(x: midX - 10, y: midY + 1))
+            ctx.addLine(to: CGPoint(x: midX - 2, y: midY + 9))
+            ctx.addLine(to: CGPoint(x: midX + 12, y: midY - 8))
+            ctx.strokePath()
+        case .clear:
+            ctx.move(to: CGPoint(x: midX - 16, y: midY - 16))
+            ctx.addLine(to: CGPoint(x: midX + 16, y: midY + 16))
+            ctx.move(to: CGPoint(x: midX + 16, y: midY - 16))
+            ctx.addLine(to: CGPoint(x: midX - 16, y: midY + 16))
+            ctx.strokePath()
+        case .tool:
+            ctx.move(to: CGPoint(x: midX - 18, y: midY - 10))
+            ctx.addLine(to: CGPoint(x: midX - 2, y: midY + 6))
+            ctx.strokePath()
+            ctx.strokeEllipse(in: CGRect(x: midX - 26, y: midY - 18, width: 16, height: 16))
+            ctx.fillEllipse(in: CGRect(x: midX + 6, y: midY + 2, width: 14, height: 14))
+        }
+
+        ctx.restoreGState()
+    }
 }
 
 private func isSessionBrandGlyph(_ glyph: ButtonSlot.IconGlyph) -> Bool {
