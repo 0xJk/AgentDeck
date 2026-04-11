@@ -40,6 +40,10 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     // MARK: - Lifecycle
 
     private var backgroundEnteredAt: Date?
+    #if os(macOS)
+    private var staleDataMonitor: Timer?
+    private static let staleDataThresholdSec: TimeInterval = 20
+    #endif
 
     // MARK: - Connection Waterfall State
 
@@ -129,7 +133,38 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
 
             return false
         }
+
+        #if os(macOS)
+        startStaleDataMonitor()
+        #endif
     }
+
+    #if os(macOS)
+    private func startStaleDataMonitor() {
+        staleDataMonitor?.invalidate()
+        staleDataMonitor = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            self?.checkForStaleBridgeData()
+        }
+        if let staleDataMonitor {
+            RunLoop.main.add(staleDataMonitor, forMode: .common)
+        }
+    }
+
+    private func checkForStaleBridgeData() {
+        guard state.bridgeConnected,
+              connection.status == .connected,
+              !connection.isReconnecting,
+              let preferredLocalBridgeUrl,
+              let lastDataReceivedAt else { return }
+
+        let age = Date().timeIntervalSince(lastDataReceivedAt)
+        guard age > Self.staleDataThresholdSec else { return }
+
+        print("[Lifecycle] bridge data stale (\(Int(age))s) — reconnecting preferred local bridge")
+        connection.forceDisconnectAndRestart()
+        connectTo(url: preferredLocalBridgeUrl)
+    }
+    #endif
 
     // MARK: - Lifecycle Handlers
 
@@ -191,9 +226,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         } else {
             connection.startPingTimer()
         }
-        return
-        #endif
-
+#else
         if !state.bridgeConnected {
             // Not connected — restart discovery
             restartWaterfall()
@@ -221,6 +254,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             // Short suspend — just restart ping timer
             connection.startPingTimer()
         }
+#endif
     }
 
     private func restartWaterfall() {
