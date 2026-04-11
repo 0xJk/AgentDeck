@@ -6,7 +6,8 @@
   "scripts": {
     "build": "pnpm --filter @agentdeck/shared build && pnpm --filter '!@agentdeck/shared' -r build",
     "dev": "pnpm -r --parallel dev",
-    "demo": "vite tools/creature-simulator",
+    "demo": "node scripts/render-creature-simulator.mjs && npx --yes vite tools/creature-simulator",
+    "demo:build": "node scripts/render-creature-simulator.mjs && vite build tools/creature-simulator --base=/AgentDeck/demo/ --outDir ../../dist/demo --emptyOutDir && cp tools/creature-simulator/sim-data.js dist/demo/sim-data.js",
     "clean": "pnpm -r clean",
     "typecheck": "pnpm -r typecheck",
     "generate-icons": "node scripts/generate-icons.mjs",
@@ -17,6 +18,7 @@
     "test:report": "bash scripts/test-report.sh",
     "test:android": "bash scripts/test-report.sh --android",
     "test:html": "pnpm vitest run --coverage && python3 scripts/generate-html-report.py && open coverage/test-report/index.html",
+    "d200h:preview": "node scripts/d200h-preview-dump.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
