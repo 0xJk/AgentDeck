@@ -43,8 +43,8 @@ actor TimelineRelay {
         subscriptions.removeAll()
     }
 
-    func sync() {
-        let sessions = SessionRegistry.shared.listActive()
+    func sync() async {
+        let sessions = await SessionRegistry.shared.listActiveAndReachable()
         let siblingPorts = Set(sessions
             .filter { $0.port != selfPort && $0.agentType != "daemon" }
             .map(\.port))

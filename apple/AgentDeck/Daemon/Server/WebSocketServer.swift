@@ -185,6 +185,22 @@ actor WebSocketServer {
         return text.range(of: "upgrade: websocket", options: .caseInsensitive) != nil
     }
 
+    /// Format an NWEndpoint as "host:port" for logging. Distinguishes local (127.0.0.1/::1)
+    /// from LAN clients so we can tell at a glance whether iPad/iPhone is actually connecting.
+    private static func describeRemote(_ endpoint: NWEndpoint) -> String {
+        switch endpoint {
+        case .hostPort(let host, let port):
+            switch host {
+            case .ipv4(let addr): return "\(addr):\(port.rawValue)"
+            case .ipv6(let addr): return "[\(addr)]:\(port.rawValue)"
+            case .name(let name, _): return "\(name):\(port.rawValue)"
+            @unknown default: return "\(host):\(port.rawValue)"
+            }
+        default:
+            return "\(endpoint)"
+        }
+    }
+
     // MARK: - WebSocket Upgrade
 
     private func handleWebSocketUpgrade(_ nwConn: NWConnection, requestData: Data) {
@@ -227,7 +243,8 @@ actor WebSocketServer {
     private func setupWebSocketConnection(_ nwConn: NWConnection) {
         let conn = WebSocketConnection(connection: nwConn)
         connections.insert(conn)
-        DaemonLogger.shared.debug("WS", "Client connected (\(connections.count) total)")
+        let remote = Self.describeRemote(nwConn.endpoint)
+        DaemonLogger.shared.info("WS: Client connected from \(remote) (\(connections.count) total)")
 
         conn.onMessage = { [weak self] data in
             let c = conn

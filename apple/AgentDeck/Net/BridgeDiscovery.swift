@@ -18,7 +18,17 @@ struct DiscoveredBridge: Identifiable, Sendable {
     var id: String { name }
 
     var wsUrl: String {
-        var url = "ws://\(host):\(port)"
+        // IPv6 literals must be wrapped in brackets per RFC 3986, otherwise
+        // Foundation `URL(string:)` returns nil and BridgeConnection reports
+        // "Invalid URL". A simple heuristic: if the host contains ':' but isn't
+        // already bracketed, wrap it. IPv4 and DNS names contain no ':'.
+        let hostLiteral: String = {
+            if host.contains(":") && !host.hasPrefix("[") {
+                return "[\(host)]"
+            }
+            return host
+        }()
+        var url = "ws://\(hostLiteral):\(port)"
         if let token { url += "?token=\(token)" }
         return url
     }
@@ -156,8 +166,20 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
         // Resolve all endpoints via NWConnection (live mDNS, not cached TXT)
         for item in needsResolve {
             resolveEndpoint(item.endpoint) { [weak self] resolvedHost in
-                guard let resolvedHost, !resolvedHost.hasPrefix("169.254.") else {
-                    print("[Discovery] resolve failed or link-local for \(item.name)")
+                // Reject unusable addresses:
+                //   nil            — resolve failed
+                //   169.254.*      — IPv4 link-local (APIPA), can't route between devices
+                //   fe80:*         — IPv6 link-local, unusable without zone ID (which we
+                //                    strip in resolveEndpoint because URL() doesn't accept
+                //                    %zone suffixes in a portable way)
+                //   ::1 / 127.*    — loopback, not reachable from iPad
+                guard let resolvedHost,
+                      !resolvedHost.hasPrefix("169.254."),
+                      !resolvedHost.lowercased().hasPrefix("fe80:"),
+                      !resolvedHost.lowercased().hasPrefix("fe80%"),
+                      resolvedHost != "::1",
+                      !resolvedHost.hasPrefix("127.") else {
+                    print("[Discovery] resolve rejected for \(item.name): host=\(resolvedHost ?? "nil")")
                     return
                 }
                 // If we have no token from TXT, try to fetch it from /health
@@ -265,7 +287,16 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
     // MARK: - Endpoint Resolution
 
     private func resolveEndpoint(_ endpoint: NWEndpoint, completion: @escaping @Sendable (String?) -> Void) {
-        let connection = NWConnection(to: endpoint, using: .tcp)
+        // Force IPv4 so Bonjour resolves to a Wi-Fi/Ethernet A record instead of
+        // an unreachable link-local IPv6 (fe80::…). iPads on the same LAN can
+        // always reach the Mac over IPv4; they often can't reach an fe80 address
+        // because the %zone identifier doesn't survive NWEndpoint → String → URL
+        // and the host interface may not even share the same IPv6 scope.
+        let params = NWParameters.tcp
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
+        let connection = NWConnection(to: endpoint, using: params)
         let guard_ = ResolveGuard()
 
         connection.stateUpdateHandler = { state in
@@ -277,7 +308,9 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
                    let remoteEndpoint = path.remoteEndpoint,
                    case .hostPort(let host, _) = remoteEndpoint {
                     let hostStr = "\(host)"
-                    // Strip interface suffix (e.g. "%en0")
+                    // Strip interface suffix (e.g. "%en0") — zone IDs don't
+                    // round-trip through URL() anyway. Any fe80:* result that
+                    // slips through here will be rejected in handleResults.
                     let clean = hostStr.components(separatedBy: "%").first ?? hostStr
                     completion(clean)
                 } else {

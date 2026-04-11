@@ -528,10 +528,10 @@ final class DaemonService: ObservableObject {
         guard currentPort > 0 else { return }
 
         let registry = SessionRegistry.shared
-        let health = await registry.probeDaemonHealth(port: currentPort)
-        let daemonAlive = (health?["mode"] as? String) == "daemon"
 
         if isUsingExternalDaemon {
+            let health = await registry.probeDaemonHealth(port: currentPort)
+            let daemonAlive = (health?["mode"] as? String) == "daemon"
             if daemonAlive {
                 externalFailureCount = 0
                 return
@@ -551,34 +551,27 @@ final class DaemonService: ObservableObject {
             return
         }
 
-        guard isRunning else { return }
+        // In-process daemon: trust in-memory state. Self-HTTP probing created a
+        // restart loop when URLSession got bogged down by dead sibling relays or
+        // slow Pixoo pushes — a transient 2-second self-probe timeout was killing
+        // a perfectly healthy server. If we hold a live `server` reference and
+        // `isRunning`, the listener is up; no probe is needed for liveness.
+        guard isRunning, server != nil else { return }
+        localFailureCount = 0
 
-        if daemonAlive {
-            if preferencesSuggestBundledD200HHelperPromotion(from: health) {
+        // Still probe once for D200H helper auto-promotion, but never let a probe
+        // failure trigger a restart — promotion is best-effort.
+        if !d200hHelperPromotionAttempted, !isStarting,
+           AppPreferences.shared.autoUseBundledD200HHelper {
+            if let health = await registry.probeDaemonHealth(port: currentPort),
+               preferencesSuggestBundledD200HHelperPromotion(from: health) {
                 let reason = d200hHelperPromotionReason(from: health)
-                guard !d200hHelperPromotionAttempted, !isStarting else { return }
                 d200hHelperPromotionAttempted = true
                 DaemonLogger.shared.info("Promoting D200H to bundled helper: \(reason)")
                 errorMessage = reason
                 await startBundledD200HHelper()
-                return
             }
-            localFailureCount = 0
-            return
         }
-
-        localFailureCount += 1
-        guard localFailureCount >= 2, !isStarting else { return }
-        DaemonLogger.shared.error("Local daemon on port \(currentPort) is no longer healthy — restarting in-process daemon")
-        localFailureCount = 0
-        await server?.shutdown()
-        server = nil
-        isRunning = false
-        isUsingExternalDaemon = false
-        port = 0
-        readyUrl = nil
-        errorMessage = nil
-        start()
     }
 
     private func preferencesSuggestBundledD200HHelperPromotion(from health: [String: Any]?) -> Bool {

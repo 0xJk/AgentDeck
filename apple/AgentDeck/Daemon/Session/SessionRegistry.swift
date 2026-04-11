@@ -85,6 +85,55 @@ final class SessionRegistry: Sendable {
         return alive
     }
 
+    /// Like `listActive()` but additionally verifies each non-daemon session
+    /// responds on its HTTP port within a short timeout. Unreachable sessions
+    /// are deregistered from sessions.json. Use from sibling-relay code paths
+    /// (TimelineRelay, usage relay) so dead CLI processes with reused PIDs —
+    /// which pass `isProcessAlive` but never respond — don't cause restart
+    /// loops, stuck subscriptions, or health-probe timeouts.
+    func listActiveAndReachable() async -> [DaemonSessionEntry] {
+        let pidAlive = listActive()
+        let candidates = pidAlive.filter { $0.agentType != "daemon" }
+        guard !candidates.isEmpty else { return pidAlive }
+
+        let reachableIds: Set<String> = await withTaskGroup(of: (String, Bool).self) { group in
+            for entry in candidates {
+                group.addTask { [self] in
+                    let ok = await self.isSessionReachable(port: entry.port)
+                    return (entry.id, ok)
+                }
+            }
+            var ids = Set<String>()
+            for await (id, ok) in group where ok {
+                ids.insert(id)
+            }
+            return ids
+        }
+
+        let survivors = pidAlive.filter { entry in
+            entry.agentType == "daemon" || reachableIds.contains(entry.id)
+        }
+        if survivors.count != pidAlive.count {
+            let removed = pidAlive.count - survivors.count
+            DaemonLogger.shared.info("SessionRegistry: pruned \(removed) unreachable sibling session(s) from sessions.json")
+            writeSessions(survivors)
+        }
+        return survivors
+    }
+
+    private func isSessionReachable(port: Int) async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 1.5
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return http.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
     func findExistingDaemon() -> DaemonSessionEntry? {
         listActive().first { $0.agentType == "daemon" }
     }
