@@ -5,21 +5,34 @@ import {
   PluginCommand,
   AgentCapabilities,
   BRIDGE_WS_PORT,
-  RECONNECT_INTERVAL_MS,
+  RECONNECT_BACKOFF_MS,
   WS_ACTIVITY_TIMEOUT_MS,
 } from '@agentdeck/shared';
 import type { AgentLink } from './agent-link.js';
 import { dlog, dwarn, derr } from './log.js';
 
+export type PortProvider = () => number | null;
+
 export class BridgeClient extends EventEmitter implements AgentLink {
   private ws: WebSocket | null = null;
-  private reconnectTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private _watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private _lastActivityAt = 0;
   private _connected = false;
   private _port = BRIDGE_WS_PORT;
   private _connectGeneration = 0;
   private _capabilities: AgentCapabilities | null = null;
+  private _portProvider: PortProvider | null = null;
+  private _backoffIdx = 0;
+
+  /**
+   * Install a port provider. Called before each (re)connect attempt.
+   * Returning null skips that attempt — used when daemon.json is missing or
+   * the recorded pid is dead. The same provider survives across reconnects.
+   */
+  setPortProvider(provider: PortProvider | null): void {
+    this._portProvider = provider;
+  }
 
   connect(port?: number): void {
     if (port != null) this._port = port;
@@ -27,12 +40,8 @@ export class BridgeClient extends EventEmitter implements AgentLink {
     this.cleanup();
     this._connectGeneration++;
     const gen = this._connectGeneration;
+    this._backoffIdx = 0;
     this.attemptConnect(gen);
-    this.reconnectTimer = setInterval(() => {
-      if (!this._connected && gen === this._connectGeneration) {
-        this.attemptConnect(gen);
-      }
-    }, RECONNECT_INTERVAL_MS);
   }
 
   /** Reconnect to a different session on a different port */
@@ -82,8 +91,53 @@ export class BridgeClient extends EventEmitter implements AgentLink {
     return this._port;
   }
 
+  private scheduleReconnect(gen: number): void {
+    if (gen !== this._connectGeneration) return;
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    const delay = RECONNECT_BACKOFF_MS[
+      Math.min(this._backoffIdx, RECONNECT_BACKOFF_MS.length - 1)
+    ];
+    if (this._backoffIdx < RECONNECT_BACKOFF_MS.length - 1) this._backoffIdx++;
+    dlog('Bridge', `next attempt in ${delay}ms (backoffIdx=${this._backoffIdx})`);
+    this.reconnectTimeout = setTimeout(() => {
+      this.reconnectTimeout = null;
+      if (gen !== this._connectGeneration) return;
+      if (this._connected) return;
+      this.attemptConnect(gen);
+    }, delay);
+  }
+
   private attemptConnect(gen: number): void {
     if (gen !== this._connectGeneration) return;
+
+    // Resolve target port via provider on every attempt so that daemon port
+    // drift (or daemon absence) is picked up without restarting the plugin.
+    if (this._portProvider) {
+      const resolved = this._portProvider();
+      if (resolved == null) {
+        dlog('Bridge', 'attemptConnect skipped: portProvider returned null (daemon offline)');
+        if (this._connected) {
+          // Daemon disappeared while we were connected — force a close so the
+          // 'disconnected' event fires through the existing 'close' path.
+          try { this.ws?.close(); } catch { /* ignore */ }
+        }
+        this.scheduleReconnect(gen);
+        return;
+      }
+      if (resolved !== this._port) {
+        dlog('Bridge', `port rebind ${this._port} -> ${resolved}`);
+        this._port = resolved;
+        if (this.ws) {
+          const stale = this.ws;
+          this.ws = null;
+          stale.removeAllListeners();
+          try { stale.close(); } catch { /* ignore */ }
+        }
+      }
+    }
 
     if (this.ws) {
       if (this.ws.readyState === WebSocket.CONNECTING) {
@@ -113,6 +167,7 @@ export class BridgeClient extends EventEmitter implements AgentLink {
         if (gen !== this._connectGeneration) return;
         dlog('Bridge', 'WebSocket open');
         this._connected = true;
+        this._backoffIdx = 0;
         this._lastActivityAt = Date.now();
         this.startWatchdog(gen);
         this.emit('connected');
@@ -146,6 +201,7 @@ export class BridgeClient extends EventEmitter implements AgentLink {
           dlog('Bridge', 'WebSocket closed (was connected)');
           this.emit('disconnected');
         }
+        this.scheduleReconnect(gen);
       });
 
       this.ws.on('error', (err) => {
@@ -154,6 +210,7 @@ export class BridgeClient extends EventEmitter implements AgentLink {
       });
     } catch (err) {
       dlog('Bridge', `attemptConnect exception: ${err}`);
+      this.scheduleReconnect(gen);
     }
   }
 
@@ -183,7 +240,8 @@ export class BridgeClient extends EventEmitter implements AgentLink {
             }
           }, 3000);
         } else {
-          // Not connected — try immediate reconnect instead of waiting 3s
+          // Not connected — reset backoff and try immediately
+          this._backoffIdx = 0;
           this.attemptConnect(gen);
         }
         return;
@@ -206,9 +264,9 @@ export class BridgeClient extends EventEmitter implements AgentLink {
   }
 
   private cleanup(): void {
-    if (this.reconnectTimer) {
-      clearInterval(this.reconnectTimer);
-      this.reconnectTimer = null;
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
     }
     this.stopWatchdog();
   }

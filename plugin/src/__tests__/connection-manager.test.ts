@@ -11,7 +11,7 @@ vi.mock('../bridge-client.js', async () => {
   class MockBridgeClient extends EventEmitter {
     _connected = false;
     _port = 9120;
-    scanLatestPort: (() => number | undefined) | null = null;
+    _portProvider: (() => number | null) | null = null;
 
     connect(port?: number) {
       if (port != null) this._port = port;
@@ -22,6 +22,9 @@ vi.mock('../bridge-client.js', async () => {
     disconnect() {
       this._connected = false;
       this.emit('disconnected');
+    }
+    setPortProvider(provider: (() => number | null) | null) {
+      this._portProvider = provider;
     }
     send = vi.fn();
     isConnected() { return this._connected; }
@@ -91,6 +94,14 @@ describe('ConnectionManager', () => {
     cm.start();
 
     expect(bridgeConnect).toHaveBeenCalled();
+  });
+
+  it('start() installs a port provider so daemon.json is re-read every attempt', () => {
+    const bridge = getBridge(cm);
+    cm.start();
+    // Provider is wired — BridgeClient will invoke it per attempt.
+    // We only verify the wire-up; the actual fs read is exercised in integration tests.
+    expect(typeof bridge._portProvider).toBe('function');
   });
 
   it('emits connected when bridge connects', () => {

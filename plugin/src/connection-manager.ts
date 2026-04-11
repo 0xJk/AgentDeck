@@ -71,13 +71,22 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
 
   // ===== Public API =====
 
-  /** Start daemon-only connection. Reads port from daemon.json. */
+  /**
+   * Start daemon-only connection.
+   *
+   * The BridgeClient resolves the target port via the installed provider on
+   * every reconnect attempt, so a stale daemon.json, dead pid, or port drift
+   * is picked up without restarting the plugin. If the provider returns null
+   * we stay in a silent offline state (backoff-throttled retries) until the
+   * daemon comes back.
+   */
   start(): void {
     if (this.started) return;
     this.started = true;
-    const port = this.findDaemonPort();
-    dinfo(TAG, `start(daemon port=${port ?? 'not found'})`);
-    this.bridge.connect(port ?? undefined);
+    this.bridge.setPortProvider(() => this.findDaemonPort());
+    const initial = this.findDaemonPort();
+    dinfo(TAG, `start(daemon port=${initial ?? 'not found'})`);
+    this.bridge.connect(initial ?? undefined);
   }
 
   /** Get current bridge port. */
