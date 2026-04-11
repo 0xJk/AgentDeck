@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RUNTIME_DIR="${SCRIPT_DIR}/agentdeck-runtime"
+RUNTIME_DIR="$(cd "${SCRIPT_DIR}/../Resources/agentdeck-runtime" && pwd)"
 NODE_BIN="${SCRIPT_DIR}/node"
 CLI_JS="${RUNTIME_DIR}/bridge/dist/cli.js"
 

@@ -1009,7 +1009,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = bound.serendipity.agentdeck.dashboard.tests;
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AgentDeck_macOS.app/Contents/MacOS/AgentDeck_macOS";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AgentDeck.app/Contents/MacOS/AgentDeck";
 			};
 			name = Release;
 		};
@@ -1204,7 +1204,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = bound.serendipity.agentdeck.dashboard.tests;
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AgentDeck_macOS.app/Contents/MacOS/AgentDeck_macOS";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AgentDeck.app/Contents/MacOS/AgentDeck";
 			};
 			name = Debug;
 		};

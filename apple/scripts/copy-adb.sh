@@ -11,6 +11,7 @@ if [ -z "${BUILT_PRODUCTS_DIR:-}" ] || [ -z "${CONTENTS_FOLDER_PATH:-}" ]; then
 fi
 
 HELPERS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
+RESOURCES_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
 DEST="${HELPERS_DIR}/adb"
 REPO_ROOT="${PROJECT_DIR}/.."
 
@@ -71,7 +72,7 @@ bundle_d200h_helper() {
     local node_src launcher_src runtime_dir
     node_src="$(command -v node || true)"
     launcher_src="${PROJECT_DIR}/scripts/agentdeck-d200h-helper.sh"
-    runtime_dir="${HELPERS_DIR}/agentdeck-runtime"
+    runtime_dir="${RESOURCES_DIR}/agentdeck-runtime"
 
     if [ -z "$node_src" ] || [ ! -x "$node_src" ]; then
         echo "warning: node not found — bundled D200H helper will be unavailable"
@@ -90,15 +91,21 @@ bundle_d200h_helper() {
         return 0
     fi
 
-    mkdir -p "$HELPERS_DIR"
+    mkdir -p "$HELPERS_DIR" "$RESOURCES_DIR"
     cp "$node_src" "${HELPERS_DIR}/node"
     cp "$launcher_src" "${HELPERS_DIR}/agentdeck-d200h-helper"
     chmod 755 "${HELPERS_DIR}/node" "${HELPERS_DIR}/agentdeck-d200h-helper"
 
-    rm -rf "$runtime_dir"
+    rm -rf "${HELPERS_DIR}/agentdeck-runtime" "$runtime_dir"
     mkdir -p "${runtime_dir}/bridge"
     cp -R "${REPO_ROOT}/bridge/dist" "${runtime_dir}/bridge/dist"
-    rsync -aL --delete "${REPO_ROOT}/node_modules/" "${runtime_dir}/node_modules/"
+    # pnpm can leave behind .ignored_* staging directories with broken links.
+    # They are not needed in the bundled runtime, and following them makes the
+    # helper bundle step fail after the app has already compiled successfully.
+    rsync -aL --delete \
+        --exclude '.ignored_*/' \
+        --exclude '*/.ignored_*/' \
+        "${REPO_ROOT}/node_modules/" "${runtime_dir}/node_modules/"
 
     if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ]; then
         SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:--}}"
