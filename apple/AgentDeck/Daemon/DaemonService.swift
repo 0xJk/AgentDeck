@@ -244,10 +244,19 @@ final class DaemonService: ObservableObject {
         let stderrData = stderrPipe.fileHandleForReading.availableData
         let stderrText = String(data: stderrData, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        errorMessage = stderrText?.isEmpty == false
+        let detail = stderrText?.isEmpty == false
             ? "Bundled D200H helper failed: \(stderrText!)"
             : "Bundled D200H helper did not become healthy on port \(targetPort)."
         await stopOwnedExternalDaemonIfNeeded()
+
+        // Helper spawn failed after stop() — without explicit recovery the app
+        // sits in a "daemon down" state until the user toggles settings. Revive
+        // the in-process daemon so dashboard/CLI/D200H paths keep working on
+        // the local code path. d200hHelperPromotionAttempted stays true so the
+        // health monitor doesn't immediately re-promote into the same failure.
+        DaemonLogger.shared.error("\(detail) — reverting to local in-process daemon")
+        errorMessage = "\(detail) Reverted to local daemon."
+        start()
     }
 
     private func connectToExternalDaemon(port knownPort: Int? = nil) async {
