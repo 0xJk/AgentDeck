@@ -48,20 +48,20 @@ export function agentLogoIcon(
   agent: AgentType,
   size = 48,
   opacity = 0.7,
+  cx = 72,
+  cy = size / 2 + 12
 ): string {
   const brandColor = agentBrandColor(agent);
-  // Center icon slightly below top — can overlap with text for compact layout
-  const cy = size / 2 + 12;
 
   if (agent === 'claude-code') {
     const s = size / 24;
-    return `<g transform="translate(72,${cy}) scale(${s.toFixed(2)}) translate(-12,-12)" opacity="${opacity}"><path d="${CLAUDE_LOGO_PATH}" fill="${brandColor}" fill-rule="evenodd"/></g>`;
+    return `<g transform="translate(${cx},${cy}) scale(${s.toFixed(2)}) translate(-12,-12)" opacity="${opacity}"><path d="${CLAUDE_LOGO_PATH}" fill="${brandColor}" fill-rule="evenodd"/></g>`;
   }
   if (agent === 'codex-cli') {
     const s = size / 24;
     return [
       `<defs><linearGradient id="cx-i" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#B1A7FF"/><stop offset="48%" stop-color="#7A9DFF"/><stop offset="100%" stop-color="${brandColor}"/></linearGradient></defs>`,
-      `<g transform="translate(72,${cy}) scale(${s.toFixed(2)}) translate(-12,-12)" opacity="${opacity}"><path d="${CODEX_LOGO_PATH}" fill="url(#cx-i)"/></g>`,
+      `<g transform="translate(${cx},${cy}) scale(${s.toFixed(2)}) translate(-12,-12)" opacity="${opacity}"><path d="${CODEX_LOGO_PATH}" fill="url(#cx-i)"/></g>`,
     ].join('');
   }
   if (agent === 'opencode') {
@@ -72,9 +72,9 @@ export function agentLogoIcon(
     const inner = ocSize * 0.5;
     return [
       `<g opacity="${opacity}">`,
-      `<rect x="${72 - half}" y="${cy - half}" width="${ocSize}" height="${ocSize}" rx="4" fill="${dimColor(brandColor, 0.3)}"/>`,
-      `<rect x="${72 - half + ring}" y="${cy - half + ring}" width="${ocSize - ring * 2}" height="${ocSize - ring * 2}" rx="2" fill="${dimColor('#4B4646', 0.2)}"/>`,
-      `<rect x="${72 - inner / 2}" y="${cy - inner / 2}" width="${inner}" height="${inner}" rx="2" fill="${dimColor('#4B4646', 0.2)}"/>`,
+      `<rect x="${cx - half}" y="${cy - half}" width="${ocSize}" height="${ocSize}" rx="4" fill="${dimColor(brandColor, 0.3)}"/>`,
+      `<rect x="${cx - half + ring}" y="${cy - half + ring}" width="${ocSize - ring * 2}" height="${ocSize - ring * 2}" rx="2" fill="${dimColor('#4B4646', 0.2)}"/>`,
+      `<rect x="${cx - inner / 2}" y="${cy - inner / 2}" width="${inner}" height="${inner}" rx="2" fill="${dimColor('#4B4646', 0.2)}"/>`,
       `</g>`,
     ].join('');
   }
@@ -82,7 +82,7 @@ export function agentLogoIcon(
   const ocScale = size / 120;
   return [
     `<defs><linearGradient id="oc-i" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="${brandColor}"/><stop offset="100%" stop-color="#991b1b"/></linearGradient></defs>`,
-    `<g transform="translate(${72 - 60 * ocScale},${cy - 60 * ocScale}) scale(${ocScale.toFixed(3)})" opacity="${opacity}">`,
+    `<g transform="translate(${cx - 60 * ocScale},${cy - 60 * ocScale}) scale(${ocScale.toFixed(3)})" opacity="${opacity}">`,
     `<path d="${OC_BODY}" fill="url(#oc-i)"/>`,
     `<path d="${OC_CLAW_L}" fill="url(#oc-i)"/>`,
     `<path d="${OC_CLAW_R}" fill="url(#oc-i)"/>`,

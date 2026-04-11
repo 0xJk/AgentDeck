@@ -75,8 +75,11 @@ export function renderSessionSlot(
   // State indicator
   const stateLbl = stateLabel(session.state, agent);
 
-  // Agent creature icon — primary identification element
-  const icon = agentLogoIcon(agent, 48, 0.7);
+  // Premium widget layout fonts
+  const fontFam = '-apple-system, system-ui, Helvetica Neue, sans-serif';
+
+  // Agent creature icon — top-left
+  const icon = agentLogoIcon(agent, 36, 0.9, 28, 28);
 
   // AWAITING pulse glow border
   let glowBorder = '';
@@ -94,16 +97,20 @@ export function renderSessionSlot(
     ? `<rect x="0" y="16" width="3" height="112" rx="1.5" fill="#3b82f6" opacity="0.8"/>`
     : '';
 
+  // State dot (Top Right)
+  const stateDot = `<circle cx="124" cy="20" r="5" fill="${sColor}"/>`;
+
   const elements = [
     icon,
     glowBorder,
     activeBorder,
-    // Project name
-    `<text x="72" y="68" text-anchor="middle" font-family="Arial,sans-serif" font-size="${projFontSize}" font-weight="bold" fill="#ffffff">${escXml(projectName)}</text>`,
-    // Model name
-    modelText ? `<text x="72" y="86" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#94a3b8">${escXml(modelText)}</text>` : '',
-    // State dot + label (centered, bottom)
-    `<text x="72" y="112" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="600" fill="${sColor}">\u25CF ${escXml(stateLbl)}</text>`,
+    stateDot,
+    // Project name (left-aligned)
+    `<text x="14" y="94" text-anchor="start" font-family="${fontFam}" font-size="18" font-weight="700" fill="#ffffff" letter-spacing="-0.3">${escXml(projectName)}</text>`,
+    // Model name (left-aligned)
+    modelText ? `<text x="14" y="112" text-anchor="start" font-family="${fontFam}" font-size="12" fill="#94a3b8" font-weight="500">${escXml(modelText)}</text>` : '',
+    // State label (left-aligned)
+    `<text x="14" y="130" text-anchor="start" font-family="${fontFam}" font-size="11" font-weight="700" fill="${sColor}" letter-spacing="0.5">${escXml(stateLbl)}</text>`,
   ].join('');
 
   return svgFrame(bgColor, elements);
@@ -176,20 +183,24 @@ export function renderDetailInfo(session: SessionInfo | undefined, state: State,
   const isOpenClaw = agent === 'openclaw';
   const nameForDisplay = displayName ?? session.projectName;
 
-  const detailIcon = agentLogoIcon(agent, 36, 0.5);
+  const fontFam = '-apple-system, system-ui, Helvetica Neue, sans-serif';
+  const detailIcon = agentLogoIcon(agent, 36, 0.9, 28, 28);
+
+  const stateDot = `<circle cx="124" cy="20" r="5" fill="${sColor}"/>`;
 
   const elements = [
     detailIcon,
-    // Project name (bold, large)
-    `<text x="72" y="50" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="#ffffff">${escXml(truncate(nameForDisplay, 12))}</text>`,
+    stateDot,
+    // Project name (left-aligned)
+    `<text x="14" y="66" text-anchor="start" font-family="${fontFam}" font-size="20" font-weight="700" fill="#ffffff" letter-spacing="-0.3">${escXml(truncate(nameForDisplay, 12))}</text>`,
     // Model (skip for OpenClaw)
-    modelName && !isOpenClaw ? `<text x="72" y="72" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#94a3b8">${escXml(truncate(modelName, 16))}</text>` : '',
-    // Mode (skip for OpenClaw)
-    mode && mode !== 'default' && !isOpenClaw ? `<text x="72" y="90" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#a78bfa">${escXml(mode.toUpperCase())}</text>` : '',
-    // Tool (if processing)
-    tool ? `<text x="72" y="106" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#fbbf24">\u25B6 ${escXml(truncate(tool, 16))}</text>` : '',
-    // State (centered, bottom)
-    `<text x="72" y="132" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="600" fill="${sColor}">\u25CF ${escXml(stateLbl)}</text>`,
+    modelName && !isOpenClaw ? `<text x="14" y="86" text-anchor="start" font-family="${fontFam}" font-size="12" fill="#94a3b8" font-weight="500">${escXml(truncate(modelName, 16))}</text>` : '',
+    // Mode
+    mode && mode !== 'default' && !isOpenClaw ? `<text x="14" y="104" text-anchor="start" font-family="${fontFam}" font-size="11" fill="#a78bfa" font-weight="600">${escXml(mode.toUpperCase())}</text>` : '',
+    // Tool (if processing, replace state label area)
+    tool ? `<text x="14" y="130" text-anchor="start" font-family="${fontFam}" font-size="11" fill="#fbbf24" font-weight="700" letter-spacing="0.5">\u25B6 ${escXml(truncate(tool, 18))}</text>` : 
+    // State
+    `<text x="14" y="130" text-anchor="start" font-family="${fontFam}" font-size="11" font-weight="700" fill="${sColor}" letter-spacing="0.5">${escXml(stateLbl)}</text>`,
   ].join('');
 
   return svgFrame('#0f172a', elements);
@@ -243,9 +254,15 @@ export function renderInfoSlot(label: string, subtitle?: string): string {
 // ---- SVG Frame ----
 
 export function svgFrame(bgColor: string, innerElements: string): string {
+  const depthBands = [
+    `<rect x="0" y="0" width="${SIZE}" height="34" rx="12" fill="#ffffff" opacity="0.08"/>`,
+    `<rect x="0" y="100" width="${SIZE}" height="44" rx="12" fill="#000000" opacity="0.12"/>`
+  ].join('');
+
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
     `<rect width="${SIZE}" height="${SIZE}" rx="12" fill="${bgColor}"/>`,
+    depthBands,
     innerElements,
     `</svg>`,
   ].join('');
