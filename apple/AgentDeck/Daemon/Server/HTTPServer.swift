@@ -140,11 +140,22 @@ actor HTTPServer {
         return true
     }
 
-    /// Route a request to matching handler (used by WebSocketServer for HTTP delegation)
+    /// Route a request to matching handler (used by WebSocketServer for HTTP delegation).
+    /// Supports both exact match and prefix match (paths ending with "*").
     func route(_ request: HTTPRequest) async -> HTTPResponse {
+        // Exact match first
         for route in routes {
             if route.method == request.method && route.path == request.path {
                 return await route.handler(request)
+            }
+        }
+        // Prefix match (e.g., "/hooks/*" matches "/hooks/PreToolUse")
+        for route in routes {
+            if route.method == request.method && route.path.hasSuffix("*") {
+                let prefix = String(route.path.dropLast()) // remove "*"
+                if request.path.hasPrefix(prefix) {
+                    return await route.handler(request)
+                }
             }
         }
         return .notFound

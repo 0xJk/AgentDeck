@@ -280,6 +280,11 @@ final class DaemonServer {
                     if event["ollamaStatus"] == nil, let cached = self.cachedOllamaStatus {
                         event["ollamaStatus"] = cached
                     }
+                    // Inject focused session's ID so clients can dedup the promoted
+                    // session from the siblings list (prevents duplicate creatures).
+                    let focusedId = await self.focusRelay.focusedSessionId
+                    if let fid = focusedId { event["sessionId"] = fid }
+
                     // Always override mlxModels with daemon's filtered cache — sibling bridges may
                     // run older/unfiltered code that leaks nanoLLaVA into the list, causing flicker.
                     if !self.cachedMlxModels.isEmpty {
@@ -619,6 +624,20 @@ final class DaemonServer {
             }
             Task { @MainActor in await self?.handleHookEvent(json) }
             return .json(["status": "ok"])
+        }
+
+        // Claude Code hooks POST to /hooks/:eventName (event name in URL path).
+        // Prefix match: /hooks/* captures all hook events.
+        await httpServer.post("/hooks/*") { [weak self] request in
+            guard let body = request.body else {
+                return .json(["received": true])
+            }
+            // Extract event name from URL path: "/hooks/PreToolUse" → "PreToolUse"
+            let eventName = String(request.path.dropFirst("/hooks/".count))
+            var json = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+            json["event"] = eventName
+            Task { @MainActor in await self?.handleHookEvent(json) }
+            return .json(["received": true])
         }
 
         await httpServer.get("/sse") { _ in
