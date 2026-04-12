@@ -31,6 +31,7 @@ export async function enrichSessionsWithState(
   sessions: SessionEntry[],
   ownSessionId: string,
   ownState: string,
+  ownModelName?: string,
 ): Promise<EnrichedSession[]> {
   return Promise.all(sessions.map(async (s) => {
     const base: EnrichedSession = {
@@ -41,7 +42,7 @@ export async function enrichSessionsWithState(
       alive: true,
       startedAt: s.startedAt,
     };
-    if (s.id === ownSessionId) return { ...base, state: ownState };
+    if (s.id === ownSessionId) return { ...base, state: ownState, modelName: ownModelName };
     try {
       const res = await fetch(`http://127.0.0.1:${s.port}/health`, { signal: AbortSignal.timeout(2000) });
       const data = await res.json() as { state?: string; modelName?: string };
@@ -63,8 +64,9 @@ export async function enrichSessionsWithState(
 export async function buildEnrichedSessionsList(
   ownSessionId: string,
   ownState: string,
+  ownModelName?: string,
 ): Promise<EnrichedSession[]> {
   const siblings = listActiveSessions().filter(s => s.agentType !== 'daemon' && s.id !== ownSessionId);
-  const enriched = await enrichSessionsWithState(siblings, ownSessionId, ownState);
+  const enriched = await enrichSessionsWithState(siblings, ownSessionId, ownState, ownModelName);
   return sortSessions(enriched);
 }

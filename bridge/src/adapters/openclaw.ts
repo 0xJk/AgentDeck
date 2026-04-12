@@ -721,6 +721,15 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
           }
 
           case 'final': {
+            // Extract modelId from payload if present (fallback when catalog probe fails)
+            const modelId = payload.model ?? payload.modelId;
+            if (typeof modelId === 'string' && modelId) {
+              this.emitAdapterEvent({
+                source: 'parser', event: 'model_info',
+                data: { model: modelId, plan: null },
+              });
+            }
+
             const duration = this.chatStarted ? Math.round((Date.now() - this.chatStartTime) / 1000) : 0;
             const toolSummary = this.buildToolSummary();
 
@@ -729,7 +738,15 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
             const responseContent = (finalText || undefined)
               || (this.accumulatedResponse || undefined);
 
-            // Build response detail (folded into chat_end instead of separate chat_response)
+            // Emit chat_response for APME turn response capture
+            if (responseContent) {
+              const respRaw = responseContent.length > 500 ? responseContent.slice(0, 497) + '...' : responseContent;
+              this.emitTimelineEntry({
+                ts: Date.now(), type: 'chat_response',
+                raw: cleanRawText(respRaw),
+                detail: cleanDetailText(responseContent.slice(0, 3000)),
+              });
+            }
             const cleanedResponse = responseContent ? cleanNopMarkers(cleanDetailText(responseContent)) : undefined;
             const responseDetail = cleanedResponse
               ? (cleanedResponse.length > 1000 ? cleanedResponse.slice(0, 997) + '...' : cleanedResponse)
