@@ -1117,21 +1117,12 @@ final class DaemonServer {
         case "session_start":
             _ = stateMachine.transition(trigger: "session_start", source: .hook)
             if let p = json["project_name"] as? String { stateMachine.projectName = p }
-            // APME: open a run for this hook-only session
-            apmeCollector?.openRun(
-                sessionId: sessionId,
-                agentType: "claude-code",
-                projectName: json["project_name"] as? String ?? stateMachine.projectName,
-                modelId: stateMachine.modelName
-            )
         case "user_prompt_submit":
             _ = stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
         case "stop":
             _ = stateMachine.transition(trigger: "stop", source: .hook)
         case "session_end":
             _ = stateMachine.transition(trigger: "session_end", source: .hook)
-            // APME: close the run
-            let _ = apmeCollector?.closeRun(sessionId: sessionId)
         case "tool_start":
             stateMachine.currentTool = json["tool_name"] as? String
             stateMachine.toolInput = json["tool_input"] as? String
@@ -1141,8 +1132,10 @@ final class DaemonServer {
         default: break
         }
 
-        // APME: ingest every hook event as a step
-        apmeCollector?.ingestHook(sessionId: sessionId, event: event, data: json)
+        // APME: route every hook event through the collector.
+        // The collector manages its own session lifecycle (session_start opens
+        // a run, session_end closes it, everything in between is a step).
+        apmeCollector?.handleHook(event: event, data: json)
 
         broadcastStateUpdate()
     }
