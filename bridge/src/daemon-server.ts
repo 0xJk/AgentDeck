@@ -308,6 +308,58 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       req.on('close', () => {});
       return;
     }
+    // Hook endpoint — receives Claude Code hook POSTs at /hooks/:eventName.
+    // Routes through APME collector the same way session bridge's hook-server does.
+    if (req.method === 'POST' && pathname.startsWith('/hooks/')) {
+      const eventName = pathname.slice('/hooks/'.length);
+      let body = '';
+      req.on('data', (c: Buffer) => { body += c; if (body.length > 1_000_000) req.destroy(); });
+      req.on('end', () => {
+        let json: Record<string, unknown> = {};
+        try { json = body ? JSON.parse(body) : {}; } catch { /* ignore */ }
+        // Map PascalCase event names to snake_case for state machine + APME
+        const eventMap: Record<string, string> = {
+          SessionStart: 'session_start', SessionEnd: 'session_end',
+          PreToolUse: 'tool_start', PostToolUse: 'tool_end',
+          Stop: 'stop', UserPromptSubmit: 'user_prompt_submit',
+          Notification: 'notification',
+        };
+        const mapped = eventMap[eventName] ?? eventName;
+        // State machine
+        if (mapped === 'session_start') core.stateMachine.handleHookEvent('SessionStart', json);
+        else if (mapped === 'session_end') core.stateMachine.handleHookEvent('SessionEnd', json);
+        else if (mapped === 'user_prompt_submit') core.stateMachine.handleHookEvent('UserPromptSubmit', json);
+        else if (mapped === 'stop') core.stateMachine.handleHookEvent('Stop', json);
+        else if (mapped === 'tool_start') {
+          core.stateMachine.handleHookEvent('PreToolUse', json);
+        } else if (mapped === 'tool_end') {
+          core.stateMachine.handleHookEvent('PostToolUse', json);
+        }
+        // APME collector
+        if (apme) {
+          // Use a stable "hook session" for the daemon — hooks from direct `claude` runs
+          // don't have AGENTDECK_PORT, so they all come here.
+          const hookSessionId = 'daemon-hook';
+          if (mapped === 'session_start') {
+            // Extract prompt source from message.content (Claude v2.1+) or prompt field
+            apme.collector.openRun({
+              sessionId: hookSessionId,
+              agentType: 'claude-code',
+              projectName: (json.project_name as string) ?? undefined,
+              projectPath: (json.project_path as string) ?? undefined,
+            });
+          }
+          apme.collector.ingestHook(hookSessionId, mapped, json);
+          if (mapped === 'session_end') {
+            apme.collector.closeRun(hookSessionId);
+          }
+        }
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ received: true }));
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/shutdown') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'shutting_down' }));
@@ -419,6 +471,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       // Merge daemon metadata into the session's state_update
       const merged: any = {
         ...evt,
+        sessionId: focusRelay.getFocusedSessionId(),
         modelCatalog: (evt as any).modelCatalog ?? core.cachedModelCatalog,
         gatewayAvailable: core.cachedGatewayAvailable,
         ollamaStatus: core.cachedOllamaStatus,
@@ -879,11 +932,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     voiceAssistant?.stop();
     voiceManager?.disconnectFromServer();
     bridgeLogStream.stop();
-    if (gatewayAdapter) {
-      await gatewayAdapter.shutdown().catch(() => {});
-      gatewayAdapter = null;
-    }
-    await stopModules(startedModules);
+    await Promise.all([
+      gatewayAdapter ? gatewayAdapter.shutdown().catch(() => {}) : Promise.resolve(),
+      stopModules(startedModules)
+    ]);
+    gatewayAdapter = null;
     httpServer.close(() => process.exit(0));
     // Force exit if httpServer.close() hangs on CLOSE_WAIT connections
     setTimeout(() => process.exit(0), 5000).unref();
