@@ -32,7 +32,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -219,7 +218,10 @@ fun EinkMonitorScreen(
             )
         } else if (isLandscape) {
             // Aquarium-centered layout: agent panel | aquarium + content + timeline
-            val terrariumState by remember { derivedStateOf { state.toTerrariumState() } }
+            // Use state as key so toTerrariumState() recomputes when siblingSessions etc. change.
+            // derivedStateOf + remember would capture the initial state parameter (plain value,
+            // not a Compose State) and never re-evaluate — causing stale creature counts.
+            val terrariumState = remember(state) { state.toTerrariumState() }
             val isActive = state.agentState == AgentState.PROCESSING ||
                 state.agentState == AgentState.AWAITING_PERMISSION ||
                 state.agentState == AgentState.AWAITING_OPTION ||
@@ -646,7 +648,7 @@ private fun EinkPortraitLayout(
     displayPrefs: DisplayPreferences,
     onSettingsClick: () -> Unit,
 ) {
-    val terrariumState by remember { derivedStateOf { state.toTerrariumState() } }
+    val terrariumState = remember(state) { state.toTerrariumState() }
     val isActive = state.agentState == AgentState.PROCESSING ||
         state.agentState == AgentState.AWAITING_PERMISSION ||
         state.agentState == AgentState.AWAITING_OPTION ||
