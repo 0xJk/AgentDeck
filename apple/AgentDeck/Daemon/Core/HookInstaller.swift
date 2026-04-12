@@ -100,11 +100,16 @@ enum HookInstaller {
     }
 
     private static func buildHookEntry(_ event: String) -> [String: Any] {
-        [
+        // Read daemon port from daemon.json at hook runtime, falling back to
+        // AGENTDECK_PORT env var (set by `agentdeck claude` bridge), then 9120.
+        // This ensures hooks reach the Swift daemon even when it's on a fallback port.
+        let daemonJsonPath = AuthManager.agentDeckDir.appendingPathComponent("daemon.json").path
+        let cmd = "PORT=${AGENTDECK_PORT:-$(python3 -c \"import json;print(json.load(open('\(daemonJsonPath)'))['port'])\" 2>/dev/null || echo 9120)}; curl -sf -X POST http://localhost:$PORT/hooks/\(event) -H 'Content-Type: application/json' -d @- 2>/dev/null || true"
+        return [
             "matcher": "",
             "hooks": [[
                 "type": "command",
-                "command": "curl -sf -X POST http://localhost:${AGENTDECK_PORT:-9120}/hooks/\(event) -H 'Content-Type: application/json' -d @- 2>/dev/null || true",
+                "command": cmd,
             ] as [String: Any]] as [[String: Any]],
         ]
     }

@@ -24,7 +24,7 @@ import type { ApmeStore } from './store.js';
 import type { ApmeRunRow } from './types.js';
 import type { AgentType } from '@agentdeck/shared';
 import type { ApmeHwSampler } from './hw-sampler.js';
-import { classifyRun } from './classifier.js';
+import { classifyRunSmart } from './classifier.js';
 
 export interface OpenRunInput {
   sessionId: string;
@@ -228,18 +228,18 @@ export class ApmeCollector {
         catch { /* ignore */ }
       }).catch(() => { /* ignore */ });
     }
-    // Classify the run based on tool usage patterns.
-    try {
-      const { signals, category } = classifyRun(this.store, runId);
+    // Classify the run — rule-based first, LLM fallback if unknown.
+    // Fire-and-forget since classifyRunSmart is async (LLM call).
+    void classifyRunSmart(this.store, runId).then(({ signals, category, source }) => {
       this.store.updateRun(runId, {
         taskSignals: JSON.stringify(signals),
         taskCategory: category,
-        taskCategorySource: 'auto',
+        taskCategorySource: source,
       });
-      debug('APME', `classified ${runId} as ${category}`);
-    } catch (err) {
+      debug('APME', `classified ${runId} as ${category} (${source})`);
+    }).catch((err) => {
       debug('APME', `classify failed: ${String(err)}`);
-    }
+    });
     // Save git diff as artifact (best-effort, capped at 1MB).
     this.saveDiffArtifact(runId, projectPath);
     return runId;

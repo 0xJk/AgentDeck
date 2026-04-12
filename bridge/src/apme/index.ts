@@ -74,7 +74,7 @@ export { ApmeRunner } from './runner.js';
 export { ApmeTuner } from './tuner.js';
 export { ApmeHwSampler } from './hw-sampler.js';
 export { ApmeRecommender } from './recommend.js';
-export { classifyRun, classify, computeSignals, TASK_CATEGORIES } from './classifier.js';
+export { classifyRun, classifyRunSmart, classifyWithLlm, classify, computeSignals, TASK_CATEGORIES } from './classifier.js';
 export { evaluateOutcome, detectOutcome, computeEfficiency, computeComposite } from './outcome.js';
 export type { Outcome, OutcomeResult, EfficiencyMetrics, CompositeBreakdown } from './outcome.js';
 export type { TaskSignals, TaskCategory } from './classifier.js';

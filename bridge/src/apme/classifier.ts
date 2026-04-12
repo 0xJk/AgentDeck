@@ -213,3 +213,105 @@ export function classifyRun(store: ApmeStore, runId: string): { signals: TaskSig
   const category = classify(signals);
   return { signals, category };
 }
+
+// ──�� LLM-based classification (local MLX, cost-free) ──────────────────────
+
+const LLM_CLASSIFY_PROMPT = `You are a task classifier for coding agent sessions.
+Given the user's prompt and tool usage summary, classify this task into exactly ONE category.
+
+Categories:
+- planning: architecture design, plan mode, thinking about approach
+- research: searching code, reading docs, web search, investigating
+- coding: writing/editing code, creating files, implementing features
+- debugging: fixing bugs, running tests, investigating failures
+- refactoring: restructuring existing code without changing behavior
+- review: reading code for understanding, code review
+- ops: git operations, deployments, config changes, CI/CD
+- conversation: quick question, chat, no tools used
+- multi_agent: delegating to sub-agents
+
+Respond with ONLY the category name, nothing else.`;
+
+/**
+ * Classify a run using the local MLX server. Falls back to rule-based
+ * classification if MLX is unavailable. Cost: $0 (local inference).
+ */
+export async function classifyWithLlm(
+  taskPrompt: string,
+  signals: TaskSignals,
+): Promise<TaskCategory> {
+  if (!taskPrompt || taskPrompt.trim().length < 5) return classify(signals);
+
+  const toolSummary = Object.entries(signals.toolCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([t, c]) => `${t}×${c}`)
+    .join(', ');
+
+  const userMsg = `Prompt: "${taskPrompt.slice(0, 500)}"
+Tools used: ${toolSummary || 'none'} (${signals.totalToolCalls} total)
+Files modified: ${signals.filesModified}, created: ${signals.filesCreated}
+Duration: ${signals.sessionDurationSec}s, turns: ${signals.turnCount}`;
+
+  try {
+    // Auto-detect MLX endpoint + model (same logic as runner.ts callMlx)
+    let model = 'default';
+    const base = 'http://127.0.0.1:8800';
+    for (const path of ['/v1/models', '/models']) {
+      const mResp = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(2000) }).catch(() => null);
+      if (mResp?.ok) {
+        const mJson = await mResp.json() as { data?: Array<{ id?: string }> };
+        const first = mJson.data?.find(m => m.id && !m.id.toLowerCase().includes('nanollava'))?.id;
+        if (first) { model = first; break; }
+      }
+    }
+
+    const resp = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: LLM_CLASSIFY_PROMPT },
+          { role: 'user', content: userMsg },
+        ],
+        temperature: 0,
+        max_tokens: 20,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!resp.ok) return classify(signals);
+    const json = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const raw = json.choices?.[0]?.message?.content?.trim().toLowerCase().replace(/[^a-z_]/g, '') ?? '';
+
+    if (TASK_CATEGORIES.includes(raw as TaskCategory)) return raw as TaskCategory;
+    // Partial match
+    const match = TASK_CATEGORIES.find(c => raw.includes(c));
+    return match ?? classify(signals);
+  } catch {
+    // MLX not available — fall back to rules
+    return classify(signals);
+  }
+}
+
+/** Classify with LLM if rule-based gives unknown, otherwise use rules. */
+export async function classifyRunSmart(
+  store: ApmeStore,
+  runId: string,
+): Promise<{ signals: TaskSignals; category: TaskCategory; source: 'rule' | 'llm' }> {
+  const signals = computeSignals(store, runId);
+  const ruleCategory = classify(signals);
+
+  if (ruleCategory !== 'unknown') {
+    return { signals, category: ruleCategory, source: 'rule' };
+  }
+
+  // Rule-based gave unknown — try LLM
+  const run = store.getRun(runId);
+  const prompt = run?.taskPrompt;
+  if (!prompt) return { signals, category: 'unknown', source: 'rule' };
+
+  const llmCategory = await classifyWithLlm(prompt, signals);
+  return { signals, category: llmCategory, source: llmCategory !== 'unknown' ? 'llm' : 'rule' };
+}
