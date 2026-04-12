@@ -476,6 +476,15 @@ final class DaemonService: ObservableObject {
             return
         }
 
+        // If the attempted port also failed, try the next available port
+        // before burning a retry. Without this, retries repeatedly hit the
+        // same blocked port (e.g., 9122 held by zombie node) instead of
+        // advancing to 9123, 9124, etc.
+        if fallbackAttempted, let nextPort = alt, nextPort != attemptedPort {
+            sessionOverridePort = nextPort
+            DaemonLogger.shared.info("Advancing fallback port \(attemptedPort) → \(nextPort)")
+        }
+
         listenerFailureRetries += 1
         guard listenerFailureRetries <= Self.maxListenerFailureRetries else {
             // Retry budget exhausted. Try fallback port one more time (handles
