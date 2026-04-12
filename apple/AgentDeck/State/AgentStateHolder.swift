@@ -95,6 +95,28 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
+        // iOS: react to mDNS bridge changes even after autoConnect timer expires.
+        // Without this, if daemon restarts after the 10s polling window, iOS never reconnects.
+        discovery.$bridges
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] bridges in
+                guard let self else { return }
+                guard self.preferredLocalBridgeUrl == nil else { return }
+                guard !self.state.bridgeConnected,
+                      self.connection.status == .disconnected else { return }
+                guard self.autoConnectTimer == nil else { return }
+
+                let candidates = bridges.filter { !self.failedBridgeIds.contains($0.id) }
+                let bridge = candidates.first(where: { $0.agentType == "daemon" })
+                    ?? candidates.first(where: { $0.agentType != nil })
+                if let bridge {
+                    print("[AutoReconnect] new bridge appeared while disconnected: \(bridge.wsUrl)")
+                    self.failedBridgeIds.removeAll()
+                    self.connectTo(bridge)
+                }
+            }
+            .store(in: &cancellables)
+
         timelineGenerator = StateTimelineGenerator(store: timelineStore)
         connection.onEvent = { [weak self] event in
             self?.handleEvent(event)
@@ -498,6 +520,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
                 timer.invalidate()
                 self.autoConnectTimer = nil
                 self.isAutoConnecting = false
+                self.waterfallStage = .idle
             }
         }
     }
@@ -563,6 +586,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         state.state = AgentConnectionState(rawValue: e.state) ?? state.state
         if let pm = e.permissionMode { state.permissionMode = PermissionMode(rawValue: pm) ?? state.permissionMode }
         state.agentType = e.agentType ?? state.agentType
+        if let sid = e.sessionId { state.sessionId = sid }
         state.agentCapabilities = e.agentCapabilities ?? state.agentCapabilities
         state.currentTool = e.currentTool ?? state.currentTool
         state.toolInput = e.toolInput ?? state.toolInput
