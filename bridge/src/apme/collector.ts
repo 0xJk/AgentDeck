@@ -24,6 +24,7 @@ import type { ApmeStore } from './store.js';
 import type { ApmeRunRow } from './types.js';
 import type { AgentType } from '@agentdeck/shared';
 import type { ApmeHwSampler } from './hw-sampler.js';
+import { classifyRun } from './classifier.js';
 
 export interface OpenRunInput {
   sessionId: string;
@@ -155,6 +156,18 @@ export class ApmeCollector {
         try { this.store.updateRun(runId, { hwProfile: JSON.stringify(snap) }); }
         catch { /* ignore */ }
       }).catch(() => { /* ignore */ });
+    }
+    // Classify the run based on tool usage patterns.
+    try {
+      const { signals, category } = classifyRun(this.store, runId);
+      this.store.updateRun(runId, {
+        taskSignals: JSON.stringify(signals),
+        taskCategory: category,
+        taskCategorySource: 'auto',
+      });
+      debug('APME', `classified ${runId} as ${category}`);
+    } catch (err) {
+      debug('APME', `classify failed: ${String(err)}`);
     }
     // Save git diff as artifact (best-effort, capped at 1MB).
     this.saveDiffArtifact(runId, projectPath);

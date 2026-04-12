@@ -27,6 +27,9 @@ export interface ApmeRunRow {
   gitBefore?: string | null;
   gitAfter?: string | null;
   hwProfile?: string | null; // JSON
+  taskSignals?: string | null; // JSON TaskSignals
+  taskCategory?: string | null;
+  taskCategorySource?: string | null; // 'auto' | 'user' | 'llm'
 }
 
 export interface ApmeStepRow {

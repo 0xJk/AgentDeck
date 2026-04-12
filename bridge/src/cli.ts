@@ -810,8 +810,8 @@ apme
     });
     if (runs.length === 0) { log('No runs found.'); return; }
 
-    log(`\n  ${'ID'.padEnd(10)} ${'Agent'.padEnd(14)} ${'Model'.padEnd(22)} ${'Project'.padEnd(16)} ${'Cost'.padEnd(8)} ${'Score'.padEnd(7)} Duration`);
-    log(`  ${'─'.repeat(10)} ${'─'.repeat(14)} ${'─'.repeat(22)} ${'─'.repeat(16)} ${'─'.repeat(8)} ${'─'.repeat(7)} ${'─'.repeat(8)}`);
+    log(`\n  ${'ID'.padEnd(10)} ${'Category'.padEnd(14)} ${'Agent'.padEnd(14)} ${'Model'.padEnd(20)} ${'Project'.padEnd(14)} ${'Cost'.padEnd(8)} ${'Score'.padEnd(7)} Dur`);
+    log(`  ${'─'.repeat(10)} ${'─'.repeat(14)} ${'─'.repeat(14)} ${'─'.repeat(20)} ${'─'.repeat(14)} ${'─'.repeat(8)} ${'─'.repeat(7)} ${'─'.repeat(5)}`);
     for (const r of runs) {
       const evals = apme.store.listEvalsForRun(r.id);
       const overall = evals.find(e => e.layer === 'llm_judge' && e.metric === 'overall');
@@ -825,7 +825,8 @@ apme
         ? `${Math.round((r.endedAt - r.startedAt) / 1000)}s`
         : '—';
       const cost = r.costUsd != null ? `$${r.costUsd.toFixed(3)}` : '—';
-      log(`  ${r.id.slice(0, 10)} ${(r.agentType ?? '—').padEnd(14)} ${(r.modelId ?? '—').slice(0, 22).padEnd(22)} ${(r.projectName ?? '—').slice(0, 16).padEnd(16)} ${cost.padEnd(8)} ${score.padEnd(7)} ${dur}`);
+      const cat = r.taskCategory ?? '—';
+      log(`  ${r.id.slice(0, 10)} ${cat.padEnd(14)} ${(r.agentType ?? '—').padEnd(14)} ${(r.modelId ?? '—').slice(0, 20).padEnd(20)} ${(r.projectName ?? '—').slice(0, 14).padEnd(14)} ${cost.padEnd(8)} ${score.padEnd(7)} ${dur}`);
     }
     log(`\n  ${runs.length} run(s) shown.`);
   });
@@ -1018,6 +1019,83 @@ apme
     if (rubric.notes) log(`  Notes: ${rubric.notes}`);
     log(`\n  Weights: ${rubric.weights}`);
     log(`\n  Prompt:\n${rubric.prompt.split('\n').map(l => '    ' + l).join('\n')}`);
+  });
+
+apme
+  .command('tag <runId> <category>')
+  .description('Override task category for a run (user label)')
+  .action(async (runId: string, category: string) => {
+    const { initApme, TASK_CATEGORIES } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    // Support partial id
+    let run = apme.store.getRun(runId);
+    if (!run) {
+      const all = apme.store.listRuns({ limit: 500 });
+      const match = all.find(r => r.id.startsWith(runId));
+      if (match) run = match;
+    }
+    if (!run) { log(`Run ${runId} not found.`); process.exit(1); }
+
+    if (!TASK_CATEGORIES.includes(category as any) && category !== 'unknown') {
+      log(`Known categories: ${TASK_CATEGORIES.join(', ')}`);
+      log(`You can also use any custom string.`);
+    }
+    apme.store.updateRun(run.id, {
+      taskCategory: category,
+      taskCategorySource: 'user',
+    });
+    log(`Tagged run ${run.id.slice(0, 10)} as "${category}" (source: user).`);
+  });
+
+apme
+  .command('reclassify')
+  .description('Re-classify all runs using the current rule-based classifier')
+  .option('--force', 'Overwrite user-tagged runs too')
+  .action(async (opts) => {
+    const { initApme, classifyRun } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    const runs = apme.store.listRuns({ limit: 5000 });
+    let updated = 0;
+    let skipped = 0;
+    for (const r of runs) {
+      if (!opts.force && r.taskCategorySource === 'user') {
+        skipped++;
+        continue;
+      }
+      const { signals, category } = classifyRun(apme.store, r.id);
+      apme.store.updateRun(r.id, {
+        taskSignals: JSON.stringify(signals),
+        taskCategory: category,
+        taskCategorySource: 'auto',
+      });
+      updated++;
+    }
+    log(`Reclassified ${updated} run(s).${skipped > 0 ? ` Skipped ${skipped} user-tagged (use --force to overwrite).` : ''}`);
+  });
+
+apme
+  .command('categories')
+  .description('Show task category scorecard (model × category performance)')
+  .action(async () => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    const cards = apme.store.categoryScorecard();
+    if (cards.length === 0) { log('No category data yet.'); return; }
+
+    log(`\n  ${'Category'.padEnd(16)} ${'Model'.padEnd(22)} ${'Runs'.padEnd(6)} ${'Score'.padEnd(8)} ${'Tests'.padEnd(8)} Cost`);
+    log(`  ${'─'.repeat(16)} ${'─'.repeat(22)} ${'─'.repeat(6)} ${'─'.repeat(8)} ${'─'.repeat(8)} ${'─'.repeat(8)}`);
+    for (const c of cards) {
+      const score = c.avgOverall != null ? `${(c.avgOverall * 100).toFixed(0)}%` : '—';
+      const tests = c.avgTestsPass != null ? `${(c.avgTestsPass * 100).toFixed(0)}%` : '—';
+      const cost = c.totalCost != null ? `$${c.totalCost.toFixed(2)}` : '—';
+      log(`  ${c.taskCategory.padEnd(16)} ${c.modelId.slice(0, 22).padEnd(22)} ${String(c.runs).padEnd(6)} ${score.padEnd(8)} ${tests.padEnd(8)} ${cost}`);
+    }
   });
 
 program.parse();

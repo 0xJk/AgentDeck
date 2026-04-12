@@ -46,7 +46,10 @@ CREATE TABLE IF NOT EXISTS runs (
   exit_code     INTEGER,
   git_before    TEXT,
   git_after     TEXT,
-  hw_profile    TEXT
+  hw_profile    TEXT,
+  task_signals  TEXT,
+  task_category TEXT,
+  task_category_source TEXT DEFAULT 'auto'
 );
 
 CREATE TABLE IF NOT EXISTS steps (
@@ -129,6 +132,19 @@ SELECT
 FROM runs r
 LEFT JOIN v_run_metrics m ON m.run_id = r.id
 GROUP BY r.agent_type, r.model_id;
+
+CREATE VIEW IF NOT EXISTS v_category_scorecard AS
+SELECT
+  r.task_category AS task_category,
+  COALESCE(r.model_id, 'unknown') AS model_id,
+  COUNT(*) AS runs,
+  AVG(m.overall) AS avg_overall,
+  AVG(m.tests_pass) AS avg_tests_pass,
+  SUM(r.cost_usd) AS total_cost
+FROM runs r
+LEFT JOIN v_run_metrics m ON m.run_id = r.id
+WHERE r.task_category IS NOT NULL AND r.task_category != 'unknown'
+GROUP BY r.task_category, r.model_id;
 `;
 
 // ─── Default rubric v1 (seeded on first boot) ──────────────────────────────────
@@ -193,6 +209,7 @@ export class ApmeStore {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       this.db.exec(DDL);
+      this.migrateSchema();
       this.seedDefaultRubric();
       this.enabled = true;
       debug('APME', `store ready at ${this.dbPath}`);
@@ -207,6 +224,22 @@ export class ApmeStore {
     try { this.db?.close(); } catch { /* ignore */ }
     this.db = null;
     this.enabled = false;
+  }
+
+  /** Add columns that may be missing from databases created before this version. */
+  private migrateSchema(): void {
+    if (!this.db) return;
+    const cols = (this.db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map(c => c.name);
+    const migrations: Array<[string, string]> = [
+      ['task_signals', 'ALTER TABLE runs ADD COLUMN task_signals TEXT'],
+      ['task_category', 'ALTER TABLE runs ADD COLUMN task_category TEXT'],
+      ['task_category_source', "ALTER TABLE runs ADD COLUMN task_category_source TEXT DEFAULT 'auto'"],
+    ];
+    for (const [col, sql] of migrations) {
+      if (!cols.includes(col)) {
+        try { this.db.exec(sql); } catch { /* column may already exist from partial migration */ }
+      }
+    }
   }
 
   private seedDefaultRubric(): void {
@@ -273,6 +306,9 @@ export class ApmeStore {
       gitBefore: 'git_before',
       gitAfter: 'git_after',
       hwProfile: 'hw_profile',
+      taskSignals: 'task_signals',
+      taskCategory: 'task_category',
+      taskCategorySource: 'task_category_source',
     };
     for (const [k, v] of Object.entries(patch)) {
       const col = map[k];
@@ -441,6 +477,19 @@ export class ApmeStore {
       costPerQuality: (r.cost_per_quality as number | null) ?? null,
     }));
   }
+
+  categoryScorecard(): Array<{ taskCategory: string; modelId: string; runs: number; avgOverall: number | null; avgTestsPass: number | null; totalCost: number | null }> {
+    if (!this.db) return [];
+    const rows = this.db.prepare('SELECT * FROM v_category_scorecard').all() as Record<string, unknown>[];
+    return rows.map((r) => ({
+      taskCategory: r.task_category as string,
+      modelId: r.model_id as string,
+      runs: r.runs as number,
+      avgOverall: (r.avg_overall as number | null) ?? null,
+      avgTestsPass: (r.avg_tests_pass as number | null) ?? null,
+      totalCost: (r.total_cost as number | null) ?? null,
+    }));
+  }
 }
 
 // ─── Row mappers ───────────────────────────────────────────────────────────────
@@ -463,6 +512,9 @@ function rowToRun(r: Record<string, unknown>): ApmeRunRow {
     gitBefore: (r.git_before as string | null) ?? null,
     gitAfter: (r.git_after as string | null) ?? null,
     hwProfile: (r.hw_profile as string | null) ?? null,
+    taskSignals: (r.task_signals as string | null) ?? null,
+    taskCategory: (r.task_category as string | null) ?? null,
+    taskCategorySource: (r.task_category_source as string | null) ?? null,
   };
 }
 
