@@ -5,5 +5,21 @@
   "voiceAutoSend": true,
   "whisperModel": "large-v3-turbo",
   "stuckTimeoutMs": 300000,
-  "reconnectIntervalMs": 3000
+  "reconnectIntervalMs": 3000,
+  "apme": {
+    "enabled": true,
+    "autoTune": true,
+    "deterministic": {
+      "enabled": true,
+      "timeoutSec": 180,
+      "commands": {}
+    },
+    "judge": {
+      "backend": "mlx",
+      "model": "qwen3-30b",
+      "sampleRate": 0.2,
+      "onlyWhenDisagreement": true
+    },
+    "availableModels": []
+  }
 }

@@ -12,9 +12,11 @@
  * (e.g. better-sqlite3 missing), so the rest of the bridge never needs to care.
  */
 
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { execSync } from 'child_process';
-import { basename } from 'path';
+import { basename, join } from 'path';
+import { mkdirSync, writeFileSync, existsSync } from 'fs';
+import { homedir } from 'os';
 import { debug } from '../logger.js';
 import type { UsageSnapshot } from '../types.js';
 import type { SessionEntry } from '../session-registry.js';
@@ -154,7 +156,36 @@ export class ApmeCollector {
         catch { /* ignore */ }
       }).catch(() => { /* ignore */ });
     }
+    // Save git diff as artifact (best-effort, capped at 1MB).
+    this.saveDiffArtifact(runId, projectPath);
     return runId;
+  }
+
+  /** Save the git diff produced by this run as an artifact file. */
+  private saveDiffArtifact(runId: string, projectPath?: string): void {
+    if (!projectPath) return;
+    try {
+      const run = this.store.getRun(runId);
+      if (!run) return;
+      const args = run.gitBefore && run.gitAfter && run.gitBefore !== run.gitAfter
+        ? `diff ${run.gitBefore}..${run.gitAfter}`
+        : 'diff HEAD';
+      const diff = execSync(`git ${args}`, {
+        cwd: projectPath, encoding: 'utf-8', timeout: 5000,
+        maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (!diff || diff.length < 10) return;
+      const hash = createHash('sha256').update(diff).digest('hex').slice(0, 16);
+      const artifactDir = getArtifactDir(runId);
+      mkdirSync(artifactDir, { recursive: true });
+      const filePath = join(artifactDir, `${hash}.diff`);
+      writeFileSync(filePath, diff, 'utf-8');
+      this.store.insertArtifact({
+        runId, kind: 'diff', path: filePath,
+        sha256: createHash('sha256').update(diff).digest('hex'),
+        bytes: Buffer.byteLength(diff, 'utf-8'),
+      });
+    } catch { /* ignore — artifact storage is best-effort */ }
   }
 
   /** Translate a `SessionEntry` + optional extras into an OpenRunInput. */
@@ -180,6 +211,11 @@ function readGitHead(cwd?: string): string | null {
   } catch {
     return null;
   }
+}
+
+function getArtifactDir(runId: string): string {
+  const dataDir = process.env.AGENTDECK_DATA_DIR || join(homedir(), '.agentdeck');
+  return join(dataDir, 'apme', 'artifacts', runId);
 }
 
 function safeStringify(v: unknown): string {

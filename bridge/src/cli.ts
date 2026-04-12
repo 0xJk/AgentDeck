@@ -788,4 +788,236 @@ program.action(async () => {
   log('\nRun `agentdeck --help` for all commands.');
 });
 
+// ===== APME commands =====
+
+const apme = program.command('apme').description('Agent Performance Monitoring & Evaluation');
+
+apme
+  .command('runs')
+  .description('List recent evaluated runs')
+  .option('-n, --limit <n>', 'Number of runs', '20')
+  .option('-a, --agent <type>', 'Filter by agent type (claude-code, openclaw, ...)')
+  .option('-m, --model <id>', 'Filter by model id')
+  .action(async (opts) => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available (better-sqlite3 missing)'); process.exit(1); }
+
+    const runs = apme.store.listRuns({
+      limit: parseInt(opts.limit, 10) || 20,
+      agentType: opts.agent,
+      modelId: opts.model,
+    });
+    if (runs.length === 0) { log('No runs found.'); return; }
+
+    log(`\n  ${'ID'.padEnd(10)} ${'Agent'.padEnd(14)} ${'Model'.padEnd(22)} ${'Project'.padEnd(16)} ${'Cost'.padEnd(8)} ${'Score'.padEnd(7)} Duration`);
+    log(`  ${'─'.repeat(10)} ${'─'.repeat(14)} ${'─'.repeat(22)} ${'─'.repeat(16)} ${'─'.repeat(8)} ${'─'.repeat(7)} ${'─'.repeat(8)}`);
+    for (const r of runs) {
+      const evals = apme.store.listEvalsForRun(r.id);
+      const overall = evals.find(e => e.layer === 'llm_judge' && e.metric === 'overall');
+      const det = evals.filter(e => e.layer === 'deterministic');
+      const score = overall
+        ? `${(overall.score * 100).toFixed(0)}%`
+        : det.length > 0
+          ? `${det.filter(e => e.score === 1).length}/${det.length}`
+          : '—';
+      const dur = r.endedAt && r.startedAt
+        ? `${Math.round((r.endedAt - r.startedAt) / 1000)}s`
+        : '—';
+      const cost = r.costUsd != null ? `$${r.costUsd.toFixed(3)}` : '—';
+      log(`  ${r.id.slice(0, 10)} ${(r.agentType ?? '—').padEnd(14)} ${(r.modelId ?? '—').slice(0, 22).padEnd(22)} ${(r.projectName ?? '—').slice(0, 16).padEnd(16)} ${cost.padEnd(8)} ${score.padEnd(7)} ${dur}`);
+    }
+    log(`\n  ${runs.length} run(s) shown.`);
+  });
+
+apme
+  .command('run <id>')
+  .description('Show details for a specific run')
+  .action(async (id: string) => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    // Support partial id match
+    let run = apme.store.getRun(id);
+    if (!run) {
+      const all = apme.store.listRuns({ limit: 500 });
+      const match = all.find(r => r.id.startsWith(id));
+      if (match) run = match;
+    }
+    if (!run) { log(`Run ${id} not found.`); process.exit(1); }
+
+    log(`\n  Run: ${run.id}`);
+    log(`  Agent: ${run.agentType}  Model: ${run.modelId ?? '—'}  Project: ${run.projectName ?? '—'}`);
+    log(`  Path: ${run.projectPath ?? '—'}`);
+    log(`  Started: ${new Date(run.startedAt).toISOString()}  Ended: ${run.endedAt ? new Date(run.endedAt).toISOString() : '—'}`);
+    log(`  Exit: ${run.exitCode ?? '—'}  Tokens: ${run.inputTokens ?? 0}in/${run.outputTokens ?? 0}out  Cost: ${run.costUsd != null ? '$' + run.costUsd.toFixed(3) : '—'}`);
+    if (run.gitBefore || run.gitAfter) log(`  Git: ${run.gitBefore?.slice(0, 8) ?? '—'} → ${run.gitAfter?.slice(0, 8) ?? '—'}`);
+    if (run.taskPrompt) log(`  Task: ${run.taskPrompt.slice(0, 200)}`);
+
+    const evals = apme.store.listEvalsForRun(run.id);
+    if (evals.length > 0) {
+      log(`\n  Evals (${evals.length}):`);
+      for (const e of evals) {
+        const tag = e.layer === 'deterministic' ? 'DET' : e.layer === 'llm_judge' ? 'LLM' : 'VIB';
+        log(`    [${tag}] ${e.metric.padEnd(14)} ${(e.score * 100).toFixed(0)}%${e.judgeModel ? `  (${e.judgeModel})` : ''}`);
+      }
+    }
+
+    const steps = apme.store.listSteps(run.id);
+    if (steps.length > 0) {
+      log(`\n  Steps (${steps.length}):`);
+      for (const s of steps.slice(-20)) {
+        const tool = s.toolName ? ` [${s.toolName}]` : '';
+        log(`    ${new Date(s.ts).toISOString().slice(11, 19)} ${s.kind}${tool}`);
+      }
+      if (steps.length > 20) log(`    ... ${steps.length - 20} more`);
+    }
+
+    const vibe = apme.store.latestVibeForRun(run.id);
+    if (vibe) log(`\n  Vibe: ${vibe.verdict}${vibe.note ? ` — ${vibe.note}` : ''}`);
+  });
+
+apme
+  .command('scorecard')
+  .description('Model performance scorecard')
+  .action(async () => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    const cards = apme.store.scorecard();
+    if (cards.length === 0) { log('No scorecard data yet.'); return; }
+
+    log(`\n  ${'Model'.padEnd(26)} ${'Agent'.padEnd(14)} ${'Runs'.padEnd(6)} ${'Score'.padEnd(8)} ${'Tests'.padEnd(8)} ${'Cost'.padEnd(10)} $/Quality`);
+    log(`  ${'─'.repeat(26)} ${'─'.repeat(14)} ${'─'.repeat(6)} ${'─'.repeat(8)} ${'─'.repeat(8)} ${'─'.repeat(10)} ${'─'.repeat(9)}`);
+    for (const c of cards) {
+      const score = c.avgOverall != null ? `${(c.avgOverall * 100).toFixed(0)}%` : '—';
+      const tests = c.avgTestsPass != null ? `${(c.avgTestsPass * 100).toFixed(0)}%` : '—';
+      const cost = c.totalCost != null ? `$${c.totalCost.toFixed(2)}` : '—';
+      const cpq = c.costPerQuality != null ? `$${c.costPerQuality.toFixed(2)}` : '—';
+      log(`  ${c.modelId.slice(0, 26).padEnd(26)} ${c.agentType.padEnd(14)} ${String(c.runs).padEnd(6)} ${score.padEnd(8)} ${tests.padEnd(8)} ${cost.padEnd(10)} ${cpq}`);
+    }
+  });
+
+apme
+  .command('judge')
+  .description('Run evaluation on unevaluated runs')
+  .option('--all', 'Judge all unevaluated runs (default: up to 10)')
+  .action(async (opts) => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    const limit = opts.all ? 100 : 10;
+    const pending = apme.store.listUnevaluatedRuns(limit);
+    if (pending.length === 0) { log('All runs already evaluated.'); return; }
+
+    log(`Evaluating ${pending.length} run(s)...`);
+    let completed = 0;
+    apme.runner.onResult((r) => {
+      completed++;
+      const tag = [r.layer1Ran && 'L1', r.layer2Ran && 'L2'].filter(Boolean).join('+') || 'skip';
+      log(`  [${completed}/${pending.length}] ${r.runId.slice(0, 10)} → ${tag}${r.overall != null ? ` overall=${(r.overall * 100).toFixed(0)}%` : ''}`);
+    });
+
+    for (const run of pending) {
+      apme.runner.enqueue({ runId: run.id, projectPath: run.projectPath ?? undefined });
+    }
+    await apme.runner.drain();
+    log(`Done. ${completed} run(s) evaluated.`);
+  });
+
+apme
+  .command('tune')
+  .description('Manually trigger rubric auto-tuning')
+  .action(async () => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    log('Running rubric tuner...');
+    const outcome = await apme.tuner.tune();
+    if (outcome.accepted) {
+      log(`Accepted rubric v${outcome.newVersion} (correlation ${outcome.baselineCorrelation?.toFixed(2) ?? '?'} → ${outcome.proposedCorrelation?.toFixed(2) ?? '?'})`);
+    } else {
+      log(`Rejected: ${outcome.reason}`);
+    }
+  });
+
+apme
+  .command('vibe <runId> <verdict>')
+  .description('Submit vibe feedback (approve|reject|neutral)')
+  .option('-n, --note <text>', 'Optional note')
+  .action(async (runId: string, verdict: string, opts) => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    if (!['approve', 'reject', 'neutral'].includes(verdict)) {
+      log('Verdict must be approve, reject, or neutral.'); process.exit(1);
+    }
+    // Support partial id
+    let run = apme.store.getRun(runId);
+    if (!run) {
+      const all = apme.store.listRuns({ limit: 500 });
+      const match = all.find(r => r.id.startsWith(runId));
+      if (match) run = match;
+    }
+    if (!run) { log(`Run ${runId} not found.`); process.exit(1); }
+
+    apme.store.insertVibe({
+      runId: run.id,
+      verdict: verdict as 'approve' | 'reject' | 'neutral',
+      note: opts.note ?? null,
+      ts: Date.now(),
+    });
+    log(`Vibe ${verdict} recorded for run ${run.id.slice(0, 10)}.`);
+  });
+
+apme
+  .command('export')
+  .description('Export runs + evals as JSONL')
+  .option('-n, --limit <n>', 'Number of runs', '100')
+  .option('-o, --output <file>', 'Output file (default: stdout)')
+  .action(async (opts) => {
+    const { initApme } = await import('./apme/index.js');
+    const { writeFileSync: wfs } = await import('fs');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    const runs = apme.store.listRuns({ limit: parseInt(opts.limit, 10) || 100 });
+    const lines: string[] = [];
+    for (const r of runs) {
+      const evals = apme.store.listEvalsForRun(r.id);
+      const vibe = apme.store.latestVibeForRun(r.id);
+      lines.push(JSON.stringify({ ...r, evals, vibe }));
+    }
+    if (opts.output) {
+      wfs(opts.output, lines.join('\n') + '\n', 'utf-8');
+      log(`Exported ${runs.length} run(s) to ${opts.output}`);
+    } else {
+      for (const line of lines) process.stdout.write(line + '\n');
+    }
+  });
+
+apme
+  .command('rubric')
+  .description('Show current judge rubric')
+  .action(async () => {
+    const { initApme } = await import('./apme/index.js');
+    const apme = await initApme();
+    if (!apme) { log('APME not available'); process.exit(1); }
+
+    const rubric = apme.store.getCurrentRubric('general');
+    if (!rubric) { log('No rubric seeded.'); return; }
+
+    log(`\n  Rubric v${rubric.version} (purpose: ${rubric.purpose})`);
+    log(`  Created: ${new Date(rubric.createdAt).toISOString()}`);
+    if (rubric.parentVer) log(`  Parent: v${rubric.parentVer}`);
+    if (rubric.notes) log(`  Notes: ${rubric.notes}`);
+    log(`\n  Weights: ${rubric.weights}`);
+    log(`\n  Prompt:\n${rubric.prompt.split('\n').map(l => '    ' + l).join('\n')}`);
+  });
+
 program.parse();

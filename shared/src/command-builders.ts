@@ -20,6 +20,8 @@ import type {
   SwitchAgentCommand,
   FocusSessionCommand,
   SessionCommand,
+  ApmeVibeFeedbackCommand,
+  ApmeRecommendCommand,
 } from "./protocol.js";
 
 export const agentCommand = {
@@ -64,5 +66,11 @@ export const agentCommand = {
   },
   sessionCommand(sessionId: string, command: { type: string; [key: string]: unknown; }): SessionCommand {
     return { type: "session_command", sessionId, command };
+  },
+  apmeVibe(runId: string, verdict: 'approve' | 'reject' | 'neutral', note?: string): ApmeVibeFeedbackCommand {
+    return { type: "apme_vibe", runId, verdict, note };
+  },
+  apmeRecommend(taskKind?: string, budgetUsd?: number, latencyBudgetMs?: number, preferLocal?: boolean): ApmeRecommendCommand {
+    return { type: "apme_recommend", taskKind, budgetUsd, latencyBudgetMs, preferLocal };
   },
 } as const;
