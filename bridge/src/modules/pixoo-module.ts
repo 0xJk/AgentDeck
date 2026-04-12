@@ -21,6 +21,6 @@ export class PixooModule implements DeviceModule {
   }
 
   async stop(): Promise<void> {
-    stopPixooBridge();
+    await stopPixooBridge();
   }
 }

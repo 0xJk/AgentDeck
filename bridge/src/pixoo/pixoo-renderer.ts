@@ -21,6 +21,7 @@
 import { State } from '../types.js';
 import type { StateUpdateEvent, UsageEvent } from '../types.js';
 import type { SessionInfo } from '@agentdeck/shared/protocol';
+import { drawTextCentered } from './pixoo-font.js';
 import {
   type RGB, COLORS, setPixel, blendPixel, glowPixel, fillRect, lerpColor,
   drawOctopus, drawJellyfish, drawOpenCode, drawCrayfish, drawTetra,
@@ -834,6 +835,15 @@ export function renderFrame(
   drawUsageHUD(outputBuf, usageEvent, animFrame);
 
   return outputBuf;
+}
+
+// ===== Disconnected Frame =====
+
+/** Render a static black frame with centered grey "OFFLINE" text. */
+export function renderDisconnectedFrame(): Uint8Array {
+  const buf = new Uint8Array(W * W * 3); // black
+  drawTextCentered(buf, 29, 'OFFLINE', '#555555');
+  return buf;
 }
 
 // ===== Preview API (re-export camera controls) =====

@@ -13,7 +13,7 @@ import type { BridgeEvent, StateUpdateEvent, UsageEvent } from '../types.js';
 import type { SessionInfo, SessionsListEvent } from '@agentdeck/shared/protocol';
 import { DISPLAY_FORWARDED_EVENTS } from '@agentdeck/shared/protocol';
 import { pushFrame, setBrightness, clearText, getDeviceBackoffStatus, switchToCustomChannel, onDeviceStatusChange, stopProbeTimer } from './pixoo-client.js';
-import { renderFrame } from './pixoo-renderer.js';
+import { renderFrame, renderDisconnectedFrame } from './pixoo-renderer.js';
 import { debug } from '../logger.js';
 
 const TAG = 'Pixoo';
@@ -162,12 +162,21 @@ export function broadcastPixoo(event: BridgeEvent): void {
   }
 }
 
-export function stopPixooBridge(): void {
+export async function stopPixooBridge(): Promise<void> {
   if (streamTimer) {
     clearInterval(streamTimer);
     streamTimer = null;
   }
   stopProbeTimer();
+
+  // Push disconnected frame to all devices (best-effort, 2s cap)
+  if (devices.length > 0) {
+    const frame = renderDisconnectedFrame();
+    await Promise.race([
+      Promise.all(devices.map(dev => pushFrame(dev.ip, frame).catch(() => {}))),
+      new Promise(resolve => setTimeout(resolve, 2000)),
+    ]);
+  }
 
   for (const dev of devices) {
     clearText(dev.ip).catch(() => {});
