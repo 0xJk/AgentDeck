@@ -18,9 +18,8 @@ enum ApmeHttpRoutes {
         }
 
         await httpServer.get("/apme/runs") { request in
-            let url = URLComponents(string: "http://localhost\(request.path)")
-            let limit = Int(url?.queryItems?.first(where: { $0.name == "limit" })?.value ?? "") ?? 50
-            let agent = url?.queryItems?.first(where: { $0.name == "agent" })?.value
+            let limit = Int(request.queryParams["limit"] ?? "") ?? 50
+            let agent = request.queryParams["agent"]
 
             let runs = store.listRuns(limit: limit, agentType: agent)
             let result = runs.map { run -> [String: Any] in
@@ -57,8 +56,7 @@ enum ApmeHttpRoutes {
         // Run detail — uses query param ?id= because HTTPServer only does exact path match.
         // Dashboard JS tries /apme/run/<id> first (Node.js), falls back to /apme/run?id=<id> (Swift).
         await httpServer.get("/apme/run") { request in
-            let url = URLComponents(string: "http://localhost\(request.path)")
-            guard let id = url?.queryItems?.first(where: { $0.name == "id" })?.value else {
+            guard let id = request.queryParams["id"], !id.isEmpty else {
                 return .json(["error": "missing ?id= parameter"], status: 400)
             }
             guard let run = store.getRun(id: id) else {
