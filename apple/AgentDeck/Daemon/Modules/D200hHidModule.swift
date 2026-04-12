@@ -390,10 +390,14 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
 
     private func handleDeviceRemoved(_ device: IOHIDDevice) {
         if device === consumerDevice {
+            // Close device to clean up resources and stop callbacks
+            IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
             consumerDevice = nil
             DaemonLogger.shared.info("D200H Consumer Control interface removed")
         }
         if device === keyboardDevice {
+            // Close device to clean up resources and stop callbacks
+            IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
             keyboardDevice = nil
             DaemonLogger.shared.info("D200H Keyboard interface removed")
         }
