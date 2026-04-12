@@ -113,9 +113,9 @@ function syncCreatures(
     }
   }
 
-  // If no sessions data, use stateEvent as single session (only for creature agents)
+  // If sessions data has never been received, use stateEvent as single session (only for creature agents)
   const stateAgentType = (stateEvent?.agentType ?? 'claude-code') as string;
-  if (aliveCoding.length === 0 && stateEvent && isCreatureAgent(stateAgentType)) {
+  if (sessions === null && aliveCoding.length === 0 && stateEvent && isCreatureAgent(stateAgentType)) {
     aliveCoding.push({
       id: '_primary',
       agentType: stateAgentType,
