@@ -74,6 +74,22 @@ function svgToPng(svg144: string): Buffer {
   }
 }
 
+/** Rasterize custom-sized SVG (e.g. 288×144 → 392×196 for merged slot). */
+function svgToPngWide(svg: string, width: number, height: number): Buffer {
+  if (!Resvg) return fallbackSolidPng(20, 20, 25);
+
+  try {
+    const resvg = new Resvg(svg, {
+      fitTo: { mode: 'width' as const, value: width },
+      font: { loadSystemFonts: false },
+    });
+    return Buffer.from(resvg.render().asPng());
+  } catch (err) {
+    debug(TAG, `Wide SVG rasterization failed: ${err}`);
+    return fallbackSolidPng(20, 20, 25);
+  }
+}
+
 // --- Layout: Key definitions ---
 
 // The D200H has 14 physical keys (5×3 grid, slot 13 is 2-col merged at col3+col4, row2)
@@ -100,6 +116,7 @@ export interface DashState {
   totalCost: number;
   options: PromptOption[];
   currentTool: string;
+  allSessions: SessionInfo[];
 }
 
 export function parseState(evt: any): DashState {
@@ -117,6 +134,7 @@ export function parseState(evt: any): DashState {
       typeof o === 'string' ? { label: o } : { label: o?.label ?? '', shortcut: o?.shortcut ?? '' }
     ),
     currentTool: evt?.currentTool ?? '',
+    allSessions: Array.isArray(evt?.allSessions) ? evt.allSessions : [],
   };
 }
 
@@ -126,19 +144,67 @@ function escXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function gaugeBar(pct: number, width = 8): string {
+  const filled = Math.round(Math.min(pct, 100) / 100 * width);
+  return '\u2588'.repeat(filled) + '\u2591'.repeat(width - filled);
+}
+
+function gaugeColor(pct: number): string {
+  return pct > 80 ? '#ef4444' : pct > 50 ? '#eab308' : '#22c55e';
+}
+
 function renderUsageButton(label: string, percent: number, color: string): string {
-  const barWidth = Math.round(80 * Math.min(percent, 100) / 100);
-  const pctColor = percent > 80 ? '#ef4444' : percent > 50 ? '#eab308' : '#22c55e';
+  const pctColor = gaugeColor(percent);
+  const gBar = gaugeBar(percent, 8);
   const elements = [
-    `<text x="72" y="48" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#94a3b8">${escXml(label)}</text>`,
-    // Gauge bar background
-    `<rect x="32" y="60" width="80" height="10" rx="5" fill="#333333"/>`,
-    // Gauge bar fill
-    barWidth > 0 ? `<rect x="32" y="60" width="${barWidth}" height="10" rx="5" fill="${color}"/>` : '',
-    // Percentage
-    `<text x="72" y="96" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="${pctColor}">${Math.round(percent)}%</text>`,
+    // Header label
+    `<text x="72" y="36" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#94a3b8">${escXml(label)}</text>`,
+    // Unicode gauge bar
+    `<text x="72" y="60" text-anchor="middle" font-family="monospace" font-size="14" fill="${color}">${escXml(gBar)}</text>`,
+    // Percentage (larger, 28px bold)
+    `<text x="72" y="90" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="bold" fill="#ffffff">${Math.round(percent)}%</text>`,
+    // Bottom accent bar (2px)
+    `<rect x="16" y="110" width="112" height="2" rx="1" fill="#1e293b"/>`,
+    `<rect x="16" y="110" width="${Math.round(112 * Math.min(percent, 100) / 100)}" height="2" rx="1" fill="${color}"/>`,
   ].join('');
-  return svgFrame('#1a1a2e', elements);
+  return svgFrame('#0f172a', elements);
+}
+
+/** Wide merged slot (3_2) — 288×144 SVG (viewBox) → 392×196 PNG. StreamDeck overview style: 5H | 7D side-by-side. */
+function renderUsageWideSlot(fiveHourPct: number, sevenDayPct: number): string {
+  const c5 = gaugeColor(fiveHourPct);
+  const c7 = gaugeColor(sevenDayPct);
+  const g5 = gaugeBar(fiveHourPct, 10);
+  const g7 = gaugeBar(sevenDayPct, 10);
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="288" height="144" viewBox="0 0 288 144">
+    <defs>
+      <linearGradient id="usage-wide-bg" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" style="stop-color:#0f172a"/>
+        <stop offset="100%" style="stop-color:#06091a"/>
+      </linearGradient>
+    </defs>
+    <!-- Background -->
+    <rect width="288" height="144" rx="12" fill="url(#usage-wide-bg)"/>
+    <!-- Inner panel -->
+    <rect x="8" y="8" width="272" height="128" rx="8" fill="#1e293b" opacity="0.4"/>
+    <!-- Header: USAGE centered -->
+    <text x="144" y="26" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#94a3b8">USAGE</text>
+    <!-- Vertical divider at x=144 -->
+    <line x1="144" y1="35" x2="144" y2="120" stroke="#334155" stroke-width="1" opacity="0.5"/>
+    <!-- Left half: 5H -->
+    <text x="50" y="50" font-family="Arial,sans-serif" font-size="11" fill="#94a3b8">5H</text>
+    <text x="80" y="62" font-family="monospace" font-size="13" fill="${c5}">${escXml(g5)}</text>
+    <text x="80" y="90" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="#ffffff">${Math.round(fiveHourPct)}%</text>
+    <!-- Right half: 7D -->
+    <text x="208" y="50" font-family="Arial,sans-serif" font-size="11" fill="#94a3b8">7D</text>
+    <text x="208" y="62" font-family="monospace" font-size="13" fill="${c7}">${escXml(g7)}</text>
+    <text x="208" y="90" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="#ffffff">${Math.round(sevenDayPct)}%</text>
+    <!-- Bottom accent bar (split): 5H on left, 7D on right -->
+    <rect x="12" y="128" width="280" height="2" rx="1" fill="#1e293b"/>
+    <rect x="12" y="128" width="${Math.round(140 * Math.min(fiveHourPct, 100) / 100)}" height="2" rx="1" fill="${c5}"/>
+    <rect x="152" y="128" width="${Math.round(140 * Math.min(sevenDayPct, 100) / 100)}" height="2" rx="1" fill="${c7}"/>
+  </svg>`;
 }
 
 function renderInfoButton(title: string, value: string, titleColor = '#94a3b8', valueColor = '#ffffff'): string {
@@ -147,7 +213,7 @@ function renderInfoButton(title: string, value: string, titleColor = '#94a3b8', 
     `<text x="72" y="52" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="${titleColor}">${escXml(title)}</text>`,
     `<text x="72" y="${86 + (valueFontSize < 20 ? 2 : 0)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${valueFontSize}" font-weight="bold" fill="${valueColor}">${escXml(value)}</text>`,
   ].join('');
-  return svgFrame('#1a1a2e', elements);
+  return svgFrame('#1C1C1E', elements);
 }
 
 function renderModeButton(mode: string): string {
@@ -155,17 +221,49 @@ function renderModeButton(mode: string): string {
     `<text x="72" y="52" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#94a3b8">MODE</text>`,
     `<text x="72" y="88" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#a78bfa">${escXml(mode.toUpperCase())}</text>`,
   ].join('');
-  return svgFrame('#1a1a2e', elements);
+  return svgFrame('#1C1C1E', elements);
+}
+
+/** Renders a uniform "dimmed" offline placeholder for a single key slot. */
+function renderOfflineSlot(hero = false): string {
+  if (hero) {
+    // Central hero card: large OFFLINE + DAEMON STOPPED
+    const elements = [
+      `<text x="72" y="54" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="bold" fill="#4b5563">OFFLINE</text>`,
+      `<text x="72" y="82" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#374151">DAEMON STOPPED</text>`,
+    ].join('');
+    return svgFrame('#0f0f0f', elements);
+  }
+  // Regular key: uniform dark dim
+  return svgFrame('#0a0a0a', `<text x="72" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#1f2937">--</text>`);
 }
 
 // --- Main layout computation ---
 
 function computeLayout(state: DashState): KeySlot[] {
+  // ============================
+  // DISCONNECTED (daemon stopped) — all keys dimmed, hero shows OFFLINE
+  // ============================
+  const isDisconnected = state.state === 'DISCONNECTED' || state.state === 'disconnected';
+  if (isDisconnected) {
+    const slots: KeySlot[] = [];
+    // 5×3 grid: position the hero card at col1+col2, row0+row1 (wide center)
+    const heroCol = 2, heroRow = 1; // center of the grid
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 5; col++) {
+        const isHero = col === heroCol && row === heroRow;
+        slots.push({ col, row, svg: renderOfflineSlot(isHero), label: '' });
+      }
+    }
+    return slots;
+  }
+
   const slots: KeySlot[] = [];
   const isAwaiting = state.state.startsWith('AWAITING') || state.state.startsWith('awaiting');
+  const isProcessing = state.state === 'PROCESSING' || state.state === 'processing';
 
-  // Build a SessionInfo-like object from the single-session state
-  const session: SessionInfo = {
+  // Build a SessionInfo-like object for the active (focused) state
+  const activeSession: SessionInfo = {
     id: 'local',
     agentType: state.agentType as any,
     projectName: state.projectName,
@@ -175,62 +273,72 @@ function computeLayout(state: DashState): KeySlot[] {
     port: 0,
   };
 
-  // Slot 0 (0,0): Mode
-  slots.push({ col: 0, row: 0, svg: renderModeButton(state.mode), label: '' });
+  const sessionsToDisplay = state.allSessions.length > 0 ? state.allSessions.slice(0, 4) : [activeSession];
+  const isMultiSession = sessionsToDisplay.length > 1;
 
-  // Slot 1 (1,0): Session tile (the hero button — uses SD+ style rendering)
-  slots.push({
-    col: 1, row: 0,
-    svg: renderSessionSlot(session, true, 0),
-    label: '',
-  });
+  if (isMultiSession) {
+    // ============================
+    // MULTI-SESSION OVERVIEW LAYOUT
+    // ============================
 
-  // Slot 2 (2,0): Session detail info
-  slots.push({
-    col: 2, row: 0,
-    svg: renderDetailInfo(session, state.state.toLowerCase() as State, state.currentTool, state.modelName, state.mode),
-    label: '',
-  });
-
-  // Slots 3-6 (3,0), (4,0), (0,1), (1,1): Options or empty
-  for (let i = 0; i < 4; i++) {
-    const col = (i + 3) % 5;
-    const row = Math.floor((i + 3) / 5);
-    const opt = state.options[i];
-    if (opt && isAwaiting) {
-      slots.push({
-        col, row,
-        svg: renderOptionButton(opt, i),
-        label: '',
-      });
-    } else {
-      slots.push({ col, row, svg: renderEmptySlot(), label: '' });
+    // Row 0: Mode, Session 1..4
+    slots.push({ col: 0, row: 0, svg: renderModeButton(state.mode), label: '' });
+    for (let i = 0; i < 4; i++) {
+      const col = i + 1;
+      const sess = sessionsToDisplay[i];
+      if (sess) {
+        const isActive = sess.projectName === activeSession.projectName && sess.agentType === activeSession.agentType;
+        slots.push({ col, row: 0, svg: renderSessionSlot(sess, isActive, 0), label: '' });
+      } else {
+        slots.push({ col, row: 0, svg: renderEmptySlot(), label: '' });
+      }
     }
+
+    // Row 1: Options 1..4, Model Info
+    for (let i = 0; i < 4; i++) {
+      const col = i;
+      const opt = state.options[i];
+      if (opt && isAwaiting) {
+        slots.push({ col, row: 1, svg: renderOptionButton(opt, i), label: '' });
+      } else {
+        slots.push({ col, row: 1, svg: renderEmptySlot(), label: '' });
+      }
+    }
+    slots.push({ col: 4, row: 1, svg: renderInfoButton('MODEL', state.modelName.slice(0, 12) || 'N/A'), label: '' });
+  } else {
+    // ============================
+    // SINGLE-SESSION DETAIL LAYOUT
+    // ============================
+
+    // Row 0: Mode, Hero Session, Extended Detail
+    slots.push({ col: 0, row: 0, svg: renderModeButton(state.mode), label: '' });
+    slots.push({ col: 1, row: 0, svg: renderSessionSlot(sessionsToDisplay[0], true, 0), label: '' });
+    slots.push({ col: 2, row: 0, svg: renderDetailInfo(sessionsToDisplay[0], state.state.toLowerCase() as State, state.currentTool, state.modelName, state.mode), label: '' });
+
+    // Options mapping identically to old 13-slot original design
+    // Slots 3_0, 4_0, 0_1, 1_1
+    for (let i = 0; i < 4; i++) {
+      const col = (i + 3) % 5;
+      const row = Math.floor((i + 3) / 5);
+      const opt = state.options[i];
+      if (opt && isAwaiting) {
+        slots.push({ col, row, svg: renderOptionButton(opt, i), label: '' });
+      } else {
+        slots.push({ col, row, svg: renderEmptySlot(), label: '' });
+      }
+    }
+
+    // Row 1 remaining stats: 2_1, 3_1, 4_1
+    slots.push({ col: 2, row: 1, svg: renderInfoButton('MODEL', state.modelName.slice(0, 12) || 'N/A'), label: '' });
+    slots.push({ col: 3, row: 1, svg: renderUsageButton('5H', state.fiveHourPercent, '#28a0b4'), label: '' });
+    slots.push({ col: 4, row: 1, svg: renderUsageButton('7D', state.sevenDayPercent, '#2850a0'), label: '' });
   }
 
-  // Slot 7 (2,1): Model info
-  slots.push({
-    col: 2, row: 1,
-    svg: renderInfoButton('MODEL', state.modelName.slice(0, 12) || 'N/A'),
-    label: '',
-  });
+  // ============================
+  // ROW 2: SHARED ACTIONS (STOP, TOKENS, COST)
+  // ============================
 
-  // Slot 8 (3,1): 5H usage
-  slots.push({
-    col: 3, row: 1,
-    svg: renderUsageButton('5H', state.fiveHourPercent, '#28a0b4'),
-    label: '',
-  });
-
-  // Slot 9 (4,1): 7D usage
-  slots.push({
-    col: 4, row: 1,
-    svg: renderUsageButton('7D', state.sevenDayPercent, '#2850a0'),
-    label: '',
-  });
-
-  // Slot 10 (0,2): STOP/ESC
-  const isProcessing = state.state === 'PROCESSING' || state.state === 'processing';
+  // Slot 0_2: STOP/ESC
   if (isProcessing) {
     slots.push({ col: 0, row: 2, svg: renderStopButton(true), label: '' });
   } else if (isAwaiting) {
@@ -239,20 +347,12 @@ function computeLayout(state: DashState): KeySlot[] {
     slots.push({ col: 0, row: 2, svg: renderStopButton(false), label: '' });
   }
 
-  // Slot 11 (1,2): Tokens
+  // Slot 1_2: Tokens
   const tk = state.totalTokens > 1000 ? `${(state.totalTokens / 1000).toFixed(0)}K` : `${state.totalTokens}`;
-  slots.push({
-    col: 1, row: 2,
-    svg: renderInfoButton('TOKENS', tk),
-    label: '',
-  });
+  slots.push({ col: 1, row: 2, svg: renderInfoButton('TOKENS', tk), label: '' });
 
-  // Slot 12 (2,2): Cost
-  slots.push({
-    col: 2, row: 2,
-    svg: renderInfoButton('COST', `$${state.totalCost.toFixed(2)}`),
-    label: '',
-  });
+  // Slot 2_2: Cost
+  slots.push({ col: 2, row: 2, svg: renderInfoButton('COST', `$${state.totalCost.toFixed(2)}`), label: '' });
 
   return slots;
 }
@@ -434,12 +534,14 @@ export function renderDashboardZip(stateEvt: any): Buffer {
     };
   }
 
-  // Small window slot (3_2) — status info
+  // Merged hardware slot (3_2) — 392×196 PNG with StreamDeck-style usage display
+  // No Action = device firmware clock overlay suppressed (solves clock overlap)
+  const wideUsageSvg = renderUsageWideSlot(state.fiveHourPercent, state.sevenDayPercent);
+  const wideUsagePng = svgToPngWide(wideUsageSvg, 392, 196);
+  files.set('icons/usage-wide.png', wideUsagePng);
   manifest['3_2'] = {
-    Action: 'com.ulanzi.ulanzideck.smallwindow.window',
-    ActionParam: {},
     State: 0,
-    ViewParam: [{ Text: state.state }],
+    ViewParam: [{ Icon: 'icons/usage-wide.png', Text: '' }],
   };
 
   files.set('manifest.json', Buffer.from(JSON.stringify(manifest), 'utf-8'));
@@ -485,5 +587,6 @@ export function renderDashboardZip(stateEvt: any): Buffer {
  */
 export function stateHash(stateEvt: any): string {
   const s = parseState(stateEvt);
-  return `${s.state}|${s.mode}|${s.projectName}|${s.modelName}|${s.fiveHourPercent}|${s.sevenDayPercent}|${s.totalTokens}|${s.totalCost}|${s.options.map(o => o.label).join(',')}|${s.currentTool}`;
+  const sessIds = s.allSessions.map(sess => sess.id).join(',');
+  return `${s.state}|${s.mode}|${s.projectName}|${s.modelName}|${s.fiveHourPercent}|${s.sevenDayPercent}|${s.totalTokens}|${s.totalCost}|${s.options.map(o => o.label).join(',')}|${s.currentTool}|${sessIds}`;
 }
