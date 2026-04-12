@@ -171,6 +171,16 @@ export class ApmeCollector {
     return this.sessionToTurn.get(sessionId)?.id ?? null;
   }
 
+  /** Store Claude's response text on the current turn. */
+  setTurnResponse(sessionId: string, response: string): void {
+    if (!this.store.enabled) return;
+    const turn = this.sessionToTurn.get(sessionId);
+    if (!turn) return;
+    try {
+      this.store.updateTurn(turn.id, { response: response.slice(0, 10_000) });
+    } catch { /* ignore */ }
+  }
+
   /** Ingest a generic timeline-style event (non-hook). */
   ingestStep(sessionId: string, kind: string, payload: Record<string, unknown>, toolName?: string): void {
     if (!this.store.enabled) return;

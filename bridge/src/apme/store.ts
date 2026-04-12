@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS turns (
   run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   turn_index  INTEGER NOT NULL,
   prompt      TEXT,
+  response    TEXT,
   started_at  INTEGER NOT NULL,
   ended_at    INTEGER,
   tool_calls  INTEGER DEFAULT 0,
@@ -260,6 +261,7 @@ export class ApmeStore {
       ['task_category', 'ALTER TABLE runs ADD COLUMN task_category TEXT'],
       ['task_category_source', "ALTER TABLE runs ADD COLUMN task_category_source TEXT DEFAULT 'auto'"],
       ['turn_id', 'ALTER TABLE evals ADD COLUMN turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE'],
+      ['turn_response', 'ALTER TABLE turns ADD COLUMN response TEXT'],
       ['outcome', 'ALTER TABLE runs ADD COLUMN outcome TEXT'],
       ['outcome_confidence', 'ALTER TABLE runs ADD COLUMN outcome_confidence TEXT'],
       ['efficiency_json', 'ALTER TABLE runs ADD COLUMN efficiency_json TEXT'],
@@ -390,7 +392,7 @@ export class ApmeStore {
       endedAt: 'ended_at', toolCalls: 'tool_calls', filesModified: 'files_modified',
       filesCreated: 'files_created', gitAfter: 'git_after', taskCategory: 'task_category',
       outcome: 'outcome', compositeScore: 'composite_score', efficiencyJson: 'efficiency_json',
-      prompt: 'prompt',
+      prompt: 'prompt', response: 'response',
     };
     const sets: string[] = []; const vals: unknown[] = [];
     for (const [k, v] of Object.entries(fields)) {

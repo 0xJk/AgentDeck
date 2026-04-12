@@ -958,7 +958,9 @@ apme
         const turnOverall = turnEvals.find(e => e.metric === 'overall');
         const scoreStr = turnOverall ? ` score=${(turnOverall.score * 100).toFixed(0)}%` : '';
 
+        const resp = t.response as string | null;
         log(`    [${idx}] ${prompt ? '"' + prompt.slice(0, 80) + (prompt.length > 80 ? '...' : '') + '"' : '(no prompt)'}`);
+        if (resp) log(`        → ${resp.slice(0, 200)}${resp.length > 200 ? '...' : ''}`);
         log(`        ${tc} tools, ${fm} edits, ${fc} creates, ${dur}${gitChanged}${scoreStr}`);
 
         // Show judge reasoning if available for this turn

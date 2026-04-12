@@ -313,9 +313,11 @@ async function selectRun(id){
         const pr=t.prompt?esc(t.prompt.slice(0,150)):'(no prompt)';
         const d2=t.ended_at&&t.started_at?fd((t.ended_at-t.started_at)):'open';
         const tc=t.tool_calls||0;const fm=t.files_modified||0;const fc=t.files_created||0;
+        const resp=t.response?esc(t.response.slice(0,300)):'';
         h+='<div class="turn-card">';
         h+='<span class="turn-idx">Turn '+t.turn_index+'</span>';
         h+='<div class="turn-prompt">"'+pr+'"</div>';
+        if(resp)h+='<div style="color:var(--muted);font-size:12px;margin:4px 0;padding:6px 8px;background:var(--bg);border-radius:4px;border-left:2px solid var(--accent)">'+resp+(t.response&&t.response.length>300?'...':'')+'</div>';
         h+='<div class="turn-stats"><span>'+tc+' tools</span><span>'+fm+' edits</span><span>'+fc+' creates</span><span>'+d2+'</span></div>';
         h+='</div>';
       }

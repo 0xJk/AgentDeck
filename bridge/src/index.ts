@@ -1173,6 +1173,12 @@ function wireClaudeCodeTimeline(
           agentType: 'claude-code',
         });
 
+        // APME: store Claude's response on the current turn
+        const apmeRef = core.getApme();
+        if (apmeRef && lastAssistantMsg) {
+          apmeRef.collector.setTurnResponse(core.sessionId, lastAssistantMsg);
+        }
+
         // Async LLM summarization — fire-and-forget, upsert chat_end when ready
         if (lastAssistantMsg && lastAssistantMsg.length > 30) {
           const savedDuration = duration;

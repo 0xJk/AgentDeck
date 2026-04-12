@@ -455,7 +455,7 @@ final class ApmeStore: @unchecked Sendable {
     );
     CREATE TABLE IF NOT EXISTS turns (
       id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-      turn_index INTEGER NOT NULL, prompt TEXT, started_at INTEGER NOT NULL,
+      turn_index INTEGER NOT NULL, prompt TEXT, response TEXT, started_at INTEGER NOT NULL,
       ended_at INTEGER, tool_calls INTEGER DEFAULT 0,
       files_modified INTEGER DEFAULT 0, files_created INTEGER DEFAULT 0,
       git_before TEXT, git_after TEXT, task_category TEXT,
