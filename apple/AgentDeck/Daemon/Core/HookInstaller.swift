@@ -105,8 +105,11 @@ enum HookInstaller {
         // This ensures hooks reach the Swift daemon even when it's on a fallback port.
         let daemonJsonPath = AuthManager.agentDeckDir.appendingPathComponent("daemon.json").path
         let cmd = "PORT=${AGENTDECK_PORT:-$(python3 -c \"import json;print(json.load(open('\(daemonJsonPath)'))['port'])\" 2>/dev/null || echo 9120)}; curl -sf -X POST http://localhost:$PORT/hooks/\(event) -H 'Content-Type: application/json' -d @- 2>/dev/null || true"
+        // Tool-specific hooks need glob matcher "*" to fire. Empty "" means
+        // "match nothing" for PreToolUse/PostToolUse. Non-tool events ignore matcher.
+        let needsToolMatcher = ["PreToolUse", "PostToolUse"].contains(event)
         return [
-            "matcher": "",
+            "matcher": needsToolMatcher ? "*" : "",
             "hooks": [[
                 "type": "command",
                 "command": cmd,

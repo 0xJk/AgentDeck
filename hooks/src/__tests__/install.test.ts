@@ -33,7 +33,8 @@ describe('Hook Installer', () => {
       for (const event of HOOK_EVENTS) {
         expect(result.hooks[event]).toHaveLength(1);
         const group = result.hooks[event][0];
-        expect(group.matcher).toBe('');
+        const expectStar = ['PreToolUse', 'PostToolUse'].includes(event);
+        expect(group.matcher).toBe(expectStar ? '*' : '');
         expect(group.hooks).toHaveLength(1);
         expect(group.hooks[0].command).toContain('AGENTDECK_PORT');
         expect(group.hooks[0].command).toContain(event);

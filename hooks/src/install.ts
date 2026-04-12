@@ -20,8 +20,12 @@ export function buildHookEntry(eventName: string) {
     type: 'command',
     command: `curl -sf -X POST http://localhost:\${AGENTDECK_PORT:-9120}/hooks/${eventName} -H 'Content-Type: application/json' -d @- 2>/dev/null || true`,
   };
+  // Tool-specific hooks (PreToolUse, PostToolUse) need a glob matcher to fire.
+  // Empty string "" means "match nothing" for tool events — use "" for non-tool
+  // events (SessionStart, Stop, etc.) where matcher is ignored.
+  const needsToolMatcher = ['PreToolUse', 'PostToolUse'].includes(eventName);
   return {
-    matcher: '',
+    matcher: needsToolMatcher ? '*' : '',
     hooks: [handler],
   };
 }
