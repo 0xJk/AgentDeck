@@ -715,7 +715,7 @@ export class BridgeCore {
         Promise.resolve().then(cb).catch(() => {}),
       ),
     );
-    await Promise.race([callbacksDone, new Promise(r => setTimeout(r, 2000))]);
+    await Promise.race([callbacksDone, new Promise(r => { const t = setTimeout(r, 2000); t.unref(); })]);
 
     // Close WS
     this.wsServer.close();

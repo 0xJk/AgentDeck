@@ -29,6 +29,7 @@ export class HookServer extends EventEmitter {
   // SSE
   private sseClients: SseClient[] = [];
   private sseHeartbeats: Map<number, ReturnType<typeof setInterval>> = new Map();
+  private pixooStreamTimers: Set<ReturnType<typeof setInterval>> = new Set();
   private sseIdCounter = 0;
   private lastStateEvent: BridgeEvent | null = null;
   private lastUsageEvent: BridgeEvent | null = null;
@@ -288,14 +289,17 @@ export class HookServer extends EventEmitter {
       const current = this.pixooFrameGetter!();
       listener(current);
 
-      // Heartbeat
+      // Heartbeat — tracked so close() can clear it even if the client
+      // hasn't disconnected yet (prevents zombie event loop handles).
       const heartbeat = setInterval(() => {
         try { res.write(':heartbeat\n\n'); } catch { /* */ }
       }, 30_000);
+      this.pixooStreamTimers.add(heartbeat);
 
       req.on('close', () => {
         offFrameRendered(listener);
         clearInterval(heartbeat);
+        this.pixooStreamTimers.delete(heartbeat);
       });
     });
 
@@ -368,6 +372,12 @@ export class HookServer extends EventEmitter {
     }
     this.sseHeartbeats.clear();
 
+    // Clear Pixoo stream heartbeats
+    for (const timer of this.pixooStreamTimers) {
+      clearInterval(timer);
+    }
+    this.pixooStreamTimers.clear();
+
     // Close all SSE connections
     for (const client of this.sseClients) {
       try { client.res.end(); } catch { /* ignore */ }
@@ -381,8 +391,9 @@ export class HookServer extends EventEmitter {
       this.server.close(() => {
         resolve();
       });
-      // Fallback: resolve after 1s even if server.close() hangs
-      setTimeout(resolve, 1000);
+      // Fallback: resolve after 1s even if server.close() hangs.
+      // .unref() so this timer doesn't keep the event loop alive as a zombie.
+      setTimeout(resolve, 1000).unref();
     });
   }
 }
