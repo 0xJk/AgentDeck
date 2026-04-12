@@ -12,7 +12,7 @@ export function apmeDashboardHtml(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentDeck APME</title>
+<title>AgentDeck — Agent Performance Monitoring & Evaluation</title>
 <style>
 :root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;--dim:#64748b;--green:#22c55e;--yellow:#f59e0b;--red:#ef4444;--blue:#3b82f6;--accent:#818cf8}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -104,7 +104,7 @@ tr.selected td{background:rgba(99,102,241,0.15);border-left:2px solid var(--acce
 </head>
 <body>
 <header>
-  <h1><span class="live"></span> AgentDeck APME</h1>
+  <h1><span class="live"></span> Agent Performance Monitoring & Evaluation</h1>
   <span class="status" id="status">Loading...</span>
 </header>
 
