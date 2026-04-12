@@ -333,6 +333,9 @@ final class DaemonService: ObservableObject {
         isOnFallbackPort = (sessionOverridePort != nil)
         if isOnFallbackPort {
             bindFailureReason = "Daemon moved to fallback port \(actualPort) because \(configuredPort) was held by another process. Clients will rediscover via mDNS."
+            if blockingProcesses.isEmpty {
+                blockingProcesses = PortDiagnostics.collectBlockers(port: configuredPort)
+            }
         } else {
             bindFailureReason = nil; blockingProcesses = []
         }
@@ -465,6 +468,10 @@ final class DaemonService: ObservableObject {
             listenerFailureRetries = 0
             squatterCleanupAttempted = false
             DaemonLogger.shared.info("Port \(userExplicitPort) held by external process — falling back to \(altPort) immediately")
+            // Show diagnostic panel so user can clean up the squatter.
+            blockingProcesses = PortDiagnostics.collectBlockers(port: userExplicitPort)
+            bindFailureReason = "Port \(userExplicitPort) is held by another process. Daemon started on fallback port \(altPort). Clean up the blocking process to restore port \(userExplicitPort)."
+            isOnFallbackPort = true
             Task { @MainActor [weak self] in self?.start() }
             return
         }
