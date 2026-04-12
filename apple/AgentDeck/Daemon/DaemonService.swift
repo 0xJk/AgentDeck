@@ -397,6 +397,14 @@ final class DaemonService: ObservableObject {
     /// (e.g. network loss after successful bind). Tears down and retries.
     private func handleListenerFailure(error: Error) async {
         guard isRunning else { return }
+        // NECP path update failures (error 22) are transient kernel-level noise
+        // that occur when NWListener is created/destroyed rapidly (port fallback).
+        // They don't affect actual network functionality — ignore them.
+        let desc = "\(error)"
+        if desc.contains("NECP") || desc.contains("necp") || desc.contains("error 22") {
+            DaemonLogger.shared.info("Listener NECP error ignored (non-fatal): \(error)")
+            return
+        }
         DaemonLogger.shared.error("Listener failure detected — tearing down and retrying: \(error)")
         let attemptedPort = Int(port)
         await server?.shutdown()
