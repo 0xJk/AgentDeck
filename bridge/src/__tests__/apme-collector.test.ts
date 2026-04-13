@@ -166,6 +166,66 @@ describe('ApmeCollector', () => {
     expect(opus?.totalCost).toBeCloseTo(0.8);
   });
 
+  it('multi-turn cycle captures prompts and responses (wireAgentApme path)', async () => {
+    const collector = new ApmeCollector(store);
+    const runId = collector.openRun({
+      sessionId: 'oc-1',
+      agentType: 'openclaw',
+      projectName: 'test',
+      projectPath: '/tmp/test',
+    });
+
+    // Turn 1: chat_start → ingestHook(UserPromptSubmit) + setTurnResponse
+    collector.ingestHook('oc-1', 'UserPromptSubmit', { message: { content: 'explain the auth flow' } });
+    const turn1 = collector.getActiveTurnId('oc-1');
+    expect(turn1).toBeTruthy();
+    collector.setTurnResponse('oc-1', 'The auth flow uses OAuth2 with PKCE...');
+
+    // Verify turn 1 has response
+    const t1 = store.getTurn(turn1!);
+    expect(t1?.prompt).toBe('explain the auth flow');
+    expect(t1?.response).toBe('The auth flow uses OAuth2 with PKCE...');
+
+    // Turn 2: another prompt creates a new turn
+    collector.ingestHook('oc-1', 'UserPromptSubmit', { message: { content: 'refactor it' } });
+    const turn2 = collector.getActiveTurnId('oc-1');
+    expect(turn2).toBeTruthy();
+    expect(turn2).not.toBe(turn1);
+
+    // setLastClosedTurnResponse applies to last closed turn (turn1)
+    // but turn1 already has response, so this should be a no-op
+    collector.setLastClosedTurnResponse('oc-1', 'should not overwrite');
+    const t1After = store.getTurn(turn1!);
+    expect(t1After?.response).toBe('The auth flow uses OAuth2 with PKCE...');
+
+    // Turn 2 response via setTurnResponse
+    collector.setTurnResponse('oc-1', 'Refactored the middleware.');
+    const t2 = store.getTurn(turn2!);
+    expect(t2?.response).toBe('Refactored the middleware.');
+
+    // Close run — both turns should exist
+    collector.closeRun('oc-1', 0, '/tmp/test');
+    const run = store.getRun(runId);
+    expect(run?.endedAt).toBeGreaterThan(0);
+  });
+
+  it('setLastClosedTurnResponse fills missing response on closed turn', async () => {
+    const collector = new ApmeCollector(store);
+    collector.openRun({ sessionId: 's-fb', agentType: 'opencode', projectName: 'p' });
+
+    // Turn with prompt but no response
+    collector.ingestHook('s-fb', 'UserPromptSubmit', { message: { content: 'hello' } });
+    const turnId = collector.getActiveTurnId('s-fb');
+
+    // Close turn by starting a new one (or close run)
+    collector.ingestHook('s-fb', 'UserPromptSubmit', { message: { content: 'second' } });
+
+    // Now turnId is closed, setLastClosedTurnResponse should work
+    collector.setLastClosedTurnResponse('s-fb', 'delayed response text');
+    const t = store.getTurn(turnId!);
+    expect(t?.response).toBe('delayed response text');
+  });
+
   it('no-op gracefully when store is disabled', () => {
     const dummy = new ApmeStore('/nonexistent/_disabled');
     // init() never called, so enabled=false

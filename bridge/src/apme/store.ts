@@ -407,7 +407,7 @@ export class ApmeStore {
         const exists = this.db.prepare('SELECT COUNT(*) AS n FROM rubrics WHERE purpose = ?').get(rubric.purpose) as { n: number };
         if (exists.n === 0) {
           this.db.prepare(
-            `INSERT INTO rubrics (version, purpose, prompt, weights, created_at, parent_ver, notes) VALUES (1, ?, ?, ?, ?, NULL, ?)`,
+            `INSERT INTO rubrics (purpose, prompt, weights, created_at, parent_ver, notes) VALUES (?, ?, ?, ?, NULL, ?)`,
           ).run(rubric.purpose, rubric.prompt, rubric.weights, Date.now(), rubric.notes);
         }
       }
@@ -424,10 +424,10 @@ export class ApmeStore {
       Date.now(),
       DEFAULT_RUBRIC_V1.notes,
     );
-    // Seed category-specific rubrics
+    // Seed category-specific rubrics (version auto-assigned by SQLite rowid)
     for (const [, rubric] of Object.entries(CATEGORY_RUBRICS)) {
       this.db.prepare(
-        `INSERT INTO rubrics (version, purpose, prompt, weights, created_at, parent_ver, notes) VALUES (1, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT INTO rubrics (purpose, prompt, weights, created_at, parent_ver, notes) VALUES (?, ?, ?, ?, NULL, ?)`,
       ).run(rubric.purpose, rubric.prompt, rubric.weights, Date.now(), rubric.notes);
     }
   }

@@ -64,12 +64,15 @@ AgentDeck is a physical control surface for AI coding agents. It started with an
 - [Android Dashboard](#android-dashboard)
 - [Apple Dashboard](#apple-dashboard)
 - [TUI Dashboard](#tui-dashboard)
+- [Agent Performance Evaluation & Model Orchestration](#agent-performance-evaluation--model-orchestration)
 - [ESP32 Display](#esp32-display)
+- [Ulanzi TC001 LED Matrix](#ulanzi-tc001-led-matrix)
 - [Pixoo64 LED Matrix](#pixoo64-led-matrix)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 - [Development](#development)
+- [Next Milestones — Current Focus](#next-milestones--current-focus)
 - [Roadmap](#roadmap)
 
 ### Documentation
@@ -88,6 +91,9 @@ AgentDeck is a physical control surface for AI coding agents. It started with an
 - [Voice Setup](docs/voice-setup.md) — sox, whisper.cpp install, model selection
 - [Wake Word Detection](docs/wake-word.md) — Porcupine (Mac) + microWakeWord (ESP32) setup
 - [Testing Guide](docs/testing.md) — test structure, coverage, CI pipeline, writing tests
+- [Why APME — 감에서 데이터로](docs/why-apme.md) — motivation, category-aware evaluation strategy, composite score design
+- [APME Pipeline (8-layer deep dive)](docs/apme-pipeline.md) — ingestion (hook/timeline/PTY), collector→store, classifier, runner, tuner, HTTP/WS, device rendering with file:line anchors
+- [Agent Performance Evaluation Reference](docs/apme.md) — session dataset, category-specific rubrics, turn-level mid-session eval, daemon HTTP API, settings
 - [Creature Simulator Demo](https://puritysb.github.io/AgentDeck/demo/) — live creature rendering playground (GitHub Pages)
 
 ---
@@ -325,6 +331,21 @@ The CLI command is `agentdeck`.
 | `agentdeck qr` | Pairing QR code + URL |
 | `agentdeck diag` | Diagnostic dump (`-a` for AI analysis) |
 
+#### Evaluation (APME)
+
+| Command | Description |
+|---------|-------------|
+| `agentdeck apme runs` | List recent runs (filter by `--agent`, `--model`, `--limit`) |
+| `agentdeck apme run <id>` | Detailed run view — steps, turns, per-turn evals, vibe |
+| `agentdeck apme judge` | Evaluate pending runs manually (no daemon required) |
+| `agentdeck apme scorecard` | Model scorecard by category and overall |
+| `agentdeck apme tune` | Trigger rubric auto-tuner (OPRO loop) |
+| `agentdeck apme vibe <runId> <verdict>` | Label a run (`approve`/`reject`/`neutral`) |
+| `agentdeck apme tag <runId> <category>` | Manually set task category |
+| `agentdeck apme reclassify` | Re-run classifier on unclassified runs |
+| `agentdeck apme rubric` | Inspect current rubrics |
+| `agentdeck apme export` | Export dataset to JSON |
+
 #### Device Setup
 
 | Command | Description |
@@ -402,8 +423,9 @@ See **[v4 Layout](docs/v4-layout.md)** for the full v4 session-per-button model,
 A 14-key USB HID controller with a 960×540 LCD — a second hardware surface that complements the Stream Deck+ with richer session visuals and a dedicated usage monitor.
 
 <p align="center">
-  <em>Multi-session agent controller with premium CoreGraphics-rendered session slots.</em>
+  <img src="docs/media/hardware-d200h-tc001-closeup.png" width="720" alt="Hardware close-up — Stream Deck+, Ulanzi D200H Deck Dock (lit session keys), and Ulanzi TC001 LED matrix">
 </p>
+<p align="center"><em>Left to right: Stream Deck+, Ulanzi D200H Deck Dock (lit session slots), Ulanzi TC001 LED matrix</em></p>
 
 ### Layout
 
@@ -502,6 +524,10 @@ The Apple app is a SwiftUI multiplatform app that connects to the bridge on iOS/
 
 The app handles iOS background/foreground transitions gracefully — WebSocket reconnects immediately on foregrounding, state syncs within milliseconds, and the terrarium animation resumes without flicker.
 
+### App Store Distribution
+
+The macOS and iOS builds are being hardened for App Store submission. This includes sandbox compatibility for `~/.agentdeck/` user data, USB device entitlements for D200H HID, and Input Monitoring permission handling. The TestFlight build is available now; App Store review is the current active milestone.
+
 ---
 
 ## TUI Dashboard
@@ -523,6 +549,107 @@ The TUI connects to a running Bridge or Daemon over WebSocket and renders a real
 - **Status + Timeline** — rate limit gauges, OAuth/Ollama models, tool calls, activity density bar
 - **Auto-discovery** — finds Daemon or active session automatically; 3s auto-reconnect
 - **SSH friendly** — works over any SSH connection with truecolor support; pipes output JSON
+
+---
+
+## Agent Performance Evaluation & Model Orchestration (APME)
+
+**The problem:** I route 6+ LLMs (Claude Opus/Sonnet, Codex/GPT-5.4, Gemini Antigravity, GLM-5.1, Qwen3.5-30B MLX) across my daily work by **gut feeling** — "this task to Codex, summaries to local Qwen, important stuff to Opus." I have no idea if that's efficient. Generic benchmarks don't answer it either — they measure average users on standard tasks, not **me on my codebase**.
+
+APME is the personalized evaluation system that fixes this. Every agent session → local SQLite dataset → category-aware auto-evaluation → eventually data-driven model routing.
+
+<p align="center">
+  <img src="docs/media/apme-dashboard.png" width="720" alt="Agent Performance dashboard — session run table with scores, models, costs, and feedback controls">
+</p>
+
+### Category-aware Evaluation Strategy
+
+The key architectural decision: **evaluation method differs per task category.** A single "overall score" across all sessions is meaningless — a model that's great at debugging may be verbose in conversation, and vice versa.
+
+| Categories | Timing | Layers |
+|---|---|---|
+| `coding` · `refactoring` · `debugging` | **Run-level** (after session ends) | Deterministic (lint/build/test) + LLM judge with category rubric |
+| `conversation` · `planning` · `research` · `review` | **Turn-level** (immediately after each turn) | LLM judge only — no git diff needed |
+| `ops` · `multi_agent` · `unknown` | Run-level | Deterministic + general rubric fallback |
+
+Seven dedicated rubrics — conversation scores `accuracy · helpfulness · conciseness`, debugging scores `diagnosis · fix_quality · verification`, and so on. Same model can be great at debugging and average at conversation — that's **normal**, and the scorecard surfaces it.
+
+### Three Ingestion Paths → One Schema
+
+Each agent emits events in a different shape. APME converges three paths onto a single `ApmeCollector` API:
+
+```
+  Claude Code   ──▶  hook HTTP POST + PTY ⏺ tail parser
+  OpenClaw/OC   ──▶  adapter timeline events
+  Codex CLI     ──▶  PTY parser (spinner_stop + tail)
+                │
+                ▼
+           ApmeCollector  →  ~/.agentdeck/apme.sqlite
+```
+
+Claude Code's `Stop` hook fires only ~18% of the time in v2.1.104, so the primary response-capture path is PTY ring buffer parsing at the `⏺` marker, with a 3-path fallback for the `spinner_stop` vs `UserPromptSubmit` race.
+
+### Composite Score (4-dimensional weighted sum)
+
+A single judge score is unreliable. APME combines four independent signals so one bad signal can't poison the run:
+
+```
+composite = 0.40 × outcome      ← did it actually finish? (git diff / response captured)
+          + 0.40 × judge         ← LLM quality score
+          + 0.15 × efficiency    ← tokens/cost/time per change
+          + 0.05 × vibe          ← user approve/reject
+```
+
+Coding outcomes are git-based (`committed → 1.0`, `iterated → 0.6`, `exploratory → 0.5`, `abandoned → 0.2`, …). Non-coding outcomes are response-based — a research session that changes no files isn't "abandoned" if the answer was delivered.
+
+### Vibe-first, Judge Second
+
+Counterintuitively, APME **doesn't try to make the LLM judge great upfront**. Instead:
+
+1. **Collect** everything (Stage 1 ✅)
+2. **Classify** into 10 categories (Stage 2 ✅)
+3. **Human labels** run-by-run via dashboard 👍/👎 — this is ground truth (Stage 3 🔧)
+4. **Auto-tune** the judge rubric against human labels via OPRO (Stage 4 🧪)
+
+Without vibe data there's no way to verify the judge is right. So humans label first, and the judge evolves toward the human baseline. The tuner picks up **disagreement samples** (`tests_pass=1 ∧ judge<0.5`, `vibe=reject ∧ judge>0.8`, etc.), proposes new rubrics, shadow-scores them, and only accepts rubrics that improve the vibe correlation.
+
+### Local-only Judge Backends (zero cost, full coverage)
+
+Judge runs on **local backends only** so `sampleRate: 1.0` (evaluate everything) is the default — no cost anxiety, no guilt-driven sampling cuts.
+
+| Backend | Endpoint | Role |
+|---|---|---|
+| `mlx` | `127.0.0.1:8800` (Qwen3.5-30B) | Primary |
+| `openclaw` | `127.0.0.1:18789` (Gateway) | Secondary |
+
+### Self-healing Daemon Loop + Device Broadcast
+
+Evaluation runs in the daemon, decoupled from session lifetime. Every 30s: enqueue unevaluated runs, compute outcomes on runs closed >10s ago, re-classify orphans, tag crashed sessions. Even if a session process dies mid-evaluation, the daemon loop eventually completes it.
+
+When an evaluation finishes, a `★ eval_result` timeline entry broadcasts to **every device simultaneously** — Stream Deck (amber ★), Apple (ledAmber EVAL row), Android (LEDAmber tag), ESP32 (@ prefix in TLToolReq), TUI dashboard. The result lands in your peripheral vision seconds after the run ends — which is the UX hook that actually gets you to press 👍/👎.
+
+### Dashboard & CLI
+
+Daemon auto-polls every 30s; or trigger manually:
+
+```bash
+agentdeck apme judge    # evaluate all pending runs manually (no daemon required)
+```
+
+Browse the local web dashboard:
+
+```
+http://localhost:9120/apme
+```
+
+Run table (session · model · task · composite score · cost · git delta), category scorecard (`v_category_scorecard` — which model wins per category), per-run vibe controls, turn-level mid-session eval cards for non-coding sessions.
+
+> **Cost policy:** Judge runs on local backends only (MLX + OpenClaw Gateway). `sampleRate: 1.0` is the default — evaluate every run without worrying about API bills. All session data stays on-device.
+
+**Deep dives:**
+- **[Why APME](docs/why-apme.md)** — the motivation, category-aware strategy, design decisions
+- **[APME Pipeline](docs/apme-pipeline.md)** — 8-layer pipeline with file:line anchors
+- **[APME Reference](docs/apme.md)** — schema, HTTP API, settings, test coverage
 
 ---
 
@@ -552,6 +679,25 @@ Run `agentdeck wifi-setup` to provision WiFi over serial (see [CLI Reference](#c
 
 ---
 
+## Ulanzi TC001 LED Matrix
+
+Compact 8×32 RGB LED matrix for always-on status-at-a-glance monitoring.
+
+<p align="center">
+  <img src="docs/media/tc001-led-matrix.png" width="720" alt="Ulanzi TC001 LED matrix — 8×32 RGB pixels showing agent state HUD with creature animation, rate limits, and usage gauge">
+</p>
+
+The TC001 is a minimal always-on display — separate from the larger ESP32 touch panels. It connects to the bridge via WiFi WebSocket and displays:
+
+- **Agent state animation** — idle, processing, awaiting option states reflected in creature movement
+- **Rate limit gauges** — visual countdown for token limits and API quotas
+- **Usage HUD** — compact numeric readout (cost, tokens, time)
+- **Multi-agent support** — pixel-based creature sprites for Claude Code, Codex, OpenCode, OpenClaw
+
+Simple desk or shelf mounting; low power consumption via USB. Firmware in `esp32/` with board support for TC001 (8×32 WS2812B addressable RGB LEDs).
+
+---
+
 ## Pixoo64 LED Matrix
 
 64×64 RGB LED pixel art terrarium on a Divoom Pixoo64.
@@ -573,7 +719,7 @@ Manage devices with `agentdeck pixoo {scan|add|list|remove|test}` — see [CLI R
 ```
 AgentDeck/
 ├── shared/        # Shared TypeScript types + SVG renderers (protocol, states, session slots)
-├── bridge/        # Node.js bridge server (PTY, hooks, WS, voice, adapters, D200H HID)
+├── bridge/        # Node.js bridge server (PTY, hooks, WS, voice, adapters, D200H HID, evaluation system)
 ├── plugin/        # Stream Deck SDK v2 plugin (v4 session-slot action, encoders, renderers)
 ├── hooks/         # Claude Code hook installer
 ├── setup/         # npm setup package (@agentdeck/setup)
@@ -733,6 +879,29 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 
 ---
 
+## Next Milestones — Current Focus
+
+AgentDeck is actively working on two critical areas to prepare for production release:
+
+### 1. App Store Distribution (macOS + iOS)
+
+Refining the SwiftUI dashboard for App Store submission. The macOS app ships a full in-process Swift daemon (30 files, ~5500 LOC) — mDNS discovery, device modules (ADB/Serial/Pixoo/D200H HID), Gateway proxy, WebSocket server. Current work: UI/UX refinement, sandbox compatibility for `~/.agentdeck/` user data, USB device entitlements for D200H HID, and Input Monitoring permission handling. TestFlight builds available now for beta testing; App Store submission is the target milestone.
+
+### 2. Personalized Agent Evaluation System (APME)
+
+Building a data-driven answer to "which of my 6+ LLMs should I route this task to?" — replacing gut-feel model selection with measurement on my actual work. All three ingestion paths (Claude Code hooks + PTY, OpenClaw/OpenCode timeline events, Codex PTY parser) converge on a unified `ApmeCollector` → local SQLite. **Category-aware evaluation:**
+- **Coding (coding/refactoring/debugging)** — run-level eval after session ends, deterministic layer (lint/build/test) + LLM judge with category-specific rubrics
+- **Non-coding (conversation/planning/research/review)** — turn-level mid-session eval, fires immediately after each turn completes, no git diff needed
+- **Composite score** — 4-dimensional weighted sum (0.40 outcome + 0.40 judge + 0.15 efficiency + 0.05 vibe) so a single noisy signal can't poison the run
+
+**Judge is local-only** (MLX Qwen3.5-30B primary, OpenClaw Gateway secondary) so `sampleRate: 1.0` is the default — every session evaluated, zero cost. **Auto-tuning** via OPRO loop picks up disagreement between human vibe labels and judge scores, proposes new rubrics, and shadow-scores them before accepting. The **Model Recommender** reads `v_category_scorecard` to suggest the best model per category + budget.
+
+Eval results broadcast to every device simultaneously (Stream Deck/Apple/Android/ESP32/TUI) via the `★ eval_result` timeline entry — pulling labeling into peripheral vision instead of burying it in a dashboard nobody opens.
+
+**Current bottleneck:** not the infrastructure (complete), but accumulating enough vibe-labeled data to unlock Stage 4 auto-tuning.
+
+---
+
 ## Roadmap
 
 ### Achieved
@@ -754,13 +923,17 @@ Stream Deck plugin logs: Stream Deck app → Settings → Logs.
 - [x] Display sleep/wake sync across all surfaces
 - [x] Color E-ink support (Kaleido 3)
 - [x] Creature simulator demo page (GitHub Pages `/demo/`)
+- [x] APME — session dataset, 3-path ingestion (hook/timeline/PTY), 10-category classifier, category-aware evaluation (run-level coding + turn-level non-coding), composite score, local-only judge (MLX + OpenClaw), rubric auto-tuner, model recommender, device-wide eval broadcast
+
+### In Progress
+
+- [ ] App Store distribution (macOS + iOS — sandbox hardening, TestFlight available)
+- [ ] APME vibe-labeling accumulation → Stage 4 OPRO rubric auto-tuner activation (needs ≥30 disagreement samples)
 
 ### Planned
 
-- Windows/Linux platform support
-- Project-specific layout presets
-- Custom button icon support
-- App Store / Play Store distribution
+- [ ] Play Store distribution (Android app)
+- [ ] Stream Deck Marketplace registration (plugin distribution)
 
 ---
 

@@ -518,9 +518,12 @@ export async function startSession(opts: SessionOptions): Promise<void> {
               for (const line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
-                // Stop at UI artifacts
-                if (/^[✢✻⏸❯─]/.test(trimmed)) break;
-                if (/planmode|shift\+tab/i.test(trimmed)) break;
+                // Stop at UI artifacts: spinner chars (✢✳✶✻✽), plan mode (⏸), prompt (❯), separator (─)
+                if (/^[✢✳✶✻✽⏸⏵❯─>]/.test(trimmed)) break;
+                if (/planmode|plan\s*mode|shift\+tab|accept\s*edits/i.test(trimmed)) break;
+                // Status text: "Whirring…", "Finagling…", token count, shortcuts hint
+                if (/^\S+…(\s|$)/.test(trimmed) && /tokens|shortcuts|\d+[ms]\s/i.test(trimmed)) break;
+                if (/\?\s*for\s*shortcuts/.test(trimmed)) break;
                 clean.push(trimmed);
               }
               response = clean.join('\n').trim();
@@ -1218,7 +1221,13 @@ function wireAgentApme(
         setTimeout(() => {
           const tail = ptyRingBuffer.getTail(5000);
           const lines = tail.split('\n').map(l => l.trim()).filter(Boolean);
-          const response = lines.slice(-5).join('\n');
+          // Filter out spinner/UI artifacts from tail (Codex PTY output)
+          const clean = lines.filter(l =>
+            !/^[✢✳✶✻✽⏸⏵❯─>]/.test(l) &&
+            !/planmode|plan\s*mode|shift\+tab|accept\s*edits/i.test(l) &&
+            !/\?\s*for\s*shortcuts/.test(l),
+          );
+          const response = clean.slice(-5).join('\n');
           if (response.length > 2) apme.collector.setTurnResponse(sid, response);
         }, 500);
       }
