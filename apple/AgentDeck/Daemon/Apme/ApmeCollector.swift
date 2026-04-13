@@ -14,6 +14,13 @@ import Foundation
 final class ApmeCollector {
     private let store: ApmeStore
 
+    /// Optional APME runner — the collector fires turn-level evals through it
+    /// after response capture. Set by DaemonServer during init. Left nil when
+    /// Phase 1 wiring isn't complete (e.g. during tests), in which case
+    /// `setTurnResponse` still records the response text but doesn't trigger
+    /// a judge.
+    var runner: ApmeRunner?
+
     /// Maps a hookSessionId → runId. A hookSessionId is generated per
     /// session_start and lives until session_end.
     private var sessionToRun: [String: String] = [:]
@@ -36,6 +43,10 @@ final class ApmeCollector {
         var filesCreated: Int = 0
     }
     private var activeTurn: ActiveTurn?
+    /// Most recently closed turn (one per hookSession) — survives `closeTurn()`
+    /// so late-arriving response text can still land on the right turn.
+    /// Maps runId → turnId.
+    private var lastClosedTurnByRun: [String: String] = [:]
     private var turnCounter = 0
 
     init(store: ApmeStore) {
@@ -197,14 +208,99 @@ final class ApmeCollector {
     // MARK: - Private
 
     private func closeTurn(runId: String) {
-        guard var turn = activeTurn else { return }
+        guard let turn = activeTurn else { return }
         activeTurn = nil
+        lastClosedTurnByRun[runId] = turn.id
         store.updateTurn(id: turn.id, fields: [
             "endedAt": nowMs(),
             "toolCalls": turn.toolCalls,
             "filesModified": turn.filesModified,
             "filesCreated": turn.filesCreated,
         ])
+    }
+
+    // MARK: - Turn response capture (mid-session eval entry point)
+
+    /// Categories where the LLM judge is triggered per-turn (non-code).
+    /// Mirrors the NON_CODE set in bridge/src/apme/index.ts.
+    private static let nonCodeCategories: Set<String> = [
+        "conversation", "planning", "research", "review",
+    ]
+
+    /// Record the agent's response on the active turn (or the most recently
+    /// closed turn if close already fired) and — if this is the first response
+    /// for the run — classify the run inline so a turn_judge eval can fire
+    /// immediately. Mirrors the TS `index.ts` fix from commit e76325f7 and is
+    /// the Swift side of the category-aware pipeline.
+    ///
+    /// Returns the turnId that was updated, or nil if no turn is in scope.
+    @discardableResult
+    func setTurnResponse(_ response: String, runId overrideRunId: String? = nil) -> String? {
+        guard store.isOpen else { return nil }
+        guard !response.isEmpty else { return nil }
+
+        // Resolve target turn.
+        let runId: String?
+        let turnId: String?
+        if let turn = activeTurn {
+            runId = turn.runId
+            turnId = turn.id
+        } else if let rid = overrideRunId, let tid = lastClosedTurnByRun[rid] {
+            runId = rid
+            turnId = tid
+        } else if let hs = activeHookSession, let rid = sessionToRun[hs], let tid = lastClosedTurnByRun[rid] {
+            runId = rid
+            turnId = tid
+        } else {
+            return nil
+        }
+        guard let runId, let turnId else { return nil }
+
+        // Persist response (capped to 10k chars to match TS runner.ts).
+        let clamped = String(response.prefix(10_000))
+        store.updateTurn(id: turnId, fields: ["response": clamped])
+        DaemonLogger.shared.debug("APME", "setTurnResponse turn=\(turnId.prefix(8)) respLen=\(clamped.count)")
+
+        // Mid-session classification: the TS bug this fixes was that the
+        // classifier only ran on closeRun(), so run.taskCategory was nil at
+        // turn-eval time and the turn_judge layer never fired. Inline
+        // rule-based classification closes that race.
+        guard var run = store.getRun(id: runId) else { return turnId }
+        var category = run.taskCategory
+        if category == nil {
+            let result = ApmeClassifier.classifyRun(store: store, runId: runId)
+            let cat = result.category.rawValue
+            if cat != "unknown" {
+                category = cat
+                if let data = try? JSONEncoder().encode(result.signals),
+                   let json = String(data: data, encoding: .utf8) {
+                    store.updateRun(id: runId, fields: [
+                        "taskCategory": cat,
+                        "taskSignals": json,
+                        "taskCategorySource": "rule",
+                    ])
+                } else {
+                    store.updateRun(id: runId, fields: [
+                        "taskCategory": cat,
+                        "taskCategorySource": "rule",
+                    ])
+                }
+                run.taskCategory = cat
+                DaemonLogger.shared.debug("APME", "mid-session classify runId=\(runId.prefix(8)) → \(cat)")
+            }
+        }
+
+        // Stamp turn with category — turn-level analytics aggregation depends on this.
+        if let category {
+            store.updateTurn(id: turnId, fields: ["taskCategory": category])
+        }
+
+        // Fire a category-aware turn_judge for non-code categories.
+        if let category, Self.nonCodeCategories.contains(category) {
+            runner?.enqueueTurn(runId: runId, turnId: turnId, category: category)
+        }
+
+        return turnId
     }
 
     private func recordStep(hookSession: String, runId: String, event: String, data: [String: Any]) {

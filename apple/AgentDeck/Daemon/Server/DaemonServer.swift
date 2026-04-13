@@ -37,6 +37,8 @@ final class DaemonServer {
     // APME
     private var apmeStore: ApmeStore?
     private var apmeCollector: ApmeCollector?
+    private var apmeRunner: ApmeRunner?
+    private var apmeEvalTimerTask: Task<Void, Never>?
 
     // Gateway
     private var gatewayAdapter: OpenClawAdapter?
@@ -177,12 +179,35 @@ final class DaemonServer {
     }
 
     func startServices() async throws {
-        // 0. Initialize APME store + collector
+        // 0. Initialize APME store + collector + runner
         let store = ApmeStore()
         if store.open() {
             apmeStore = store
-            apmeCollector = ApmeCollector(store: store)
-            DaemonLogger.shared.info("APME enabled — data will be logged to \(store.dbPath)")
+            let collector = ApmeCollector(store: store)
+            apmeCollector = collector
+            // Runner wraps the judge pipeline. In Phase 1 the only backend
+            // is Apple Foundation Models (on-device, zero-config). If it's
+            // unavailable (Intel Mac, Apple Intelligence off), turn_judge
+            // evals silently skip — collector still records everything.
+            let runner = ApmeRunner(store: store)
+            apmeRunner = runner
+            collector.runner = runner
+
+            // Register the eval-result broadcaster. Mirrors the TS daemon's
+            // `apme.runner.onResult` handler in bridge/src/daemon-server.ts
+            // (lines 902-974). Persists turn-level outcome/composite, emits
+            // apmeEval WS events, and appends ★ eval_result timeline entries.
+            Task {
+                await runner.onResult { [weak self] result in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        self.handleApmeResult(result)
+                    }
+                }
+            }
+
+            let fmReady = ApmeJudgeFoundationModels.isAvailable
+            DaemonLogger.shared.info("APME enabled — data will be logged to \(store.dbPath); judge=\(fmReady ? "foundationModels ready" : ApmeJudgeFoundationModels.unavailableReason)")
         }
 
         // 1. Setup HTTP routes + Bonjour, then start unified server
@@ -1189,14 +1214,27 @@ final class DaemonServer {
             voiceAssistant.resetResponseTimeout()
         }
 
-        // Voice assistant: PROCESSING→IDLE triggers TTS response
+        // PROCESSING→IDLE edge: agent finished a turn.
+        // (1) Voice assistant TTS — existing behavior.
+        // (2) APME turn-response capture — hands the response text to the
+        //     collector, which persists it on the active turn, inline-classifies
+        //     if needed, and fires a turn_judge eval for non-code categories.
         let wasProcessing = previousDaemonState == .processing
         previousDaemonState = currentState
-        if wasProcessing && currentState == .idle && voiceAssistant.state == .processing {
-            Task {
-                let lastEntry = await timelineStore.getLastEntry(type: "chat_end")
+        if wasProcessing && currentState == .idle {
+            Task { [weak self] in
+                guard let self else { return }
+                let lastEntry = await self.timelineStore.getLastEntry(type: "chat_end")
                 let responseText = (lastEntry?.detail ?? lastEntry?.raw) ?? ""
-                voiceAssistant.handleResponse(responseText.isEmpty ? "완료했습니다." : responseText)
+                await MainActor.run {
+                    // APME: record the response even when voice assistant is inactive
+                    if !responseText.isEmpty {
+                        self.apmeCollector?.setTurnResponse(responseText)
+                    }
+                    if self.voiceAssistant.state == .processing {
+                        self.voiceAssistant.handleResponse(responseText.isEmpty ? "완료했습니다." : responseText)
+                    }
+                }
             }
         }
     }
@@ -1420,6 +1458,18 @@ final class DaemonServer {
                     self.cachedGatewayHasError = hasError
                     self.broadcastStateUpdate()
                 }
+            }
+        }
+
+        // APME eval loop — 30s, mirrors bridge/src/daemon-server.ts:951-990
+        // Picks up runs that closed without eval, computes outcome on closed
+        // runs, classifies stragglers, and backfills turn outcomes for
+        // code-category turns that never go through turn_judge.
+        apmeEvalTimerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard let self else { break }
+                await self.apmeEvalTick()
             }
         }
 
@@ -1654,6 +1704,18 @@ final class DaemonServer {
         if let data = event.jsonData {
             Task { await wsServer.broadcastRaw(data) }
         }
+    }
+
+    /// In-process accessor for D200H module status. Same-process callers
+    /// (e.g. `DaemonService` health monitor) must use this instead of HTTP
+    /// self-probing `/health` — routing a loopback query through
+    /// `URLSession.shared` creates a negative-feedback loop under connection
+    /// pool contention (see memory: `bug_daemon_self_http_probe.md`).
+    /// Returns the same dict that `/health` → `modules.d200h` would return,
+    /// or `nil` if the D200H module isn't initialized.
+    @MainActor
+    func d200hStatusSnapshot() -> [String: Any]? {
+        return d200hModule?.statusSnapshot()
     }
 
     @MainActor
@@ -2021,6 +2083,204 @@ final class DaemonServer {
         if let navigable = s.navigable, navigable { d["navigable"] = true }
         if let sa = s.startedAt { d["startedAt"] = sa }
         return d
+    }
+
+    // MARK: - APME eval result handling
+
+    /// Called on the main actor when ApmeRunner finishes an eval job.
+    /// Mirrors bridge/src/daemon-server.ts lines 902-974 — persists turn-level
+    /// outcome/composite, broadcasts an `apme_eval` WS event, and appends a
+    /// `★ eval_result` timeline entry so every viewer target surfaces the score.
+    @MainActor
+    private func handleApmeResult(_ result: ApmeEvalJobResult) {
+        guard let store = apmeStore else { return }
+
+        // Turn-level branch
+        if let turnId = result.turnId {
+            guard let run = store.getRun(id: result.runId) else { return }
+            let turnEvals = store.listEvalsForTurn(turnId)
+            guard let overall = turnEvals.first(where: { $0.metric == "overall" }) else { return }
+
+            // Persist turn outcome + composite so category scorecards aggregate.
+            store.updateTurn(id: turnId, fields: [
+                "outcome": "committed",
+                "compositeScore": overall.score,
+            ])
+
+            let pct = Int((overall.score * 100).rounded())
+            let category = run.taskCategory ?? "?"
+
+            // WS broadcast — turn eval
+            broadcastApmeEval(
+                run: run,
+                evals: turnEvals,
+                overallScore: overall.score,
+                outcome: "committed",
+                compositeScore: overall.score
+            )
+
+            // Timeline entry (★ eval_result) — rendered by every viewer target
+            appendEvalResultTimeline(
+                raw: "★ turn \(pct)% [\(category)]",
+                detail: "Turn eval · \((run.taskPrompt ?? "").prefix(80))",
+                agentType: run.agentType
+            )
+            return
+        }
+
+        // Run-level branch
+        guard let run = store.getRun(id: result.runId) else { return }
+        let evals = store.listEvalsForRun(result.runId)
+        let overall = evals.first(where: { $0.layer == "llm_judge" && $0.metric == "overall" })?.score
+            ?? result.overall
+
+        broadcastApmeEval(
+            run: run,
+            evals: evals,
+            overallScore: overall,
+            outcome: run.outcome,
+            compositeScore: run.compositeScore
+        )
+
+        let pctValue = overall ?? run.compositeScore ?? 0
+        let pct = Int((pctValue * 100).rounded())
+        let category = run.taskCategory ?? "?"
+        let outcome = run.outcome ?? "pending"
+        appendEvalResultTimeline(
+            raw: "★ [\(category)] \(pct)% · \(outcome)",
+            detail: "\(run.projectName ?? "") · \((run.taskPrompt ?? "").prefix(100))",
+            agentType: run.agentType
+        )
+    }
+
+    /// Build + broadcast an `apme_eval` WebSocket event. Matches the JSON
+    /// shape of `ADApmeRunSummary` (codegen'd from shared protocol.ts) so
+    /// every viewer target — Android, Stream Deck+, ESP32, iOS, TUI — decodes
+    /// it with the same struct.
+    @MainActor
+    private func broadcastApmeEval(
+        run: ApmeRun,
+        evals: [ApmeEval],
+        overallScore: Double?,
+        outcome: String?,
+        compositeScore: Double?
+    ) {
+        var runDict: [String: Any] = [
+            "runId": run.id,
+            "sessionId": run.sessionId,
+            "agentType": run.agentType,
+            "startedAt": run.startedAt,
+            "evals": evals.map { e -> [String: Any] in
+                var d: [String: Any] = [
+                    "layer": e.layer,
+                    "metric": e.metric,
+                    "score": e.score,
+                    "createdAt": e.createdAt,
+                ]
+                if let jm = e.judgeModel { d["judgeModel"] = jm }
+                return d
+            },
+        ]
+        if let v = run.modelId { runDict["modelId"] = v }
+        if let v = run.projectName { runDict["projectName"] = v }
+        if let v = run.taskPrompt { runDict["taskPrompt"] = v }
+        if let v = run.taskCategory { runDict["taskCategory"] = v }
+        if let v = outcome { runDict["outcome"] = v }
+        if let v = compositeScore { runDict["compositeScore"] = v }
+        if let v = overallScore { runDict["overallScore"] = v }
+        if let v = run.endedAt { runDict["endedAt"] = v }
+        if let v = run.inputTokens { runDict["inputTokens"] = v }
+        if let v = run.outputTokens { runDict["outputTokens"] = v }
+        if let v = run.costUsd { runDict["costUsd"] = v }
+        if let v = run.exitCode { runDict["exitCode"] = v }
+
+        let event: [String: Any] = [
+            "type": "apme_eval",
+            "run": runDict,
+        ]
+        broadcastRaw(event)
+    }
+
+    /// Append an `eval_result` entry to the daemon timeline. Uses the
+    /// existing TimelineStore so downstream viewers pick it up through the
+    /// same channel that renders every other timeline entry.
+    @MainActor
+    private func appendEvalResultTimeline(raw: String, detail: String, agentType: String) {
+        let entry = DaemonTimelineEntry(
+            ts: Date().timeIntervalSince1970 * 1000,
+            type: "eval_result",
+            raw: raw,
+            detail: detail,
+            approvalId: nil,
+            status: nil,
+            agentType: agentType,
+            repeatCount: nil,
+            automated: nil
+        )
+        Task { await timelineStore.add(entry) }
+    }
+
+    // MARK: - APME eval tick (30s loop)
+
+    /// Runs once every 30s. Mirrors bridge/src/daemon-server.ts:951-990.
+    @MainActor
+    private func apmeEvalTick() async {
+        guard let store = apmeStore, let runner = apmeRunner else { return }
+
+        // 1. Enqueue unevaluated runs (run-level layer-2 judge).
+        let pending = store.listUnevaluatedRuns(limit: 5)
+        for p in pending {
+            runner.enqueue(runId: p.id)
+        }
+
+        // 2. Outcome detection on closed runs that don't have an outcome yet.
+        //    Wait at least 10s after close so A/B + iteration windows resolve.
+        let closedRuns = store.listRuns(limit: 20)
+        let now = Int(Date().timeIntervalSince1970 * 1000)
+        for r in closedRuns {
+            guard let ended = r.endedAt, r.outcome == nil else { continue }
+            if now - ended > 10_000 {
+                ApmeOutcomeEngine.evaluateOutcome(store: store, runId: r.id)
+            }
+        }
+
+        // 3. Re-classify runs the session bridge didn't finish classifying
+        //    (rule-based only in Phase 1 — no LLM fallback).
+        let unclassified = store.listUnclassifiedRuns(limit: 5)
+        for r in unclassified {
+            let result = ApmeClassifier.classifyRun(store: store, runId: r.id)
+            if result.category != .unknown {
+                if let data = try? JSONEncoder().encode(result.signals),
+                   let json = String(data: data, encoding: .utf8) {
+                    store.updateRun(id: r.id, fields: [
+                        "taskSignals": json,
+                        "taskCategory": result.category.rawValue,
+                        "taskCategorySource": "rule",
+                    ])
+                }
+            }
+        }
+
+        // 4. Backfill turn outcome for code-category turns that never went
+        //    through turn_judge. Keeps v_category_scorecard populated even
+        //    when no judge ran on the turn.
+        let needOutcome = store.listTurnsNeedingOutcome(limit: 20)
+        for t in needOutcome {
+            let evs = store.listEvalsForTurn(t.id)
+            let overall = evs.first(where: { $0.layer == "turn_judge" && $0.metric == "overall" })
+            var fields: [String: Any?] = ["outcome": "committed"]
+            if let o = overall { fields["compositeScore"] = o.score }
+            store.updateTurn(id: t.id, fields: fields)
+        }
+
+        // 5. Clean up orphaned runs — started long ago, never closed.
+        let orphans = store.listOrphanedRuns(staleSec: 1800)
+        for id in orphans {
+            store.updateRun(id: id, fields: [
+                "endedAt": now,
+                "taskCategory": "_empty",
+            ])
+        }
     }
 }
 

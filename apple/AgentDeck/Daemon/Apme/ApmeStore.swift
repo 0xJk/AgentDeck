@@ -30,6 +30,11 @@ final class ApmeStore: @unchecked Sendable {
         db = handle
         exec("PRAGMA journal_mode = WAL")
         exec("PRAGMA foreign_keys = ON")
+        // Dual-writer safety: Node.js bridge (better-sqlite3) and this Swift daemon
+        // may both open the same ~/.agentdeck/apme.sqlite. Both honor the native
+        // SQLite lock protocol under WAL; busy_timeout prevents "database is locked"
+        // errors when writes overlap. Matches bridge/src/apme/store.ts contract.
+        exec("PRAGMA busy_timeout = 5000")
         exec(Self.ddl)
         migrateSchema()
         seedDefaultRubric()
@@ -162,6 +167,75 @@ final class ApmeStore: @unchecked Sendable {
         return result
     }
 
+    /// Runs that have ended but have no category — candidates for daemon re-classification.
+    func listUnclassifiedRuns(limit: Int = 5) -> [(id: String, projectPath: String?)] {
+        guard let db else { return [] }
+        let sql = """
+        SELECT r.id, r.project_path FROM runs r
+        WHERE r.ended_at IS NOT NULL AND r.task_category IS NULL
+        ORDER BY r.ended_at DESC LIMIT ?
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, Int32(limit))
+        var result: [(String, String?)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let id = String(cString: sqlite3_column_text(stmt, 0))
+            let path = sqlite3_column_type(stmt, 1) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 1))
+            result.append((id, path))
+        }
+        return result
+    }
+
+    /// Orphaned runs: started long ago, never closed, no turns.
+    /// Typically from session bridges that crashed without cleanup.
+    func listOrphanedRuns(staleSec: Int = 1800) -> [String] {
+        guard let db else { return [] }
+        let cutoff = Int(Date().timeIntervalSince1970 * 1000) - staleSec * 1000
+        let sql = """
+        SELECT r.id FROM runs r
+        WHERE r.ended_at IS NULL
+          AND r.started_at < ?
+          AND r.task_prompt IS NULL
+          AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.run_id = r.id)
+        LIMIT 20
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(cutoff))
+        var result: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(String(cString: sqlite3_column_text(stmt, 0)))
+        }
+        return result
+    }
+
+    /// Turns with response captured but no outcome yet — backfill candidates.
+    /// Mirrors bridge/src/apme/store.ts listTurnsNeedingOutcome (commit e76325f7).
+    func listTurnsNeedingOutcome(limit: Int = 20) -> [(id: String, runId: String)] {
+        guard let db else { return [] }
+        let sql = """
+        SELECT id, run_id FROM turns
+        WHERE response IS NOT NULL AND response != ''
+          AND outcome IS NULL
+        ORDER BY started_at DESC LIMIT ?
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, Int32(limit))
+        var result: [(String, String)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append((
+                String(cString: sqlite3_column_text(stmt, 0)),
+                String(cString: sqlite3_column_text(stmt, 1))
+            ))
+        }
+        return result
+    }
+
     // MARK: - Turns
 
     func insertTurn(id: String, runId: String, turnIndex: Int, prompt: String?, startedAt: Int) {
@@ -180,15 +254,14 @@ final class ApmeStore: @unchecked Sendable {
     }
 
     func updateTurn(id: String, fields: [String: Any?]) {
-        updateRun(id: id, fields: fields)
-        // Reuse the same generic update logic — column names match
-        // Actually turns table has different column names. Do a direct update.
         guard let db, !fields.isEmpty else { return }
         let colMap: [String: String] = [
             "endedAt": "ended_at", "toolCalls": "tool_calls",
             "filesModified": "files_modified", "filesCreated": "files_created",
             "gitAfter": "git_after", "taskCategory": "task_category",
             "outcome": "outcome", "compositeScore": "composite_score",
+            "efficiencyJson": "efficiency_json",
+            "prompt": "prompt", "response": "response",
         ]
         var sets: [String] = []
         var vals: [Any?] = []
@@ -217,6 +290,16 @@ final class ApmeStore: @unchecked Sendable {
 
     func listTurns(runId: String) -> [[String: Any]] {
         return query("SELECT * FROM turns WHERE run_id = '\(runId.replacingOccurrences(of: "'", with: "''"))' ORDER BY turn_index ASC")
+    }
+
+    func getTurn(id: String) -> [String: Any]? {
+        guard let db else { return nil }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT * FROM turns WHERE id = ?", -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, id)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return rowToDict(stmt)
     }
 
     // MARK: - Steps
@@ -278,11 +361,61 @@ final class ApmeStore: @unchecked Sendable {
         sqlite3_step(stmt)
     }
 
-    func listEvalsForRun(_ runId: String) -> [ApmeEval] {
+    /// Insert an eval row associated with both a run and a turn (turn_judge layer).
+    /// Mirrors bridge/src/apme/store.ts insertEvalForTurn.
+    func insertEvalForTurn(_ eval: ApmeEval, turnId: String) {
+        guard let db else { return }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "INSERT INTO evals (run_id, turn_id, layer, metric, score, raw, rubric_ver, judge_model, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            -1, &stmt, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, eval.runId)
+        bindText(stmt, 2, turnId)
+        bindText(stmt, 3, eval.layer)
+        bindText(stmt, 4, eval.metric)
+        sqlite3_bind_double(stmt, 5, eval.score)
+        bindTextOrNull(stmt, 6, eval.raw)
+        if let v = eval.rubricVer { sqlite3_bind_int(stmt, 7, Int32(v)) } else { sqlite3_bind_null(stmt, 7) }
+        bindTextOrNull(stmt, 8, eval.judgeModel)
+        sqlite3_bind_int64(stmt, 9, Int64(eval.createdAt))
+        sqlite3_step(stmt)
+    }
+
+    func listEvalsForTurn(_ turnId: String) -> [ApmeEval] {
         guard let db else { return [] }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
-            "SELECT * FROM evals WHERE run_id = ? ORDER BY created_at ASC",
+            "SELECT id, run_id, layer, metric, score, raw, rubric_ver, judge_model, created_at FROM evals WHERE turn_id = ? ORDER BY created_at ASC",
+            -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, turnId)
+        var result: [ApmeEval] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(ApmeEval(
+                id: Int(sqlite3_column_int(stmt, 0)),
+                runId: String(cString: sqlite3_column_text(stmt, 1)),
+                layer: String(cString: sqlite3_column_text(stmt, 2)),
+                metric: String(cString: sqlite3_column_text(stmt, 3)),
+                score: sqlite3_column_double(stmt, 4),
+                raw: sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 5)),
+                rubricVer: sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 6)),
+                judgeModel: sqlite3_column_type(stmt, 7) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 7)),
+                createdAt: Int(sqlite3_column_int64(stmt, 8))
+            ))
+        }
+        return result
+    }
+
+    func listEvalsForRun(_ runId: String) -> [ApmeEval] {
+        guard let db else { return [] }
+        var stmt: OpaquePointer?
+        // Explicit column list — evals schema now includes turn_id. SELECT *
+        // returns columns in table-creation order, which differs between freshly
+        // DDL'd databases (turn_id at col 2) and migrated databases (turn_id appended
+        // at the end). Using an explicit list makes reads position-stable.
+        guard sqlite3_prepare_v2(db,
+            "SELECT id, run_id, layer, metric, score, raw, rubric_ver, judge_model, created_at FROM evals WHERE run_id = ? ORDER BY created_at ASC",
             -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
         bindText(stmt, 1, runId)
@@ -319,6 +452,24 @@ final class ApmeStore: @unchecked Sendable {
         sqlite3_step(stmt)
     }
 
+    /// Most recent vibe verdict for a run, or nil if none.
+    /// Mirrors bridge/src/apme/store.ts latestVibeForRun (used by computeComposite).
+    func latestVibeForRun(_ runId: String) -> (verdict: String, note: String?, ts: Int)? {
+        guard let db else { return nil }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "SELECT verdict, note, ts FROM vibe_feedback WHERE run_id = ? ORDER BY ts DESC LIMIT 1",
+            -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, runId)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return (
+            String(cString: sqlite3_column_text(stmt, 0)),
+            sqlite3_column_type(stmt, 1) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 1)),
+            Int(sqlite3_column_int64(stmt, 2))
+        )
+    }
+
     // MARK: - Scorecard
 
     func scorecard() -> [[String: Any]] {
@@ -331,13 +482,18 @@ final class ApmeStore: @unchecked Sendable {
 
     // MARK: - Rubric
 
-    func getCurrentRubric() -> [String: Any]? {
+    /// Fetch the most recent rubric for a given purpose.
+    /// When `purpose` is a category name (e.g. "conversation", "research"), this
+    /// returns that category's rubric with its domain-specific axes. Callers
+    /// should fall back to `getCurrentRubric(purpose: "general")` if nil.
+    func getCurrentRubric(purpose: String = "general") -> [String: Any]? {
         guard let db else { return nil }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db,
-            "SELECT * FROM rubrics WHERE purpose = 'general' ORDER BY version DESC LIMIT 1",
+            "SELECT * FROM rubrics WHERE purpose = ? ORDER BY version DESC LIMIT 1",
             -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, purpose)
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
         return rowToDict(stmt)
     }
@@ -350,27 +506,221 @@ final class ApmeStore: @unchecked Sendable {
     }
 
     private func migrateSchema() {
-        guard let db else { return }
-        let cols = query("PRAGMA table_info(runs)").compactMap { $0["name"] as? String }
-        let migrations: [(String, String)] = [
-            ("task_signals", "ALTER TABLE runs ADD COLUMN task_signals TEXT"),
-            ("task_category", "ALTER TABLE runs ADD COLUMN task_category TEXT"),
+        guard db != nil else { return }
+        // runs table
+        let runsCols = query("PRAGMA table_info(runs)").compactMap { $0["name"] as? String }
+        let runsMigrations: [(String, String)] = [
+            ("task_signals",         "ALTER TABLE runs ADD COLUMN task_signals TEXT"),
+            ("task_category",        "ALTER TABLE runs ADD COLUMN task_category TEXT"),
             ("task_category_source", "ALTER TABLE runs ADD COLUMN task_category_source TEXT DEFAULT 'auto'"),
+            ("outcome",              "ALTER TABLE runs ADD COLUMN outcome TEXT"),
+            ("outcome_confidence",   "ALTER TABLE runs ADD COLUMN outcome_confidence TEXT"),
+            ("efficiency_json",      "ALTER TABLE runs ADD COLUMN efficiency_json TEXT"),
+            ("composite_score",      "ALTER TABLE runs ADD COLUMN composite_score REAL"),
         ]
-        for (col, sql) in migrations where !cols.contains(col) {
-            exec(sql)
+        for (col, sql) in runsMigrations where !runsCols.contains(col) { exec(sql) }
+
+        // turns table — schema added turn-level category/outcome/composite in commit e76325f7
+        let turnsCols = query("PRAGMA table_info(turns)").compactMap { $0["name"] as? String }
+        let turnsMigrations: [(String, String)] = [
+            ("response",        "ALTER TABLE turns ADD COLUMN response TEXT"),
+            ("task_category",   "ALTER TABLE turns ADD COLUMN task_category TEXT"),
+            ("outcome",         "ALTER TABLE turns ADD COLUMN outcome TEXT"),
+            ("composite_score", "ALTER TABLE turns ADD COLUMN composite_score REAL"),
+            ("efficiency_json", "ALTER TABLE turns ADD COLUMN efficiency_json TEXT"),
+        ]
+        for (col, sql) in turnsMigrations where !turnsCols.contains(col) { exec(sql) }
+
+        // evals table — turn_id FK for turn_judge rows
+        let evalsCols = query("PRAGMA table_info(evals)").compactMap { $0["name"] as? String }
+        if !evalsCols.contains("turn_id") {
+            exec("ALTER TABLE evals ADD COLUMN turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE")
         }
     }
 
     private func seedDefaultRubric() {
         guard let db else { return }
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM rubrics", -1, &stmt, nil) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_int(stmt, 0) == 0 else { return }
-        let prompt = "You are a strict but fair senior engineer judging the output of an AI coding agent.\n\nGiven the task prompt, the git diff produced, the deterministic test results, and\na sample of the agent''s tool calls, score the run on the following axes. Each score\nis a float in [0,1] where 0=failure and 1=excellent. Be concise in reasoning.\n\nAxes:\n- intent: Did the final output actually address what the user asked for?\n- correctness: Is the code correct given its claimed purpose?\n- style: Does it match the codebase''s conventions (naming, structure, imports)?\n- convention: Does it avoid footguns (no dead code, no debug prints, no unrelated churn)?\n- overall: Your holistic judgment weighted by the above.\n\nReturn strict JSON: {\"intent\":N,\"correctness\":N,\"style\":N,\"convention\":N,\"overall\":N,\"reasoning\":\"...\"}."
+        // Mirrors bridge/src/apme/store.ts CATEGORY_RUBRICS — idempotent:
+        // seeds any rubric whose `purpose` doesn't already exist. This lets
+        // the Swift daemon and Node bridge coexist on the same sqlite without
+        // colliding and ensures category-aware turn_judge has the right axes.
         let now = Int(Date().timeIntervalSince1970 * 1000)
-        exec("INSERT INTO rubrics (version, purpose, prompt, weights, created_at, notes) VALUES (1, 'general', '\(prompt)', '{\"intent\":0.35,\"correctness\":0.3,\"style\":0.15,\"convention\":0.2}', \(now), 'seeded default')")
+
+        func existsRubric(_ purpose: String) -> Bool {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM rubrics WHERE purpose = ?", -1, &stmt, nil) == SQLITE_OK else { return false }
+            sqlite3_bind_text(stmt, 1, (purpose as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0
+        }
+
+        func insertRubric(version: Int?, purpose: String, prompt: String, weights: String, notes: String) {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            if let v = version {
+                guard sqlite3_prepare_v2(db,
+                    "INSERT INTO rubrics (version, purpose, prompt, weights, created_at, parent_ver, notes) VALUES (?,?,?,?,?,NULL,?)",
+                    -1, &stmt, nil) == SQLITE_OK else { return }
+                sqlite3_bind_int(stmt, 1, Int32(v))
+                sqlite3_bind_text(stmt, 2, (purpose as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                sqlite3_bind_text(stmt, 3, (prompt as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                sqlite3_bind_text(stmt, 4, (weights as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                sqlite3_bind_int64(stmt, 5, Int64(now))
+                sqlite3_bind_text(stmt, 6, (notes as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            } else {
+                guard sqlite3_prepare_v2(db,
+                    "INSERT INTO rubrics (purpose, prompt, weights, created_at, parent_ver, notes) VALUES (?,?,?,?,NULL,?)",
+                    -1, &stmt, nil) == SQLITE_OK else { return }
+                sqlite3_bind_text(stmt, 1, (purpose as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                sqlite3_bind_text(stmt, 2, (prompt as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                sqlite3_bind_text(stmt, 3, (weights as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                sqlite3_bind_int64(stmt, 4, Int64(now))
+                sqlite3_bind_text(stmt, 5, (notes as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+            sqlite3_step(stmt)
+        }
+
+        // 1. General rubric (v1) — seeded only if no 'general' rubric exists.
+        if !existsRubric("general") {
+            insertRubric(
+                version: 1,
+                purpose: "general",
+                prompt: """
+                You are a senior engineer evaluating whether an AI coding agent completed the user's task.
+
+                Given the task prompt and the git diff produced, evaluate the agent's contribution.
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - task_completion: Did the agent actually do what the user asked? A perfect score means the task prompt's request was fully addressed in the diff. A zero means nothing relevant was done.
+                - code_quality: Is the code correct, safe, and maintainable? Check for bugs, missing error handling, security issues, and dead code.
+                - efficiency: Did the agent make minimal, focused changes? Penalize unrelated modifications, unnecessary refactoring, or verbose solutions to simple problems.
+                - overall: Your holistic judgment. Weight task_completion most heavily — a session that completes the task with decent quality is better than a perfect-style session that misses the point.
+
+                Important: Explain your reasoning with specific references to what was done and what was missed. List concrete items with checkmarks (done) and crosses (missed). This reasoning will be shown to the user for verification.
+
+                Return strict JSON: {"task_completion":N,"code_quality":N,"efficiency":N,"overall":N,"reasoning":"...", "done":["item1","item2"], "missed":["item1"]}.
+                """,
+                weights: #"{"task_completion":0.5,"code_quality":0.3,"efficiency":0.2}"#,
+                notes: "seeded default"
+            )
+        }
+
+        // 2. Category-specific rubrics — each matches TS store.ts CATEGORY_RUBRICS.
+        struct CategoryRubric { let purpose: String; let prompt: String; let weights: String; let notes: String }
+        let categoryRubrics: [CategoryRubric] = [
+            CategoryRubric(purpose: "conversation", prompt: """
+                You are evaluating an AI assistant's response to a conversational query or question.
+                The user asked a question and the agent responded. Evaluate the quality of the response.
+
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - accuracy: Is the answer factually correct? For math/logic questions, is the result right?
+                - helpfulness: Does the response address what the user actually wanted? Is it complete?
+                - conciseness: Is the response appropriately sized? Not too verbose, not too terse.
+                - overall: Holistic judgment. An accurate, helpful response scores high even if brief.
+
+                Return strict JSON: {"accuracy":N,"helpfulness":N,"conciseness":N,"overall":N,"reasoning":"...", "done":["item1"], "missed":["item1"]}.
+                """,
+                weights: #"{"accuracy":0.5,"helpfulness":0.3,"conciseness":0.2}"#,
+                notes: "conversation/Q&A evaluation"),
+            CategoryRubric(purpose: "planning", prompt: """
+                You are evaluating an AI agent's planning session. The user asked the agent to plan an approach for a task.
+
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - completeness: Does the plan cover all aspects of the request? Are edge cases considered?
+                - feasibility: Is the plan technically sound and implementable? Are the proposed steps realistic?
+                - clarity: Is the plan well-structured, easy to follow, with clear priorities?
+                - overall: Holistic judgment. A thorough, actionable plan scores high.
+
+                Return strict JSON: {"completeness":N,"feasibility":N,"clarity":N,"overall":N,"reasoning":"...", "done":["item1"], "missed":["item1"]}.
+                """,
+                weights: #"{"completeness":0.4,"feasibility":0.35,"clarity":0.25}"#,
+                notes: "planning/architecture evaluation"),
+            CategoryRubric(purpose: "research", prompt: """
+                You are evaluating an AI agent's research session. The user asked the agent to investigate, search, or gather information.
+
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - thoroughness: Did the agent search broadly enough? Were relevant files, docs, or sources explored?
+                - relevance: Is the information found actually relevant to the user's question?
+                - synthesis: Did the agent synthesize findings into a clear answer or summary?
+                - overall: Holistic judgment. Research that finds the right answer efficiently scores high.
+
+                Return strict JSON: {"thoroughness":N,"relevance":N,"synthesis":N,"overall":N,"reasoning":"...", "done":["item1"], "missed":["item1"]}.
+                """,
+                weights: #"{"thoroughness":0.3,"relevance":0.4,"synthesis":0.3}"#,
+                notes: "research/investigation evaluation"),
+            CategoryRubric(purpose: "debugging", prompt: """
+                You are evaluating an AI agent's debugging session. The user reported a bug and the agent investigated and attempted to fix it.
+
+                Given the task prompt and the git diff produced, evaluate the debugging effort.
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - diagnosis: Did the agent correctly identify the root cause? Not just symptoms but the actual bug?
+                - fix_quality: Is the fix correct, minimal, and safe? Does it avoid introducing new bugs?
+                - verification: Did the agent verify the fix (run tests, check edge cases)?
+                - overall: Holistic judgment. A correct diagnosis + clean fix scores high.
+
+                Return strict JSON: {"diagnosis":N,"fix_quality":N,"verification":N,"overall":N,"reasoning":"...", "done":["item1"], "missed":["item1"]}.
+                """,
+                weights: #"{"diagnosis":0.35,"fix_quality":0.4,"verification":0.25}"#,
+                notes: "debugging evaluation"),
+            CategoryRubric(purpose: "refactoring", prompt: """
+                You are evaluating an AI agent's refactoring session. The user asked the agent to restructure or improve existing code.
+
+                Given the task prompt and the git diff produced, evaluate the refactoring.
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - safety: Does the refactoring preserve existing behavior? No regressions introduced?
+                - improvement: Is the resulting code genuinely better? Cleaner, more maintainable, less duplication?
+                - scope: Was the refactoring appropriately scoped? Not too aggressive, not too timid?
+                - overall: Holistic judgment. Safe refactoring that clearly improves the code scores high.
+
+                Return strict JSON: {"safety":N,"improvement":N,"scope":N,"overall":N,"reasoning":"...", "done":["item1"], "missed":["item1"]}.
+                """,
+                weights: #"{"safety":0.4,"improvement":0.35,"scope":0.25}"#,
+                notes: "refactoring evaluation"),
+            CategoryRubric(purpose: "review", prompt: """
+                You are evaluating an AI agent's code review session. The user asked the agent to review code for issues.
+
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - coverage: Did the review examine all relevant areas? Were critical paths checked?
+                - insight: Did the review catch real issues (not just style nits)? Were suggestions actionable?
+                - accuracy: Are the identified issues real problems? Low false positive rate?
+                - overall: Holistic judgment. A review that catches important bugs/issues scores high.
+
+                Return strict JSON: {"coverage":N,"insight":N,"accuracy":N,"overall":N,"reasoning":"...", "done":["item1"], "missed":["item1"]}.
+                """,
+                weights: #"{"coverage":0.3,"insight":0.4,"accuracy":0.3}"#,
+                notes: "code review evaluation"),
+            CategoryRubric(purpose: "ops", prompt: """
+                You are evaluating an AI agent's ops/DevOps session. The user asked the agent to perform operational tasks (git, CI/CD, deployment, configuration).
+
+                Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+                Axes:
+                - correctness: Did the operations complete successfully? Were commands appropriate?
+                - safety: Were destructive operations handled carefully? Were backups/confirmations used?
+                - completeness: Were all requested steps performed? Nothing left half-done?
+                - overall: Holistic judgment. Correct, safe ops that complete the task score high.
+
+                Return strict JSON: {"correctness":N,"safety":N,"completeness":N,"overall":N,"reasoning":"...", "done":["item1"], "missed":["item1"]}.
+                """,
+                weights: #"{"correctness":0.4,"safety":0.35,"completeness":0.25}"#,
+                notes: "ops/DevOps evaluation"),
+        ]
+        for r in categoryRubrics where !existsRubric(r.purpose) {
+            insertRubric(version: nil, purpose: r.purpose, prompt: r.prompt, weights: r.weights, notes: r.notes)
+        }
     }
 
     private func query(_ sql: String) -> [[String: Any]] {
@@ -446,7 +796,8 @@ final class ApmeStore: @unchecked Sendable {
       started_at INTEGER NOT NULL, ended_at INTEGER,
       input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL,
       exit_code INTEGER, git_before TEXT, git_after TEXT, hw_profile TEXT,
-      task_signals TEXT, task_category TEXT, task_category_source TEXT DEFAULT 'auto'
+      task_signals TEXT, task_category TEXT, task_category_source TEXT DEFAULT 'auto',
+      outcome TEXT, outcome_confidence TEXT, efficiency_json TEXT, composite_score REAL
     );
     CREATE TABLE IF NOT EXISTS steps (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -470,6 +821,7 @@ final class ApmeStore: @unchecked Sendable {
     CREATE TABLE IF NOT EXISTS evals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE,
       layer TEXT NOT NULL, metric TEXT NOT NULL, score REAL,
       raw TEXT, rubric_ver INTEGER, judge_model TEXT, created_at INTEGER NOT NULL
     );

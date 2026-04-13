@@ -98,6 +98,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: bound.serendipity.agentdeck.dashboard.tests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/AgentDeck.app/Contents/MacOS/AgentDeck"
         BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   AgentDeck_iOS:
