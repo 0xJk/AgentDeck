@@ -38,7 +38,7 @@ struct ControlTowerPanel: View {
             Divider().overlay(Color.gray.opacity(0.3))
             footerSection
         }
-        .frame(width: 340, height: 450)
+        .frame(width: 340, height: 560)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -229,7 +229,7 @@ struct ControlTowerPanel: View {
             }
             Spacer()
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
         .contentShape(Rectangle())
         .onTapGesture {
             stateHolder.sendCommand(.focusSession(sessionId: session.id))
@@ -237,31 +237,37 @@ struct ControlTowerPanel: View {
         }
     }
 
-    // MARK: - Session Icon (Creature SF Symbol)
+    // MARK: - Session Icon (Creature asset in brand color + state dot)
 
     private func sessionIcon(_ session: SessionInfo) -> some View {
         let state = sessionState(session)
-        let color: Color = switch state {
+        return ZStack(alignment: .topTrailing) {
+            SessionCreatureIcon(
+                agentType: session.agentType,
+                tint: SessionBrand.color(for: session.agentType),
+                size: 22
+            )
+            .opacity(state == .disconnected ? 0.35 : 1.0)
+            // Small state dot anchored to the creature so both brand and
+            // state are visible at a glance.
+            Circle()
+                .fill(stateColor(state))
+                .frame(width: 6, height: 6)
+                .overlay(
+                    Circle()
+                        .stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1)
+                )
+                .offset(x: 2, y: -2)
+        }
+        .frame(width: 24, height: 24)
+    }
+
+    private func stateColor(_ state: AgentConnectionState) -> Color {
+        switch state {
         case .processing: .cyan
         case .awaitingPermission, .awaitingOption, .awaitingDiff: .orange
         case .idle: .green
         case .disconnected: .gray
-        }
-        let symbol = agentTypeSymbol(session.agentType)
-        return Image(systemName: symbol)
-            .font(.system(size: 10))
-            .foregroundStyle(color)
-            .frame(width: 14, height: 14)
-    }
-
-    private func agentTypeSymbol(_ type: String?) -> String {
-        switch type {
-        case "claude-code": return "water.waves"
-        case "openclaw": return "ladybug.fill"
-        case "codex-cli": return "cloud.fill"
-        case "opencode": return "terminal.fill"
-        case "daemon": return "server.rack"
-        default: return "circle.fill"
         }
     }
 
@@ -469,7 +475,7 @@ struct ControlTowerPanel: View {
                         .font(.system(size: 10))
                     if let until = sub.until {
                         Spacer()
-                        Text(until)
+                        Text(formatSubscriptionDate(until))
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
@@ -482,19 +488,83 @@ struct ControlTowerPanel: View {
 
     private var devicesSection: some View {
         SectionContainer(title: "DEVICES", titleColor: .secondary) {
-            HStack(spacing: 4) {
-                Image(systemName: "display")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                Text("Coming soon")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if daemonService.connectedClients > 0 {
-                    Text("\(daemonService.connectedClients) client\(daemonService.connectedClients == 1 ? "" : "s")")
-                        .font(.system(size: 10))
+            let entries = daemonService.deviceSummary.allEntries
+            if entries.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "cable.connector.slash")
+                        .font(.system(size: 9))
                         .foregroundStyle(.secondary)
+                    Text("No devices connected")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if daemonService.connectedClients > 0 {
+                        Text("\(daemonService.connectedClients) client\(daemonService.connectedClients == 1 ? "" : "s")")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
                 }
+            } else {
+                ForEach(entries) { entry in
+                    deviceRow(entry)
+                }
+                if daemonService.connectedClients > 0 {
+                    HStack {
+                        Spacer()
+                        Text("\(daemonService.connectedClients) dashboard client\(daemonService.connectedClients == 1 ? "" : "s")")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func deviceRow(_ entry: DeviceEntry) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: entry.kind.symbolName)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .frame(width: 14, height: 14)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(entry.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                if let subtitle = entry.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 4)
+            statusDot(entry.status)
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func statusDot(_ status: DeviceStatus) -> some View {
+        let color: Color = switch status {
+        case .connected:    .green
+        case .reconnecting: .orange
+        case .idle:         .gray
+        case .error:        .red
+        }
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            if case .error(let msg) = status {
+                Text(msg)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 90, alignment: .leading)
             }
         }
     }
@@ -534,20 +604,33 @@ struct ControlTowerPanel: View {
 
             Spacer()
 
-            Button {
-                // Activate app first so Settings window appears in front
-                NSApp.activate(ignoringOtherApps: true)
-                if #available(macOS 14.0, *) {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                } else {
-                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+            // SettingsLink is the only reliable way to open Settings from a
+            // MenuBarExtra window — `NSApp.sendAction(showSettingsWindow:)`
+            // races against the popover auto-dismiss and swallows the action.
+            // Available macOS 14+; accessory apps fall back to activating
+            // the (presumably already open) existing Settings window.
+            if #available(macOS 14.0, *) {
+                SettingsLink {
+                    Image(systemName: "gear")
+                        .font(.system(size: 11))
                 }
-            } label: {
-                Image(systemName: "gear")
-                    .font(.system(size: 11))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Open Settings")
+                .simultaneousGesture(TapGesture().onEnded {
+                    NSApp.activate(ignoringOtherApps: true)
+                })
+            } else {
+                Button {
+                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                } label: {
+                    Image(systemName: "gear")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -592,7 +675,7 @@ struct ControlTowerPanel: View {
         case "codex-cli": "Codex"
         case "opencode": "OpenCode"
         case "daemon": "Daemon"
-        default: type
+        default: type.replacingOccurrences(of: "-", with: " ").capitalized
         }
     }
 
@@ -684,6 +767,19 @@ struct ControlTowerPanel: View {
         return ""
     }
 
+    /// Format subscription renewal date — accepts ISO 8601 or passthrough.
+    /// Produces compact "Apr 19" style output; falls back to input when
+    /// parsing fails (some backends return short-form strings already).
+    private func formatSubscriptionDate(_ input: String) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let parsed = iso.date(from: input) ?? ISO8601DateFormatter().date(from: input)
+        guard let date = parsed else { return input }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MMM d"
+        return fmt.string(from: date)
+    }
+
     private func formatResetTime(_ isoString: String?) -> String {
         guard let isoString, !isoString.isEmpty else { return "" }
         let formatter = ISO8601DateFormatter()
@@ -696,6 +792,77 @@ struct ControlTowerPanel: View {
         let minutes = (Int(interval) % 3600) / 60
         if hours > 0 { return "\(hours)h\(minutes)m" }
         return "\(minutes)m"
+    }
+}
+
+// MARK: - Session Brand Colors
+
+/// Canonical per-agent brand colors. Mirrors `D200hHidModule.agentBrandColor`
+/// and `SessionListPanel.agentIconView` — keep these three in sync if any
+/// agent brand color shifts. Creature SVG assets are authored as
+/// `currentColor` silhouettes, so the tint applied here is what the user
+/// actually sees.
+enum SessionBrand {
+    static func color(for agentType: String?) -> Color {
+        switch agentType {
+        case "claude-code": return Color(red: 0.753, green: 0.439, blue: 0.345) // #C07058
+        case "codex-cli":   return Color(red: 0.38,  green: 0.40,  blue: 0.88)  // indigo
+        case "openclaw":    return Color(red: 1.0,   green: 0.30,  blue: 0.30)  // #FF4D4D
+        case "opencode":    return Color(red: 0.945, green: 0.925, blue: 0.925) // near-white
+        case "daemon":      return Color(red: 0.55,  green: 0.55,  blue: 0.60)
+        default:            return Color.secondary
+        }
+    }
+}
+
+// MARK: - Session Creature Icon
+
+/// Renders an agent's branded creature from the app's asset catalog in its
+/// brand color. Falls back to a generic SF Symbol when the agent type is
+/// unknown so the layout never collapses on new agents.
+private struct SessionCreatureIcon: View {
+    let agentType: String?
+    let tint: Color
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let asset = Self.assetName(for: agentType) {
+                Image(asset)
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "questionmark.circle")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            }
+        }
+        .frame(width: size, height: size)
+        .foregroundStyle(tint)
+        .accessibilityLabel(Self.accessibilityLabel(for: agentType))
+    }
+
+    private static func assetName(for type: String?) -> String? {
+        switch type {
+        case "claude-code": return "CreatureClaudeCode"
+        case "openclaw":    return "CreatureOpenClaw"
+        case "codex-cli":   return "CreatureCodex"
+        case "opencode":    return "CreatureOpenCode"
+        default:            return nil
+        }
+    }
+
+    private static func accessibilityLabel(for type: String?) -> String {
+        switch type {
+        case "claude-code": return "Claude Code session"
+        case "openclaw":    return "OpenClaw session"
+        case "codex-cli":   return "Codex session"
+        case "opencode":    return "OpenCode session"
+        case "daemon":      return "Daemon"
+        default:            return "Unknown agent session"
+        }
     }
 }
 

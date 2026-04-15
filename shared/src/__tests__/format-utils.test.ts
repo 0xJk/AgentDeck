@@ -40,6 +40,18 @@ describe('adjustUsagePercent', () => {
   it('handles empty string resetsAt (returns percent)', () => {
     expect(adjustUsagePercent(30, '')).toBe(30);
   });
+
+  it('returns percent unchanged when resetsAt is far in the past (>1h)', () => {
+    // Server returning a prior window's final value because no new window is active.
+    // Zeroing here would hide real usage during a 429 / cache-stuck situation.
+    const farPast = new Date(Date.now() - 2 * 3600_000).toISOString();
+    expect(adjustUsagePercent(68, farPast)).toBe(68);
+  });
+
+  it('still returns 0 just after the 1h threshold boundary', () => {
+    const justInside = new Date(Date.now() - 59 * 60_000).toISOString();
+    expect(adjustUsagePercent(42, justInside)).toBe(0);
+  });
 });
 
 describe('formatResetTime', () => {

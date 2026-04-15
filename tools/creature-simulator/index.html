@@ -2169,6 +2169,7 @@
       const modelStr = agent === "claude" ? "opus-4" : agent === "codex" ? "gpt-5" : agent === "openclaw" ? "" : "opencode";
       const nameStr = agent === "claude" ? "Claude" : agent === "codex" ? "Codex" : agent === "openclaw" ? "OpenClaw" : "OpenCode";
       const hasModel = modelStr.length > 0;
+      const d200hFont = "\"Helvetica Neue\", Helvetica, Arial, sans-serif";
 
       const gradId = `d200h-bg-${agent}-${state}`;
       addLinearGradient(svg, gradId, [
@@ -2210,18 +2211,18 @@
 
       svg.appendChild(el("circle", { cx: 163, cy: 33, r: 8, fill: stateColor, opacity: 0.9 }));
       svg.appendChild(textNode(nameStr, {
-        x: 34, y: hasModel ? 116 : 122, "font-size": nameStr.length > 8 ? 21 : 23, "font-weight": 800, "text-anchor": "start",
-        fill: "#FFFFFF", "font-family": "Inter, sans-serif",
+        x: 34, y: hasModel ? 104 : 112, "font-size": nameStr.length >= 8 ? 20 : 22, "font-weight": 800, "text-anchor": "start",
+        fill: "#FFFFFF", "font-family": d200hFont,
       }));
       if (hasModel) {
         svg.appendChild(textNode(modelStr, {
-          x: 34, y: 140, "font-size": 16, "font-weight": 700, "text-anchor": "start",
-          fill: "#94A3B8", "font-family": "Inter, sans-serif",
+          x: 34, y: 126, "font-size": 15, "font-weight": 700, "text-anchor": "start",
+          fill: "#94A3B8", "font-family": d200hFont,
         }));
       }
       svg.appendChild(textNode(stateLabel, {
-        x: 34, y: hasModel ? 163 : 154, "font-size": 15, "font-weight": 800, "text-anchor": "start",
-        fill: stateColor, "font-family": "Inter, sans-serif",
+        x: 34, y: hasModel ? 148 : 140, "font-size": 14, "font-weight": 800, "text-anchor": "start",
+        fill: stateColor, "font-family": d200hFont,
       }));
 
       if (isAsking) drawAskIndicator(svg, "streamdeck", 163, 33, 0.85, t);
@@ -2231,61 +2232,61 @@
       clear(svg);
       const pct5 = 46;
       const pct7 = 72;
-      const colorForPct = (pct) => pct >= 90 ? "#EF4444" : pct >= 70 ? "#F59E0B" : pct >= 50 ? "#00C8B4" : "#3B82F6";
+      const colorForPct = (pct) => pct > 80 ? "#EF4444" : pct > 50 ? "#EAB308" : "#22C55E";
       const color5 = colorForPct(pct5);
       const color7 = colorForPct(pct7);
       const w = 392;
       const h = 196;
-      svg.appendChild(el("rect", { x: 0, y: 0, width: w, height: h, fill: "#0D0D12" }));
-      svg.appendChild(el("rect", { x: 18, y: 18, width: w - 36, height: h - 36, rx: 15, fill: "#151720" }));
-      svg.appendChild(el("rect", { x: 18, y: 18, width: w - 36, height: 42, rx: 15, fill: "#FFFFFF", opacity: 0.08 }));
-      svg.appendChild(el("rect", { x: 18, y: 128, width: w - 36, height: 50, rx: 15, fill: "#000000", opacity: 0.16 }));
-      svg.appendChild(el("rect", { x: 18, y: 18, width: w - 36, height: h - 36, rx: 15, fill: "none", stroke: "#FFFFFF", "stroke-width": 1.5, opacity: 0.24 }));
-      svg.appendChild(el("line", { x1: 196, y1: 50, x2: 196, y2: 144, stroke: "#CCD6E5", "stroke-width": 2, opacity: 0.14 }));
-      svg.appendChild(el("rect", { x: 178, y: 136, width: 36, height: 5, rx: 2.5, fill: "#FFFFFF", opacity: 0.12 }));
+      const d200hFont = "\"Helvetica Neue\", Helvetica, Arial, sans-serif";
+      svg.appendChild(el("rect", { x: 0, y: 0, width: w, height: h, fill: "#0F172A" }));
 
-      const bar = (x, pct, color) => {
-        const width = 136;
-        const height = 20;
-        const fillW = Math.max(height, width * pct / 100);
-        svg.appendChild(el("rect", { x, y: 128, width, height, rx: height / 2, fill: "#0C0D12", opacity: 0.95 }));
-        svg.appendChild(el("rect", { x, y: 128, width: fillW, height, rx: height / 2, fill: color, opacity: 0.86 }));
-        svg.appendChild(el("rect", { x, y: 128, width, height, rx: height / 2, fill: "none", stroke: color, "stroke-width": 1, opacity: 0.34 }));
+      const segmentGauge = (x, y, pct, color) => {
+        const segments = 8;
+        const segmentWidth = 20;
+        const segmentHeight = 18;
+        const gap = 5;
+        const filled = Math.round(Math.max(0, Math.min(100, pct)) / 100 * segments);
+        for (let i = 0; i < segments; i++) {
+          svg.appendChild(el("rect", {
+            x: x + i * (segmentWidth + gap), y, width: segmentWidth, height: segmentHeight, rx: 4,
+            fill: i < filled ? color : "#1E293B", opacity: i < filled ? 0.88 : 0.78,
+          }));
+        }
       };
-      bar(34, pct5, color5);
-      bar(222, pct7, color7);
+      segmentGauge(78, 53, pct5, color5);
+      segmentGauge(78, 105, pct7, color7);
 
-      svg.appendChild(textNode("LIMITS", {
-        x: w / 2, y: 39, "font-size": 16, "font-weight": 800, "text-anchor": "middle",
-        fill: "#E2E8F0", "font-family": "Inter, sans-serif",
+      svg.appendChild(textNode("USAGE", {
+        x: w / 2, y: 22, "font-size": 22, "font-weight": 800, "text-anchor": "middle",
+        fill: "#94A3B8", "font-family": d200hFont,
       }));
       svg.appendChild(textNode("5H", {
-        x: 34, y: 64, "font-size": 18, "font-weight": 800, "text-anchor": "start",
-        fill: "#94A3B8", "font-family": "Inter, sans-serif",
+        x: 34, y: 49, "font-size": 22, "font-weight": 800, "text-anchor": "start",
+        fill: "#94A3B8", "font-family": d200hFont,
       }));
       svg.appendChild(textNode(`${pct5}%`, {
-        x: 34, y: 93, "font-size": 38, "font-weight": 800, "text-anchor": "start",
-        fill: color5, "font-family": "Inter, sans-serif",
+        x: 334, y: 44, "font-size": 26, "font-weight": 800, "text-anchor": "middle",
+        fill: "#FFFFFF", "font-family": d200hFont,
       }));
       svg.appendChild(textNode("1h24m", {
-        x: 36, y: 118, "font-size": 19, "font-weight": 800, "text-anchor": "start",
-        fill: "#E2E8F0", "font-family": "Inter, sans-serif",
+        x: 327, y: 74, "font-size": 17, "font-weight": 800, "text-anchor": "middle",
+        fill: "#94A3B8", "font-family": d200hFont,
       }));
       svg.appendChild(textNode("7D", {
-        x: 222, y: 64, "font-size": 18, "font-weight": 800, "text-anchor": "start",
-        fill: "#94A3B8", "font-family": "Inter, sans-serif",
+        x: 34, y: 101, "font-size": 22, "font-weight": 800, "text-anchor": "start",
+        fill: "#94A3B8", "font-family": d200hFont,
       }));
       svg.appendChild(textNode(`${pct7}%`, {
-        x: 222, y: 93, "font-size": 38, "font-weight": 800, "text-anchor": "start",
-        fill: color7, "font-family": "Inter, sans-serif",
+        x: 334, y: 96, "font-size": 26, "font-weight": 800, "text-anchor": "middle",
+        fill: "#FFFFFF", "font-family": d200hFont,
       }));
       svg.appendChild(textNode("1d4h", {
-        x: 224, y: 118, "font-size": 19, "font-weight": 800, "text-anchor": "start",
-        fill: "#E2E8F0", "font-family": "Inter, sans-serif",
+        x: 327, y: 126, "font-size": 17, "font-weight": 800, "text-anchor": "middle",
+        fill: "#94A3B8", "font-family": d200hFont,
       }));
       svg.appendChild(textNode("ChatGPT Plus Apr 27", {
-        x: w / 2, y: 164, "font-size": 15, "font-weight": 800, "text-anchor": "middle",
-        fill: "#94A3B8", "font-family": "Inter, sans-serif",
+        x: w / 2, y: 140, "font-size": 16, "font-weight": 800, "text-anchor": "middle",
+        fill: "#64748B", "font-family": d200hFont,
       }));
     }
 

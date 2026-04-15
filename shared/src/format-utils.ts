@@ -77,7 +77,15 @@ export function formatUptime(sec: number): string {
   return `${m}m`;
 }
 
-/** If the rate-limit window has expired (resetsAt <= now), return 0 instead of stale percent */
+/**
+ * Reconcile a rate-limit percent against its resets_at timestamp.
+ *
+ * - Future resets_at → trust percent (current window).
+ * - Recently past resets_at → return 0 (window just rolled over; old percent is meaningless).
+ * - Far-past resets_at (> 1h) → trust percent (server is returning a prior window's
+ *   final value because no new window is active; zeroing would underreport).
+ *   Consumers should pair this with a `usageStale` badge so the user sees uncertainty.
+ */
 export function adjustUsagePercent(
   percent: number | null | undefined,
   resetsAt: string | null | undefined,
@@ -86,7 +94,11 @@ export function adjustUsagePercent(
   if (resetsAt) {
     try {
       const resetMs = new Date(resetsAt).getTime();
-      if (!isNaN(resetMs) && resetMs <= Date.now()) return 0;
+      if (!isNaN(resetMs)) {
+        const elapsed = Date.now() - resetMs;
+        if (elapsed > 3_600_000) return percent;
+        if (elapsed > 0) return 0;
+      }
     } catch { /* fall through */ }
   }
   return percent;

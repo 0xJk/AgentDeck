@@ -377,7 +377,11 @@ final class WebSocketConnection: Hashable, Sendable {
 
     func send(_ data: Data) {
         let frame = Self.buildFrame(opcode: 0x1, payload: data)
-        connection.send(content: frame, isComplete: true, completion: .contentProcessed({ _ in }))
+        // isComplete: false — on NWConnection/TCP, isComplete: true signals
+        // end-of-stream (FIN). Setting it per-frame half-closes the send side
+        // after the first outbound WS message, which races with the client's
+        // ping/receive timers and manifests as a ~15s reconnect loop.
+        connection.send(content: frame, isComplete: false, completion: .contentProcessed({ _ in }))
     }
 
     func close() {

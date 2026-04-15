@@ -16,6 +16,7 @@ final class DaemonService: ObservableObject {
     @Published private(set) var port: UInt16 = 0
     @Published private(set) var connectedClients = 0
     @Published private(set) var errorMessage: String?
+    @Published private(set) var deviceSummary = DeviceSummary()
 
     /// Called when daemon starts — provides ws://localhost:PORT URL for dashboard connection
     var onReady: ((String) -> Void)? {
@@ -544,9 +545,14 @@ final class DaemonService: ObservableObject {
         healthMonitorTask?.cancel()
         healthMonitorTask = Task { [weak self] in
             guard let self else { return }
+            // Populate the menu bar devices section before the first 5s tick —
+            // avoids a "flash of empty state" when the user opens the dropdown
+            // immediately after app launch.
+            await self.refreshDeviceSummary()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
                 await self.checkDaemonHealth()
+                await self.refreshDeviceSummary()
             }
         }
     }
@@ -584,28 +590,48 @@ final class DaemonService: ObservableObject {
         // slow Pixoo pushes — a transient 2-second self-probe timeout was killing
         // a perfectly healthy server. If we hold a live `server` reference and
         // `isRunning`, the listener is up; no probe is needed for liveness.
-        guard isRunning, server != nil else { return }
+        guard isRunning, let server else { return }
         localFailureCount = 0
 
-        // Still probe once for D200H helper auto-promotion, but never let a probe
-        // failure trigger a restart — promotion is best-effort.
+        // D200H helper auto-promotion check. Historical context: a previous fix
+        // (bug_daemon_self_http_probe.md, 373774b0) removed the self-probe from
+        // the liveness check but left this promotion-decision branch still
+        // HTTP-probing `http://127.0.0.1:\(port)/health` every 5s via
+        // `URLSession.shared`. Because the "attempted" flag only flipped when
+        // promotion actually fired, the common steady-state (D200H working
+        // normally — promotion criteria never true) meant the self-probe ran
+        // forever. Over hours it poisoned URLSession.shared and eventually
+        // deadlocked the main thread in CATransaction dealloc (2026-04-13 hang).
+        //
+        // Fix: reach into the in-process D200H module directly via
+        // `DaemonServer.d200hStatusSnapshot()`. Same @MainActor, zero network,
+        // zero URLSession contention. And make it a TRUE one-shot — the module
+        // state fields we care about (sandboxEnabled, usbEntitlementPresent,
+        // lastOpenError, managerOpened) are launch-session invariants, so a
+        // single successful snapshot is all we ever need. Flag resets only on
+        // full stop/restart.
         if !d200hHelperPromotionAttempted, !isStarting,
            AppPreferences.shared.autoUseBundledD200HHelper {
-            if let health = await registry.probeDaemonHealth(port: currentPort),
-               preferencesSuggestBundledD200HHelperPromotion(from: health) {
-                let reason = d200hHelperPromotionReason(from: health)
+            if let snapshot = server.d200hStatusSnapshot() {
                 d200hHelperPromotionAttempted = true
-                DaemonLogger.shared.info("Promoting D200H to bundled helper: \(reason)")
-                errorMessage = reason
-                await startBundledD200HHelper()
+                if preferencesSuggestBundledD200HHelperPromotion(from: snapshot) {
+                    let reason = d200hHelperPromotionReason(from: snapshot)
+                    DaemonLogger.shared.info("Promoting D200H to bundled helper: \(reason)")
+                    errorMessage = reason
+                    await startBundledD200HHelper()
+                }
             }
         }
     }
 
-    private func preferencesSuggestBundledD200HHelperPromotion(from health: [String: Any]?) -> Bool {
+    /// Decide whether the D200H helper should be promoted based on the D200H
+    /// module's own status snapshot (the same dict that `/health` →
+    /// `modules.d200h` exposes). Takes the inner d200h dict directly so the
+    /// in-process caller can fetch it via `DaemonServer.d200hStatusSnapshot()`
+    /// without going through HTTP (see `bug_daemon_self_http_probe.md`).
+    private func preferencesSuggestBundledD200HHelperPromotion(from d200h: [String: Any]?) -> Bool {
         guard AppPreferences.shared.autoUseBundledD200HHelper else { return false }
-        guard let modules = health?["modules"] as? [String: Any],
-              let d200h = modules["d200h"] as? [String: Any] else { return false }
+        guard let d200h else { return false }
         guard (d200h["connected"] as? Bool) != true else { return false }
 
         let sandboxEnabled = d200h["sandboxEnabled"] as? Bool ?? false
@@ -617,11 +643,8 @@ final class DaemonService: ObservableObject {
             (managerOpened && lastOpenError == kIOReturnNotPermitted)
     }
 
-    private func d200hHelperPromotionReason(from health: [String: Any]?) -> String {
-        guard let modules = health?["modules"] as? [String: Any],
-              let d200h = modules["d200h"] as? [String: Any] else {
-            return "D200H helper promotion requested."
-        }
+    private func d200hHelperPromotionReason(from d200h: [String: Any]?) -> String {
+        guard let d200h else { return "D200H helper promotion requested." }
 
         let sandboxEnabled = d200h["sandboxEnabled"] as? Bool ?? false
         let usbEntitlementPresent = d200h["usbEntitlementPresent"] as? Bool ?? true
@@ -718,6 +741,239 @@ final class DaemonService: ObservableObject {
             return SMAppService.mainApp.status == .enabled
         }
         return false
+    }
+
+    // MARK: - Device Summary Refresh
+
+    /// Refresh the published `deviceSummary` from the running daemon's
+    /// in-process module snapshots. Called on each health-monitor tick.
+    /// Zero network — snapshots come straight from the module actors.
+    func refreshDeviceSummary() async {
+        guard let server else {
+            if !deviceSummary.isEmpty { deviceSummary = DeviceSummary() }
+            return
+        }
+        var summary = DeviceSummary()
+
+        // D200H (Stream Deck+ via HID)
+        if let d200h = server.d200hStatusSnapshot() {
+            summary.d200h = DeviceSummary.makeD200hEntry(from: d200h)
+        }
+
+        // Pixoo (LED panels over HTTP)
+        if let pixoo = server.pixooStatusSnapshot() {
+            summary.pixoo = DeviceSummary.makePixooEntries(from: pixoo)
+        }
+
+        // ESP32 serial boards
+        if let serial = await server.serialStatusSnapshot() {
+            summary.serial = DeviceSummary.makeSerialEntries(from: serial)
+        }
+
+        // ADB (Android devices)
+        if let adb = server.adbStatusSnapshot() {
+            summary.adb = DeviceSummary.makeAdbEntries(from: adb)
+        }
+
+        if summary != deviceSummary {
+            deviceSummary = summary
+        }
+    }
+}
+
+// MARK: - DeviceSummary
+
+struct DeviceSummary: Equatable {
+    var d200h: DeviceEntry?
+    var pixoo: [DeviceEntry] = []
+    var serial: [DeviceEntry] = []
+    var adb: [DeviceEntry] = []
+
+    var isEmpty: Bool {
+        d200h == nil && pixoo.isEmpty && serial.isEmpty && adb.isEmpty
+    }
+
+    var allEntries: [DeviceEntry] {
+        var out: [DeviceEntry] = []
+        if let d200h { out.append(d200h) }
+        out.append(contentsOf: pixoo)
+        out.append(contentsOf: serial)
+        out.append(contentsOf: adb)
+        return out
+    }
+
+    // MARK: Builders (each converts the `[String: Any]` module snapshot
+    // into a typed DeviceEntry for the menu bar). Filters out modules that
+    // aren't actually attached (e.g. zero-Pixoo installs) so empty hardware
+    // pools don't show up as ghost rows.
+
+    static func makeD200hEntry(from d: [String: Any]) -> DeviceEntry {
+        let connected = d["connected"] as? Bool ?? false
+        let managerOpened = d["managerOpened"] as? Bool ?? false
+        let lastOpenError = d["lastOpenError"] as? Int32 ?? 0
+        let sandboxEnabled = d["sandboxEnabled"] as? Bool ?? false
+        let usbEntitlementPresent = d["usbEntitlementPresent"] as? Bool ?? true
+        let pressCount = d["buttonPressCount"] as? Int ?? 0
+
+        let status: DeviceStatus
+        var subtitle: String?
+        if connected {
+            status = .connected
+            subtitle = pressCount > 0 ? "\(pressCount) press\(pressCount == 1 ? "" : "es")" : "ready"
+        } else if sandboxEnabled && !usbEntitlementPresent {
+            status = .error("USB entitlement missing")
+            subtitle = "needs bundled helper"
+        } else if lastOpenError != 0 {
+            status = .error("HID open denied")
+            subtitle = "err \(lastOpenError)"
+        } else if managerOpened {
+            status = .reconnecting
+            subtitle = "searching…"
+        } else {
+            status = .idle
+            subtitle = "not plugged in"
+        }
+        return DeviceEntry(
+            id: "d200h",
+            kind: .d200h,
+            title: "Stream Deck+",
+            subtitle: subtitle,
+            status: status
+        )
+    }
+
+    static func makePixooEntries(from d: [String: Any]) -> [DeviceEntry] {
+        let ips = d["deviceIps"] as? [String] ?? []
+        let hasFrame = d["hasFrame"] as? Bool ?? false
+        let dimmed = d["displayDimmed"] as? Bool ?? false
+        let lastError = d["lastPushError"] as? String
+        return ips.enumerated().map { idx, ip in
+            let status: DeviceStatus
+            if let lastError, !lastError.isEmpty {
+                status = .error(lastError)
+            } else if hasFrame {
+                status = .connected
+            } else {
+                status = .idle
+            }
+            return DeviceEntry(
+                id: "pixoo-\(ip)",
+                kind: .pixoo,
+                title: "Pixoo \(idx + 1)",
+                subtitle: dimmed ? "\(ip) · dimmed" : ip,
+                status: status
+            )
+        }
+    }
+
+    static func makeSerialEntries(from d: [String: Any]) -> [DeviceEntry] {
+        let conns = d["connections"] as? [[String: Any]] ?? []
+        let globalOpenErr = d["lastOpenError"] as? String
+        return conns.compactMap { conn in
+            let port = conn["port"] as? String ?? "?"
+            let connected = conn["connected"] as? Bool ?? false
+            let info = conn["deviceInfo"] as? [String: Any]
+            let board = info?["board"] as? String
+            let version = info?["version"] as? String
+            let wifiConnected = info?["wifiConnected"] as? Bool ?? false
+
+            let title = board.map { "ESP32 \($0)" } ?? "ESP32 (\(port))"
+            var subtitleBits: [String] = []
+            if let version { subtitleBits.append("v\(version)") }
+            subtitleBits.append(wifiConnected ? "wifi" : "no-wifi")
+            subtitleBits.append(port)
+
+            let status: DeviceStatus
+            if connected {
+                status = .connected
+            } else if let globalOpenErr, !globalOpenErr.isEmpty {
+                status = .error(globalOpenErr)
+            } else {
+                status = .reconnecting
+            }
+            return DeviceEntry(
+                id: "serial-\(port)",
+                kind: .serial,
+                title: title,
+                subtitle: subtitleBits.joined(separator: " · "),
+                status: status
+            )
+        }
+    }
+
+    static func makeAdbEntries(from d: [String: Any]) -> [DeviceEntry] {
+        let available = d["available"] as? Bool ?? false
+        let devices = d["devices"] as? [String] ?? []
+        let readyCount = d["reverseReadyCount"] as? Int ?? 0
+        let lastError = d["lastError"] as? String
+        if !available || devices.isEmpty { return [] }
+        return devices.enumerated().map { idx, serial in
+            let reverseReady = idx < readyCount
+            let status: DeviceStatus
+            if reverseReady {
+                status = .connected
+            } else if let lastError, !lastError.isEmpty {
+                status = .error(lastError)
+            } else {
+                status = .reconnecting
+            }
+            return DeviceEntry(
+                id: "adb-\(serial)",
+                kind: .adb,
+                title: "Android",
+                subtitle: serial,
+                status: status
+            )
+        }
+    }
+}
+
+struct DeviceEntry: Identifiable, Equatable {
+    let id: String
+    let kind: DeviceKind
+    let title: String
+    let subtitle: String?
+    let status: DeviceStatus
+}
+
+enum DeviceKind: Equatable {
+    case d200h
+    case pixoo
+    case serial
+    case adb
+
+    var symbolName: String {
+        switch self {
+        case .d200h:  return "keyboard"
+        case .pixoo:  return "square.grid.3x3.fill"
+        case .serial: return "cpu"
+        case .adb:    return "iphone"
+        }
+    }
+}
+
+enum DeviceStatus: Equatable {
+    case connected
+    case reconnecting
+    case idle
+    case error(String)
+
+    var dotColor: String {  // keyed name; resolved to SwiftUI Color at render time
+        switch self {
+        case .connected:    return "green"
+        case .reconnecting: return "orange"
+        case .idle:         return "gray"
+        case .error:        return "red"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .connected:      return "connected"
+        case .reconnecting:   return "reconnecting"
+        case .idle:           return "idle"
+        case .error(let msg): return msg
+        }
     }
 }
 #endif

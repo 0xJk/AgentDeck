@@ -51,6 +51,19 @@ final class DaemonServer {
     private var cachedOllamaStatus: [String: Any]?
     private var cachedMlxModels: [String] = []
     private var preferredMlxModelsEndpoint: String?
+
+    // Backoff state for local LLM discovery. Probe functions read/update these;
+    // the polling task reads `nextInterval` on every iteration so the sleep
+    // stretches exponentially while the service is absent (e.g. right after a
+    // PC restart before `ollama serve` / mlx is up). See plan
+    // unified-dreaming-gray.md + memory/bug_local_llm_probe_no_backoff.md.
+    private var ollamaFailureCount: Int = 0
+    private var ollamaNextInterval: TimeInterval = 5
+    private var mlxFailureCount: Int = 0
+    private var mlxNextInterval: TimeInterval = 5
+    private static let probeBaseInterval: TimeInterval = 5
+    private static let probeMaxInterval: TimeInterval = 300
+    private static let probeStaleThreshold = 3
     private var cachedDisplayOn = true
     private var cachedGatewayAvailable = false
     private var cachedPairingUrl: String?
@@ -1412,19 +1425,23 @@ final class DaemonServer {
             }
         }
 
-        // Ollama — 5s
+        // Ollama — dynamic interval (5s base, exponential backoff up to 5m
+        // when the service is absent). See probeOllama() for the backoff
+        // state machine.
         ollamaPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
+                let interval = await MainActor.run { self?.ollamaNextInterval ?? 5 }
+                try? await Task.sleep(for: .seconds(interval))
                 guard let self, await self.wsServer.hasClients() else { continue }
                 await self.probeOllama()
             }
         }
 
-        // MLX — 5s
+        // MLX — dynamic interval, same backoff pattern as ollama.
         mlxPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
+                let interval = await MainActor.run { self?.mlxNextInterval ?? 5 }
+                try? await Task.sleep(for: .seconds(interval))
                 guard let self, await self.wsServer.hasClients() else { continue }
                 await self.probeMLX()
             }
@@ -1718,6 +1735,26 @@ final class DaemonServer {
         return d200hModule?.statusSnapshot()
     }
 
+    /// In-process accessors for the other device modules. Same rationale as
+    /// `d200hStatusSnapshot()` — callers inside the app (menu bar devices
+    /// section) must not HTTP-probe `/health`. All return `nil` when the
+    /// underlying module isn't initialized for this session.
+    @MainActor
+    func adbStatusSnapshot() -> [String: Any]? {
+        return adbModule?.statusSnapshot()
+    }
+
+    @MainActor
+    func pixooStatusSnapshot() -> [String: Any]? {
+        return pixooModule?.statusSnapshot()
+    }
+
+    @MainActor
+    func serialStatusSnapshot() async -> [String: Any]? {
+        guard let serialModule else { return nil }
+        return await serialModule.statusSnapshot()
+    }
+
     @MainActor
     private func buildModuleHealth() async -> SendableDict {
         let gwConnected: Bool
@@ -1932,20 +1969,27 @@ final class DaemonServer {
         // If time hasn't passed yet, show current percent
         if elapsed < 0 { return percent }
 
-        // If usage is very high (>90%), keep it 'sticky' for 5 minutes after reset
-        // to account for server propagation delay/clock skew.
-        if percent > 0.90 {
-            if elapsed < 300 { // 5 minutes
+        // Far-past resets_at (>1h) means Anthropic's /oauth/usage is returning
+        // a prior window's final value because no new window is active — or the
+        // bridge cache is stuck in a 429 backoff loop. In either case, zeroing
+        // would underreport real usage; keep the last-known percent and let the
+        // `usageStale` flag surface uncertainty to the UI.
+        if elapsed > 3600 { return percent }
+
+        // High-usage sticky: hold 90%+ values for 5 minutes post-reset to mask
+        // server propagation lag / clock skew. Note: percent is on a 0–100 scale,
+        // so the threshold is 90.0 (prior code used 0.90 and silently behaved
+        // like a 0.9% threshold).
+        if percent > 90.0 {
+            if elapsed < 300 {
                 return percent
             }
         } else {
-            // For lower usage, a 60s buffer is enough
             if elapsed < 60 {
                 return percent
             }
         }
 
-        // Only reset to 0 after safe buffer
         return 0
     }
 
@@ -1954,11 +1998,12 @@ final class DaemonServer {
     @MainActor
     private func probeOllama() async {
         let previous = cachedOllamaStatus as NSDictionary?
+        var success = false
         do {
             guard let psUrl = URL(string: "http://127.0.0.1:11434/api/ps") else { return }
             var request = URLRequest(url: psUrl)
             request.timeoutInterval = 2
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, _) = try await LocalProbeSession.shared.data(for: request)
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                let models = json["models"] as? [[String: Any]] {
                 cachedOllamaStatus = [
@@ -1969,10 +2014,26 @@ final class DaemonServer {
                         "sizeVram": $0["size_vram"] ?? $0["sizeVram"] ?? 0,
                     ] }
                 ]
+                success = true
             }
         } catch {
-            cachedOllamaStatus = ["available": false, "models": [] as [Any]]
+            // Swallow; handled via success flag below.
         }
+
+        if success {
+            ollamaFailureCount = 0
+            ollamaNextInterval = Self.probeBaseInterval
+        } else {
+            ollamaFailureCount += 1
+            ollamaNextInterval = min(ollamaNextInterval * 2, Self.probeMaxInterval)
+            // Preserve the last-known cache until we've seen N consecutive
+            // failures — a single blip (e.g. URLSession contention) should not
+            // flip the UI to "unavailable". Once stale, flip to unavailable.
+            if ollamaFailureCount >= Self.probeStaleThreshold {
+                cachedOllamaStatus = ["available": false, "models": [] as [Any]]
+            }
+        }
+
         if previous == nil || !(previous?.isEqual(to: cachedOllamaStatus ?? [:]) ?? false) {
             broadcastStateUpdate()
             broadcastUsage()
@@ -1986,15 +2047,25 @@ final class DaemonServer {
             "http://127.0.0.1:8800/v1/models",
             "http://127.0.0.1:8800/models",
         ]
-        let candidates = Array(Set(([preferredMlxModelsEndpoint].compactMap { $0 }) + fallbackCandidates))
+        // Once an endpoint has been resolved, prefer it exclusively. Only when
+        // discovery keeps failing do we broaden the search back to all
+        // fallbacks — this avoids burning 2 × N seconds on every poll cycle
+        // while the service is absent.
+        let candidates: [String]
+        if let preferred = preferredMlxModelsEndpoint, mlxFailureCount < Self.probeStaleThreshold {
+            candidates = [preferred]
+        } else {
+            candidates = Array(Set(([preferredMlxModelsEndpoint].compactMap { $0 }) + fallbackCandidates))
+        }
         var resolved: [String] = []
+        var success = false
 
         for endpoint in candidates {
             guard let url = URL(string: endpoint) else { continue }
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 2
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await LocalProbeSession.shared.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 guard status == 200,
                       let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -2008,13 +2079,28 @@ final class DaemonServer {
                 }.filter { !$0.lowercased().contains("nanollava") })).sorted()
                 if !resolved.isEmpty {
                     preferredMlxModelsEndpoint = endpoint
+                    success = true
                     break
                 }
             } catch {
                 continue
             }
         }
-        cachedMlxModels = resolved
+
+        if success {
+            mlxFailureCount = 0
+            mlxNextInterval = Self.probeBaseInterval
+            cachedMlxModels = resolved
+        } else {
+            mlxFailureCount += 1
+            mlxNextInterval = min(mlxNextInterval * 2, Self.probeMaxInterval)
+            // Keep last-known model list until we've seen N consecutive
+            // failures; then clear so the UI reflects unavailability.
+            if mlxFailureCount >= Self.probeStaleThreshold {
+                cachedMlxModels = []
+            }
+        }
+
         if previous != cachedMlxModels {
             broadcastStateUpdate()
             broadcastUsage()

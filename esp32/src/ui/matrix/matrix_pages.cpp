@@ -364,10 +364,14 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     AgentInfo agents[6];
     int agentCount = 0;
     int claudeSeen = 0, codexSeen = 0, opencodeSeen = 0;
+    bool openclawAlive = false;
 
     for (int i = 0; i < sessionCount && agentCount < 6; i++) {
         if (!g_state.sessions[i].alive) continue;
-        if (strcmp(g_state.sessions[i].agentType, "openclaw") == 0) continue;
+        if (strcmp(g_state.sessions[i].agentType, "openclaw") == 0) {
+            openclawAlive = true;
+            continue;
+        }
         if (strcmp(g_state.sessions[i].agentType, "daemon") == 0) continue;
         strncpy(agents[agentCount].state, g_state.sessions[i].state, 19);
         agents[agentCount].state[19] = '\0';
@@ -410,6 +414,9 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     if (agentCount == 0) {
         if (!connected) {
             renderDisconnectStatus(leds, animTime);
+            return;
+        }
+        if (openclawAlive) {
             return;
         }
         // No active agent sessions — show idle octopus with gentle breathing

@@ -117,7 +117,12 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
         print("[BridgeConnection] connecting to \(urlString)")
 
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 15
+        // timeoutIntervalForRequest applies per outstanding URLSession receive
+        // call for WebSocketTask. When no server push arrives within the window
+        // the pending `ws.receive` fails with "Operation timed out" and we tear
+        // the socket down. Must comfortably exceed `pingIntervalSec` (15s) so
+        // ping/pong round-trips keep the connection alive between quiet periods.
+        config.timeoutIntervalForRequest = 60
         #if os(iOS)
         // iOS: WiFi may not be ready on cold start — wait instead of failing immediately
         config.waitsForConnectivity = true
@@ -127,7 +132,7 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
         // Half-open detection: abort reads that idle longer than this. Live sockets
         // produce traffic via pingIntervalSec so healthy connections never trip it;
         // after sleep/wake the dead socket fails within the window and reconnect fires.
-        config.timeoutIntervalForResource = 30
+        config.timeoutIntervalForResource = 120
         #endif
         let session = URLSession(configuration: config)
         self.urlSession = session

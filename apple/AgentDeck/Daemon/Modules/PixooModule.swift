@@ -59,7 +59,14 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
     }
 
     func stop() async {
+        // Cancel the render loop and wait for the in-flight iteration to finish
+        // its current URLSession request. Without the await, stop() returns
+        // immediately while pushFrame() is still blocked on a 2s HTTP timeout to
+        // an unreachable Pixoo — the orphaned URL requests stretch shutdown past
+        // the 10s semaphore and leave the process in `?E` state at exit.
         renderTask?.cancel()
+        await renderTask?.value
+        renderTask = nil
     }
 
     func handleWake() async {

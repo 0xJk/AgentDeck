@@ -26,6 +26,7 @@ private let ICON_SIZE = 196
 
 private let POLL_INTERVAL: UInt64 = 500_000_000   // 500ms device detection
 private let KEEPALIVE_INTERVAL: TimeInterval = 15  // 15s keep-alive (D200H reverts to default after ~30s)
+private let D200H_RENDERER_REV = "stock-safe-v19"
 
 // HID Commands
 private let CMD_SET_BUTTONS: UInt16    = 0x0001
@@ -44,6 +45,10 @@ private func d200hBakeSessionTextEnabled() -> Bool {
 
 private func d200hHideNativeSessionLabelsEnabled() -> Bool {
     d200hBakeSessionTextEnabled() && AppPreferences.shared.d200hHideNativeSessionLabels
+}
+
+private func d200hStableStockHidEnabled() -> Bool {
+    true
 }
 
 // MARK: - D200hHidModule
@@ -284,6 +289,9 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             "lastOpenError": lastOpenError,
             "nativeLabelsVisible": shouldShowNativeLabels(for: currentMode),
             "bakeSessionText": d200hBakeSessionTextEnabled(),
+            "stableStockHid": d200hStableStockHidEnabled(),
+            "partialUpdatesEnabled": !d200hStableStockHidEnabled() && partialUpdateSupported,
+            "rendererRev": D200H_RENDERER_REV,
             "mode": currentMode == .sessionList ? "sessions" : "options",
             "sessionsCount": cachedSessionsList.count,
             "lastStateHash": lastStateHash,
@@ -599,12 +607,14 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 animFrame: animFrame
             )
             slots = computedSlots
-            let startIdx = sessionPage * 13
-            for i in 0..<13 {
-                let sessionIdx = startIdx + i
-                guard sessionIdx < allSessions.count else { break }
-                if allSessions[sessionIdx].isAwaiting || allSessions[sessionIdx].isProcessing {
-                    animButtonIds.append(i)
+            if !d200hStableStockHidEnabled() {
+                let startIdx = sessionPage * 13
+                for i in 0..<13 {
+                    let sessionIdx = startIdx + i
+                    guard sessionIdx < allSessions.count else { break }
+                    if allSessions[sessionIdx].isAwaiting || allSessions[sessionIdx].isProcessing {
+                        animButtonIds.append(i)
+                    }
                 }
             }
 
@@ -623,7 +633,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     }
 
     private func sendPartialUpdate(slots: [ButtonSlot], buttonIds: [Int], sessions: [D200hSessionInfo]) {
-        guard connected, managerOpened, partialUpdateSupported else { return }
+        guard connected, managerOpened, partialUpdateSupported, !d200hStableStockHidEnabled() else { return }
         let zip = D200hRenderer.renderPartialZip(
             slots: slots,
             buttonIds: buttonIds,
@@ -638,11 +648,15 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     }
 
     private func scheduleButtonDispatch(_ buttonIndex: Int) {
-        sendPressFlash(buttonIndex)
+        if !d200hStableStockHidEnabled() {
+            sendPressFlash(buttonIndex)
+        }
 
         pressDispatchTasks[buttonIndex]?.cancel()
         pressDispatchTasks[buttonIndex] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: PRESS_FLASH_DURATION)
+            if !d200hStableStockHidEnabled() {
+                try? await Task.sleep(nanoseconds: PRESS_FLASH_DURATION)
+            }
             guard let self, !Task.isCancelled else { return }
 
             let modeBefore = self.currentMode
@@ -665,7 +679,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 || sessionPageBefore != self.sessionPage
                 || optionPageBefore != self.optionPage
 
-            if !displayChanged {
+            if !displayChanged && !d200hStableStockHidEnabled() {
                 self.restoreButtonAfterFlash(buttonIndex)
             }
 
@@ -706,12 +720,12 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         updateAnimationTimer(needsAnimation: !animatedButtonIds.isEmpty)
 
         // Decide: full update or partial animation
-        if animationOnly && partialUpdateSupported && !animatedButtonIds.isEmpty && !lastFullSlots.isEmpty {
+        if animationOnly && partialUpdateSupported && !d200hStableStockHidEnabled() && !animatedButtonIds.isEmpty && !lastFullSlots.isEmpty {
             sendPartialUpdate(slots: slots, buttonIds: animatedButtonIds, sessions: allSessions)
         } else {
             // Skip if content unchanged (prevents flooding device with repeated ZIPs)
             let modeKey = currentMode == .sessionList ? "L" : "O"
-            let contentKey = "\(modeKey)|labels=\(shouldShowNativeLabels(for: currentMode) ? 1 : 0)|baked=\(d200hBakeSessionTextEnabled() ? 1 : 0)|\(slots.map(\.cacheKey).joined(separator: ","))"
+            let contentKey = "\(modeKey)|rev=\(D200H_RENDERER_REV)|labels=\(shouldShowNativeLabels(for: currentMode) ? 1 : 0)|baked=\(d200hBakeSessionTextEnabled() ? 1 : 0)|\(slots.map(\.cacheKey).joined(separator: ","))"
             if contentKey == lastStateHash { return }
             lastStateHash = contentKey
 
@@ -758,6 +772,12 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     // MARK: - Animation Timer
 
     private func updateAnimationTimer(needsAnimation: Bool) {
+        if d200hStableStockHidEnabled() {
+            self.needsAnimation = false
+            animationTask?.cancel()
+            animationTask = nil
+            return
+        }
         self.needsAnimation = needsAnimation
         if needsAnimation && animationTask == nil {
             animationTask = Task { [weak self] in
@@ -1048,8 +1068,8 @@ private struct D200hSessionInfo {
         let rawProjectName = dict["projectName"] as? String ?? dict["agentType"] as? String ?? ""
         let isVirtualGateway = id == "openclaw-gateway"
         let normalizedProjectName: String
-        if isVirtualGateway && (rawProjectName.isEmpty || rawProjectName.caseInsensitiveCompare("OpenClaw") == .orderedSame) {
-            normalizedProjectName = "Gateway"
+        if isVirtualGateway && (rawProjectName.isEmpty || rawProjectName.caseInsensitiveCompare("Gateway") == .orderedSame) {
+            normalizedProjectName = "OpenClaw"
         } else {
             normalizedProjectName = rawProjectName
         }
@@ -1293,11 +1313,19 @@ private enum D200hRenderer {
 
             let border: ButtonSlot.BorderStyle
             if session.isAwaiting {
-                border = .awaitingPulse(color: sColor, frame: animFrame)
-                needsAnim = true
+                if d200hStableStockHidEnabled() {
+                    border = .solid(color: sColor)
+                } else {
+                    border = .awaitingPulse(color: sColor, frame: animFrame)
+                    needsAnim = true
+                }
             } else if session.isProcessing {
-                border = .processingDash(color: sColor, frame: animFrame)
-                needsAnim = true
+                if d200hStableStockHidEnabled() {
+                    border = .solid(color: sColor)
+                } else {
+                    border = .processingDash(color: sColor, frame: animFrame)
+                    needsAnim = true
+                }
             } else {
                 border = .none
             }
@@ -1356,10 +1384,16 @@ private enum D200hRenderer {
         guard let d = date else { return "" }
         let diff = d.timeIntervalSinceNow
         if diff <= 0 { return "now" }
-        let h = Int(diff) / 3600
-        let m = (Int(diff) % 3600) / 60
-        if h > 0 { return "\(h)h\(m)m" }
-        return "\(m)m"
+        let totalMinutes = max(1, Int(ceil(diff / 60)))
+        let hours = totalMinutes / 60
+        let days = hours / 24
+        let remainingHours = hours % 24
+        let minutes = totalMinutes % 60
+        if days > 0 && remainingHours > 0 { return "\(days)d\(remainingHours)h" }
+        if days > 0 { return "\(days)d" }
+        if hours > 0 && minutes > 0 { return "\(hours)h\(minutes)m" }
+        if hours > 0 { return "\(hours)h" }
+        return "\(minutes)m"
     }
 
     // MARK: - Mode B: Option Select
@@ -1485,9 +1519,9 @@ private enum D200hRenderer {
         for (i, key) in keyDefs.enumerated() {
             if i == 13 { continue } // Slot 13 handled below as merged button
             let slot = slots[i]
-            let iconPath = "icons/btn\(key.id).png"
             let colRow = "\(key.col)_\(key.row)"
             let png = renderButtonPng(slot)
+            let iconPath = iconFilePath(slotId: key.id, data: png)
             let label = manifestText(for: slot, optionMode: optionMode, slotId: key.id)
             let actionPath = actionPath(for: slot, slotId: key.id, optionMode: optionMode, sessions: sessions, sessionPage: sessionPage, focusedSessionId: focusedSessionId)
             manifest[colRow] = manifestEntry(text: label, iconPath: iconPath, actionPath: actionPath)
@@ -1500,34 +1534,25 @@ private enum D200hRenderer {
             let usagePct7 = usageEvent?["sevenDayPercent"] as? Double ?? stateEvent?["sevenDayPercent"] as? Double ?? 0
             let reset5 = usageEvent?["fiveHourResetsAt"] as? String ?? stateEvent?["fiveHourResetsAt"] as? String
             let reset7 = usageEvent?["sevenDayResetsAt"] as? String ?? stateEvent?["sevenDayResetsAt"] as? String
-            let (leftPng, rightPng) = renderUsageMergedButton(pct5: usagePct5, pct7: usagePct7, reset5: reset5, reset7: reset7)
+            let renewal = billingSummary(from: usageEvent) ?? billingSummary(from: stateEvent)
+            let png = renderUsageWideButton(pct5: usagePct5, pct7: usagePct7, reset5: reset5, reset7: reset7, renewal: renewal)
+            let iconPath = iconFilePath(slotId: 13, suffix: "wide", data: png)
             manifest["3_2"] = manifestEntry(
                 text: hidesNativeSessionLabels ? "" : usageText(window: "5H", percent: usagePct5),
-                iconPath: "icons/btn13L.png",
+                iconPath: iconPath,
                 clearAction: true
             )
-            manifest["4_2"] = manifestEntry(
-                text: hidesNativeSessionLabels ? "" : usageText(window: "7D", percent: usagePct7),
-                iconPath: "icons/btn13R.png",
-                clearAction: true
-            )
-            files.append(("icons/btn13L.png", leftPng))
-            files.append(("icons/btn13R.png", rightPng))
+            files.append((iconPath, png))
         } else {
             let mergedSlot = slots[13]
-            let (leftPng, rightPng) = renderMirroredMergedButton(mergedSlot)
+            let png = renderWideButton(left: mergedSlot, right: mergedSlot)
+            let iconPath = iconFilePath(slotId: 13, suffix: "wide", data: png)
             manifest["3_2"] = manifestEntry(
                 text: manifestText(for: mergedSlot, optionMode: optionMode, slotId: 13),
-                iconPath: "icons/btn13L.png",
+                iconPath: iconPath,
                 actionPath: "agentdeck://back"
             )
-            manifest["4_2"] = manifestEntry(
-                text: "",
-                iconPath: "icons/btn13R.png",
-                actionPath: "agentdeck://back"
-            )
-            files.append(("icons/btn13L.png", leftPng))
-            files.append(("icons/btn13R.png", rightPng))
+            files.append((iconPath, png))
         }
 
         if let manifestData = try? JSONSerialization.data(withJSONObject: manifest) {
@@ -1548,27 +1573,22 @@ private enum D200hRenderer {
             if btnId == 13 {
                 guard optionMode, btnId < slots.count else { continue }
                 let mergedSlot = slots[13]
-                let (leftPng, rightPng) = renderMirroredMergedButton(mergedSlot)
+                let png = renderWideButton(left: mergedSlot, right: mergedSlot)
+                let iconPath = iconFilePath(slotId: 13, suffix: "wide", data: png)
                 manifest["3_2"] = manifestEntry(
                     text: manifestText(for: mergedSlot, optionMode: optionMode, slotId: 13),
-                    iconPath: "icons/btn13L.png",
+                    iconPath: iconPath,
                     actionPath: "agentdeck://back"
                 )
-                manifest["4_2"] = manifestEntry(
-                    text: "",
-                    iconPath: "icons/btn13R.png",
-                    actionPath: "agentdeck://back"
-                )
-                files.append(("icons/btn13L.png", leftPng))
-                files.append(("icons/btn13R.png", rightPng))
+                files.append((iconPath, png))
                 continue
             }
             guard btnId < keyDefs.count, btnId < slots.count else { continue }
             let key = keyDefs[btnId]
             let slot = slots[btnId]
-            let iconPath = "icons/btn\(key.id).png"
             let colRow = "\(key.col)_\(key.row)"
             let png = renderButtonPng(slot)
+            let iconPath = iconFilePath(slotId: key.id, data: png)
             let label = manifestText(for: slot, optionMode: optionMode, slotId: key.id)
             let actionPath = actionPath(for: slot, slotId: key.id, optionMode: optionMode, sessions: sessions, sessionPage: sessionPage, focusedSessionId: focusedSessionId)
             manifest[colRow] = manifestEntry(text: label, iconPath: iconPath, actionPath: actionPath)
@@ -1582,6 +1602,100 @@ private enum D200hRenderer {
     }
 
     // MARK: - Usage Merged Button (slot 13, 2 columns wide)
+
+    /// Render the merged 5H/7D window as one 392x196 image, matching the D200H simulator.
+    private static func renderUsageWideButton(
+        pct5: Double, pct7: Double,
+        reset5: String? = nil, reset7: String? = nil,
+        renewal: String? = nil
+    ) -> Data {
+        let width = ICON_SIZE * 2
+        let height = ICON_SIZE
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return Data() }
+
+        let w = CGFloat(width)
+        let h = CGFloat(height)
+        let color5 = pctColor(pct5)
+        let color7 = pctColor(pct7)
+        let reset5Str = formatResetTime(reset5)
+        let reset7Str = formatResetTime(reset7)
+        let billing = sanitizeNativeText(renewal ?? "")
+
+        drawInTopDownCoordinates(ctx, canvasHeight: h) {
+            ctx.setFillColor(rgb(15, 23, 42))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+
+            drawUsageSegmentGauge(ctx, x: 78, y: 53, pct: pct5, color: color5)
+            drawUsageSegmentGauge(ctx, x: 78, y: 105, pct: pct7, color: color7)
+        }
+
+        drawText("USAGE", ctx: ctx, y: 22, color: rgb(148, 163, 184), font: ctFont(22, bold: true), leftBound: 0, rightBound: w, alignLeft: false, canvasHeight: h)
+
+        drawText("5H", ctx: ctx, y: 49, color: rgb(148, 163, 184), font: ctFont(22, bold: true), leftBound: 34, rightBound: 68, alignLeft: true, canvasHeight: h)
+        drawText("\(Int(pct5.rounded()))%", ctx: ctx, y: 44, color: rgb(255, 255, 255), font: ctFont(26, bold: true), leftBound: 302, rightBound: 366, alignLeft: false, canvasHeight: h)
+        if !reset5Str.isEmpty {
+            drawText(reset5Str, ctx: ctx, y: 74, color: rgb(148, 163, 184), font: ctFont(17, bold: true), leftBound: 288, rightBound: 366, alignLeft: false, canvasHeight: h)
+        }
+
+        drawText("7D", ctx: ctx, y: 101, color: rgb(148, 163, 184), font: ctFont(22, bold: true), leftBound: 34, rightBound: 68, alignLeft: true, canvasHeight: h)
+        drawText("\(Int(pct7.rounded()))%", ctx: ctx, y: 96, color: rgb(255, 255, 255), font: ctFont(26, bold: true), leftBound: 302, rightBound: 366, alignLeft: false, canvasHeight: h)
+        if !reset7Str.isEmpty {
+            drawText(reset7Str, ctx: ctx, y: 126, color: rgb(148, 163, 184), font: ctFont(17, bold: true), leftBound: 288, rightBound: 366, alignLeft: false, canvasHeight: h)
+        }
+
+        if !billing.isEmpty {
+            drawText(String(billing.prefix(30)), ctx: ctx, y: 140, color: rgb(100, 116, 139), font: ctFont(16, bold: true), leftBound: 24, rightBound: w - 24, alignLeft: false, canvasHeight: h)
+        }
+
+        return pngImage(ctx)
+    }
+
+    private static func drawUsageSegmentGauge(_ ctx: CGContext, x: CGFloat, y: CGFloat, pct: Double, color: CGColor) {
+        let segments = 8
+        let segmentWidth: CGFloat = 20
+        let segmentHeight: CGFloat = 18
+        let gap: CGFloat = 5
+        let filled = Int(round(max(0, min(100, pct)) / 100 * Double(segments)))
+        for i in 0..<segments {
+            let rect = CGRect(x: x + CGFloat(i) * (segmentWidth + gap), y: y, width: segmentWidth, height: segmentHeight)
+            ctx.setFillColor(i < filled ? color : rgb(30, 41, 59))
+            ctx.setAlpha(i < filled ? 0.88 : 0.78)
+            ctx.addPath(CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil))
+            ctx.fillPath()
+        }
+        ctx.setAlpha(1)
+    }
+
+    private static func drawUsageLimitRow(
+        _ ctx: CGContext, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat = 18,
+        pct: Double, color: CGColor, minFill: CGFloat? = nil, fillAlpha: CGFloat = 0.82, strokeAlpha: CGFloat = 0.28
+    ) {
+        let fillW = max(minFill ?? height, width * CGFloat(max(0, min(100, pct))) / 100)
+        let rect = CGRect(x: x, y: y, width: width, height: height)
+        let fillRect = CGRect(x: x, y: y, width: fillW, height: height)
+        ctx.setAlpha(1.0)
+        ctx.setFillColor(rgb(12, 13, 18))
+        ctx.addPath(CGPath(roundedRect: rect, cornerWidth: height / 2, cornerHeight: height / 2, transform: nil))
+        ctx.fillPath()
+        ctx.setAlpha(fillAlpha)
+        ctx.setFillColor(color)
+        ctx.addPath(CGPath(roundedRect: fillRect, cornerWidth: height / 2, cornerHeight: height / 2, transform: nil))
+        ctx.fillPath()
+        if strokeAlpha > 0 {
+            ctx.setAlpha(strokeAlpha)
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(1)
+            ctx.addPath(CGPath(roundedRect: rect, cornerWidth: height / 2, cornerHeight: height / 2, transform: nil))
+            ctx.strokePath()
+        }
+        ctx.setAlpha(1.0)
+    }
 
     /// Render usage as two buttons with percentage, gauge color, and reset time.
     private static func renderUsageMergedButton(
@@ -1620,13 +1734,61 @@ private enum D200hRenderer {
     }
 
     private static func pctColor(_ pct: Double) -> CGColor {
-        if pct > 80 { return rgb(239, 68, 68) }   // red
-        if pct > 50 { return rgb(245, 158, 11) }   // amber
-        return rgb(34, 197, 94)                      // green
+        if pct > 80 { return rgb(239, 68, 68) }
+        if pct > 50 { return rgb(234, 179, 8) }
+        return rgb(34, 197, 94)
     }
 
     private static func usageText(window: String, percent: Double) -> String {
         "\(window) \(Int(percent.rounded()))%"
+    }
+
+    private static func billingSummary(from event: [String: Any]?) -> String? {
+        guard let event else { return nil }
+        if let subscriptions = event["subscriptions"] as? [[String: Any]] {
+            let parts = subscriptions.compactMap { sub -> String? in
+                guard let name = sub["name"] as? String,
+                      let until = sub["until"] as? String,
+                      let date = formatBillingDate(until) else { return nil }
+                return "\(name) \(date)"
+            }
+            if !parts.isEmpty { return parts.joined(separator: " · ") }
+        }
+        if let plan = event["codexPlanType"] as? String,
+           let until = event["codexSubscriptionActiveUntil"] as? String,
+           let date = formatBillingDate(until) {
+            return "\(chatGptPlanDisplay(plan)) \(date)"
+        }
+        return nil
+    }
+
+    private static func chatGptPlanDisplay(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "plus": return "ChatGPT Plus"
+        case "pro": return "ChatGPT Pro"
+        case "team": return "ChatGPT Team"
+        case "enterprise": return "ChatGPT Enterprise"
+        default: return "ChatGPT \(raw)"
+        }
+    }
+
+    private static func formatBillingDate(_ raw: String) -> String? {
+        let date: Date?
+        if raw.contains("T") {
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            date = fractional.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+        } else {
+            let parser = DateFormatter()
+            parser.locale = Locale(identifier: "en_US_POSIX")
+            parser.dateFormat = "yyyy-MM-dd"
+            date = parser.date(from: raw)
+        }
+        guard let date else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
     }
 
     private static func manifestText(for slot: ButtonSlot, optionMode: Bool, slotId: Int) -> String {
@@ -1659,7 +1821,9 @@ private enum D200hRenderer {
                 "Icon": iconPath,
             ]],
         ]
-        if !clearAction {
+        if clearAction {
+            entry["Action"] = ""
+        } else {
             if let actionPath {
                 entry["Action"] = "com.ulanzi.ulanzideck.system.open"
                 entry["ActionParam"] = ["Path": actionPath]
@@ -1699,6 +1863,48 @@ private enum D200hRenderer {
     private static func renderMirroredMergedButton(_ slot: ButtonSlot) -> (left: Data, right: Data) {
         let png = renderButtonPng(slot)
         return (png, png)
+    }
+
+    private static func renderWideButton(left: ButtonSlot, right: ButtonSlot) -> Data {
+        let width = ICON_SIZE * 2
+        let height = ICON_SIZE
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return Data() }
+        guard let leftImage = CGImageSourceCreateWithData(renderButtonPng(left) as CFData, nil).flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) }),
+              let rightImage = CGImageSourceCreateWithData(renderButtonPng(right) as CFData, nil).flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) }) else {
+            return Data()
+        }
+        ctx.draw(leftImage, in: CGRect(x: 0, y: 0, width: ICON_SIZE, height: ICON_SIZE))
+        ctx.draw(rightImage, in: CGRect(x: ICON_SIZE, y: 0, width: ICON_SIZE, height: ICON_SIZE))
+        return pngImage(ctx)
+    }
+
+    private static func iconFilePath(slotId: Int, suffix: String? = nil, data: Data) -> String {
+        let middle = suffix.map { "-\($0)" } ?? ""
+        return "icons/btn\(slotId)\(middle)-\(D200H_RENDERER_REV)-\(fnv1a32Hex(data)).png"
+    }
+
+    private static func fnv1a32Hex(_ data: Data) -> String {
+        var hash: UInt32 = 0x811c9dc5
+        for byte in data {
+            hash ^= UInt32(byte)
+            hash = hash &* 0x01000193
+        }
+        return String(format: "%08x", hash)
+    }
+
+    private static func pngImage(_ ctx: CGContext) -> Data {
+        guard let image = ctx.makeImage() else { return Data() }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, UTType.png.identifier as CFString, 1, nil) else { return Data() }
+        CGImageDestinationAddImage(dest, image, nil)
+        CGImageDestinationFinalize(dest)
+        return data as Data
     }
 
     private static func sanitizeNativeText(_ raw: String) -> String {
@@ -1756,9 +1962,10 @@ private func ctFont(_ size: CGFloat, bold: Bool = false) -> CTFont {
 /// Draw CoreText string horizontally within [leftBound, rightBound], at given y (top-down, auto-flipped)
 private func drawText(
     _ text: String, ctx: CGContext, y: CGFloat, color: CGColor,
-    font: CTFont, leftBound: CGFloat = 14, rightBound: CGFloat = 182, alpha: CGFloat = 1.0, alignLeft: Bool = false
+    font: CTFont, leftBound: CGFloat = 14, rightBound: CGFloat = 182, alpha: CGFloat = 1.0, alignLeft: Bool = false,
+    canvasHeight: CGFloat = CGFloat(ICON_SIZE)
 ) {
-    let s = CGFloat(ICON_SIZE)
+    let s = canvasHeight
     let attrs: [NSAttributedString.Key: Any] = [
         .font: font,
         .foregroundColor: color,
@@ -1792,14 +1999,15 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     ) else { return Data() }
 
     let s = CGFloat(size)
-    let pad: CGFloat = 4
-    let cornerR: CGFloat = 16
+    let isBrandTile = isSessionBrandGlyph(slot.icon)
+    let pad: CGFloat = isBrandTile ? 18 : 4
+    let cornerR: CGFloat = isBrandTile ? 13 : 16
     let innerRect = CGRect(x: pad, y: pad, width: s - pad * 2, height: s - pad * 2)
     let innerPath = CGPath(roundedRect: innerRect, cornerWidth: cornerR, cornerHeight: cornerR, transform: nil)
-    let isBrandTile = isSessionBrandGlyph(slot.icon)
+    let buttonBg = isBrandTile ? rgb(28, 28, 30) : slot.bg
 
     // 1. Dark canvas background
-    ctx.setFillColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1)
+    ctx.setFillColor(isBrandTile ? rgb(13, 13, 18) : rgb(13, 13, 18))
     ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
 
     // 2. Rounded rect button background with a slight depth band, but no large gradients
@@ -1807,12 +2015,12 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     ctx.saveGState()
     ctx.addPath(innerPath)
     ctx.clip()
-    ctx.setFillColor(slot.bg)
+    ctx.setFillColor(buttonBg)
     ctx.fill(innerRect)
-    ctx.setFillColor(blendColor(slot.bg, toward: (1, 1, 1), ratio: 0.16))
+    ctx.setFillColor(blendColor(buttonBg, toward: (1, 1, 1), ratio: 0.16))
     ctx.setAlpha(0.08)
     ctx.fill(CGRect(x: innerRect.minX, y: innerRect.minY, width: innerRect.width, height: 34))
-    ctx.setFillColor(blendColor(slot.bg, toward: (0, 0, 0), ratio: 0.34))
+    ctx.setFillColor(blendColor(buttonBg, toward: (0, 0, 0), ratio: 0.34))
     ctx.setAlpha(0.12)
     ctx.fill(CGRect(x: innerRect.minX, y: innerRect.maxY - 44, width: innerRect.width, height: 44))
     ctx.setAlpha(1.0)
@@ -1861,15 +2069,18 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
 
     // 4. Stream Deck-style thin left indicator for session tiles only.
     if slot.enabled && isBrandTile {
+        let stripColor: CGColor
         switch slot.borderStyle {
         case .awaitingPulse, .processingDash, .solid:
-            drawInTopDownCoordinates(ctx) {
-                ctx.setFillColor(rgb(59, 130, 246))
-                ctx.setAlpha(0.7)
-                ctx.fill(CGRect(x: pad + 1, y: pad + 24, width: 4, height: s - pad * 2 - 48))
-                ctx.setAlpha(1.0)
-            }
-        case .none: break
+            stripColor = slot.statusColor ?? rgb(59, 130, 246)
+        case .none:
+            stripColor = slot.iconColor ?? rgb(59, 130, 246)
+        }
+        drawInTopDownCoordinates(ctx) {
+            ctx.setFillColor(stripColor)
+            ctx.setAlpha(0.78)
+            ctx.fill(CGRect(x: pad + 3, y: pad + 34, width: 5, height: s - pad * 2 - 68))
+            ctx.setAlpha(1.0)
         }
     }
 
@@ -1879,7 +2090,7 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         let iconColor = slot.iconColor ?? rgb(241, 245, 249)
         let iconRect: CGRect
         if isBrandTile {
-            iconRect = CGRect(x: 18, y: 18, width: 64, height: 64)
+            iconRect = CGRect(x: 27, y: 29, width: 76, height: 76)
         } else if slot.textOverlay == .usageStat {
             iconRect = CGRect(x: 58, y: 18, width: s - 116, height: 52)
         } else {
@@ -1905,8 +2116,8 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     // 6. Status dot at Top Right
     if slot.enabled && isBrandTile {
         let dotR: CGFloat = 8
-        let dotX: CGFloat = s - pad - 20
-        let dotY: CGFloat = pad + 20
+        let dotX: CGFloat = 163
+        let dotY: CGFloat = 33
         let dotColor = slot.statusColor ?? rgb(148, 163, 184)
 
         drawInTopDownCoordinates(ctx) {
@@ -1937,8 +2148,8 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     return pngData
 }
 
-private func drawInTopDownCoordinates(_ ctx: CGContext, _ draw: () -> Void) {
-    let s = CGFloat(ICON_SIZE)
+private func drawInTopDownCoordinates(_ ctx: CGContext, canvasHeight: CGFloat = CGFloat(ICON_SIZE), _ draw: () -> Void) {
+    let s = canvasHeight
     ctx.saveGState()
     ctx.translateBy(x: 0, y: s)
     ctx.scaleBy(x: 1, y: -1)
@@ -1947,22 +2158,23 @@ private func drawInTopDownCoordinates(_ ctx: CGContext, _ draw: () -> Void) {
 }
 
 private func drawSessionTextOverlay(_ ctx: CGContext, slot: ButtonSlot) {
-    let projectName = String(slot.title.prefix(16))
+    let projectName = String(slot.title.prefix(14))
     let model = String(slot.modelName.prefix(16))
     let state = String(slot.stateLabel.prefix(18))
-    let projectFont = ctFont(projectName.count > 10 ? 20 : 24, bold: true)
+    let projectFont = ctFont(projectName.count >= 8 ? 20 : 22, bold: true)
+    let hasModel = !model.isEmpty
+    let leftEdge: CGFloat = 34
+    let rightEdge: CGFloat = 174
 
-    let leftEdge: CGFloat = 18
-
-    drawText(projectName, ctx: ctx, y: 130, color: rgb(255, 255, 255), font: projectFont, leftBound: leftEdge, rightBound: 182, alignLeft: true)
+    drawText(projectName, ctx: ctx, y: hasModel ? 104 : 112, color: rgb(255, 255, 255), font: projectFont, leftBound: leftEdge, rightBound: rightEdge, alignLeft: true)
     
-    if !model.isEmpty {
-        drawText(model, ctx: ctx, y: 152, color: rgb(148, 163, 184), font: ctFont(16, bold: true), leftBound: leftEdge, rightBound: 182, alpha: 0.96, alignLeft: true)
+    if hasModel {
+        drawText(model, ctx: ctx, y: 126, color: rgb(148, 163, 184), font: ctFont(15, bold: true), leftBound: leftEdge, rightBound: rightEdge, alpha: 0.96, alignLeft: true)
     }
     
     if !state.isEmpty {
         let stateColor = slot.statusColor ?? rgb(148, 163, 184)
-        drawText(state, ctx: ctx, y: 176, color: stateColor, font: ctFont(15, bold: true), leftBound: leftEdge, rightBound: 182, alignLeft: true)
+        drawText(state, ctx: ctx, y: hasModel ? 148 : 140, color: stateColor, font: ctFont(14, bold: true), leftBound: leftEdge, rightBound: rightEdge, alignLeft: true)
     }
 }
 

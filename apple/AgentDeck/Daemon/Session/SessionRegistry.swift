@@ -4,6 +4,42 @@
 
 import Foundation
 
+/// Dedicated URLSession for short-lived local-loopback probes (sibling
+/// `/health`, ollama `/api/ps`, mlx `/models`). Isolating these from
+/// `URLSession.shared` prevents Pixoo/APME/usage HTTP storms from starving
+/// the connection pool and causing legitimate sibling sessions to be pruned
+/// on a single transient timeout. See memory/bug_urlsession_pool_starvation.md
+enum LocalProbeSession {
+    static let shared: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 2
+        config.timeoutIntervalForResource = 2
+        config.httpMaximumConnectionsPerHost = 2
+        config.waitsForConnectivity = false
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config)
+    }()
+}
+
+/// Tracks consecutive health-probe failures per port so that a single
+/// transient failure (e.g. URLSession pool contention) does not prune a
+/// legitimate sibling session. Three consecutive failures required before
+/// `listActiveAndReachable()` treats a sibling as dead.
+actor SessionProbeFailureTracker {
+    private var failures: [Int: Int] = [:]
+
+    func recordSuccess(port: Int) {
+        failures[port] = nil
+    }
+
+    /// Returns the new failure count after incrementing.
+    func recordFailure(port: Int) -> Int {
+        let count = (failures[port] ?? 0) + 1
+        failures[port] = count
+        return count
+    }
+}
+
 struct DaemonInfo: Codable, Sendable {
     let port: Int
     let pid: Int
@@ -34,6 +70,12 @@ final class SessionRegistry: Sendable {
     static let defaultPort = 9120
     static let basePort = 9120
     static let maxPort = 9139
+
+    /// Per-port consecutive health-probe failure counter. Shared across the
+    /// SessionRegistry singleton so repeated calls to `listActiveAndReachable()`
+    /// can enforce an N-strike grace period before pruning.
+    private static let probeFailureTracker = SessionProbeFailureTracker()
+    private static let probeFailureThreshold = 3
 
     private var dataDir: URL {
         if let env = ProcessInfo.processInfo.environment["AGENTDECK_DATA_DIR"] {
@@ -96,18 +138,45 @@ final class SessionRegistry: Sendable {
         let candidates = pidAlive.filter { $0.agentType != "daemon" }
         guard !candidates.isEmpty else { return pidAlive }
 
-        let reachableIds: Set<String> = await withTaskGroup(of: (String, Bool).self) { group in
+        // Probe in parallel, return (id, port, ok) so the grace-period logic
+        // below can track consecutive failures per port.
+        struct ProbeResult: Sendable {
+            let id: String
+            let port: Int
+            let ok: Bool
+        }
+        let results: [ProbeResult] = await withTaskGroup(of: ProbeResult.self) { group in
             for entry in candidates {
                 group.addTask { [self] in
                     let ok = await self.isSessionReachable(port: entry.port)
-                    return (entry.id, ok)
+                    return ProbeResult(id: entry.id, port: entry.port, ok: ok)
                 }
             }
-            var ids = Set<String>()
-            for await (id, ok) in group where ok {
-                ids.insert(id)
+            var out: [ProbeResult] = []
+            for await r in group { out.append(r) }
+            return out
+        }
+
+        // Apply 3-strike grace: a sibling is only considered unreachable after
+        // N consecutive failed probes. This absorbs transient URLSession
+        // contention (Pixoo storms, APME LLM calls) that would otherwise prune
+        // a perfectly healthy session on the first miss.
+        var reachableIds = Set<String>()
+        for r in results {
+            if r.ok {
+                await Self.probeFailureTracker.recordSuccess(port: r.port)
+                reachableIds.insert(r.id)
+            } else {
+                let count = await Self.probeFailureTracker.recordFailure(port: r.port)
+                if count < Self.probeFailureThreshold {
+                    // Grace: keep in the survivor set so it isn't pruned yet.
+                    reachableIds.insert(r.id)
+                    DaemonLogger.shared.debug(
+                        "SessionRegistry",
+                        "Sibling health probe failed for port \(r.port) (\(count)/\(Self.probeFailureThreshold)) — holding"
+                    )
+                }
             }
-            return ids
         }
 
         let survivors = pidAlive.filter { entry in
@@ -124,9 +193,9 @@ final class SessionRegistry: Sendable {
     private func isSessionReachable(port: Int) async -> Bool {
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 1.5
+        request.timeoutInterval = 2
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await LocalProbeSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else { return false }
             return http.statusCode == 200
         } catch {
@@ -206,7 +275,7 @@ final class SessionRegistry: Sendable {
         var request = URLRequest(url: url)
         request.timeoutInterval = 2
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await LocalProbeSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
             return try JSONSerialization.jsonObject(with: data) as? [String: Any]
         } catch {
