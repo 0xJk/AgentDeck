@@ -37,7 +37,7 @@ AgentDeck is a physical control surface for AI coding agents. It started with an
 </p>
 
 <p align="center">
-  <img src="docs/media/desk-setup-2.jpg" width="720" alt="AgentDeck — TUI dashboard, Pixoo64, Stream Deck+, and all surfaces running simultaneously">
+  <img src="docs/media/desk-setup-3.jpg" width="720" alt="AgentDeck — TUI dashboard, Pixoo64, Stream Deck+, Ulanzi D200H, TC001 matrix, Apple and Android surfaces running simultaneously">
 </p>
 
 | | Requirement |
@@ -432,6 +432,11 @@ A 14-key USB HID controller with a 960×540 LCD — a second hardware surface th
 - **13 session buttons** — one per session (same OpenClaw-first ordering as Stream Deck+), with agent-colored watermarks, project name, and state indicator baked into each key image
 - **1 big merged usage button** (col3+col4, row2) — dedicated usage monitor with live 5h/7d gauges
 - **Press feedback** — a bright press-flash on every keydown for tactile confirmation even without force touch
+
+<p align="center">
+  <img src="docs/media/d200h-session-buttons.jpg" width="720" alt="Ulanzi D200H Deck Dock in-desk view — 13 session buttons lit with agent-colored watermarks alongside Stream Deck+, TC001 matrix, and companion surfaces">
+</p>
+<p align="center"><em>D200H session keys lit in a full desk view — 13 sessions rendered side-by-side with the Stream Deck+ keypad</em></p>
 
 ### Transport
 
