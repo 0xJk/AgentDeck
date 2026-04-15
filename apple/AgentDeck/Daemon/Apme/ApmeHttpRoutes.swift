@@ -102,6 +102,28 @@ enum ApmeHttpRoutes {
             return .json(["rubric": rubric])
         }
 
+        // Phase 2: model recommendation endpoint backed by v_model_scorecard.
+        // Query params: ?budget=<usd>&models=<comma-separated> (both optional)
+        await httpServer.get("/apme/recommend") { request in
+            var input = ApmeRecommendInput()
+            if let b = request.queryParams["budget"], let d = Double(b) { input.budgetUsd = d }
+            if let models = request.queryParams["models"], !models.isEmpty {
+                input.availableModels = models.split(separator: ",").map { String($0) }
+            }
+            let candidates = ApmeRecommender.recommend(store: store, input: input)
+            let json = candidates.map { c -> [String: Any] in
+                [
+                    "modelId": c.modelId,
+                    "agentType": c.agentType,
+                    "expectedScore": c.expectedScore,
+                    "expectedCostUsd": c.expectedCostUsd,
+                    "confidence": c.confidence,
+                    "rationale": c.rationale,
+                ]
+            }
+            return .json(["candidates": json])
+        }
+
         await httpServer.post("/apme/vibe") { request in
             guard let body = request.body,
                   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],

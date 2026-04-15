@@ -129,5 +129,127 @@ enum ApmeClassifier {
         let category = classify(signals)
         return (signals, category)
     }
+
+    // MARK: - LLM-assisted classification (Phase 2)
+    //
+    // Mirrors bridge/src/apme/classifier.ts `classifyWithLlm` + `classifyRunSmart`.
+    // Rule-based runs first (cheap + deterministic). If rules give .unknown
+    // AND the run has a prompt, we fall back to the configured judge backend
+    // for a single-shot category classification.
+    //
+    // Cost posture per feedback_cost_sensitive_defaults memory: the default
+    // backend is Foundation Models, so fallback is on-device and free. MLX
+    // or API backends only fire when the user explicitly picks them.
+
+    private static let llmClassifyPrompt = """
+        You are a task classifier for coding agent sessions.
+        Given the user's prompt and tool usage summary, classify this task into exactly ONE category.
+
+        Categories:
+        - planning: architecture design, plan mode, thinking about approach
+        - research: searching code, reading docs, web search, investigating
+        - coding: writing/editing code, creating files, implementing features
+        - debugging: fixing bugs, running tests, investigating failures
+        - refactoring: restructuring existing code without changing behavior
+        - review: reading code for understanding, code review
+        - ops: git operations, deployments, config changes, CI/CD
+        - conversation: quick question, chat, no tools used
+        - multi_agent: delegating to sub-agents
+
+        Respond with ONLY the category name, nothing else.
+        """
+
+    /// Classify a run using the LLM judge backend. Returns rule-based
+    /// fallback when the prompt is too short or the judge is unavailable.
+    /// Cost: $0 on the default (Foundation Models) backend.
+    static func classifyWithLlm(taskPrompt: String, signals: TaskSignals) async -> TaskCategory {
+        let trimmed = taskPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 5 { return classify(signals) }
+
+        let toolSummary = signals.toolCounts
+            .sorted { $0.value > $1.value }
+            .prefix(5)
+            .map { "\($0.key)×\($0.value)" }
+            .joined(separator: ", ")
+
+        let promptSlice = String(taskPrompt.prefix(500))
+        let userMsg = """
+            Prompt: "\(promptSlice)"
+            Tools used: \(toolSummary.isEmpty ? "none" : toolSummary) (\(signals.totalToolCalls) total)
+            Files modified: \(signals.filesModified), created: \(signals.filesCreated)
+            Duration: \(signals.sessionDurationSec)s, turns: \(signals.turnCount)
+            """
+
+        // Use whatever judge backend the user configured. The judge module's
+        // interface is "pass a full prompt, get a text response" — we wrap
+        // the system prompt + user message into one text blob to stay compatible
+        // with all backends without a chat-completions abstraction.
+        let fullPrompt = llmClassifyPrompt + "\n\n" + userMsg
+        guard let response = await callConfiguredJudge(prompt: fullPrompt) else {
+            return classify(signals)
+        }
+
+        // Accept either the bare category name or any response containing it.
+        // Normalize: lowercase, strip non-alpha-underscore.
+        let normalized = response
+            .lowercased()
+            .components(separatedBy: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz_").inverted)
+            .joined()
+
+        let allCategories = TaskCategory.allCases.map { $0.rawValue }
+        if let exact = allCategories.first(where: { $0 == normalized }),
+           let cat = TaskCategory(rawValue: exact) {
+            return cat
+        }
+        // Partial match — models often wrap the answer in prose even
+        // when told not to.
+        if let partial = allCategories.first(where: { normalized.contains($0) }),
+           let cat = TaskCategory(rawValue: partial) {
+            return cat
+        }
+        return classify(signals)
+    }
+
+    /// Invoke the configured judge backend for a one-shot classification.
+    /// Routes through ApmeJudgeFoundationModels by default; other backends
+    /// (MLX, API) are reached via the same dispatch path ApmeRunner uses
+    /// for eval scoring, keeping the classifier/eval backend choice in sync.
+    private static func callConfiguredJudge(prompt: String) async -> String? {
+        let config = ApmeSettings.load()
+        switch config.judge.backend {
+        case .foundationModels:
+            return await ApmeJudgeFoundationModels.judge(prompt: prompt)
+        case .mlx:
+            return await ApmeJudgeMlx.judge(prompt: prompt, config: config.judge)
+        case .api:
+            return await ApmeJudgeApi.judge(prompt: prompt, config: config.judge)
+        case .openclaw:
+            // Not wired in Phase 2 — degrade to Foundation Models.
+            return await ApmeJudgeFoundationModels.judge(prompt: prompt)
+        }
+    }
+
+    /// Smart classification: rule-based first, LLM fallback on .unknown.
+    /// Returns the source so callers can persist `task_category_source`
+    /// ('rule' vs 'llm') for downstream analytics.
+    static func classifyRunSmart(
+        store: ApmeStore,
+        runId: String
+    ) async -> (signals: TaskSignals, category: TaskCategory, source: String) {
+        let signals = computeSignals(store: store, runId: runId)
+        let ruleCategory = classify(signals)
+        if ruleCategory != .unknown {
+            return (signals, ruleCategory, "rule")
+        }
+        // Rule-based gave up — try LLM if we have a prompt to feed it.
+        guard let run = store.getRun(id: runId),
+              let prompt = run.taskPrompt,
+              !prompt.isEmpty
+        else {
+            return (signals, .unknown, "rule")
+        }
+        let llmCategory = await classifyWithLlm(taskPrompt: prompt, signals: signals)
+        return (signals, llmCategory, llmCategory != .unknown ? "llm" : "rule")
+    }
 }
 #endif

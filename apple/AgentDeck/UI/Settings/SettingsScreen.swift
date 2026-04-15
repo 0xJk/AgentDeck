@@ -133,6 +133,11 @@ struct SettingsScreen: View {
                     .padding(8)
             }
 
+            GroupBox("APME") {
+                apmeContent
+                    .padding(8)
+            }
+
             GroupBox("About") {
                 aboutContent
                     .padding(8)
@@ -141,7 +146,7 @@ struct SettingsScreen: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 460, height: 620)
+        .frame(width: 460, height: 720)
     }
     #endif
 
@@ -573,6 +578,79 @@ struct SettingsScreen: View {
                     .foregroundStyle(TerrariumHUD.subtext)
             }
         }
+    }
+
+    // MARK: - APME section
+
+    /// APME judge backend picker + inline status for each option.
+    /// Writes the selection to both `UserDefaults` (fast local access)
+    /// and `~/.agentdeck/settings.json` (shared with the Node bridge).
+    ///
+    /// Availability semantics:
+    ///   - foundationModels: requires macOS 26 + Apple Intelligence on Apple
+    ///     Silicon. Status line shows availability from SystemLanguageModel.
+    ///   - mlx: requires user-run local MLX server. Status is "server
+    ///     required — check /apme in the dashboard after starting it".
+    ///   - api: requires ANTHROPIC_API_KEY in env or settings.json.
+    ///     Paid, opt-in, highlighted so users don't pick it accidentally.
+    private var apmeContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Judge Backend")
+                .font(.system(size: 13, weight: .semibold))
+
+            Text("Which model scores your agent turns. Changes apply immediately and the next eval uses the new backend.")
+                .font(.system(size: 11))
+                .foregroundStyle(TerrariumHUD.subtext)
+
+            Picker("Backend", selection: $preferences.apmeJudgeBackend) {
+                Text("Foundation Models (on-device, free)").tag("foundationModels")
+                Text("MLX (local server, free)").tag("mlx")
+                Text("Anthropic API (paid)").tag("api")
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+
+            // Inline availability hint for the current selection.
+            Group {
+                switch preferences.apmeJudgeBackend {
+                case "foundationModels":
+                    let ready = ApmeJudgeFoundationModels.isAvailable
+                    Label(
+                        ready ? "Apple Intelligence ready" : ApmeJudgeFoundationModels.unavailableReason,
+                        systemImage: ready ? "checkmark.circle.fill" : "exclamationmark.triangle"
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(ready ? .green : .orange)
+                case "mlx":
+                    Label(
+                        "Requires a local MLX server at http://127.0.0.1:8800. Start it before scoring runs.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(TerrariumHUD.subtext)
+                case "api":
+                    let configured = ApmeJudgeApi.isConfigured
+                    Label(
+                        configured
+                            ? "ANTHROPIC_API_KEY detected. Calls cost Anthropic credits."
+                            : "Set ANTHROPIC_API_KEY in env or ~/.agentdeck/settings.json. Paid backend — opt-in only.",
+                        systemImage: configured ? "dollarsign.circle.fill" : "key.slash"
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(configured ? .yellow : .orange)
+                default:
+                    EmptyView()
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Text("APME data lives in ~/.agentdeck/apme.sqlite and the dashboard is accessible from the menu bar APME button.")
+                .font(.system(size: 10))
+                .foregroundStyle(TerrariumHUD.subtext.opacity(0.7))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var servicesContent: some View {

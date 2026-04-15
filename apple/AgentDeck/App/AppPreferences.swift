@@ -82,6 +82,20 @@ final class AppPreferences: ObservableObject, @unchecked Sendable {
     @Published var showSubscriptionsSection: Bool {
         didSet { defaults.set(showSubscriptionsSection, forKey: Keys.showSubscriptionsSection) }
     }
+
+    /// APME judge backend selected by the user in Settings. Default is
+    /// `foundationModels` (on-device, zero cost, macOS 26+). The didSet
+    /// mirrors the choice into `~/.agentdeck/settings.json` so the Node
+    /// bridge + Swift daemon share a single source of truth. Per
+    /// feedback_cost_sensitive_defaults memory, switching to `.api` is a
+    /// paid opt-in — the Settings UI surfaces that before accepting.
+    @Published var apmeJudgeBackend: String {
+        didSet {
+            defaults.set(apmeJudgeBackend, forKey: Keys.apmeJudgeBackend)
+            writeApmeJudgeBackendToSettingsJson(apmeJudgeBackend)
+        }
+    }
+
     @Published private(set) var antigravityAccessEnabled: Bool
     @Published private(set) var antigravitySelectedPath: String?
 
@@ -107,6 +121,37 @@ final class AppPreferences: ObservableObject, @unchecked Sendable {
         self.showSubscriptionsSection = defaults.object(forKey: Keys.showSubscriptionsSection) as? Bool ?? true
         self.antigravitySelectedPath = defaults.string(forKey: Keys.antigravitySelectedPath)
         self.antigravityAccessEnabled = defaults.data(forKey: Keys.antigravityBookmark) != nil
+        self.apmeJudgeBackend = defaults.string(forKey: Keys.apmeJudgeBackend) ?? "foundationModels"
+    }
+
+    /// Merge the new backend choice into ~/.agentdeck/settings.json without
+    /// clobbering other keys. Writes atomically so a crashed write doesn't
+    /// leave the file half-parsed.
+    private func writeApmeJudgeBackendToSettingsJson(_ backend: String) {
+        #if os(macOS)
+        let home = (NSHomeDirectory() as NSString).appendingPathComponent(".agentdeck")
+        let path = (home as NSString).appendingPathComponent("settings.json")
+        let url = URL(fileURLWithPath: path)
+
+        // Load existing JSON (or start blank). Silently ignore parse errors —
+        // a malformed file will be rewritten fresh with just our key.
+        var root: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            root = parsed
+        }
+
+        var apme = (root["apme"] as? [String: Any]) ?? [:]
+        var judge = (apme["judge"] as? [String: Any]) ?? [:]
+        judge["backend"] = backend
+        apme["judge"] = judge
+        root["apme"] = apme
+
+        guard let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) else { return }
+        // Create parent dir if missing (fresh install).
+        try? FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        try? out.write(to: url, options: [.atomic])
+        #endif
     }
 
     func clearAntigravityAccess() {
@@ -214,5 +259,6 @@ final class AppPreferences: ObservableObject, @unchecked Sendable {
         static let showSubscriptionsSection = "prefs.showSubscriptionsSection"
         static let antigravityBookmark = "prefs.antigravityBookmark"
         static let antigravitySelectedPath = "prefs.antigravitySelectedPath"
+        static let apmeJudgeBackend = "prefs.apmeJudgeBackend"
     }
 }

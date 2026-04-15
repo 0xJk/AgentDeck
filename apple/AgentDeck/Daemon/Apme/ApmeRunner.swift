@@ -115,7 +115,7 @@ actor ApmeRunner {
 
         let now = Int(Date().timeIntervalSince1970 * 1000)
         let rubricVer = rubric["version"] as? Int
-        let judgeModel = ApmeJudgeFoundationModels.judgeModelLabel
+        let judgeModel = self.judgeModelLabel
 
         for (axis, score) in parsed.scores {
             var raw: String? = nil
@@ -195,7 +195,7 @@ actor ApmeRunner {
 
         let now = Int(Date().timeIntervalSince1970 * 1000)
         let rubricVer = rubric["version"] as? Int
-        let judgeModel = ApmeJudgeFoundationModels.judgeModelLabel
+        let judgeModel = self.judgeModelLabel
         for (axis, score) in parsed.scores {
             var raw: String? = nil
             if axis == "overall" {
@@ -236,16 +236,39 @@ actor ApmeRunner {
 
     // MARK: - Judge dispatch
 
-    /// Route to the configured backend. Phase 1: only `foundationModels` is
-    /// wired; other backends return nil (caller treats as "skip eval").
+    /// Route to the configured backend. Phase 2 wires MLX + API adapters
+    /// alongside Foundation Models. Per feedback_cost_sensitive_defaults
+    /// memory, never silently fall back from a paid/local backend to the
+    /// free on-device one — if the user picked MLX and it's offline, the
+    /// eval is skipped so the user notices, rather than paying a mental
+    /// cost wondering why "their" model didn't run.
+    ///
+    /// `openclaw` remains a round-trip compatibility stub (settings.json
+    /// can round-trip it but the adapter isn't wired yet). It degrades to
+    /// Foundation Models until Phase 3.
     private func callJudge(prompt: String) async -> String? {
         switch config.judge.backend {
         case .foundationModels:
             return await ApmeJudgeFoundationModels.judge(prompt: prompt)
-        case .mlx, .api, .openclaw:
-            // Phase 2 — wire when backend adapters ship. For now, degrade.
-            DaemonLogger.shared.debug("APME", "judge backend \(config.judge.backend.rawValue) not available in Phase 1, using foundationModels")
+        case .mlx:
+            return await ApmeJudgeMlx.judge(prompt: prompt, config: config.judge)
+        case .api:
+            return await ApmeJudgeApi.judge(prompt: prompt, config: config.judge)
+        case .openclaw:
+            DaemonLogger.shared.debug("APME", "openclaw backend not wired, degrading to foundationModels")
             return await ApmeJudgeFoundationModels.judge(prompt: prompt)
+        }
+    }
+
+    /// Judge model label to persist on the eval row. Matches `callJudge`
+    /// dispatch so the `evals.judge_model` column correctly identifies
+    /// which backend produced each row.
+    private var judgeModelLabel: String {
+        switch config.judge.backend {
+        case .foundationModels: return ApmeJudgeFoundationModels.judgeModelLabel
+        case .mlx:              return ApmeJudgeMlx.judgeModelLabel
+        case .api:              return ApmeJudgeApi.judgeModelLabel
+        case .openclaw:         return "openclaw:\(config.judge.model)"
         }
     }
 

@@ -2244,18 +2244,20 @@ final class DaemonServer {
             }
         }
 
-        // 3. Re-classify runs the session bridge didn't finish classifying
-        //    (rule-based only in Phase 1 — no LLM fallback).
+        // 3. Re-classify runs the session bridge didn't finish classifying.
+        //    Phase 2: uses classifyRunSmart — rules first, LLM fallback when
+        //    rules return .unknown. Default backend is on-device Foundation
+        //    Models so the LLM path is free and cost-safe.
         let unclassified = store.listUnclassifiedRuns(limit: 5)
         for r in unclassified {
-            let result = ApmeClassifier.classifyRun(store: store, runId: r.id)
+            let result = await ApmeClassifier.classifyRunSmart(store: store, runId: r.id)
             if result.category != .unknown {
                 if let data = try? JSONEncoder().encode(result.signals),
                    let json = String(data: data, encoding: .utf8) {
                     store.updateRun(id: r.id, fields: [
                         "taskSignals": json,
                         "taskCategory": result.category.rawValue,
-                        "taskCategorySource": "rule",
+                        "taskCategorySource": result.source,
                     ])
                 }
             }
@@ -2280,6 +2282,19 @@ final class DaemonServer {
                 "endedAt": now,
                 "taskCategory": "_empty",
             ])
+        }
+
+        // 6. Rubric auto-tuning (Phase 2). Gated by `shouldRetune` which
+        //    only fires when there are ≥10 disagreement samples and the
+        //    current rubric correlates poorly (<0.4) with user vibe. That
+        //    means we tune roughly once per week in normal use — cheap
+        //    enough even on paid backends, free on FM/MLX.
+        if ApmeTuner.shouldRetune(store: store) {
+            let outcome = await ApmeTuner.tune(store: store)
+            DaemonLogger.shared.debug(
+                "APME",
+                "tuner: accepted=\(outcome.accepted) reason=\(outcome.reason) new_version=\(outcome.newVersion.map { String($0) } ?? "n/a")"
+            )
         }
     }
 }

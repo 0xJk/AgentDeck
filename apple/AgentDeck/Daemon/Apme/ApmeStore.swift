@@ -482,6 +482,34 @@ final class ApmeStore: @unchecked Sendable {
 
     // MARK: - Rubric
 
+    /// Append a new rubric version and return the assigned version number.
+    /// Used by the tuner when it auto-proposes an improved rubric — the new
+    /// row's `parent_ver` points at the version it was derived from.
+    /// Mirrors bridge/src/apme/store.ts `appendRubric`.
+    @discardableResult
+    func appendRubric(purpose: String, prompt: String, weights: String, parentVer: Int?, notes: String?) -> Int {
+        guard let db else { return 0 }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(version), 0) + 1 FROM rubrics", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        var next: Int = 1
+        if sqlite3_step(stmt) == SQLITE_ROW { next = Int(sqlite3_column_int(stmt, 0)) }
+        sqlite3_finalize(stmt); stmt = nil
+
+        guard sqlite3_prepare_v2(db,
+            "INSERT INTO rubrics (version, purpose, prompt, weights, created_at, parent_ver, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, Int32(next))
+        bindText(stmt, 2, purpose)
+        bindText(stmt, 3, prompt)
+        bindText(stmt, 4, weights)
+        sqlite3_bind_int64(stmt, 5, Int64(Date().timeIntervalSince1970 * 1000))
+        if let p = parentVer { sqlite3_bind_int(stmt, 6, Int32(p)) } else { sqlite3_bind_null(stmt, 6) }
+        bindTextOrNull(stmt, 7, notes)
+        sqlite3_step(stmt)
+        return next
+    }
+
     /// Fetch the most recent rubric for a given purpose.
     /// When `purpose` is a category name (e.g. "conversation", "research"), this
     /// returns that category's rubric with its domain-specific axes. Callers
