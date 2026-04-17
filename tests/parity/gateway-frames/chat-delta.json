@@ -1,0 +1,12 @@
+{
+  "type": "event",
+  "event": "chat",
+  "payload": {
+    "state": "delta",
+    "runId": "run_abc",
+    "sessionKey": "sess_xyz",
+    "delta": "Hello, wor",
+    "prompt": "say hi"
+  },
+  "seq": "42"
+}

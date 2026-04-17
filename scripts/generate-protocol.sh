@@ -32,8 +32,16 @@ npx ts-json-schema-generator \
   --no-type-check \
   > "$OUT_DIR/plugin-command-schema.json"
 
+npx ts-json-schema-generator \
+  --path "$PROJECT_DIR/shared/src/gateway-protocol.ts" \
+  --type "GatewayFrame" \
+  --tsconfig "$PROJECT_DIR/shared/tsconfig.json" \
+  --no-type-check \
+  > "$OUT_DIR/gateway-frame-schema.json"
+
 echo "   → bridge-event-schema.json"
 echo "   → plugin-command-schema.json"
+echo "   → gateway-frame-schema.json"
 
 echo "=== Step 2: Generate Swift types ==="
 npx quicktype \
@@ -62,8 +70,22 @@ npx quicktype \
   --out "$OUT_DIR/PluginCommand.swift" \
   2>/dev/null || echo "   (Swift PluginCommand generation had warnings)"
 
+npx quicktype \
+  --src "$OUT_DIR/gateway-frame-schema.json" \
+  --src-lang schema \
+  --lang swift \
+  --density normal \
+  --type-prefix AD \
+  --protocol equatable \
+  --struct-or-class struct \
+  --mutable-properties \
+  --acronym-style camel \
+  --out "$OUT_DIR/GatewayFrame.swift" \
+  2>/dev/null || echo "   (Swift GatewayFrame generation had warnings)"
+
 echo "   → BridgeEvent.swift"
 echo "   → PluginCommand.swift"
+echo "   → GatewayFrame.swift"
 
 echo "=== Step 3: Generate Kotlin types ==="
 npx quicktype \
@@ -82,8 +104,17 @@ npx quicktype \
   --out "$OUT_DIR/PluginCommand.kt" \
   2>&1 | grep -v "^Issue in line" || true
 
+npx quicktype \
+  --src "$OUT_DIR/gateway-frame-schema.json" \
+  --src-lang schema \
+  --lang kotlin \
+  --package dev.agentdeck.generated \
+  --out "$OUT_DIR/GatewayFrame.kt" \
+  2>&1 | grep -v "^Issue in line" || true
+
 echo "   → BridgeEvent.kt"
 echo "   → PluginCommand.kt"
+echo "   → GatewayFrame.kt"
 
 echo "=== Step 4: Generate typed command builders ==="
 node "$PROJECT_DIR/scripts/generate-command-builders.mjs"

@@ -34,7 +34,9 @@ assets/screenshots/
 compatibility.json
 
 # Generated code (regenerate via: bash scripts/generate-protocol.sh)
-generated/
+# Track generated/protocol/ so CI can catch drift; other subdirs stay ignored.
+generated/*
+!generated/protocol/
 
 # Coverage
 coverage/

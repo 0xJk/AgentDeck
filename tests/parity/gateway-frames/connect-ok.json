@@ -1,0 +1,10 @@
+{
+  "type": "res",
+  "id": "init-1",
+  "ok": true,
+  "payload": {
+    "accepted": true,
+    "sessionToken": "sess_0123456789abcdef",
+    "expiresAt": 1713484800000
+  }
+}

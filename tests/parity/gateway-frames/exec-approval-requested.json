@@ -1,0 +1,15 @@
+{
+  "type": "event",
+  "event": "exec.approval.requested",
+  "payload": {
+    "id": "appr_001",
+    "sessionKey": "sess_xyz",
+    "tool": "bash",
+    "command": "rm -rf /tmp/build",
+    "reason": "Clean build artifacts before rebuild",
+    "options": [
+      { "key": "allow", "label": "Allow" },
+      { "key": "deny", "label": "Deny" }
+    ]
+  }
+}

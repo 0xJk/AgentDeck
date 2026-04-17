@@ -1,0 +1,10 @@
+{
+  "type": "res",
+  "id": "r42",
+  "ok": false,
+  "error": {
+    "code": "NOT_PAIRED",
+    "message": "Device identity not recognized",
+    "details": { "deviceId": null }
+  }
+}

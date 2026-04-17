@@ -71,6 +71,17 @@ export {
   type TimelineEntryType,
   parseLogLine,
 } from '@agentdeck/shared';
+
+export {
+  type GatewayFrame,
+  type GatewayRequestFrame,
+  type GatewayResponseFrame,
+  type GatewayEventFrame,
+  type GatewayError,
+  type GatewaySession,
+  type DeviceIdentity,
+  type DeviceAuthToken,
+} from '@agentdeck/shared';
 // ===== Bridge-specific types =====
 
 export interface VoiceState {

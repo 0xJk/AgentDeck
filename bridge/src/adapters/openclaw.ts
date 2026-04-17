@@ -7,7 +7,13 @@ import { createPublicKey, createPrivateKey, sign as cryptoSign, randomUUID } fro
 import WebSocket from 'ws';
 import { debug } from '../logger.js';
 import { summarizeResponse, extractTopicHint } from '../timeline-summarizer.js';
-import { cleanDetailText, cleanRawText, cleanNopMarkers } from '@agentdeck/shared';
+import {
+  cleanDetailText,
+  cleanRawText,
+  cleanNopMarkers,
+  ED25519_SPKI_PREFIX_LEN,
+  GATEWAY_PROTOCOL_VERSION,
+} from '@agentdeck/shared';
 import type {
   AgentAdapter,
   AgentCapabilities,
@@ -15,67 +21,21 @@ import type {
   AdapterEvent,
   PluginCommand,
   TimelineEntry,
+  GatewayResponseFrame,
+  GatewayEventFrame,
+  GatewaySession,
+  DeviceIdentity,
+  DeviceAuthToken,
 } from '../types.js';
 import { OPENCLAW_CAPABILITIES, OPENCLAW_GATEWAY_PORT } from '../types.js';
 import { fetchModelCatalog, getDefaultModelName, invalidateModelCache } from '../model-catalog.js';
 
-/** Ed25519 SPKI DER prefix length (bytes before the raw 32-byte key) */
-const ED25519_SPKI_PREFIX_LEN = 12;
-
-/** Protocol version supported by this adapter */
-const PROTOCOL_VERSION = 3;
-
-// ===== Device Identity Types =====
-
-interface DeviceIdentity {
-  deviceId: string;
-  publicKeyPem: string;
-  privateKeyPem: string;
-}
-
-interface DeviceAuthToken {
-  token: string;
-  role: string;
-  scopes: string[];
-}
-
-// ===== Gateway Frame Types =====
-
-interface GatewayRequest {
-  type: 'req';
-  id: string;
-  method: string;
-  params: Record<string, unknown>;
-}
-
-interface GatewayResponse {
-  type: 'res';
-  id: string;
-  ok: boolean;
-  payload?: unknown;
-  error?: { code: string; message: string; details?: unknown };
-}
-
-interface GatewayEventFrame {
-  type: 'event';
-  event: string;
-  payload: Record<string, unknown>;
-  seq?: string;
-  stateVersion?: string;
-}
-
-type GatewayMessage = GatewayResponse | GatewayEventFrame;
-
-// ===== Session Types =====
-
-interface GatewaySession {
-  key: string;
-  kind?: string;
-  label?: string;
-  displayName?: string;
-  updatedAt?: number;
-  sessionId?: string;
-}
+/**
+ * Inbound message envelopes — responses to our requests, or server-initiated events.
+ * Frame definitions live in `@agentdeck/shared/gateway-protocol.ts` (single source
+ * of truth for Swift / Kotlin / TypeScript).
+ */
+type GatewayMessage = GatewayResponseFrame | GatewayEventFrame;
 
 /**
  * OpenClaw adapter — connects to OpenClaw Gateway via WebSocket.
@@ -580,7 +540,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
       }
 
       const id = `r${++this.reqId}`;
-      const message: GatewayRequest = { type: 'req', id, method, params };
+      const message = { type: 'req' as const, id, method, params };
 
       this.pendingRpc.set(id, { resolve, reject, method });
 
@@ -626,7 +586,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
       if (this.alive) {
         this.emitAdapterEvent({ source: 'activity' });
       }
-      this.handleGatewayEvent(msg.event, msg.payload || {});
+      this.handleGatewayEvent(msg.event, (msg.payload ?? {}) as Record<string, unknown>);
     }
   }
 
@@ -933,8 +893,8 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
     const authToken = this.deviceAuthToken?.token ?? '';
 
     const params: Record<string, unknown> = {
-      minProtocol: PROTOCOL_VERSION,
-      maxProtocol: PROTOCOL_VERSION,
+      minProtocol: GATEWAY_PROTOCOL_VERSION,
+      maxProtocol: GATEWAY_PROTOCOL_VERSION,
       client: {
         id: 'gateway-client',
         displayName: 'AgentDeck',
@@ -958,7 +918,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const id = 'init-1';
-    const message: GatewayRequest = { type: 'req', id, method: 'connect', params };
+    const message = { type: 'req' as const, id, method: 'connect', params };
 
     this.pendingRpc.set(id, {
       resolve: (payload) => {

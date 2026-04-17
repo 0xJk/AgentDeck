@@ -19,7 +19,7 @@ function getLanIp(): string | undefined {
   return undefined;
 }
 
-const MDNS_RECOVERY_INTERVAL = 30_000; // 30s
+const MDNS_RECOVERY_INTERVAL = 5_000; // 5s — tightens WiFi-change discovery gap (was 30s)
 
 /**
  * Called from uncaughtException handler when mDNS socket fails.

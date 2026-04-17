@@ -1,0 +1,7 @@
+{
+  "type": "event",
+  "event": "tick",
+  "payload": {
+    "serverTime": 1713398400000
+  }
+}

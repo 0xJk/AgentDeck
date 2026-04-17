@@ -42,3 +42,13 @@ jobs:
         env:
           COLORTERM: truecolor
           TZ: Asia/Seoul
+
+      - name: Protocol drift check
+        run: |
+          pnpm generate-protocol
+          if ! git diff --quiet generated/protocol/; then
+            echo "::error::Protocol artifacts under generated/protocol/ are out of sync with shared/src/*protocol.ts."
+            echo "::error::Run 'pnpm generate-protocol' locally and commit the result."
+            git diff generated/protocol/
+            exit 1
+          fi
