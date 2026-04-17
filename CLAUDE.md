@@ -136,7 +136,7 @@ ESP32 WiFi provisioning + disconnect recovery details: see [docs/esp32.md](docs/
 - **Plugin UUID**: `bound.serendipity.agentdeck` (immutable post-distribution)
 - **Package scope**: `@agentdeck/*` (shared, bridge, plugin, hooks, setup)
 - **User data dir**: `~/.agentdeck/` — `daemon.json`, `sessions.json`, `auth-token`, `settings.json`, `timeline.json`, `wifi-config.json`, `compatibility.json`, `apme.sqlite`
-- **Daemon hub**: Port 9120, sole entry point for all dashboard clients. Session bridges serve internal hook HTTP only (9121-9139). See [docs/daemon.md](docs/daemon.md)
+- **Daemon hub**: Port 9120, sole entry point for all dashboard clients. Session bridges serve internal hook HTTP only (9121-9139). Session bridges push state to daemon via internal WS (`daemon-ws-client.ts`); daemon falls back to HTTP `/health` polling when push is stale. See [docs/daemon.md](docs/daemon.md)
 - **Action ID pattern**: SD actions store string IDs + `getActionById()` — never action object references
 - **Shift+Tab** (`\x1b[Z`) for Claude Code mode switching (100ms debounce)
 - **Version compatibility**: `agentdeck claude` checks Claude Code version via npm + GitHub on startup; never blocks startup
