@@ -55,10 +55,17 @@ class TransitionManager {
     }
 
     private fun envTopColor(env: EnvironmentVisualState): Color = when (env) {
-        EnvironmentVisualState.DARK -> TerrariumColors.DeepSea.copy(alpha = 0.5f)
+        EnvironmentVisualState.DARK -> ENV_DARK_TOP
         EnvironmentVisualState.CALM -> TerrariumColors.ShallowWater
-        EnvironmentVisualState.ACTIVE -> TerrariumColors.ShallowWater.copy(alpha = 0.9f)
-        EnvironmentVisualState.ALERT -> Color(0xFF1A3D5C)
+        EnvironmentVisualState.ACTIVE -> ENV_ACTIVE_TOP
+        EnvironmentVisualState.ALERT -> ENV_ALERT_TOP
+    }
+
+    companion object {
+        // Pre-computed colors — avoids per-transition Color.copy() allocations
+        private val ENV_DARK_TOP = TerrariumColors.DeepSea.copy(alpha = 0.5f)
+        private val ENV_ACTIVE_TOP = TerrariumColors.ShallowWater.copy(alpha = 0.9f)
+        private val ENV_ALERT_TOP = Color(0xFF1A3D5C)
     }
 
     private fun envCausticsAlpha(env: EnvironmentVisualState): Float = when (env) {

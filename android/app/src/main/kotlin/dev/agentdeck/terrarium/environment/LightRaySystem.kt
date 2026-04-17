@@ -95,10 +95,7 @@ class LightRaySystem : Creature {
 
         if (envState == EnvironmentVisualState.DARK) return
 
-        val tintColor = when (envState) {
-            EnvironmentVisualState.ALERT -> AMBER_TINT
-            else -> Color.White
-        }
+        val isAlert = envState == EnvironmentVisualState.ALERT
 
         for (i in rays.indices) {
             val ray = rays[i]
@@ -121,7 +118,7 @@ class LightRaySystem : Creature {
                 path = path,
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        tintColor.copy(alpha = ray.alpha),
+                        cachedTintColor(isAlert, ray.alpha),
                         Color.Transparent,
                     ),
                     startY = 0f,
@@ -159,5 +156,20 @@ class LightRaySystem : Creature {
         private const val MAX_RAYS = 5
         private const val FADE_DURATION = 4f // seconds
         private val AMBER_TINT = Color(0xFFFBBF24)
+
+        // Pre-computed alpha-bucketed colors for gradient — avoids per-frame Color.copy() allocations
+        private const val ALPHA_BUCKETS = 20
+        private val WHITE_ALPHA_CACHE = Array(ALPHA_BUCKETS + 1) { i ->
+            Color.White.copy(alpha = i.toFloat() / ALPHA_BUCKETS)
+        }
+        private val AMBER_ALPHA_CACHE = Array(ALPHA_BUCKETS + 1) { i ->
+            AMBER_TINT.copy(alpha = i.toFloat() / ALPHA_BUCKETS)
+        }
+
+        fun cachedTintColor(isAlert: Boolean, alpha: Float): Color {
+            val cache = if (isAlert) AMBER_ALPHA_CACHE else WHITE_ALPHA_CACHE
+            val idx = (alpha * ALPHA_BUCKETS).toInt().coerceIn(0, ALPHA_BUCKETS)
+            return cache[idx]
+        }
     }
 }

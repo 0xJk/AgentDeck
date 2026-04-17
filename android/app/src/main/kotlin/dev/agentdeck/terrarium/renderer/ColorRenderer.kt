@@ -116,13 +116,18 @@ fun ColorTerrariumCanvas(
     }
 }
 
+// Pre-computed background colors — avoids per-frame Color.copy() allocations
+private val BG_DARK_TOP = TerrariumColors.DeepSea.copy(alpha = 0.5f)
+private val BG_ACTIVE_TOP = TerrariumColors.ShallowWater.copy(alpha = 0.9f)
+private val BG_ALERT_TOP = Color(0xFF1A3D5C)
+
 /** Gradient background — shifts with environment state. */
 private fun DrawScope.drawDeepSeaBackground(w: Float, h: Float, env: EnvironmentVisualState) {
     val topColor = when (env) {
-        EnvironmentVisualState.DARK -> TerrariumColors.DeepSea.copy(alpha = 0.5f)
+        EnvironmentVisualState.DARK -> BG_DARK_TOP
         EnvironmentVisualState.CALM -> TerrariumColors.ShallowWater
-        EnvironmentVisualState.ACTIVE -> TerrariumColors.ShallowWater.copy(alpha = 0.9f)
-        EnvironmentVisualState.ALERT -> Color(0xFF1A3D5C)
+        EnvironmentVisualState.ACTIVE -> BG_ACTIVE_TOP
+        EnvironmentVisualState.ALERT -> BG_ALERT_TOP
     }
     val bottomColor = TerrariumColors.DeepSea
 

@@ -32,8 +32,18 @@ class RockFormation {
     private val rockPaths = Array(6) { Path() }
     private var rockPathIdx = 0
 
+    // Pre-computed LED colors per environment state — avoids per-frame Color.copy() allocations
+    private var ledBaseColor = TerrariumColors.LEDGreen
+    private var ledBaseAlpha = 1f
+
     fun setState(state: EnvironmentVisualState) {
         envState = state
+        when (state) {
+            EnvironmentVisualState.DARK -> { ledBaseColor = TerrariumColors.LEDRed; ledBaseAlpha = 0.15f }
+            EnvironmentVisualState.CALM -> { ledBaseColor = TerrariumColors.LEDGreen; ledBaseAlpha = 1f }
+            EnvironmentVisualState.ACTIVE -> { ledBaseColor = TerrariumColors.LEDAmber; ledBaseAlpha = 1f }
+            EnvironmentVisualState.ALERT -> { ledBaseColor = TerrariumColors.LEDRed; ledBaseAlpha = 1f }
+        }
     }
 
     fun update(dt: Float) {
@@ -52,7 +62,7 @@ class RockFormation {
     fun drawLEDs(scope: DrawScope, env: EnvironmentVisualState) {
         val w = scope.size.width
         val h = scope.size.height
-        drawLEDCables(scope, w, h, env)
+        drawLEDCables(scope, w, h)
     }
 
     private fun drawSand(scope: DrawScope, w: Float, h: Float) {
@@ -142,19 +152,12 @@ class RockFormation {
         )
     }
 
-    private fun drawLEDCables(scope: DrawScope, w: Float, h: Float, env: EnvironmentVisualState) {
+    private fun drawLEDCables(scope: DrawScope, w: Float, h: Float) {
         val bottomY = h * (1f - TerrariumLayout.SAND_HEIGHT_FRACTION)
 
-        val ledColor = when (env) {
-            EnvironmentVisualState.DARK -> TerrariumColors.LEDRed.copy(alpha = 0.15f)
-            EnvironmentVisualState.CALM -> TerrariumColors.LEDGreen
-            EnvironmentVisualState.ACTIVE -> TerrariumColors.LEDAmber
-            EnvironmentVisualState.ALERT -> TerrariumColors.LEDRed
-        }
-
-        // Pulse effect
+        // Pulse effect — uses pre-computed ledBaseColor/ledBaseAlpha (no Color.copy per frame)
         val pulse = sin(time * TerrariumTiming.LED_PULSE_SPEED) * 0.3f + 0.7f
-        val effectiveColor = ledColor.copy(alpha = ledColor.alpha * pulse)
+        val effectiveAlpha = ledBaseAlpha * pulse
 
         // Cable from left rocks to right rocks
         val cablePath = Path().apply {
@@ -165,7 +168,8 @@ class RockFormation {
 
         scope.drawPath(
             path = cablePath,
-            color = effectiveColor.copy(alpha = effectiveColor.alpha * 0.4f),
+            color = ledBaseColor,
+            alpha = effectiveAlpha * 0.4f,
             style = Stroke(
                 width = 2f,
                 pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f)),
@@ -183,7 +187,8 @@ class RockFormation {
 
             val dotPulse = sin(time * TerrariumTiming.LED_PULSE_SPEED + i * 0.5f) * 0.4f + 0.6f
             scope.drawCircle(
-                color = effectiveColor.copy(alpha = dotPulse * 0.8f),
+                color = ledBaseColor,
+                alpha = dotPulse * 0.8f * effectiveAlpha,
                 radius = w * 0.003f,
                 center = Offset(dotX, dotY),
             )
