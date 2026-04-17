@@ -81,6 +81,10 @@
 		4B88BF545E6DD2320A7FDE60 /* TankStatusPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF4F61CE4842A567D1BC861E /* TankStatusPanel.swift */; };
 		F404CC5B8C7246B08C90AF6E /* DeviceDiagnosticPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8E5077EE8C04AD6B281FC6C /* DeviceDiagnosticPanel.swift */; };
 		6CF7DBD165FA4A7AB7DEEDF0 /* DeviceDiagnosticPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8E5077EE8C04AD6B281FC6C /* DeviceDiagnosticPanel.swift */; };
+		497DDEAB3DBFE03B00328EDB /* StateColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E567A28D6A84267171490EE /* StateColors.swift */; };
+		79A2AEFBBD6384A1ABA95BBB /* StateColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E567A28D6A84267171490EE /* StateColors.swift */; };
+		6637B015E00B72F37440B44E /* SessionSlotRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94F864481DC5B9D2A683FC87 /* SessionSlotRenderer.swift */; };
+		C5B7C7E637301DCAD0626B5D /* SessionSlotRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94F864481DC5B9D2A683FC87 /* SessionSlotRenderer.swift */; };
 		4D0E6511F2638CDF14C798AD /* MdnsModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D130EAC9287841A5BC8770DC /* MdnsModule.swift */; };
 		4D4A0A6C0120C440966AEFB3 /* DisplaySyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89F9A134A1BC3EDEE8309695 /* DisplaySyncService.swift */; };
 		4D7595686B60FDBDE4A5210D /* AdbModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83589BA4C41B89C8EF1A46FD /* AdbModule.swift */; };
@@ -206,6 +210,8 @@
 		EB83962F2BDBC13AB130DD6B /* SessionListPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40755F64E4C39A49B99D88CA /* SessionListPanel.swift */; };
 		F0C03AF0FCFD56AC72DE9FD3 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 908DB05568DE4E828CD7FCE6 /* Logger.swift */; };
 		F1AA123E5D16742D2C7B003C /* apme-dashboard.html in Resources */ = {isa = PBXBuildFile; fileRef = 766909A21820E709DA63C7C2 /* apme-dashboard.html */; };
+		3B064E2D93EA826A1C275469 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 3496BEA878B5B93CA3415748 /* PrivacyInfo.xcprivacy */; };
+		0C23DA19B80922EA709F5A0F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 3496BEA878B5B93CA3415748 /* PrivacyInfo.xcprivacy */; };
 		F20373DB53552C2F36204EDF /* TerrariumConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 403CDDF7DDFCF5D8702491EA /* TerrariumConfig.swift */; };
 		F42F09D300661953D5F0EAFF /* StateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA46D3D4A84FBDE6C8B3AB62 /* StateMachine.swift */; };
 		F5B2BB7991E7283F4B99902F /* MonitorHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19949AA33CE27D478B358976 /* MonitorHUD.swift */; };
@@ -329,6 +335,9 @@
 		CCEE70EEDDCA2199E894D275 /* GaugeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GaugeBar.swift; sourceTree = "<group>"; };
 		CF4F61CE4842A567D1BC861E /* TankStatusPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TankStatusPanel.swift; sourceTree = "<group>"; };
 		E8E5077EE8C04AD6B281FC6C /* DeviceDiagnosticPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiagnosticPanel.swift; sourceTree = "<group>"; };
+		0E567A28D6A84267171490EE /* StateColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateColors.swift; sourceTree = "<group>"; };
+		94F864481DC5B9D2A683FC87 /* SessionSlotRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSlotRenderer.swift; sourceTree = "<group>"; };
+		3496BEA878B5B93CA3415748 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		CF788F02F06C01E401DC8EA6 /* SessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistry.swift; sourceTree = "<group>"; };
 		D130EAC9287841A5BC8770DC /* MdnsModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MdnsModule.swift; sourceTree = "<group>"; };
 		D1DDCB822B1DC56875875388 /* ModuleManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleManager.swift; sourceTree = "<group>"; };
@@ -562,6 +571,7 @@
 				AE2C0B4AE497F08576484A2D /* Generated */,
 				EA3237691E872717C75DF805 /* Model */,
 				DCEC752C69312C74843D250D /* Net */,
+				BBCBD25CBBB0CEFDBA750602 /* Rendering */,
 				AC7149D65EB34AE85760881A /* Resources */,
 				4BFA9357D1C2F3690DCD95CA /* State */,
 				4D2FB249472FD031262748BA /* Terrarium */,
@@ -569,6 +579,15 @@
 				2021734157E1CAD0CAE4DDDC /* Voice */,
 			);
 			path = AgentDeck;
+			sourceTree = "<group>";
+		};
+		BBCBD25CBBB0CEFDBA750602 /* Rendering */ = {
+			isa = PBXGroup;
+			children = (
+				94F864481DC5B9D2A683FC87 /* SessionSlotRenderer.swift */,
+				0E567A28D6A84267171490EE /* StateColors.swift */,
+			);
+			path = Rendering;
 			sourceTree = "<group>";
 		};
 		AC7149D65EB34AE85760881A /* Resources */ = {
@@ -580,6 +599,7 @@
 				2D2F35C5E4DF5DAE1C93F54B /* Assets.xcassets */,
 				4D7EC34DCAF26B2F39F5257B /* Info.plist */,
 				3FEDAA4E272EEE41D0DB9FAE /* LaunchAgents */,
+				3496BEA878B5B93CA3415748 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -846,6 +866,7 @@
 			files = (
 				809CC98B24E5F976E5E84AF9 /* Assets.xcassets in Resources */,
 				F1AA123E5D16742D2C7B003C /* apme-dashboard.html in Resources */,
+				3B064E2D93EA826A1C275469 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -855,6 +876,7 @@
 			files = (
 				5FBCFE8F4EBDCB7937FECA50 /* Assets.xcassets in Resources */,
 				FBBDE4862E8788F5007ACBC3 /* apme-dashboard.html in Resources */,
+				0C23DA19B80922EA709F5A0F /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -991,6 +1013,8 @@
 				F42F09D300661953D5F0EAFF /* StateMachine.swift in Sources */,
 				A8293F557BD8D3FB91BF4CF4 /* StateTimelineGenerator.swift in Sources */,
 				DF804392C56333041A3C2784 /* StatusBadge.swift in Sources */,
+				497DDEAB3DBFE03B00328EDB /* StateColors.swift in Sources */,
+				6637B015E00B72F37440B44E /* SessionSlotRenderer.swift in Sources */,
 				4B88BF545E6DD2320A7FDE60 /* TankStatusPanel.swift in Sources */,
 				F404CC5B8C7246B08C90AF6E /* DeviceDiagnosticPanel.swift in Sources */,
 				F20373DB53552C2F36204EDF /* TerrariumConfig.swift in Sources */,
@@ -1097,6 +1121,8 @@
 				C1D4DE16F04DB0A3507F4AA0 /* StateMachine.swift in Sources */,
 				942DEF7F0BE77DF0FA264AF8 /* StateTimelineGenerator.swift in Sources */,
 				67FA80518E8F347B39576FCC /* StatusBadge.swift in Sources */,
+				79A2AEFBBD6384A1ABA95BBB /* StateColors.swift in Sources */,
+				C5B7C7E637301DCAD0626B5D /* SessionSlotRenderer.swift in Sources */,
 				FB05C5FF001D9A5382E3FB66 /* TankStatusPanel.swift in Sources */,
 				6CF7DBD165FA4A7AB7DEEDF0 /* DeviceDiagnosticPanel.swift in Sources */,
 				076E08E5217ECF4528B4AC9A /* TerrariumConfig.swift in Sources */,
