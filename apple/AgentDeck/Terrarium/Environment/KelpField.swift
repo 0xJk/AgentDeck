@@ -55,6 +55,8 @@ final class KelpField {
     }
 
     func draw(context: inout GraphicsContext, size: CGSize) {
+        guard size.width > 0, size.height > 0,
+              size.width.isFinite, size.height.isFinite else { return }
         let w = Float(size.width)
         let h = Float(size.height)
 

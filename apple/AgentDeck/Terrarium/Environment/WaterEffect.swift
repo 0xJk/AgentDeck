@@ -19,6 +19,8 @@ final class WaterEffect {
 
     func draw(context: inout GraphicsContext, size: CGSize) {
         guard envState != .dark else { return }
+        guard size.width > 0, size.height > 0,
+              size.width.isFinite, size.height.isFinite else { return }
 
         let w = Float(size.width)
         let h = Float(size.height)

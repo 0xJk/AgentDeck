@@ -80,6 +80,8 @@ final class LightRaySystem {
 
     func draw(context: inout GraphicsContext, size: CGSize) {
         guard envState != .dark else { return }
+        guard size.width > 0, size.height > 0,
+              size.width.isFinite, size.height.isFinite else { return }
 
         let w = size.width
         let h = size.height
