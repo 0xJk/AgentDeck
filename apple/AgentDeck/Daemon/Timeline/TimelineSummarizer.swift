@@ -9,6 +9,50 @@ enum TimelineSummarizer {
     private static let ollamaPort = 11434
     private static let maxChars = 80
 
+    /// Final fallback when neither llm.mlx pin nor the /v1/models catalog
+    /// yield a usable model. Mirrors shared/src/llm-settings.ts MLX_FALLBACK_MODEL.
+    private static let mlxFallbackModel = "mlx-community/Qwen3.6-35B-A3B-4bit"
+
+    /// Cached first model id from /v1/models, refreshed on staleness. Avoids
+    /// hitting the catalog endpoint on every summarization.
+    nonisolated(unsafe) private static var probedFirstModel: String?
+    nonisolated(unsafe) private static var probedAt: Date = .distantPast
+    private static let probeCacheTTL: TimeInterval = 60
+
+    private static func resolveMlxModel() async -> String {
+        if let pin = ApmeSettings.loadMlxConfig().model {
+            return pin
+        }
+        if probedFirstModel == nil || Date().timeIntervalSince(probedAt) > probeCacheTTL {
+            probedFirstModel = await fetchFirstMlxModel()
+            probedAt = Date()
+        }
+        return probedFirstModel ?? mlxFallbackModel
+    }
+
+    private static func fetchFirstMlxModel() async -> String? {
+        let base = ApmeSettings.loadMlxConfig().endpoint
+        for path in ["/v1/models", "/models"] {
+            guard let url = URL(string: base + path) else { continue }
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 2
+            guard let (data, response) = try? await URLSession.shared.data(for: req),
+                  let http = response as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let rows = json["data"] as? [[String: Any]]
+            else { continue }
+            for row in rows {
+                if let id = row["id"] as? String,
+                   !id.isEmpty,
+                   !id.lowercased().contains("nanollava") {
+                    return id
+                }
+            }
+        }
+        return nil
+    }
+
     /// Summarize a response text using local LLM (MLX → Ollama fallback → heuristic)
     static func summarize(_ text: String) async -> String? {
         // Try MLX qwen server first
@@ -24,10 +68,12 @@ enum TimelineSummarizer {
     // MARK: - MLX (port 8800)
 
     private static func queryMLX(_ text: String) async -> String? {
-        let url = URL(string: "http://127.0.0.1:\(mlxPort)/chat/completions")!
+        let base = ApmeSettings.loadMlxConfig().endpoint
+        guard let url = URL(string: base + "/chat/completions") else { return nil }
         let truncated = String(text.prefix(2000))
+        let model = await resolveMlxModel()
         let body: [String: Any] = [
-            "model": "mlx-community/Qwen3.5-35B-A3B-4bit",
+            "model": model,
             "messages": [
                 ["role": "system", "content": summarySystemPrompt],
                 ["role": "user", "content": truncated],

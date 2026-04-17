@@ -5,8 +5,9 @@ import { join } from 'path';
 import { execSync } from 'child_process';
 import { ApmeStore } from '../apme/store.js';
 import { ApmeCollector } from '../apme/collector.js';
-import { ApmeRunner, detectLanguage, parseJudgeJson, buildJudgePrompt, runDeterministic } from '../apme/runner.js';
+import { ApmeRunner, detectLanguage, parseJudgeJson, buildJudgePrompt, runDeterministic, effectiveJudgeModelTag } from '../apme/runner.js';
 import { DEFAULT_APME_CONFIG, shouldJudge } from '../apme/settings.js';
+import { clearMlxSettingsCache } from '@agentdeck/shared';
 import type { ApmeConfig } from '../apme/settings.js';
 import type { ApmeRunRow } from '../apme/types.js';
 
@@ -92,6 +93,49 @@ describe('parseJudgeJson', () => {
 
   it('returns null when overall is missing', () => {
     expect(parseJudgeJson('{"intent": 0.9}')).toBeNull();
+  });
+});
+
+describe('effectiveJudgeModelTag', () => {
+  const origDir = process.env.AGENTDECK_DATA_DIR;
+  let settingsDir: string;
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(join(tmpdir(), 'apme-settings-'));
+    process.env.AGENTDECK_DATA_DIR = settingsDir;
+    clearMlxSettingsCache();
+  });
+
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+    if (origDir === undefined) delete process.env.AGENTDECK_DATA_DIR;
+    else process.env.AGENTDECK_DATA_DIR = origDir;
+    clearMlxSettingsCache();
+  });
+
+  it('uses cfg.model for MLX when no pin is set', () => {
+    const cfg = { ...DEFAULT_APME_CONFIG.judge, backend: 'mlx' as const, model: 'qwen3-30b' };
+    expect(effectiveJudgeModelTag(cfg)).toBe('mlx:qwen3-30b');
+  });
+
+  it('uses llm.mlx pin over cfg.model for MLX backend', () => {
+    writeFileSync(
+      join(settingsDir, 'settings.json'),
+      JSON.stringify({ llm: { mlx: { model: 'mlx-community/Qwen3.6-35B-A3B-4bit' } } }),
+    );
+    clearMlxSettingsCache();
+    const cfg = { ...DEFAULT_APME_CONFIG.judge, backend: 'mlx' as const, model: 'qwen3-30b' };
+    expect(effectiveJudgeModelTag(cfg)).toBe('mlx:mlx-community/Qwen3.6-35B-A3B-4bit');
+  });
+
+  it('ignores llm.mlx pin for non-MLX backends', () => {
+    writeFileSync(
+      join(settingsDir, 'settings.json'),
+      JSON.stringify({ llm: { mlx: { model: 'ignored' } } }),
+    );
+    clearMlxSettingsCache();
+    const cfg = { ...DEFAULT_APME_CONFIG.judge, backend: 'api' as const, model: 'claude-opus-4-6' };
+    expect(effectiveJudgeModelTag(cfg)).toBe('api:claude-opus-4-6');
   });
 });
 

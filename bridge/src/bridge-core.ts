@@ -12,6 +12,7 @@ import { readAntigravityLocalStatus } from './antigravity-local.js';
 import { buildSubscriptions, buildUsageEvent } from './usage-event.js';
 import { readCodexAuthStatus } from './codex-auth.js';
 import { fetchMlxModels } from './mlx-probe.js';
+import { loadMlxSettings } from '@agentdeck/shared';
 import { probeGateway, checkGatewayHealth } from './gateway-probe.js';
 import { fetchUsageFromApi, hasOAuthToken, getTokenStatus, type ApiUsageData } from './usage-api.js';
 import { buildEnrichedSessionsList } from './session-aggregator.js';
@@ -353,15 +354,39 @@ export class BridgeCore {
   }
 
   startMlxProbe(intervalMs = 5000): void {
-    fetchMlxModels().then((models) => {
-      this.cachedMlxModels = models;
-    }).catch(() => {});
-    this.addInterval(setInterval(() => {
-      fetchMlxModels().then((models) => {
+    // Exponential backoff when the MLX server is absent — mirrors Swift
+    // DaemonServer.probeMLX (5s base, 2× grow, 30s cap). See
+    // memory/bug_local_llm_probe_no_backoff.md for the original issue.
+    const MAX_INTERVAL = 30_000;
+    let failureCount = 0;
+    let nextFireAt = 0;
+
+    const probe = (): void => {
+      const pin = loadMlxSettings().model;
+      fetchMlxModels(pin).then((models) => {
+        const success = Array.isArray(models) && models.length > 0;
+        if (success) {
+          failureCount = 0;
+          nextFireAt = 0;
+        } else {
+          failureCount += 1;
+          const wait = Math.min(intervalMs * 2 ** failureCount, MAX_INTERVAL);
+          nextFireAt = Date.now() + wait;
+        }
         const changed = JSON.stringify(this.cachedMlxModels) !== JSON.stringify(models);
         this.cachedMlxModels = models;
         if (changed) this.stateMachine.emit('state_changed', this.stateMachine.getSnapshot());
-      }).catch(() => {});
+      }).catch(() => {
+        failureCount += 1;
+        const wait = Math.min(intervalMs * 2 ** failureCount, MAX_INTERVAL);
+        nextFireAt = Date.now() + wait;
+      });
+    };
+
+    probe();
+    this.addInterval(setInterval(() => {
+      if (nextFireAt > 0 && Date.now() < nextFireAt) return;
+      probe();
     }, intervalMs));
   }
 

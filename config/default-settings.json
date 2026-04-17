@@ -6,6 +6,12 @@
   "whisperModel": "large-v3-turbo",
   "stuckTimeoutMs": 300000,
   "reconnectIntervalMs": 3000,
+  "llm": {
+    "mlx": {
+      "endpoint": "http://127.0.0.1:8800",
+      "model": null
+    }
+  },
   "apme": {
     "enabled": true,
     "autoTune": true,

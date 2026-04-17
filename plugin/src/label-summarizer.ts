@@ -6,11 +6,11 @@
  * First render uses ellipsis; result replaces on next render cycle.
  */
 import { dlog, dwarn } from './log.js';
+import { mlxChatUrl, resolveMlxModel } from '@agentdeck/shared';
 
 const TAG = 'LabelSum';
 const MAX_CACHE = 200;
-const MLX_URL = 'http://127.0.0.1:8800/chat/completions';
-const MLX_MODEL = 'mlx-community/Qwen3.5-35B-A3B-4bit';
+const MLX_URL = mlxChatUrl();
 const TIMEOUT_MS = 10_000;
 const RETRY_INTERVAL_MS = 60_000;
 
@@ -70,7 +70,7 @@ async function summarizeViaMlx(label: string, maxChars: number): Promise<string 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: MLX_MODEL,
+        model: resolveMlxModel(),
         enable_thinking: false,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 60,

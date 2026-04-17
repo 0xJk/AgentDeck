@@ -88,6 +88,11 @@ enum ApmeJudgeMlx {
     /// configured model id if auto-detect fails. Skips "nanollava" variants
     /// which some users keep loaded for vision tasks but aren't good judges.
     private static func resolveModel(config: ApmeJudgeConfig, endpoint: String) async -> String {
+        // Priority: llm.mlx pin (shared across summarizers/judge) > apme.judge.model
+        // > auto-detect from /v1/models > apme.judge.model fallback.
+        if let pin = ApmeSettings.loadMlxConfig().model {
+            return pin
+        }
         // Only auto-detect when the user hasn't specified a real model.
         // The TS port uses "qwen3-30b" as the placeholder default; we match that.
         if config.model != "default" && config.model != "qwen3-30b" {

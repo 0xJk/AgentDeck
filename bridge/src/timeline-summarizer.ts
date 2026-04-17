@@ -7,10 +7,31 @@
  */
 
 import { debug } from './logger.js';
-import { SUMMARY_SYSTEM_PROMPT, cleanLLMOutput } from '@agentdeck/shared';
+import { SUMMARY_SYSTEM_PROMPT, cleanLLMOutput, mlxChatUrl, resolveMlxModel } from '@agentdeck/shared';
+import { fetchMlxModels } from './mlx-probe.js';
 export { extractTopicHint } from '@agentdeck/shared';
 
-const MLX_URL = 'http://127.0.0.1:8800/chat/completions';
+const MLX_URL = mlxChatUrl();
+
+// In-memory cache of the probe's first result, so summarizers don't hit
+// /v1/models on every call. Refreshed lazily when the model call fails.
+let probedFirstModel: string | null = null;
+let probedAt = 0;
+const PROBE_CACHE_TTL_MS = 60_000;
+
+async function resolveModelForCall(): Promise<string> {
+  const now = Date.now();
+  if (!probedFirstModel || now - probedAt > PROBE_CACHE_TTL_MS) {
+    try {
+      const models = await fetchMlxModels();
+      probedFirstModel = models && models.length > 0 ? models[0] : null;
+      probedAt = now;
+    } catch {
+      probedFirstModel = null;
+    }
+  }
+  return resolveMlxModel(probedFirstModel);
+}
 const OLLAMA_URL = 'http://localhost:11434/api/chat';
 const TIMEOUT_MS = 30_000; // 30s — first inference needs model load time
 const MAX_INPUT_CHARS = 2000;
@@ -70,13 +91,14 @@ export async function summarizeResponse(text: string): Promise<string | null> {
 async function callMLX(input: string): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const model = await resolveModelForCall();
 
   try {
     const resp = await fetch(MLX_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'mlx-community/Qwen3.5-35B-A3B-4bit',
+        model,
         enable_thinking: false,
         messages: [
           { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
@@ -201,9 +223,10 @@ async function callLLMRaw(
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const url = provider === 'mlx' ? MLX_URL : OLLAMA_URL;
+    const mlxModel = provider === 'mlx' ? await resolveModelForCall() : '';
     const body = provider === 'mlx'
       ? {
-        model: 'mlx-community/Qwen3.5-35B-A3B-4bit',
+        model: mlxModel,
         enable_thinking: false,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -287,12 +310,13 @@ async function callLLMWithFallback(
 async function callMLXGeneric(systemPrompt: string, userMessage: string): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const model = await resolveModelForCall();
   try {
     const resp = await fetch(MLX_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'mlx-community/Qwen3.5-35B-A3B-4bit',
+        model,
         enable_thinking: false,
         messages: [
           { role: 'system', content: systemPrompt },

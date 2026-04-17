@@ -18,6 +18,7 @@ import { debug } from '../logger.js';
 import type { ApmeStore } from './store.js';
 import type { ApmeConfig, ApmeJudgeConfig } from './settings.js';
 import { loadApmeConfig, shouldJudge } from './settings.js';
+import { loadMlxSettings, mlxChatUrl } from '@agentdeck/shared';
 import type { ApmeRunRow } from './types.js';
 import { execSync } from 'child_process';
 
@@ -142,7 +143,7 @@ export class ApmeRunner {
       if (!parsed) return;
 
       const now = Date.now();
-      const judgeModel = `${cfg.judge.backend}:${cfg.judge.model}`;
+      const judgeModel = effectiveJudgeModelTag(cfg.judge);
       for (const [axis, score] of Object.entries(parsed.scores)) {
         this.store.insertEvalForTurn({
           runId, turnId,
@@ -248,7 +249,7 @@ export class ApmeRunner {
           const parsed = parseJudgeJson(judgeText);
           if (parsed) {
             const now = Date.now();
-            const judgeModel = `${cfg.judge.backend}:${cfg.judge.model}`;
+            const judgeModel = effectiveJudgeModelTag(cfg.judge);
             for (const [axis, score] of Object.entries(parsed.scores)) {
               this.store.insertEval({
                 runId: run.id,
@@ -498,6 +499,19 @@ function collectDiff(run: ApmeRunRow): string {
   }
 }
 
+/**
+ * Build the `judgeModel` DB tag. For MLX backend the effective model is the
+ * llm.mlx pin when set — otherwise cfg.judge.model (may still be the legacy
+ * "qwen3-30b" placeholder). Non-MLX backends use cfg.judge.model verbatim.
+ */
+export function effectiveJudgeModelTag(cfg: ApmeJudgeConfig): string {
+  if (cfg.backend === 'mlx') {
+    const pinned = loadMlxSettings().model;
+    return `mlx:${pinned ?? cfg.model}`;
+  }
+  return `${cfg.backend}:${cfg.model}`;
+}
+
 export async function callJudge(prompt: string, judgeCfg: ApmeJudgeConfig): Promise<string> {
   if (judgeCfg.backend === 'mlx') return callMlx(prompt, judgeCfg);
   if (judgeCfg.backend === 'openclaw') return callOpenClaw(prompt, judgeCfg);
@@ -506,15 +520,16 @@ export async function callJudge(prompt: string, judgeCfg: ApmeJudgeConfig): Prom
 }
 
 async function callMlx(prompt: string, cfg: ApmeJudgeConfig): Promise<string> {
-  // MLX server speaks OpenAI chat-completions. Default endpoint matches
-  // existing mlx-probe.ts expectations.
-  // Try both /v1/chat/completions (mlx-lm) and /chat/completions (mlx-vlm).
-  const url = cfg.endpoint ?? 'http://127.0.0.1:8800/chat/completions';
-  // Auto-detect model if not explicitly configured — query /v1/models or /models
-  let model = cfg.model;
+  // MLX server speaks OpenAI chat-completions. The llm.mlx pin (shared with
+  // timeline/label summarizers) is the source of truth; cfg.endpoint/model
+  // override only when the user explicitly set apme.judge.* in settings.json.
+  const mlx = loadMlxSettings();
+  const url = cfg.endpoint ?? mlxChatUrl();
+  // Pin > cfg.model > probe auto-detect > cfg.model (final fallback).
+  let model = mlx.model ?? cfg.model;
   if (!model || model === 'qwen3-30b') {
     try {
-      const base = (cfg.endpoint ?? 'http://127.0.0.1:8800').replace(/\/chat\/completions$/, '').replace(/\/v1\/chat\/completions$/, '');
+      const base = (cfg.endpoint ?? mlx.endpoint).replace(/\/chat\/completions$/, '').replace(/\/v1\/chat\/completions$/, '');
       for (const path of ['/v1/models', '/models']) {
         const mResp = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(3000) }).catch(() => null);
         if (mResp?.ok) {

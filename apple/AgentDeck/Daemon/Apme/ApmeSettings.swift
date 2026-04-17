@@ -56,6 +56,35 @@ struct ApmeConfig: Codable {
     var availableModels: [String] = []
 }
 
+// MARK: - LLM MLX pin
+
+/// Single source of truth for which MLX model AgentDeck uses across
+/// probe, timeline summarizer, and APME judge. Mirrors
+/// shared/src/llm-settings.ts (MlxSettings). See plan mlx-atomic-minsky.
+struct LlmMlxConfig: Codable {
+    /// Base URL (no /chat/completions suffix). Default: 127.0.0.1:8800.
+    var endpoint: String = "http://127.0.0.1:8800"
+    /// Pinned model id. `nil` means auto-detect from `/v1/models`.
+    var model: String?
+}
+
+private let placeholderModelIds: Set<String> = ["", "default", "qwen3-30b"]
+
+private func isPlaceholderModel(_ m: String?) -> Bool {
+    guard let m = m?.trimmingCharacters(in: .whitespaces) else { return true }
+    return placeholderModelIds.contains(m)
+}
+
+private func stripChatSuffix(_ url: String) -> String {
+    var s = url
+    for suffix in ["/v1/chat/completions", "/chat/completions"] {
+        if s.hasSuffix(suffix) {
+            s = String(s.dropLast(suffix.count))
+        }
+    }
+    return s
+}
+
 // MARK: - Loader
 
 enum ApmeSettings {
@@ -105,6 +134,53 @@ enum ApmeSettings {
         if let models = apme["availableModels"] as? [String] { cfg.availableModels = models }
 
         return cfg
+    }
+
+    // MARK: LLM MLX pin
+
+    nonisolated(unsafe) private static var mlxCache: (at: Date, value: LlmMlxConfig)?
+    private static let mlxCacheTTL: TimeInterval = 30
+
+    /// Load llm.mlx pin (shared across probe, timeline, judge).
+    /// Falls back to legacy apme.judge.{endpoint,model} for backward compat.
+    /// Result is cached for 30s to avoid re-parsing settings.json on every call.
+    static func loadMlxConfig() -> LlmMlxConfig {
+        if let c = mlxCache, Date().timeIntervalSince(c.at) < mlxCacheTTL {
+            return c.value
+        }
+        var cfg = LlmMlxConfig()
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+
+            if let llmMlx = (json["llm"] as? [String: Any])?["mlx"] as? [String: Any] {
+                if let ep = llmMlx["endpoint"] as? String, !ep.isEmpty {
+                    cfg.endpoint = stripChatSuffix(ep)
+                }
+                if let m = llmMlx["model"] as? String, !isPlaceholderModel(m) {
+                    cfg.model = m.trimmingCharacters(in: .whitespaces)
+                }
+            }
+
+            // Legacy fallback: apme.judge.{endpoint,model}
+            if cfg.model == nil || cfg.endpoint == "http://127.0.0.1:8800" {
+                if let judge = (json["apme"] as? [String: Any])?["judge"] as? [String: Any] {
+                    if cfg.model == nil, let m = judge["model"] as? String, !isPlaceholderModel(m) {
+                        cfg.model = m.trimmingCharacters(in: .whitespaces)
+                    }
+                    if cfg.endpoint == "http://127.0.0.1:8800",
+                       let ep = judge["endpoint"] as? String, !ep.isEmpty {
+                        cfg.endpoint = stripChatSuffix(ep)
+                    }
+                }
+            }
+        }
+        mlxCache = (Date(), cfg)
+        return cfg
+    }
+
+    /// Clear the 30s mlx config cache — used by tests or after a settings write.
+    static func clearMlxCache() {
+        mlxCache = nil
     }
 
     /// Decide whether layer-2 (LLM judge) should run for this run.

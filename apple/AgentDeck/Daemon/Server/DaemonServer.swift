@@ -2196,7 +2196,16 @@ final class DaemonServer {
         if success {
             mlxFailureCount = 0
             mlxNextInterval = Self.probeBaseInterval
-            cachedMlxModels = resolved
+            // Pin filter: when the user has selected a specific MLX model via
+            // `llm.mlx.model` in settings.json and it's present in the catalog,
+            // broadcast only that one so dashboard, summarizers, and judge all
+            // agree on a single model. Otherwise show the full filtered list.
+            let pin = ApmeSettings.loadMlxConfig().model
+            if let pin = pin, resolved.contains(pin) {
+                cachedMlxModels = [pin]
+            } else {
+                cachedMlxModels = resolved
+            }
         } else {
             mlxFailureCount += 1
             mlxNextInterval = min(mlxNextInterval * 2, Self.probeMaxInterval)
