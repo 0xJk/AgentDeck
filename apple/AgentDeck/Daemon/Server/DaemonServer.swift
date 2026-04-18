@@ -2198,11 +2198,15 @@ final class DaemonServer {
             mlxNextInterval = Self.probeBaseInterval
             // Pin filter: when the user has selected a specific MLX model via
             // `llm.mlx.model` in settings.json and it's present in the catalog,
-            // broadcast only that one so dashboard, summarizers, and judge all
-            // agree on a single model. Otherwise show the full filtered list.
+            // broadcast only that one. Otherwise, when the catalog advertises
+            // multiple models, auto-pick the first — matches the APME judge's
+            // "first non-nanollava" auto-detect and prevents dashboard from
+            // exposing every downloaded model on disk as if they were all live.
             let pin = ApmeSettings.loadMlxConfig().model
             if let pin = pin, resolved.contains(pin) {
                 cachedMlxModels = [pin]
+            } else if resolved.count > 1, let first = resolved.first {
+                cachedMlxModels = [first]
             } else {
                 cachedMlxModels = resolved
             }

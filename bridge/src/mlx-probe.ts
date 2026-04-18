@@ -32,6 +32,12 @@ export async function fetchMlxModels(pin?: string | null): Promise<string[] | nu
       if (pin && deduped.includes(pin)) {
         return [pin];
       }
+      // Auto-pick the first model when the catalog advertises multiple and
+      // no explicit pin is set. mlx_vlm.server enumerates every downloaded
+      // model regardless of what's actually loaded, so exposing all of them
+      // in the dashboard creates ambiguity. Matches the APME judge's existing
+      // "first non-nanollava" auto-detection.
+      if (deduped.length > 1) return [deduped[0]];
       return deduped;
     } catch {
       // try next endpoint
