@@ -86,6 +86,34 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         renderTask?.cancel()
         await renderTask?.value
         renderTask = nil
+
+        // Replace the last rendered frame with an OFFLINE placeholder before
+        // tearing down, so the Pixoo hardware doesn't stay frozen on a stale
+        // creature scene after the daemon goes away. Matches Node's
+        // stopPixooBridge() behavior.
+        await pushOfflineFrame()
+    }
+
+    private func pushOfflineFrame() async {
+        let targets = devices.filter { !isBackedOff($0.ip) }
+        guard !targets.isEmpty else { return }
+        let frame = renderer.renderDisconnectedFrame()
+        lastFrame = frame
+
+        let pushes = Task { [weak self] in
+            guard let self else { return }
+            await withTaskGroup(of: Void.self) { group in
+                for device in targets {
+                    group.addTask { await self.pushToDevice(device, frame: frame) }
+                }
+            }
+        }
+        let deadline = Task {
+            try? await Task.sleep(for: .seconds(2))
+            pushes.cancel()
+        }
+        await pushes.value
+        deadline.cancel()
     }
 
     func handleWake() async {
@@ -213,7 +241,15 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
     private func pushFrame() async {
         guard !devices.isEmpty, !displayDimmed else { return }
 
-        let frame = renderer.render(dashboardState: currentDashboardState())
+        // No creature agent has reported yet and no sessions are alive — render
+        // the neutral OFFLINE placeholder instead of an empty tank so the user
+        // can tell at a glance that nothing is driving the display.
+        let frame: Data
+        if cachedState == "disconnected" && cachedAgentType == nil && cachedSessions.isEmpty {
+            frame = renderer.renderDisconnectedFrame()
+        } else {
+            frame = renderer.render(dashboardState: currentDashboardState())
+        }
         lastFrame = frame
 
         for device in devices where !isBackedOff(device.ip) {

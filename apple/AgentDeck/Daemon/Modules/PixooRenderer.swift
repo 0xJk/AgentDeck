@@ -240,6 +240,14 @@ final class PixooRenderer {
         "m": [0b101, 0b111, 0b101, 0b101, 0b101],
         "d": [0b001, 0b001, 0b011, 0b101, 0b011],
         " ": [0b000, 0b000, 0b000, 0b000, 0b000],
+        // Uppercase glyphs for "OFFLINE" disconnected frame — mirrors
+        // bridge/src/pixoo/pixoo-font.ts.
+        "O": [0b010, 0b101, 0b101, 0b101, 0b010],
+        "F": [0b111, 0b100, 0b110, 0b100, 0b100],
+        "L": [0b100, 0b100, 0b100, 0b100, 0b111],
+        "I": [0b111, 0b010, 0b010, 0b010, 0b111],
+        "N": [0b101, 0b111, 0b111, 0b101, 0b101],
+        "E": [0b111, 0b100, 0b110, 0b100, 0b111],
     ]
 
     private static let colors = Colors()
@@ -454,6 +462,21 @@ final class PixooRenderer {
 
         drawUsageHUD(&output, dashboardState: dashboardState, animFrame: animFrame)
         return Data(output)
+    }
+
+    /// Static black frame with a centered grey "OFFLINE" label. Mirrors
+    /// `renderDisconnectedFrame()` in bridge/src/pixoo/pixoo-renderer.ts so
+    /// Pixoo stops displaying stale creature frames the moment the Swift
+    /// daemon goes away.
+    func renderDisconnectedFrame() -> Data {
+        var buf = [UInt8](repeating: 0, count: Self.width * Self.height * 3)
+        let text = "OFFLINE"
+        // Glyphs are 3px wide + 1px gap; drawText is right-aligned, so compute
+        // a rightX that centers the 27px text on the 64px canvas (cols 18..44).
+        let textWidth = text.count * 4 - 1
+        let rightX = (Self.width + textWidth) / 2
+        drawText(&buf, text: text, rightX: rightX, y: 29, color: (0x55, 0x55, 0x55))
+        return Data(buf)
     }
 
     private func syncCreatures(dashboardState: DashboardState) {
