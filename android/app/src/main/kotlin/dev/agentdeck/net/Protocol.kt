@@ -100,6 +100,7 @@ data class StateUpdate(
     val subscriptions: List<SubscriptionInfo>? = null,
     val antigravityStatus: AntigravityStatusInfo? = null,
     val gatewayAvailable: Boolean? = null,
+    val gatewayConnected: Boolean? = null,
     val gatewayHasError: Boolean? = null,
     val voiceAssistantState: String? = null,
     val voiceAssistantText: String? = null,

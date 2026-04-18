@@ -112,7 +112,8 @@ struct DashboardState {
 
     // Crayfish state (derived from sibling)
     CrayfishState crayfishState;
-    bool gatewayAvailable;
+    bool gatewayAvailable;   // OpenClaw process reachable on localhost:18789
+    bool gatewayConnected;   // OpenClaw Gateway authenticated — drives crayfish visibility
     bool gatewayHasError;
 
     // Current tool (processing indicator)
@@ -184,11 +185,15 @@ struct DashboardState {
                 break;
         }
 
-        // Derive crayfish state from gateway when no sessions_list received
+        // Derive crayfish state from gateway when no sessions_list received.
+        // Reachability alone (`gatewayAvailable`) isn't enough — the crayfish
+        // only comes out when the Gateway is authenticated, matching the
+        // iOS/Android terrariums.
         if (crayfishCount == 0) {
-            if (gatewayAvailable) {
-                crayfishState = gatewayHasError
-                    ? CrayfishState::SICK : CrayfishState::SITTING;
+            if (gatewayHasError) {
+                crayfishState = CrayfishState::SICK;
+            } else if (gatewayConnected) {
+                crayfishState = CrayfishState::SITTING;
             } else {
                 crayfishState = CrayfishState::DORMANT;
             }

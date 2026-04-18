@@ -124,31 +124,36 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         AgentState.AWAITING_DIFF -> OctopusVisualState.ASKING
     }
 
-    // OpenClaw sibling state determines crayfish independently
+    // OpenClaw sibling state determines crayfish independently.
+    //
+    // Gating parity with the iOS terrarium (TerrariumState.swift):
+    // crayfish is hidden (DORMANT) unless the Gateway is authenticated
+    // (`gatewayConnected == true`) or has surfaced an explicit error.
+    // Reachability alone (`gatewayAvailable`) used to trigger a cheerful
+    // SITTING crayfish even when the shared token was missing, which
+    // misled users into thinking OpenClaw was wired up.
     val ocSibling = siblingSessions.firstOrNull { it.agentType == "openclaw" }
     val crayfish = when {
-        // Primary is OpenClaw — use primary state
+        // Gateway not authenticated and no error to surface — hide.
+        gatewayConnected != true && gatewayHasError != true -> CrayfishVisualState.DORMANT
+        // Primary is OpenClaw — use primary state.
         isOpenClaw -> when (effectiveAgentState) {
             AgentState.PROCESSING -> CrayfishVisualState.ROUTING
             AgentState.IDLE -> CrayfishVisualState.SITTING
             AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
             else -> CrayfishVisualState.WAITING
         }
-        // Sibling OpenClaw exists — use its state
+        // Sibling OpenClaw exists — use its state.
         ocSibling != null -> when (ocSibling.state) {
             "processing" -> CrayfishVisualState.ROUTING
             "idle" -> CrayfishVisualState.SITTING
             "awaiting_permission", "awaiting_option", "awaiting_diff" -> CrayfishVisualState.WAITING
             else -> if (ocSibling.alive) CrayfishVisualState.SITTING else CrayfishVisualState.DORMANT
         }
-        // Gateway detected but no bridge
-        gatewayAvailable == true -> CrayfishVisualState.SITTING
-        // Nothing — derive from effective agent state
-        else -> when (effectiveAgentState) {
-            AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
-            AgentState.PROCESSING -> CrayfishVisualState.OBSERVING
-            else -> CrayfishVisualState.SITTING
-        }
+        // Gateway authenticated but no OpenClaw session yet.
+        gatewayConnected == true -> CrayfishVisualState.SITTING
+        // Only error surfaces remain — fall through to SICK below.
+        else -> CrayfishVisualState.SITTING
     }
 
     // Override to SICK if gateway has errors (but not when DORMANT — gateway unreachable)

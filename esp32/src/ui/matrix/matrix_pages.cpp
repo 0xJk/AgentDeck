@@ -350,7 +350,9 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     lockState();
     bool connected = g_state.wsConnected;
     uint8_t sessionCount = g_state.sessionCount;
-    bool gatewayAvail = g_state.gatewayAvailable;
+    // Crayfish draws only when the Gateway is authenticated — reachability
+    // alone (`gatewayConnable`) is not enough. Parity with terrarium renderer.
+    bool gatewayConn = g_state.gatewayConnected;
     bool gatewayError = g_state.gatewayHasError;
     CrayfishState cfState = g_state.crayfishState;
 
@@ -390,7 +392,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     unlockState();
 
     // === Crayfish: fixed at right (x=27, y=1) ===
-    if (connected && gatewayAvail) {
+    if (connected && gatewayConn) {
         CRGB cfColor;
         if (gatewayError) {
             cfColor = CRGB(40, 40, 40);  // SICK: gray
@@ -408,7 +410,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
     }
 
     // === Agents: left area (x 0 to cfX-2) ===
-    int cfX = (connected && gatewayAvail) ? 27 : 32;  // crayfish position (or off-screen)
+    int cfX = (connected && gatewayConn) ? 27 : 32;  // crayfish position (or off-screen)
     int agentMaxX = cfX - 7;            // rightmost sprite start (5px sprite + 2px gap)
 
     if (agentCount == 0) {

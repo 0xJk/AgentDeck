@@ -378,7 +378,10 @@ void update() {
     strncpy(primaryAgent, g_state.agentType, sizeof(primaryAgent) - 1);
     primaryAgent[sizeof(primaryAgent) - 1] = '\0';
 
-    bool gateway = g_state.gatewayAvailable;
+    // HUD shows the OpenClaw label only when the Gateway is authenticated,
+    // matching the creature gate. Reachability alone (`gatewayAvailable`)
+    // used to light up an "OpenClaw" row even with no shared token.
+    bool gateway = g_state.gatewayConnected;
     unlockState();
 
     // === Left panel: session list ===

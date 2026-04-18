@@ -212,7 +212,12 @@ void render(float dt) {
     if (cloudCount == 0 && isCloudAgent) cloudCount = 1;
     uint8_t opencodeCount = hasData ? g_state.opencodeCount : 0;
     if (opencodeCount == 0 && isOpenCodeAgent) opencodeCount = 1;
-    bool showCrayfish = hasData && (g_state.gatewayAvailable || g_state.gatewayHasError || g_state.crayfishCount > 0);
+    // Crayfish is drawn only when the OpenClaw Gateway is authenticated
+    // (or an error is surfaced). Reachability alone — `gatewayAvailable`
+    // — used to draw a cheerful crayfish even when the shared token was
+    // missing, which made the board read as "OpenClaw wired up" when it
+    // wasn't. Parity with the iOS/Android terrariums.
+    bool showCrayfish = hasData && (g_state.gatewayConnected || g_state.gatewayHasError || g_state.crayfishCount > 0);
 
     // Per-creature state arrays
     CreatureState octStates[MAX_OCTOPUS];

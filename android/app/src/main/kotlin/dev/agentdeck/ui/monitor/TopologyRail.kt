@@ -250,7 +250,10 @@ private fun UpstreamRows(state: DashboardState) {
                 name = "OpenClaw",
                 status = when {
                     state.gatewayHasError == true -> LEDStatus.ERROR
-                    state.gatewayAvailable == true && openClawLines.isNotEmpty() -> LEDStatus.OK
+                    // OK only when the Gateway is authenticated — reachability
+                    // alone keeps the row amber so users know setup isn't
+                    // finished (matches iOS topology semantics).
+                    state.gatewayConnected == true -> LEDStatus.OK
                     else -> LEDStatus.WARN
                 },
                 subtitle = subtitle,

@@ -74,7 +74,12 @@ static void handleStateUpdate(JsonObject& obj) {
     }
 
     // Gateway
+    // gatewayAvailable = OpenClaw process reachable (kept for future topology
+    // widgets). gatewayConnected = authenticated — the one that drives
+    // crayfish rendering. Older daemons that don't broadcast gatewayConnected
+    // will leave it at false, so the crayfish stays dormant until they update.
     g_state.gatewayAvailable = obj["gatewayAvailable"] | false;
+    g_state.gatewayConnected = obj["gatewayConnected"] | false;
     g_state.gatewayHasError = obj["gatewayHasError"] | false;
 
     // Mark that we've received real data from bridge
@@ -349,11 +354,12 @@ static void handleSessionsList(JsonObject& obj) {
     }
     }  // MAX_OPENCODE > 0
 
-    // No OpenClaw sessions: check gateway availability
+    // No OpenClaw sessions: gate crayfish on authentication, not reachability.
     if (g_state.crayfishCount == 0) {
-        if (g_state.gatewayAvailable) {
-            g_state.crayfishState = g_state.gatewayHasError
-                ? CrayfishState::SICK : CrayfishState::SITTING;
+        if (g_state.gatewayHasError) {
+            g_state.crayfishState = CrayfishState::SICK;
+        } else if (g_state.gatewayConnected) {
+            g_state.crayfishState = CrayfishState::SITTING;
         } else {
             g_state.crayfishState = CrayfishState::DORMANT;
         }
