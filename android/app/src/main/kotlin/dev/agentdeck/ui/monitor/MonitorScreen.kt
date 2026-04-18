@@ -701,13 +701,84 @@ private fun MonitorHUD(
                 .widthIn(max = 220.dp),
         )
 
-        // Top-right: Tank status (aquarium engine panel)
-        TankStatusPanel(
+        // Top-right: Relationship-centric topology rail replaces the former
+        // TankStatusPanel. Shows upstream providers → AgentDeck hub →
+        // downstream devices as a single vertical flow instead of disjoint
+        // list boxes.
+        TopologyRail(
             state = dashState,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(end = 12.dp, top = 12.dp)
-                .widthIn(max = 280.dp),
+                .widthIn(max = 300.dp),
+        )
+
+        // Floating attention theater — ported from the Option D macOS
+        // design. When any session is awaiting input we pin a YES/NO/ALWAYS
+        // card to the top-center of the canvas so the user can answer
+        // without opening the menu bar or digging through the session list.
+        val awaiting = buildAwaitingList(dashState)
+        val featuredSession = awaiting.firstOrNull { it.id == dashState.sessionId } ?: awaiting.firstOrNull()
+        if (featuredSession != null) {
+            val featured = buildAttentionFeatured(
+                session = featuredSession,
+                question = if (featuredSession.id == dashState.sessionId) dashState.question else null,
+            )
+            AttentionTheaterHUD(
+                featured = featured,
+                queuedCount = (awaiting.size - 1).coerceAtLeast(0),
+                onRespond = { index ->
+                    BridgeConnection.instance.sendSelectOption(index)
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 14.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Surface every session that's currently in an awaiting_* state, preferring
+ * the primary (local) session when its agentType is unique. Mirrors the
+ * Swift side's `attentionSessions` list.
+ */
+private fun buildAwaitingList(state: DashboardState): List<dev.agentdeck.net.SessionInfo> {
+    val out = mutableListOf<dev.agentdeck.net.SessionInfo>()
+
+    // Primary session — synthesize a SessionInfo so the theater can share
+    // its payload type with the siblings list.
+    val primaryAwaits = state.agentState.isAwaiting()
+    val primaryAgentType = state.agentType
+    if (primaryAwaits && primaryAgentType != null && primaryAgentType != "daemon" &&
+        state.siblingSessions.none { it.agentType == primaryAgentType }
+    ) {
+        out += dev.agentdeck.net.SessionInfo(
+            id = state.sessionId ?: "primary",
+            port = 0,
+            projectName = state.projectName,
+            agentType = primaryAgentType,
+            alive = true,
+            state = state.agentState.wireName(),
+            modelName = state.modelName,
         )
     }
+
+    for (session in state.siblingSessions) {
+        val s = dev.agentdeck.ui.eink.mapSessionState(session)
+        if (s.isAwaiting()) out += session
+    }
+    return out
+}
+
+/** Wire-format the agent state back to its serial string — used when
+ * synthesizing a SessionInfo for the primary session from DashboardState.
+ */
+private fun dev.agentdeck.net.AgentState.wireName(): String = when (this) {
+    dev.agentdeck.net.AgentState.AWAITING_PERMISSION -> "awaiting_permission"
+    dev.agentdeck.net.AgentState.AWAITING_OPTION -> "awaiting_option"
+    dev.agentdeck.net.AgentState.AWAITING_DIFF -> "awaiting_diff"
+    dev.agentdeck.net.AgentState.PROCESSING -> "processing"
+    dev.agentdeck.net.AgentState.IDLE -> "idle"
+    dev.agentdeck.net.AgentState.DISCONNECTED -> "disconnected"
 }

@@ -145,6 +145,20 @@ private fun appendNumber(s: String, start: Int, sb: StringBuilder): Int {
     return i
 }
 
+/**
+ * Canonical per-agent brand color, shared by rail consumer dots, session
+ * list icons, attention theater badges, etc. Keep in sync with the iOS
+ * `SessionBrand.color(for:)` switch and the D200H hardware color map.
+ */
+fun brandColorForAgent(agentType: String?): Color = when (agentType) {
+    "claude-code" -> Color(0xFFC07058)
+    "codex-cli"   -> Color(0xFF6166E0)
+    "openclaw"    -> Color(0xFFFF4D4D)
+    "opencode"    -> Color(0xFFF1ECEC)
+    "daemon"      -> Color(0xFF8C8C99)
+    else          -> Color(0xFF94A3B8)
+}
+
 private class BrandIconSpec(
     val pathDataList: List<String>,
     val viewBox: Float,
