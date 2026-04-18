@@ -28,6 +28,8 @@ AgentDeck is a physical control surface for AI coding agents. It started with an
 
 > One bridge. 13 surfaces. Steer your AI — without leaving your keyboard flow.
 
+> Independent project. Not affiliated with Anthropic, OpenAI, Google, Elgato, DIVOOM, or other third parties referenced. All trademarks are property of their respective owners. See [ATTRIBUTION.md](ATTRIBUTION.md) for full notices.
+
 <p align="center">
   <img src="assets/AgentDeck_SNS_Collage.png" width="720" alt="AgentDeck collage — Stream Deck+, Android, e-ink, Apple devices, ESP32 displays, Pixoo64, and TUI dashboard">
 </p>

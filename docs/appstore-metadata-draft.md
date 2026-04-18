@@ -90,6 +90,10 @@ Android ADB 브리징, Codex 웹 인증 상태 표시, APME Layer 1 deterministi
 • Apple Silicon 또는 Intel Mac
 
 AI 코딩 에이전트가 처음이라면 [docs.claude.com/claude-code](https://docs.claude.com/en/docs/claude-code/quickstart)에서 Claude Code CLI부터 설치하세요. AgentDeck은 설치 후 바로 세션을 모니터링합니다.
+
+═══ 비관계 고지 & 상표 ═══
+
+AgentDeck는 독립적인 프로젝트이며 Anthropic, OpenAI, Google, SST, Corsair/Elgato, DIVOOM, Ulanzi 및 언급된 기타 제3자와 제휴, 후원, 또는 승인 관계가 없습니다. Claude™, Claude Code™, Codex™, Stream Deck®, Pixoo® 등 모든 상표는 각 소유자의 자산입니다. 자세한 상표 고지와 오픈소스 라이선스는 [ATTRIBUTION.md](https://github.com/puritysb/AgentDeck/blob/master/ATTRIBUTION.md)를 참고하세요.
 ```
 
 ### Keywords (100자, 쉼표로 구분, 공백 무관)
@@ -198,6 +202,10 @@ Android ADB bridging, Codex web-auth status, and APME Layer 1 deterministic scor
 • Apple Silicon or Intel Mac
 
 New to AI coding agents? Install Claude Code first: https://docs.claude.com/en/docs/claude-code/quickstart. AgentDeck picks up sessions the moment you run one.
+
+═══ Independence and trademarks ═══
+
+AgentDeck is an independent project and is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, Google, SST, Corsair/Elgato, DIVOOM, Ulanzi, or any other third parties mentioned. Claude™, Claude Code™, Codex™, Stream Deck®, Pixoo®, and all other trademarks referenced are the property of their respective owners. See ATTRIBUTION.md (https://github.com/puritysb/AgentDeck/blob/master/ATTRIBUTION.md) for full trademark notices and open-source licenses.
 ```
 
 ### Keywords (100 chars)
