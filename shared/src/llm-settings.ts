@@ -104,6 +104,31 @@ export function resolveMlxModel(probeFirst?: string | null): string {
 }
 
 /**
+ * Pick one model id from a live probe catalog. Returns `null` when the
+ * server is unreachable or advertises no usable model — UI should render
+ * "MLX · Not detected" rather than silently masquerading the fallback as
+ * active (the fallback id won't exist on the user's disk and every
+ * summarize call would fail).
+ *
+ * Priority — mirrors the 4-layer policy documented in CLAUDE.md:
+ *   1. caller-supplied pin if present in catalog
+ *   2. `MLX_FALLBACK_MODEL` (3.6 family) if present in catalog — keeps the
+ *      codebase's chosen default in sync with what the dashboard advertises
+ *   3. first catalog entry (preserves the `auto-pick first` behavior added
+ *      in commit 2b7b38b3 for the many-models case)
+ *   4. null — no catalog
+ */
+export function pickMlxModel(
+  catalog: string[] | null | undefined,
+  pin?: string | null,
+): string | null {
+  if (!catalog || catalog.length === 0) return null;
+  if (pin && pin.length > 0 && catalog.includes(pin)) return pin;
+  if (catalog.includes(MLX_FALLBACK_MODEL)) return MLX_FALLBACK_MODEL;
+  return catalog[0];
+}
+
+/**
  * Return a full chat-completions URL for the configured endpoint.
  * MLX-VLM uses `/chat/completions`; MLX-LM historically also answers on
  * `/v1/chat/completions`. We use the non-v1 path to match existing callers

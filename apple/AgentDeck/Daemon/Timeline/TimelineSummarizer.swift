@@ -9,28 +9,38 @@ enum TimelineSummarizer {
     private static let ollamaPort = 11434
     private static let maxChars = 80
 
-    /// Final fallback when neither llm.mlx pin nor the /v1/models catalog
-    /// yield a usable model. Mirrors shared/src/llm-settings.ts MLX_FALLBACK_MODEL.
+    /// Preferred MLX model when the live catalog advertises it. Mirrors
+    /// shared/src/llm-settings.ts MLX_FALLBACK_MODEL. Used only for catalog
+    /// matching — never returned when the server is down.
     private static let mlxFallbackModel = "mlx-community/Qwen3.6-35B-A3B-4bit"
 
-    /// Cached first model id from /v1/models, refreshed on staleness. Avoids
-    /// hitting the catalog endpoint on every summarization.
-    nonisolated(unsafe) private static var probedFirstModel: String?
+    /// Cached picked model id from /v1/models, refreshed on staleness.
+    /// `nil` means "server probed, nothing usable" and summarize must skip.
+    nonisolated(unsafe) private static var probedModel: String?
     nonisolated(unsafe) private static var probedAt: Date = .distantPast
     private static let probeCacheTTL: TimeInterval = 60
 
-    private static func resolveMlxModel() async -> String {
+    /// Resolve the MLX model id for an inference call. Returns `nil` when
+    /// the MLX server is unreachable — callers must skip the HTTP request
+    /// rather than POSTing to a nonexistent model (App Store users without
+    /// `mlx_vlm.server` installed would otherwise see a silent 100% failure
+    /// rate and blocking network timeouts).
+    private static func resolveMlxModel() async -> String? {
         if let pin = ApmeSettings.loadMlxConfig().model {
             return pin
         }
-        if probedFirstModel == nil || Date().timeIntervalSince(probedAt) > probeCacheTTL {
-            probedFirstModel = await fetchFirstMlxModel()
+        if probedModel == nil || Date().timeIntervalSince(probedAt) > probeCacheTTL {
+            probedModel = await pickFromCatalog()
             probedAt = Date()
         }
-        return probedFirstModel ?? mlxFallbackModel
+        return probedModel
     }
 
-    private static func fetchFirstMlxModel() async -> String? {
+    /// Fetch /v1/models catalog and apply the 4-layer policy mirrored from
+    /// shared `pickMlxModel`: pin → MLX_FALLBACK_MODEL if present → first
+    /// entry → nil. The pin branch is handled by the caller (settings take
+    /// precedence over probe). `nanollava` variants are always filtered.
+    private static func pickFromCatalog() async -> String? {
         let base = ApmeSettings.loadMlxConfig().endpoint
         for path in ["/v1/models", "/models"] {
             guard let url = URL(string: base + path) else { continue }
@@ -42,13 +52,16 @@ enum TimelineSummarizer {
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let rows = json["data"] as? [[String: Any]]
             else { continue }
-            for row in rows {
-                if let id = row["id"] as? String,
-                   !id.isEmpty,
-                   !id.lowercased().contains("nanollava") {
-                    return id
-                }
+            let catalog: [String] = rows.compactMap { row in
+                guard let id = row["id"] as? String,
+                      !id.isEmpty,
+                      !id.lowercased().contains("nanollava")
+                else { return nil }
+                return id
             }
+            if catalog.isEmpty { return nil }
+            if catalog.contains(mlxFallbackModel) { return mlxFallbackModel }
+            return catalog.first
         }
         return nil
     }
@@ -70,8 +83,10 @@ enum TimelineSummarizer {
     private static func queryMLX(_ text: String) async -> String? {
         let base = ApmeSettings.loadMlxConfig().endpoint
         guard let url = URL(string: base + "/chat/completions") else { return nil }
+        // MLX server not detected (App Store install without mlx-vlm) — skip
+        // rather than posting to a nonexistent model and burning a 10s timeout.
+        guard let model = await resolveMlxModel() else { return nil }
         let truncated = String(text.prefix(2000))
-        let model = await resolveMlxModel()
         let body: [String: Any] = [
             "model": model,
             "messages": [

@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import {
   loadMlxSettings,
   resolveMlxModel,
+  pickMlxModel,
   clearMlxSettingsCache,
   mlxChatUrl,
   MLX_FALLBACK_MODEL,
@@ -94,6 +95,30 @@ describe('llm-settings', () => {
     expect(resolveMlxModel()).toBe(MLX_FALLBACK_MODEL);
     expect(resolveMlxModel(null)).toBe(MLX_FALLBACK_MODEL);
     expect(resolveMlxModel('')).toBe(MLX_FALLBACK_MODEL);
+  });
+
+  it('pickMlxModel: 4-layer priority (pin > fallback > first > null)', () => {
+    const OTHER = 'mlx-community/Qwen3.5-30B-A3B-4bit';
+
+    // Layer 4: null catalog → null (Not detected)
+    expect(pickMlxModel(null)).toBeNull();
+    expect(pickMlxModel([])).toBeNull();
+    expect(pickMlxModel(undefined)).toBeNull();
+
+    // Layer 1: explicit pin wins when present in catalog
+    expect(pickMlxModel([OTHER, MLX_FALLBACK_MODEL], OTHER)).toBe(OTHER);
+    // Pin missing from catalog → falls through to fallback/first
+    expect(pickMlxModel([OTHER, MLX_FALLBACK_MODEL], 'not-on-disk'))
+      .toBe(MLX_FALLBACK_MODEL);
+
+    // Layer 2: fallback model preferred when available and no pin
+    expect(pickMlxModel([OTHER, MLX_FALLBACK_MODEL])).toBe(MLX_FALLBACK_MODEL);
+
+    // Layer 3: first entry when fallback absent (preserves 2b7b38b3 behavior)
+    expect(pickMlxModel([OTHER, 'foo/bar'])).toBe(OTHER);
+
+    // Empty-string pin is ignored (treated as unset)
+    expect(pickMlxModel([OTHER, MLX_FALLBACK_MODEL], '')).toBe(MLX_FALLBACK_MODEL);
   });
 
   it('mlxChatUrl reflects endpoint setting', () => {
