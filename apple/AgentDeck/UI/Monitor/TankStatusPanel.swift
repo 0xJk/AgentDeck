@@ -51,7 +51,25 @@ struct TankStatusPanel: View {
     }
 
     private var openClawLines: [String] {
-        DashboardDataRules.openClawDisplayLines(stateHolder.state.modelCatalog)
+        let catalogLines = DashboardDataRules.openClawDisplayLines(stateHolder.state.modelCatalog)
+        if !catalogLines.isEmpty { return catalogLines }
+        guard stateHolder.state.gatewayAvailable else { return [] }
+        if stateHolder.state.gatewayHasError { return ["Gateway error"] }
+        if !stateHolder.state.gatewayConnected {
+            switch stateHolder.state.gatewayAuthStatus {
+            case "approval_pending":
+                return ["Approval pending", "Approve in OpenClaw"]
+            case "pairing_required":
+                return ["Pairing required", "Run openclaw devices list"]
+            case "auth_failed", "token_mismatch", "device_auth_invalid":
+                return ["Auth failed", "Re-approve AgentDeck"]
+            case "unsupported_protocol":
+                return ["Unsupported Gateway", "Update OpenClaw"]
+            default:
+                return ["Gateway reachable", "Waiting for OpenClaw pairing"]
+            }
+        }
+        return ["Connected", "Waiting for model catalog"]
     }
 
     private var ollamaLines: [String] {
@@ -86,7 +104,7 @@ struct TankStatusPanel: View {
     }
 
     private var openClawPrimaryLine: String? {
-        openClawLines.first
+        DashboardDataRules.openClawDisplayLines(stateHolder.state.modelCatalog).first
     }
 }
 

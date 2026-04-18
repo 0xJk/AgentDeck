@@ -1,0 +1,17 @@
+{
+  "type": "event",
+  "event": "sessions.changed",
+  "payload": {
+    "reason": "updated",
+    "key": "session_openclaw_1",
+    "sessions": [
+      {
+        "key": "session_openclaw_1",
+        "kind": "agent",
+        "displayName": "OpenClaw",
+        "updatedAt": 1776441600000,
+        "sessionId": "oc-1"
+      }
+    ]
+  }
+}

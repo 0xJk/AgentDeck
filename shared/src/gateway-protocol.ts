@@ -2,7 +2,8 @@
  * OpenClaw Gateway WebSocket protocol — single source of truth.
  *
  * Wire shape: JSON-encoded frames with a `type` discriminator (`req`/`res`/`event`).
- * Auth: Ed25519 device signature over `v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce`.
+ * Auth: Ed25519 device signature over
+ * `v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily`.
  * Bridge implementation: `bridge/src/adapters/openclaw.ts` (Node) / `apple/AgentDeck/Daemon/Modules/OpenClawAdapter.swift` (Swift).
  *
  * This file is used by `scripts/generate-protocol.sh` to emit Swift/Kotlin bindings
@@ -62,27 +63,45 @@ export interface GatewayError {
 
 export type GatewayMethodName =
   | 'connect'
+  | 'health'
+  | 'models.list'
+  | 'logs.tail'
   | 'chat.send'
   | 'chat.abort'
   | 'exec.approval.resolve'
-  | 'sessions.list';
+  | 'sessions.list'
+  | 'sessions.subscribe'
+  | 'sessions.messages.subscribe'
+  | 'system-presence';
 
 export type GatewayMethodParams =
   | ConnectParams
+  | HealthParams
+  | ModelsListParams
+  | LogsTailParams
   | ChatSendParams
   | ChatAbortParams
   | ExecApprovalResolveParams
-  | SessionsListParams;
+  | SessionsListParams
+  | SessionsSubscribeParams
+  | SessionsMessagesSubscribeParams
+  | SystemPresenceParams;
 
 export type GatewayMethodResult =
   | ConnectResult
+  | HealthResult
+  | ModelsListResult
+  | LogsTailResult
   | ChatSendResult
   | ChatAbortResult
   | ExecApprovalResolveResult
-  | SessionsListResult;
+  | SessionsListResult
+  | SessionsSubscribeResult
+  | SessionsMessagesSubscribeResult
+  | SystemPresenceResult;
 
 // connect — signed handshake response to connect.challenge.
-// Wire shape matches `bridge/src/adapters/openclaw.ts#sendConnectRequest`.
+// Wire shape matches OpenClaw 2026.4.14 `buildDeviceAuthPayloadV3`.
 export interface ConnectParams {
   /** Lower bound of protocol versions this client supports. */
   minProtocol: number;
@@ -93,19 +112,56 @@ export interface ConnectParams {
     displayName: string;
     version: string;
     platform: string;
-    mode: 'backend' | 'frontend';
+    deviceFamily?: string;
+    mode: 'backend' | 'frontend' | 'operator' | 'node';
+    instanceId?: string;
   };
   role: string;
   scopes: string[];
   caps: string[];
-  /** Ed25519 device signature over `v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce`. */
+  commands?: string[];
+  permissions?: Record<string, boolean>;
+  locale?: string;
+  userAgent?: string;
+  /** Ed25519 device signature over `v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily`. */
   device?: DeviceAuth;
   /** Bearer token issued during device pairing. */
-  auth?: { token: string };
+  auth?: {
+    token?: string;
+    bootstrapToken?: string;
+    deviceToken?: string;
+    password?: string;
+  };
 }
 
 export interface ConnectResult {
-  accepted: boolean;
+  type?: 'hello-ok';
+  accepted?: boolean;
+  protocol?: number;
+  server?: {
+    version: string;
+    connId: string;
+  };
+  features?: {
+    methods: string[];
+    events: string[];
+  };
+  auth?: {
+    deviceToken: string;
+    role: string;
+    scopes: string[];
+    issuedAtMs?: number;
+    deviceTokens?: Array<{
+      deviceToken: string;
+      role: string;
+      scopes: string[];
+      issuedAtMs?: number;
+    }>;
+  };
+  policy?: {
+    tickIntervalMs?: number;
+    maxPayload?: number;
+  };
   sessionToken?: string;
   expiresAt?: number;
 }
@@ -116,6 +172,55 @@ export interface DeviceAuth {
   signature: string;  // base64url Ed25519 signature
   signedAt: number;   // ms since epoch
   nonce: string;      // from connect.challenge
+}
+
+// health — gateway health snapshot
+export interface HealthParams {
+  probe?: boolean;
+}
+
+export interface HealthResult {
+  ok?: boolean;
+  ts?: number;
+  durationMs?: number;
+  status?: string;
+  checks?: Array<{ id?: string; name?: string; status?: string; message?: string }>;
+  [key: string]: unknown;
+}
+
+// models.list — runtime-allowed model catalog
+export interface ModelsListParams {}
+
+export interface ModelsListResult {
+  models: OpenClawModel[];
+}
+
+export interface OpenClawModel {
+  key?: string;
+  id?: string;
+  name?: string;
+  provider?: string;
+  title?: string;
+  available?: boolean;
+  missing?: boolean;
+  tags?: string[];
+  [key: string]: unknown;
+}
+
+// logs.tail — bounded gateway log tail
+export interface LogsTailParams {
+  cursor?: number;
+  limit?: number;
+  maxBytes?: number;
+}
+
+export interface LogsTailResult {
+  file?: string;
+  cursor?: number;
+  size?: number;
+  lines: string[];
+  truncated?: boolean;
+  reset?: boolean;
 }
 
 // chat.send — dispatch user message to active session
@@ -159,6 +264,29 @@ export interface SessionsListResult {
   sessions: GatewaySession[];
 }
 
+export interface SessionsSubscribeParams {}
+
+export interface SessionsSubscribeResult {
+  subscribed: boolean;
+}
+
+export interface SessionsMessagesSubscribeParams {
+  key: string;
+}
+
+export interface SessionsMessagesSubscribeResult {
+  subscribed: boolean;
+  key: string;
+}
+
+export interface SystemPresenceParams {}
+
+export interface SystemPresenceResult {
+  entries?: GatewayPresenceEntry[];
+  devices?: GatewayPresenceEntry[];
+  [key: string]: unknown;
+}
+
 export interface GatewaySession {
   key: string;
   kind?: string;
@@ -179,10 +307,16 @@ export interface GatewaySession {
  */
 export interface GatewayMethodMap {
   connect: { params: ConnectParams; result: ConnectResult };
+  health: { params: HealthParams; result: HealthResult };
+  'models.list': { params: ModelsListParams; result: ModelsListResult };
+  'logs.tail': { params: LogsTailParams; result: LogsTailResult };
   'chat.send': { params: ChatSendParams; result: ChatSendResult };
   'chat.abort': { params: ChatAbortParams; result: ChatAbortResult };
   'exec.approval.resolve': { params: ExecApprovalResolveParams; result: ExecApprovalResolveResult };
   'sessions.list': { params: SessionsListParams; result: SessionsListResult };
+  'sessions.subscribe': { params: SessionsSubscribeParams; result: SessionsSubscribeResult };
+  'sessions.messages.subscribe': { params: SessionsMessagesSubscribeParams; result: SessionsMessagesSubscribeResult };
+  'system-presence': { params: SystemPresenceParams; result: SystemPresenceResult };
 }
 
 // ===== Event catalog =====
@@ -190,18 +324,28 @@ export interface GatewayMethodMap {
 export type GatewayEventName =
   | 'connect.challenge'
   | 'chat'
+  | 'health'
+  | 'session.message'
+  | 'session.tool'
+  | 'sessions.changed'
   | 'exec.approval.requested'
   | 'exec.approval.resolved'
   | 'presence'
+  | 'system-presence'
   | 'tick'
   | 'shutdown';
 
 export type GatewayEventPayload =
   | ConnectChallengePayload
   | ChatEventPayload
+  | HealthResult
+  | SessionMessagePayload
+  | SessionToolPayload
+  | SessionsChangedPayload
   | ExecApprovalRequestedPayload
   | ExecApprovalResolvedPayload
   | PresencePayload
+  | SystemPresenceResult
   | TickPayload
   | ShutdownPayload;
 
@@ -256,10 +400,53 @@ export interface ExecApprovalResolvedPayload {
   sessionKey?: string;
 }
 
-export interface PresencePayload {
+export interface GatewayPresenceEntry {
   connected: boolean;
   clientId?: string;
   deviceId?: string;
+  roles?: string[];
+  scopes?: string[];
+  displayName?: string;
+  [key: string]: unknown;
+}
+
+export interface PresencePayload {
+  connected?: boolean;
+  clientId?: string;
+  deviceId?: string;
+  entries?: GatewayPresenceEntry[];
+  devices?: GatewayPresenceEntry[];
+  [key: string]: unknown;
+}
+
+export interface SessionsChangedPayload {
+  sessions?: GatewaySession[];
+  key?: string;
+  sessionKey?: string;
+  reason?: string;
+}
+
+export interface SessionMessagePayload {
+  key?: string;
+  sessionKey?: string;
+  role?: string;
+  text?: string;
+  content?: string;
+  message?: unknown;
+  ts?: number;
+  [key: string]: unknown;
+}
+
+export interface SessionToolPayload {
+  key?: string;
+  sessionKey?: string;
+  name?: string;
+  tool?: string;
+  input?: unknown;
+  output?: unknown;
+  status?: string;
+  ts?: number;
+  [key: string]: unknown;
 }
 
 export interface TickPayload {

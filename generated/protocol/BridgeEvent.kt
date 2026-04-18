@@ -21,6 +21,7 @@ private val klaxon = Klaxon()
     .convert(VoiceState::class,          { VoiceState.fromValue(it.string!!) },          { "\"${it.value}\"" })
     .convert(EntryStatus::class,         { EntryStatus.fromValue(it.string!!) },         { "\"${it.value}\"" })
     .convert(TimelineEntryType::class,   { TimelineEntryType.fromValue(it.string!!) },   { "\"${it.value}\"" })
+    .convert(GatewayAuthStatus::class,   { GatewayAuthStatus.fromValue(it.string!!) },   { "\"${it.value}\"" })
     .convert(PermissionMode::class,      { PermissionMode.fromValue(it.string!!) },      { "\"${it.value}\"" })
     .convert(PromptType::class,          { PromptType.fromValue(it.string!!) },          { "\"${it.value}\"" })
     .convert(Layer::class,               { Layer.fromValue(it.string!!) },               { "\"${it.value}\"" })
@@ -51,6 +52,22 @@ data class BridgeEvent (
     val currentTool: String? = null,
     val cursorIndex: Double? = null,
     val effortLevel: String? = null,
+
+    /**
+     * Human-readable OpenClaw auth/pairing diagnostic
+     */
+    val gatewayAuthMessage: String? = null,
+
+    /**
+     * OpenClaw device pairing request id, when Gateway requires approval
+     */
+    @Json(name = "gatewayAuthRequestId")
+    val gatewayAuthRequestID: String? = null,
+
+    /**
+     * OpenClaw Gateway auth/pairing state
+     */
+    val gatewayAuthStatus: GatewayAuthStatus? = null,
 
     /**
      * OpenClaw Gateway reachability (port 18789)
@@ -444,6 +461,36 @@ enum class TimelineEntryType(val value: String) {
             "tool_resolved"  -> ToolResolved
             "user_action"    -> UserAction
             else             -> throw IllegalArgumentException()
+        }
+    }
+}
+
+/**
+ * OpenClaw Gateway auth/pairing state
+ */
+enum class GatewayAuthStatus(val value: String) {
+    ApprovalPending("approval_pending"),
+    AuthFailed("auth_failed"),
+    Connected("connected"),
+    DeviceAuthInvalid("device_auth_invalid"),
+    GatewayNotFound("gateway_not_found"),
+    GatewayReachable("gateway_reachable"),
+    PairingRequired("pairing_required"),
+    TokenMismatch("token_mismatch"),
+    UnsupportedProtocol("unsupported_protocol");
+
+    companion object {
+        public fun fromValue(value: String): GatewayAuthStatus = when (value) {
+            "approval_pending"     -> ApprovalPending
+            "auth_failed"          -> AuthFailed
+            "connected"            -> Connected
+            "device_auth_invalid"  -> DeviceAuthInvalid
+            "gateway_not_found"    -> GatewayNotFound
+            "gateway_reachable"    -> GatewayReachable
+            "pairing_required"     -> PairingRequired
+            "token_mismatch"       -> TokenMismatch
+            "unsupported_protocol" -> UnsupportedProtocol
+            else                   -> throw IllegalArgumentException()
         }
     }
 }

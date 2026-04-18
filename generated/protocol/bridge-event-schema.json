@@ -872,6 +872,29 @@
         "effortLevel": {
           "type": "string"
         },
+        "gatewayAuthMessage": {
+          "description": "Human-readable OpenClaw auth/pairing diagnostic",
+          "type": "string"
+        },
+        "gatewayAuthRequestId": {
+          "description": "OpenClaw device pairing request id, when Gateway requires approval",
+          "type": "string"
+        },
+        "gatewayAuthStatus": {
+          "description": "OpenClaw Gateway auth/pairing state",
+          "enum": [
+            "gateway_not_found",
+            "gateway_reachable",
+            "pairing_required",
+            "approval_pending",
+            "connected",
+            "auth_failed",
+            "token_mismatch",
+            "device_auth_invalid",
+            "unsupported_protocol"
+          ],
+          "type": "string"
+        },
         "gatewayAvailable": {
           "description": "OpenClaw Gateway reachability (port 18789)",
           "type": "boolean"

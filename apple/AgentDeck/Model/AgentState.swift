@@ -108,7 +108,11 @@ struct DashboardState: Sendable {
     var pairingUrl: String?
     var workerSessionCount: Int?
     var gatewayAvailable = false
+    var gatewayConnected = false
     var gatewayHasError = false
+    var gatewayAuthStatus: String?
+    var gatewayAuthRequestId: String?
+    var gatewayAuthMessage: String?
 
     // Usage
     var sessionDurationSec = 0

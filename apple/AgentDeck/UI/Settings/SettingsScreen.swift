@@ -800,10 +800,9 @@ struct SettingsScreen: View {
 
     // MARK: - OpenClaw integration status row
 
-    /// OpenClaw gateway registration needs `~/.openclaw/identity/device.json`
-    /// which App Sandbox forbids reading. Flag the unavailability inline so
-    /// users understand why the gateway never comes online in the App Store
-    /// build. Non-sandbox dev builds see "configured via CLI" wording.
+    /// App Store builds use a separate AgentDeck Dashboard device identity and
+    /// pair through the OpenClaw Gateway. Non-sandbox builds keep the legacy
+    /// CLI identity file path.
     private var openClawIntegrationRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -814,13 +813,13 @@ struct SettingsScreen: View {
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 if AgentDeckRuntime.isSandboxed {
-                    Text("Unavailable")
+                    Text(openClawGatewayStatusLabel)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(openClawGatewayStatusColor)
                 }
             }
             if AgentDeckRuntime.isSandboxed {
-                Text("OpenClaw gateway unavailable in App Store build. Install via CLI: `npm i -g @openclaw/cli`.")
+                Text(openClawGatewayHelpText)
                     .font(.system(size: 11))
                     .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)
@@ -830,6 +829,60 @@ struct SettingsScreen: View {
                     .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private var openClawGatewayStatusLabel: String {
+        switch stateHolder.state.gatewayAuthStatus {
+        case "connected":
+            return "Connected"
+        case "approval_pending":
+            return "Approval pending"
+        case "pairing_required":
+            return "Pairing required"
+        case "token_mismatch", "device_auth_invalid", "auth_failed":
+            return "Auth failed"
+        case "unsupported_protocol":
+            return "Unsupported"
+        case "gateway_reachable":
+            return "Gateway reachable"
+        default:
+            return stateHolder.state.gatewayAvailable ? "Gateway reachable" : "Gateway not found"
+        }
+    }
+
+    private var openClawGatewayStatusColor: Color {
+        switch stateHolder.state.gatewayAuthStatus {
+        case "connected":
+            return .green
+        case "approval_pending", "pairing_required", "gateway_reachable":
+            return .orange
+        case "auth_failed", "token_mismatch", "device_auth_invalid", "unsupported_protocol":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    private var openClawGatewayHelpText: String {
+        let base = "AgentDeck는 OpenClaw Gateway에 별도 기기로 등록됩니다. `openclaw devices list`에서 이 기기를 승인하세요."
+        let approve = stateHolder.state.gatewayAuthRequestId.map {
+            "Approve this device in OpenClaw: run `openclaw devices approve \($0)` or visit `http://localhost:18789` if the Web UI is enabled."
+        } ?? "Approve this device in OpenClaw: run `openclaw devices approve <requestId>` or visit `http://localhost:18789` if the Web UI is enabled."
+
+        switch stateHolder.state.gatewayAuthStatus {
+        case "connected":
+            return "Connected through the local OpenClaw Gateway. \(base)"
+        case "approval_pending", "pairing_required":
+            return "\(base) \(approve)"
+        case "unsupported_protocol":
+            return "OpenClaw Gateway version not supported. Update OpenClaw to a compatible 2026.4.14+ Gateway."
+        case "auth_failed", "token_mismatch", "device_auth_invalid":
+            return stateHolder.state.gatewayAuthMessage ?? "OpenClaw Gateway authentication failed. Revoke this AgentDeck device in OpenClaw and approve it again."
+        case "gateway_reachable":
+            return "\(base) Waiting for OpenClaw Gateway approval."
+        default:
+            return "Start OpenClaw Gateway on `ws://127.0.0.1:18789`. \(base)"
         }
     }
 

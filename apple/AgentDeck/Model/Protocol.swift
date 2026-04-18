@@ -374,7 +374,8 @@ struct StateUpdateEvent: Codable, Sendable {
         case billingType, options, promptType, question, navigable, cursorIndex
         case suggestedPrompt, modelCatalog, sessionStatus, remoteUrl, pairingUrl
         case workerSessionCount, ollamaStatus, mlxModels, subscriptions
-        case antigravityStatus, gatewayAvailable, gatewayHasError
+        case antigravityStatus, gatewayAvailable, gatewayConnected, gatewayHasError
+        case gatewayAuthStatus, gatewayAuthRequestId, gatewayAuthMessage
         case voiceAssistantState, voiceAssistantText, voiceAssistantResponseText
     }
     var permissionMode: String?
@@ -405,7 +406,11 @@ struct StateUpdateEvent: Codable, Sendable {
     var subscriptions: [SubscriptionInfo]?
     var antigravityStatus: AntigravityStatusInfo?
     var gatewayAvailable: Bool?
+    var gatewayConnected: Bool?
     var gatewayHasError: Bool?
+    var gatewayAuthStatus: String?
+    var gatewayAuthRequestId: String?
+    var gatewayAuthMessage: String?
     var voiceAssistantState: String?  // idle | listening | processing | speaking | disabled
     var voiceAssistantText: String?
     var voiceAssistantResponseText: String?

@@ -170,13 +170,19 @@
           "additionalProperties": false,
           "description": "Bearer token issued during device pairing.",
           "properties": {
+            "bootstrapToken": {
+              "type": "string"
+            },
+            "deviceToken": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
             "token": {
               "type": "string"
             }
           },
-          "required": [
-            "token"
-          ],
           "type": "object"
         },
         "caps": {
@@ -188,16 +194,24 @@
         "client": {
           "additionalProperties": false,
           "properties": {
+            "deviceFamily": {
+              "type": "string"
+            },
             "displayName": {
               "type": "string"
             },
             "id": {
               "type": "string"
             },
+            "instanceId": {
+              "type": "string"
+            },
             "mode": {
               "enum": [
                 "backend",
-                "frontend"
+                "frontend",
+                "operator",
+                "node"
               ],
               "type": "string"
             },
@@ -217,9 +231,18 @@
           ],
           "type": "object"
         },
+        "commands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "device": {
           "$ref": "#/definitions/DeviceAuth",
-          "description": "Ed25519 device signature over `v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce`."
+          "description": "Ed25519 device signature over `v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily`."
+        },
+        "locale": {
+          "type": "string"
         },
         "maxProtocol": {
           "description": "Upper bound of protocol versions this client supports.",
@@ -229,6 +252,12 @@
           "description": "Lower bound of protocol versions this client supports.",
           "type": "number"
         },
+        "permissions": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "type": "object"
+        },
         "role": {
           "type": "string"
         },
@@ -237,6 +266,9 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "userAgent": {
+          "type": "string"
         }
       },
       "required": [
@@ -255,16 +287,125 @@
         "accepted": {
           "type": "boolean"
         },
+        "auth": {
+          "additionalProperties": false,
+          "properties": {
+            "deviceToken": {
+              "type": "string"
+            },
+            "deviceTokens": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "deviceToken": {
+                    "type": "string"
+                  },
+                  "issuedAtMs": {
+                    "type": "number"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "scopes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "deviceToken",
+                  "role",
+                  "scopes"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "issuedAtMs": {
+              "type": "number"
+            },
+            "role": {
+              "type": "string"
+            },
+            "scopes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "deviceToken",
+            "role",
+            "scopes"
+          ],
+          "type": "object"
+        },
         "expiresAt": {
           "type": "number"
         },
+        "features": {
+          "additionalProperties": false,
+          "properties": {
+            "events": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "methods": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "methods",
+            "events"
+          ],
+          "type": "object"
+        },
+        "policy": {
+          "additionalProperties": false,
+          "properties": {
+            "maxPayload": {
+              "type": "number"
+            },
+            "tickIntervalMs": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "protocol": {
+          "type": "number"
+        },
+        "server": {
+          "additionalProperties": false,
+          "properties": {
+            "connId": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "connId"
+          ],
+          "type": "object"
+        },
         "sessionToken": {
+          "type": "string"
+        },
+        "type": {
+          "const": "hello-ok",
           "type": "string"
         }
       },
-      "required": [
-        "accepted"
-      ],
       "type": "object"
     },
     "DeviceAuth": {
@@ -447,9 +588,14 @@
       "enum": [
         "connect.challenge",
         "chat",
+        "health",
+        "session.message",
+        "session.tool",
+        "sessions.changed",
         "exec.approval.requested",
         "exec.approval.resolved",
         "presence",
+        "system-presence",
         "tick",
         "shutdown"
       ],
@@ -464,6 +610,18 @@
           "$ref": "#/definitions/ChatEventPayload"
         },
         {
+          "$ref": "#/definitions/HealthResult"
+        },
+        {
+          "$ref": "#/definitions/SessionMessagePayload"
+        },
+        {
+          "$ref": "#/definitions/SessionToolPayload"
+        },
+        {
+          "$ref": "#/definitions/SessionsChangedPayload"
+        },
+        {
           "$ref": "#/definitions/ExecApprovalRequestedPayload"
         },
         {
@@ -471,6 +629,9 @@
         },
         {
           "$ref": "#/definitions/PresencePayload"
+        },
+        {
+          "$ref": "#/definitions/SystemPresenceResult"
         },
         {
           "$ref": "#/definitions/TickPayload"
@@ -496,10 +657,16 @@
     "GatewayMethodName": {
       "enum": [
         "connect",
+        "health",
+        "models.list",
+        "logs.tail",
         "chat.send",
         "chat.abort",
         "exec.approval.resolve",
-        "sessions.list"
+        "sessions.list",
+        "sessions.subscribe",
+        "sessions.messages.subscribe",
+        "system-presence"
       ],
       "type": "string"
     },
@@ -507,6 +674,15 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ConnectParams"
+        },
+        {
+          "$ref": "#/definitions/HealthParams"
+        },
+        {
+          "$ref": "#/definitions/ModelsListParams"
+        },
+        {
+          "$ref": "#/definitions/LogsTailParams"
         },
         {
           "$ref": "#/definitions/ChatSendParams"
@@ -519,6 +695,15 @@
         },
         {
           "$ref": "#/definitions/SessionsListParams"
+        },
+        {
+          "$ref": "#/definitions/SessionsSubscribeParams"
+        },
+        {
+          "$ref": "#/definitions/SessionsMessagesSubscribeParams"
+        },
+        {
+          "$ref": "#/definitions/SystemPresenceParams"
         }
       ]
     },
@@ -526,6 +711,15 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ConnectResult"
+        },
+        {
+          "$ref": "#/definitions/HealthResult"
+        },
+        {
+          "$ref": "#/definitions/ModelsListResult"
+        },
+        {
+          "$ref": "#/definitions/LogsTailResult"
         },
         {
           "$ref": "#/definitions/ChatSendResult"
@@ -538,8 +732,50 @@
         },
         {
           "$ref": "#/definitions/SessionsListResult"
+        },
+        {
+          "$ref": "#/definitions/SessionsSubscribeResult"
+        },
+        {
+          "$ref": "#/definitions/SessionsMessagesSubscribeResult"
+        },
+        {
+          "$ref": "#/definitions/SystemPresenceResult"
         }
       ]
+    },
+    "GatewayPresenceEntry": {
+      "additionalProperties": {},
+      "properties": {
+        "clientId": {
+          "type": "string"
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "deviceId": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "connected"
+      ],
+      "type": "object"
     },
     "GatewayRequestFrame": {
       "additionalProperties": false,
@@ -622,8 +858,153 @@
       ],
       "type": "object"
     },
-    "PresencePayload": {
+    "HealthParams": {
       "additionalProperties": false,
+      "properties": {
+        "probe": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "HealthResult": {
+      "additionalProperties": {},
+      "properties": {
+        "checks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "LogsTailParams": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "maxBytes": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "LogsTailResult": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "number"
+        },
+        "file": {
+          "type": "string"
+        },
+        "lines": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reset": {
+          "type": "boolean"
+        },
+        "size": {
+          "type": "number"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "type": "object"
+    },
+    "ModelsListParams": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ModelsListResult": {
+      "additionalProperties": false,
+      "properties": {
+        "models": {
+          "items": {
+            "$ref": "#/definitions/OpenClawModel"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "models"
+      ],
+      "type": "object"
+    },
+    "OpenClawModel": {
+      "additionalProperties": {},
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "missing": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PresencePayload": {
+      "additionalProperties": {},
       "properties": {
         "clientId": {
           "type": "string"
@@ -633,11 +1014,92 @@
         },
         "deviceId": {
           "type": "string"
+        },
+        "devices": {
+          "items": {
+            "$ref": "#/definitions/GatewayPresenceEntry"
+          },
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/GatewayPresenceEntry"
+          },
+          "type": "array"
         }
       },
-      "required": [
-        "connected"
-      ],
+      "type": "object"
+    },
+    "SessionMessagePayload": {
+      "additionalProperties": {},
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "message": {},
+        "role": {
+          "type": "string"
+        },
+        "sessionKey": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "SessionToolPayload": {
+      "additionalProperties": {},
+      "properties": {
+        "input": {},
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {},
+        "sessionKey": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "SessionsChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "sessionKey": {
+          "type": "string"
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/definitions/GatewaySession"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "SessionsListParams": {
@@ -664,6 +1126,50 @@
       ],
       "type": "object"
     },
+    "SessionsMessagesSubscribeParams": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "SessionsMessagesSubscribeResult": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "subscribed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "subscribed",
+        "key"
+      ],
+      "type": "object"
+    },
+    "SessionsSubscribeParams": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "SessionsSubscribeResult": {
+      "additionalProperties": false,
+      "properties": {
+        "subscribed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "subscribed"
+      ],
+      "type": "object"
+    },
     "ShutdownPayload": {
       "additionalProperties": false,
       "properties": {
@@ -672,6 +1178,28 @@
         },
         "restartAt": {
           "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "SystemPresenceParams": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "SystemPresenceResult": {
+      "additionalProperties": {},
+      "properties": {
+        "devices": {
+          "items": {
+            "$ref": "#/definitions/GatewayPresenceEntry"
+          },
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/GatewayPresenceEntry"
+          },
+          "type": "array"
         }
       },
       "type": "object"

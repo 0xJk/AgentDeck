@@ -12,6 +12,8 @@ actor GatewayProbe {
     private(set) var hasError = false
     var onStateChanged: ((Bool, Bool) -> Void)? // (available, hasError)
 
+    func hasErrorSnapshot() -> Bool { hasError }
+
     func start() {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -31,7 +33,8 @@ actor GatewayProbe {
         isAvailable = available
 
         if available {
-            // Check health via openclaw doctor
+            // Non-App-Store builds use `openclaw doctor`; App Store health is
+            // refreshed through OpenClawAdapter's Gateway RPC after auth.
             let health = await checkHealth()
             let errorChanged = health != hasError
             hasError = health
@@ -84,8 +87,8 @@ actor GatewayProbe {
     private func checkHealth() async -> Bool {
         #if AGENTDECK_APP_STORE
         // App Store build: `openclaw doctor` is an external-CLI invocation
-        // that violates Apple 2.5.2. Health status for OpenClaw is sourced
-        // purely from the TCP probe above in this build.
+        // that violates Apple 2.5.2. Authenticated health is sourced through
+        // OpenClawAdapter's `health` RPC; this probe only tracks reachability.
         return false
         #else
         // Try `openclaw doctor --json`

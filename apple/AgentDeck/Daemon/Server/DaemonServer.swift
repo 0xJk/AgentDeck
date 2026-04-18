@@ -44,6 +44,10 @@ final class DaemonServer {
     private var gatewayAdapter: OpenClawAdapter?
     private var gatewayConnecting = false
     private var cachedGatewayHasError = false
+    private var cachedGatewayConnected = false
+    private var cachedGatewayAuthStatus: String = "gateway_not_found"
+    private var cachedGatewayAuthRequestId: String?
+    private var cachedGatewayAuthMessage: String?
 
     // State caches
     private var cachedSessions: [DaemonSessionEntry] = []
@@ -315,6 +319,10 @@ final class DaemonServer {
                         event["modelCatalog"] = self.cachedModelCatalog
                     }
                     event["gatewayAvailable"] = self.cachedGatewayAvailable
+                    event["gatewayConnected"] = self.cachedGatewayConnected
+                    event["gatewayAuthStatus"] = self.cachedGatewayAuthStatus
+                    if let requestId = self.cachedGatewayAuthRequestId { event["gatewayAuthRequestId"] = requestId }
+                    if let message = self.cachedGatewayAuthMessage { event["gatewayAuthMessage"] = message }
                     if event["ollamaStatus"] == nil, let cached = self.cachedOllamaStatus {
                         event["ollamaStatus"] = cached
                     }
@@ -546,7 +554,7 @@ final class DaemonServer {
 
         // Seed initial state so serial heartbeat has data from the start
         // (without this, lastStateEvent is nil until first WS client or hook event)
-        let gwAlive = gatewayAdapter != nil
+        let gwAlive = cachedGatewayConnected
         lastStateEvent = buildFullStateEvent(agentType: gwAlive ? "openclaw" : "daemon")
         DaemonLogger.shared.info("startDeviceModules: seed state done")
 
@@ -1089,7 +1097,7 @@ final class DaemonServer {
             "status": "ok",
             "state": stateMachine.state.rawValue,
             "sessionId": sessionId,
-            "gatewayConnected": gatewayAdapter != nil,
+            "gatewayConnected": cachedGatewayConnected,
             "gatewayAvailable": cachedGatewayAvailable,
             "logStreamRunning": await logStream.isRunning,
             "modules": modules,
@@ -1125,7 +1133,7 @@ final class DaemonServer {
         ]
         if let data = connectionEvent.jsonData { conn.send(data) }
 
-        let gwAlive = gatewayAdapter != nil
+        let gwAlive = cachedGatewayConnected
         let stateEvent = buildFullStateEvent(agentType: gwAlive ? "openclaw" : "daemon")
         lastStateEvent = stateEvent
         if let data = stateEvent.jsonData { conn.send(data) }
@@ -1257,7 +1265,7 @@ final class DaemonServer {
     }
 
     private func handleSwitchAgent(_ target: String) {
-        if target == "openclaw", gatewayAdapter != nil {
+        if target == "openclaw", cachedGatewayConnected {
             let event = buildFullStateEvent(agentType: "openclaw")
             lastStateEvent = event
             broadcastRaw(event)
@@ -1307,7 +1315,7 @@ final class DaemonServer {
     @MainActor
     private func handleStateChanged() {
         let currentState = stateMachine.state
-        let gwAlive = gatewayAdapter != nil
+        let gwAlive = cachedGatewayConnected
         let event = buildFullStateEvent(agentType: gwAlive ? "openclaw" : "daemon")
         lastStateEvent = event
         broadcastRaw(event)
@@ -1360,13 +1368,23 @@ final class DaemonServer {
             await adapter.setOnConnectionChanged { [weak self] connected in
                 Task { @MainActor in
                     if connected {
+                        self?.cachedGatewayConnected = true
+                        self?.cachedGatewayAuthStatus = "connected"
+                        self?.cachedGatewayAuthRequestId = nil
+                        self?.cachedGatewayAuthMessage = nil
                         DaemonLogger.shared.info("OpenClaw Gateway connected")
+                        #if !AGENTDECK_APP_STORE
                         await self?.logStream.start()
+                        #endif
                         if self?.stateMachine.state == .disconnected {
                             _ = self?.stateMachine.transition(trigger: "session_start", source: .hook)
                         }
                         self?.handleStateChanged()
                     } else {
+                        self?.cachedGatewayConnected = false
+                        if self?.cachedGatewayAvailable == true, self?.cachedGatewayAuthStatus == "connected" {
+                            self?.cachedGatewayAuthStatus = "gateway_reachable"
+                        }
                         DaemonLogger.shared.info("OpenClaw Gateway disconnected")
                         await self?.logStream.stop()
                         _ = self?.stateMachine.transition(trigger: "session_end", source: .hook)
@@ -1385,6 +1403,10 @@ final class DaemonServer {
         DaemonLogger.shared.info("OpenClaw Gateway lost, cleaning up...")
         Task { await adapter.stop() }
         gatewayAdapter = nil
+        cachedGatewayConnected = false
+        cachedGatewayAuthStatus = cachedGatewayAvailable ? "gateway_reachable" : "gateway_not_found"
+        cachedGatewayAuthRequestId = nil
+        cachedGatewayAuthMessage = nil
         _ = stateMachine.transition(trigger: "session_end", source: .hook)
         broadcastSessionsList()
         broadcastStateUpdate()
@@ -1416,6 +1438,18 @@ final class DaemonServer {
             broadcastStateUpdate()
         case "gateway_presence":
             break // Heartbeat
+        case "gateway_auth":
+            cachedGatewayAuthStatus = event["status"] as? String ?? cachedGatewayAuthStatus
+            cachedGatewayAuthRequestId = event["requestId"] as? String
+            cachedGatewayAuthMessage = event["message"] as? String
+            if cachedGatewayAuthStatus != "connected" {
+                cachedGatewayConnected = false
+            }
+            handleStateChanged()
+        case "gateway_timeline_entry":
+            if let entry = event["entry"] as? [String: Any] {
+                appendGatewayTimelineEntry(entry)
+            }
         case "gateway_health":
             let payload = event["payload"] as? [String: Any]
             let hasError = !((payload?["ok"] as? Bool) ?? false)
@@ -1547,6 +1581,13 @@ final class DaemonServer {
                 let available = await self.gatewayProbe.isAvailable
                 let changed = available != self.cachedGatewayAvailable
                 self.cachedGatewayAvailable = available
+                if !available {
+                    self.cachedGatewayAuthStatus = "gateway_not_found"
+                    self.cachedGatewayAuthRequestId = nil
+                    self.cachedGatewayAuthMessage = nil
+                } else if self.cachedGatewayAuthStatus == "gateway_not_found" {
+                    self.cachedGatewayAuthStatus = "gateway_reachable"
+                }
                 if available && self.gatewayAdapter == nil {
                     self.connectGatewayAdapter()
                 } else if !available && self.gatewayAdapter != nil {
@@ -1562,7 +1603,17 @@ final class DaemonServer {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
                 guard let self else { break }
-                let hasError = await self.gatewayProbe.hasError
+                #if AGENTDECK_APP_STORE
+                let adapterHealth = await self.gatewayAdapter?.fetchHealthHasError()
+                let hasError: Bool
+                if let adapterHealth {
+                    hasError = adapterHealth
+                } else {
+                    hasError = await self.gatewayProbe.hasErrorSnapshot()
+                }
+                #else
+                let hasError = await self.gatewayProbe.hasErrorSnapshot()
+                #endif
                 if hasError != self.cachedGatewayHasError {
                     self.cachedGatewayHasError = hasError
                     self.broadcastStateUpdate()
@@ -1679,7 +1730,7 @@ final class DaemonServer {
                 // sort tiebreaker (1970-01-01) keeps OC pinned to slot 0 even
                 // if a real openclaw session were ever added later.
                 let smState = stateMachine.state.rawValue
-                let normalizedState = (gatewayAdapter != nil && smState != "disconnected") ? smState : "idle"
+                let normalizedState = (cachedGatewayConnected && smState != "disconnected") ? smState : "idle"
                 var gatewaySession: [String: Any] = [
                     "id": "openclaw-gateway", "port": 18789,
                     "projectName": "OpenClaw", "agentType": "openclaw",
@@ -1795,7 +1846,7 @@ final class DaemonServer {
 
     @MainActor
     private func broadcastStateUpdate() {
-        let gwAlive = gatewayAdapter != nil
+        let gwAlive = cachedGatewayConnected
         let event = buildFullStateEvent(agentType: gwAlive ? "openclaw" : "daemon")
         lastStateEvent = event
         broadcastRaw(event)
@@ -1849,16 +1900,10 @@ final class DaemonServer {
 
     @MainActor
     private func buildModuleHealth() async -> SendableDict {
-        let gwConnected: Bool
-        if let gw = gatewayAdapter {
-            gwConnected = await gw.isConnectedSnapshot
-        } else {
-            gwConnected = false
-        }
         var modules: [String: Any] = [
             "gateway": [
                 "available": cachedGatewayAvailable,
-                "connected": gwConnected,
+                "connected": cachedGatewayConnected,
                 "hasError": cachedGatewayHasError,
             ]
         ]
@@ -1904,8 +1949,12 @@ final class DaemonServer {
         e["cursorIndex"] = stateMachine.cursorIndex
         if let sp = stateMachine.suggestedPrompt { e["suggestedPrompt"] = sp }
         mergeEngineSnapshot(into: &e)
-        if cachedGatewayAvailable { e["gatewayAvailable"] = true }
-        if cachedGatewayHasError { e["gatewayHasError"] = true }
+        e["gatewayAvailable"] = cachedGatewayAvailable
+        e["gatewayConnected"] = cachedGatewayConnected
+        e["gatewayHasError"] = cachedGatewayHasError
+        e["gatewayAuthStatus"] = cachedGatewayAuthStatus
+        if let requestId = cachedGatewayAuthRequestId { e["gatewayAuthRequestId"] = requestId }
+        if let message = cachedGatewayAuthMessage { e["gatewayAuthMessage"] = message }
         if let url = cachedPairingUrl { e["pairingUrl"] = url }
         if let r = stateMachine.remoteUrl { e["remoteUrl"] = r }
         if oauthConnected { e["oauthConnected"] = true }
@@ -2423,6 +2472,23 @@ final class DaemonServer {
             automated: nil
         )
         Task { await timelineStore.add(entry) }
+    }
+
+    @MainActor
+    private func appendGatewayTimelineEntry(_ rawEntry: [String: Any]) {
+        let entry = DaemonTimelineEntry(
+            ts: (rawEntry["ts"] as? NSNumber)?.doubleValue ?? rawEntry["ts"] as? Double ?? Date().timeIntervalSince1970 * 1000,
+            type: rawEntry["type"] as? String ?? "event",
+            raw: rawEntry["raw"] as? String ?? "",
+            detail: rawEntry["detail"] as? String,
+            approvalId: rawEntry["approvalId"] as? String,
+            status: rawEntry["status"] as? String,
+            agentType: rawEntry["agentType"] as? String ?? "openclaw",
+            repeatCount: rawEntry["repeatCount"] as? Int,
+            automated: rawEntry["automated"] as? Bool
+        )
+        Task { await timelineStore.add(entry) }
+        broadcastRaw(["type": "timeline_event", "entry": rawEntry] as [String: Any])
     }
 
     // MARK: - APME eval tick (30s loop)

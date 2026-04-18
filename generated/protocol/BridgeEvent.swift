@@ -26,6 +26,12 @@ struct ADBridgeEvent: Codable, Equatable {
     var currentTool: String?
     var cursorIndex: Double?
     var effortLevel: String?
+    /// Human-readable OpenClaw auth/pairing diagnostic
+    var gatewayAuthMessage: String?
+    /// OpenClaw device pairing request id, when Gateway requires approval
+    var gatewayAuthRequestId: String?
+    /// OpenClaw Gateway auth/pairing state
+    var gatewayAuthStatus: ADGatewayAuthStatus?
     /// OpenClaw Gateway reachability (port 18789)
     var gatewayAvailable: Bool?
     /// OpenClaw Gateway authenticated adapter connection
@@ -121,6 +127,9 @@ struct ADBridgeEvent: Codable, Equatable {
         case currentTool = "currentTool"
         case cursorIndex = "cursorIndex"
         case effortLevel = "effortLevel"
+        case gatewayAuthMessage = "gatewayAuthMessage"
+        case gatewayAuthRequestId = "gatewayAuthRequestId"
+        case gatewayAuthStatus = "gatewayAuthStatus"
         case gatewayAvailable = "gatewayAvailable"
         case gatewayConnected = "gatewayConnected"
         case gatewayHasError = "gatewayHasError"
@@ -222,6 +231,9 @@ extension ADBridgeEvent {
         currentTool: String?? = nil,
         cursorIndex: Double?? = nil,
         effortLevel: String?? = nil,
+        gatewayAuthMessage: String?? = nil,
+        gatewayAuthRequestId: String?? = nil,
+        gatewayAuthStatus: ADGatewayAuthStatus?? = nil,
         gatewayAvailable: Bool?? = nil,
         gatewayConnected: Bool?? = nil,
         gatewayHasError: Bool?? = nil,
@@ -303,6 +315,9 @@ extension ADBridgeEvent {
             currentTool: currentTool ?? self.currentTool,
             cursorIndex: cursorIndex ?? self.cursorIndex,
             effortLevel: effortLevel ?? self.effortLevel,
+            gatewayAuthMessage: gatewayAuthMessage ?? self.gatewayAuthMessage,
+            gatewayAuthRequestId: gatewayAuthRequestId ?? self.gatewayAuthRequestId,
+            gatewayAuthStatus: gatewayAuthStatus ?? self.gatewayAuthStatus,
             gatewayAvailable: gatewayAvailable ?? self.gatewayAvailable,
             gatewayConnected: gatewayConnected ?? self.gatewayConnected,
             gatewayHasError: gatewayHasError ?? self.gatewayHasError,
@@ -939,6 +954,19 @@ enum ADTimelineEntryType: String, Codable, Equatable {
     case toolRequest = "tool_request"
     case toolResolved = "tool_resolved"
     case userAction = "user_action"
+}
+
+/// OpenClaw Gateway auth/pairing state
+enum ADGatewayAuthStatus: String, Codable, Equatable {
+    case approvalPending = "approval_pending"
+    case authFailed = "auth_failed"
+    case connected = "connected"
+    case deviceAuthInvalid = "device_auth_invalid"
+    case gatewayNotFound = "gateway_not_found"
+    case gatewayReachable = "gateway_reachable"
+    case pairingRequired = "pairing_required"
+    case tokenMismatch = "token_mismatch"
+    case unsupportedProtocol = "unsupported_protocol"
 }
 
 //

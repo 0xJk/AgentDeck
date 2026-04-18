@@ -1,0 +1,16 @@
+{
+  "type": "res",
+  "id": "logs-1",
+  "ok": true,
+  "payload": {
+    "file": "/tmp/openclaw/openclaw.log",
+    "cursor": 240,
+    "size": 240,
+    "lines": [
+      "{\"type\":\"model_call\",\"message\":\"OpenClaw model call started\"}",
+      "{\"type\":\"tool_exec\",\"message\":\"Shell command requested\"}"
+    ],
+    "truncated": false,
+    "reset": false
+  }
+}

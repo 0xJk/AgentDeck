@@ -148,8 +148,16 @@ export interface StateUpdateEvent {
   antigravityStatus?: AntigravityStatusInfo;
   /** OpenClaw Gateway reachability (port 18789) */
   gatewayAvailable?: boolean;
+  /** OpenClaw Gateway authenticated adapter connection */
+  gatewayConnected?: boolean;
   /** OpenClaw Gateway has doctor warnings/errors */
   gatewayHasError?: boolean;
+  /** OpenClaw Gateway auth/pairing state */
+  gatewayAuthStatus?: 'gateway_not_found' | 'gateway_reachable' | 'pairing_required' | 'approval_pending' | 'connected' | 'auth_failed' | 'token_mismatch' | 'device_auth_invalid' | 'unsupported_protocol';
+  /** OpenClaw device pairing request id, when Gateway requires approval */
+  gatewayAuthRequestId?: string;
+  /** Human-readable OpenClaw auth/pairing diagnostic */
+  gatewayAuthMessage?: string;
   /** Voice assistant pipeline state (wake word → STT → LLM → TTS) */
   voiceAssistantState?: VoiceAssistantState;
   /** Transcribed user speech (processing/speaking) */

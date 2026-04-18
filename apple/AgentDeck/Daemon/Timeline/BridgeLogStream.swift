@@ -18,9 +18,9 @@ actor BridgeLogStream {
 
         #if AGENTDECK_APP_STORE
         // App Store build: spawning the OpenClaw CLI log tailer violates
-        // Apple 2.5.2. OpenClaw timeline entries are CLI-only; dashboard
-        // still receives everything else via the in-process HTTP hooks.
-        DaemonLogger.shared.debug("LogStream", "openclaw log stream skipped (App Store build)")
+        // Apple 2.5.2. OpenClawAdapter supplies timeline entries through
+        // Gateway `logs.tail` and session event subscriptions instead.
+        DaemonLogger.shared.debug("LogStream", "openclaw CLI log stream skipped (App Store build)")
         return
         #else
         let binPath = Self.resolveOpenClawBin()

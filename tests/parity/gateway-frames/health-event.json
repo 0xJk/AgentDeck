@@ -1,0 +1,17 @@
+{
+  "type": "event",
+  "event": "health",
+  "payload": {
+    "ok": true,
+    "ts": 1776441600000,
+    "durationMs": 24,
+    "checks": [
+      {
+        "id": "gateway",
+        "name": "Gateway",
+        "status": "ok",
+        "message": "ready"
+      }
+    ]
+  }
+}

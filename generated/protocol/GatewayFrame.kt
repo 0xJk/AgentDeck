@@ -22,7 +22,8 @@ private val klaxon = Klaxon()
     .convert(PayloadDecision::class,             { PayloadDecision.fromValue(it.string!!) },             { "\"${it.value}\"" })
     .convert(State::class,                       { State.fromValue(it.string!!) },                       { "\"${it.value}\"" })
     .convert(Status::class,                      { Status.fromValue(it.string!!) },                      { "\"${it.value}\"" })
-    .convert(Type::class,                        { Type.fromValue(it.string!!) },                        { "\"${it.value}\"" })
+    .convert(PayloadType::class,                 { PayloadType.fromValue(it.string!!) },                 { "\"${it.value}\"" })
+    .convert(GatewayFrameType::class,            { GatewayFrameType.fromValue(it.string!!) },            { "\"${it.value}\"" })
 
 /**
  * Client → Gateway: RPC request.
@@ -35,7 +36,7 @@ data class GatewayFrame (
     val id: String? = null,
     val method: GatewayMethodName? = null,
     val params: GatewayMethodParams? = null,
-    val type: Type,
+    val type: GatewayFrameType,
     val error: GatewayError? = null,
     val ok: Boolean? = null,
     val payload: Gateway? = null,
@@ -69,8 +70,13 @@ enum class GatewayEventName(val value: String) {
     ConnectChallenge("connect.challenge"),
     ExecApprovalRequested("exec.approval.requested"),
     ExecApprovalResolved("exec.approval.resolved"),
+    Health("health"),
     Presence("presence"),
+    SessionMessage("session.message"),
+    SessionTool("session.tool"),
+    SessionsChanged("sessions.changed"),
     Shutdown("shutdown"),
+    SystemPresence("system-presence"),
     Tick("tick");
 
     companion object {
@@ -79,8 +85,13 @@ enum class GatewayEventName(val value: String) {
             "connect.challenge"       -> ConnectChallenge
             "exec.approval.requested" -> ExecApprovalRequested
             "exec.approval.resolved"  -> ExecApprovalResolved
+            "health"                  -> Health
             "presence"                -> Presence
+            "session.message"         -> SessionMessage
+            "session.tool"            -> SessionTool
+            "sessions.changed"        -> SessionsChanged
             "shutdown"                -> Shutdown
+            "system-presence"         -> SystemPresence
             "tick"                    -> Tick
             else                      -> throw IllegalArgumentException()
         }
@@ -92,16 +103,28 @@ enum class GatewayMethodName(val value: String) {
     ChatSend("chat.send"),
     Connect("connect"),
     ExecApprovalResolve("exec.approval.resolve"),
-    SessionsList("sessions.list");
+    Health("health"),
+    LogsTail("logs.tail"),
+    ModelsList("models.list"),
+    SessionsList("sessions.list"),
+    SessionsMessagesSubscribe("sessions.messages.subscribe"),
+    SessionsSubscribe("sessions.subscribe"),
+    SystemPresence("system-presence");
 
     companion object {
         public fun fromValue(value: String): GatewayMethodName = when (value) {
-            "chat.abort"            -> ChatAbort
-            "chat.send"             -> ChatSend
-            "connect"               -> Connect
-            "exec.approval.resolve" -> ExecApprovalResolve
-            "sessions.list"         -> SessionsList
-            else                    -> throw IllegalArgumentException()
+            "chat.abort"                  -> ChatAbort
+            "chat.send"                   -> ChatSend
+            "connect"                     -> Connect
+            "exec.approval.resolve"       -> ExecApprovalResolve
+            "health"                      -> Health
+            "logs.tail"                   -> LogsTail
+            "models.list"                 -> ModelsList
+            "sessions.list"               -> SessionsList
+            "sessions.messages.subscribe" -> SessionsMessagesSubscribe
+            "sessions.subscribe"          -> SessionsSubscribe
+            "system-presence"             -> SystemPresence
+            else                          -> throw IllegalArgumentException()
         }
     }
 }
@@ -110,16 +133,19 @@ data class GatewayMethodParams (
     /**
      * Bearer token issued during device pairing.
      */
-    val auth: Auth? = null,
+    val auth: GatewayMethodParamsAuth? = null,
 
     val caps: List<String>? = null,
     val client: Client? = null,
+    val commands: List<String>? = null,
 
     /**
      * Ed25519 device signature over
-     * `v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce`.
+     * `v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily`.
      */
     val device: DeviceAuth? = null,
+
+    val locale: String? = null,
 
     /**
      * Upper bound of protocol versions this client supports.
@@ -131,8 +157,14 @@ data class GatewayMethodParams (
      */
     val minProtocol: Double? = null,
 
+    val permissions: Map<String, Boolean>? = null,
     val role: String? = null,
     val scopes: List<String>? = null,
+    val userAgent: String? = null,
+    val probe: Boolean? = null,
+    val cursor: Double? = null,
+    val limit: Double? = null,
+    val maxBytes: Double? = null,
     val idempotencyKey: String? = null,
     val message: String? = null,
     val sessionKey: String? = null,
@@ -142,19 +174,28 @@ data class GatewayMethodParams (
 
     val decision: GatewayMethodParamsDecision? = null,
     val id: String? = null,
-    val kind: String? = null
+    val kind: String? = null,
+    val key: String? = null
 )
 
 /**
  * Bearer token issued during device pairing.
  */
-data class Auth (
-    val token: String
+data class GatewayMethodParamsAuth (
+    val bootstrapToken: String? = null,
+    val deviceToken: String? = null,
+    val password: String? = null,
+    val token: String? = null
 )
 
 data class Client (
+    val deviceFamily: String? = null,
     val displayName: String,
     val id: String,
+
+    @Json(name = "instanceId")
+    val instanceID: String? = null,
+
     val mode: Mode,
     val platform: String,
     val version: String
@@ -162,12 +203,16 @@ data class Client (
 
 enum class Mode(val value: String) {
     Backend("backend"),
-    Frontend("frontend");
+    Frontend("frontend"),
+    Node("node"),
+    Operator("operator");
 
     companion object {
         public fun fromValue(value: String): Mode = when (value) {
             "backend"  -> Backend
             "frontend" -> Frontend
+            "node"     -> Node
+            "operator" -> Operator
             else       -> throw IllegalArgumentException()
         }
     }
@@ -188,7 +233,7 @@ enum class GatewayMethodParamsDecision(val value: String) {
 
 /**
  * Ed25519 device signature over
- * `v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce`.
+ * `v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|deviceFamily`.
  */
 data class DeviceAuth (
     val id: String,
@@ -200,8 +245,29 @@ data class DeviceAuth (
 
 data class Gateway (
     val accepted: Boolean? = null,
+    val auth: PayloadAuth? = null,
     val expiresAt: Double? = null,
+    val features: Features? = null,
+    val policy: Policy? = null,
+    val protocol: Double? = null,
+    val server: Server? = null,
     val sessionToken: String? = null,
+    val type: PayloadType? = null,
+    val checks: List<Check>? = null,
+
+    @Json(name = "durationMs")
+    val durationMS: Double? = null,
+
+    val ok: Boolean? = null,
+    val status: String? = null,
+    val ts: Double? = null,
+    val models: List<OpenClawModel>? = null,
+    val cursor: Double? = null,
+    val file: String? = null,
+    val lines: List<String>? = null,
+    val reset: Boolean? = null,
+    val size: Double? = null,
+    val truncated: Boolean? = null,
 
     @Json(name = "runId")
     val runID: String? = null,
@@ -209,6 +275,10 @@ data class Gateway (
     val aborted: Boolean? = null,
     val resolved: Boolean? = null,
     val sessions: List<GatewaySession>? = null,
+    val subscribed: Boolean? = null,
+    val key: String? = null,
+    val devices: List<GatewayPresenceEntry>? = null,
+    val entries: List<GatewayPresenceEntry>? = null,
     val nonce: String? = null,
 
     /**
@@ -258,6 +328,15 @@ data class Gateway (
      */
     val tools: List<ChatToolInvocation>? = null,
 
+    val content: String? = null,
+    val message: Any? = null,
+    val role: String? = null,
+    val text: String? = null,
+    val input: Any? = null,
+    val name: String? = null,
+    val output: Any? = null,
+    val tool: String? = null,
+    val reason: String? = null,
     val command: String? = null,
     val id: String? = null,
 
@@ -266,8 +345,6 @@ data class Gateway (
      */
     val options: List<Option>? = null,
 
-    val reason: String? = null,
-    val tool: String? = null,
     val decision: PayloadDecision? = null,
 
     @Json(name = "clientId")
@@ -280,6 +357,34 @@ data class Gateway (
 
     val serverTime: Double? = null,
     val restartAt: Double? = null
+)
+
+data class PayloadAuth (
+    val deviceToken: String,
+    val deviceTokens: List<DeviceToken>? = null,
+
+    @Json(name = "issuedAtMs")
+    val issuedAtMS: Double? = null,
+
+    val role: String,
+    val scopes: List<String>
+)
+
+data class DeviceToken (
+    val deviceToken: String,
+
+    @Json(name = "issuedAtMs")
+    val issuedAtMS: Double? = null,
+
+    val role: String,
+    val scopes: List<String>
+)
+
+data class Check (
+    val id: String? = null,
+    val message: String? = null,
+    val name: String? = null,
+    val status: String? = null
 )
 
 enum class PayloadDecision(val value: String) {
@@ -297,9 +402,53 @@ enum class PayloadDecision(val value: String) {
     }
 }
 
+data class GatewayPresenceEntry (
+    @Json(name = "clientId")
+    val clientID: String? = null,
+
+    val connected: Boolean,
+
+    @Json(name = "deviceId")
+    val deviceID: String? = null,
+
+    val displayName: String? = null,
+    val roles: List<String>? = null,
+    val scopes: List<String>? = null
+)
+
+data class Features (
+    val events: List<String>,
+    val methods: List<String>
+)
+
+data class OpenClawModel (
+    val available: Boolean? = null,
+    val id: String? = null,
+    val key: String? = null,
+    val missing: Boolean? = null,
+    val name: String? = null,
+    val provider: String? = null,
+    val tags: List<String>? = null,
+    val title: String? = null
+)
+
 data class Option (
     val key: String,
     val label: String
+)
+
+data class Policy (
+    val maxPayload: Double? = null,
+
+    @Json(name = "tickIntervalMs")
+    val tickIntervalMS: Double? = null
+)
+
+data class Server (
+    @Json(name = "connId")
+    val connID: String,
+
+    val version: String
 )
 
 data class GatewaySession (
@@ -353,13 +502,24 @@ enum class Status(val value: String) {
     }
 }
 
-enum class Type(val value: String) {
+enum class PayloadType(val value: String) {
+    HelloOk("hello-ok");
+
+    companion object {
+        public fun fromValue(value: String): PayloadType = when (value) {
+            "hello-ok" -> HelloOk
+            else       -> throw IllegalArgumentException()
+        }
+    }
+}
+
+enum class GatewayFrameType(val value: String) {
     Event("event"),
     Req("req"),
     Res("res");
 
     companion object {
-        public fun fromValue(value: String): Type = when (value) {
+        public fun fromValue(value: String): GatewayFrameType = when (value) {
             "event" -> Event
             "req"   -> Req
             "res"   -> Res

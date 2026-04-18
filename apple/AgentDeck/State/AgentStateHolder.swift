@@ -635,7 +635,11 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         state.subscriptions = e.subscriptions ?? state.subscriptions
         state.antigravityStatus = e.antigravityStatus ?? state.antigravityStatus
         state.gatewayAvailable = e.gatewayAvailable ?? state.gatewayAvailable
+        state.gatewayConnected = e.gatewayConnected ?? state.gatewayConnected
         state.gatewayHasError = e.gatewayHasError ?? state.gatewayHasError
+        state.gatewayAuthStatus = e.gatewayAuthStatus ?? state.gatewayAuthStatus
+        state.gatewayAuthRequestId = e.gatewayAuthRequestId ?? state.gatewayAuthRequestId
+        state.gatewayAuthMessage = e.gatewayAuthMessage ?? state.gatewayAuthMessage
         state.voiceAssistantState = e.voiceAssistantState ?? state.voiceAssistantState
         state.voiceAssistantText = e.voiceAssistantText  // null when idle, no fallback
         state.voiceAssistantResponseText = e.voiceAssistantResponseText  // null when idle

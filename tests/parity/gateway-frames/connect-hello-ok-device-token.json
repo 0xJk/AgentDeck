@@ -1,0 +1,45 @@
+{
+  "type": "res",
+  "id": "connect-1",
+  "ok": true,
+  "payload": {
+    "type": "hello-ok",
+    "protocol": 3,
+    "server": {
+      "version": "2026.4.14",
+      "connId": "conn_agentdeck_1"
+    },
+    "features": {
+      "methods": [
+        "health",
+        "models.list",
+        "logs.tail",
+        "sessions.list",
+        "sessions.subscribe",
+        "sessions.messages.subscribe",
+        "system-presence"
+      ],
+      "events": [
+        "health",
+        "sessions.changed",
+        "session.message",
+        "session.tool",
+        "exec.approval.requested"
+      ]
+    },
+    "auth": {
+      "deviceToken": "oc_device_token_123",
+      "role": "operator",
+      "scopes": [
+        "operator.read",
+        "operator.write",
+        "operator.approvals"
+      ],
+      "issuedAtMs": 1776441600000
+    },
+    "policy": {
+      "tickIntervalMs": 15000,
+      "maxPayload": 1048576
+    }
+  }
+}

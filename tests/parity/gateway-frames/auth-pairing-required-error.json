@@ -1,0 +1,14 @@
+{
+  "type": "res",
+  "id": "connect-2",
+  "ok": false,
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "device pairing required",
+    "details": {
+      "code": "PAIRING_REQUIRED",
+      "requestId": "pair_req_agentdeck_1",
+      "recommendedNextStep": "approve_device"
+    }
+  }
+}

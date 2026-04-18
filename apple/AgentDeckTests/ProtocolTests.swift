@@ -16,7 +16,9 @@ final class ProtocolTests: XCTestCase {
             "projectName": "my-project",
             "modelName": "opus-4",
             "currentTool": "Read",
-            "toolInput": "src/main.ts"
+            "toolInput": "src/main.ts",
+            "gatewayAvailable": true,
+            "gatewayConnected": false
         }
         """
 
@@ -32,6 +34,8 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(e.modelName, "opus-4")
         XCTAssertEqual(e.currentTool, "Read")
         XCTAssertEqual(e.toolInput, "src/main.ts")
+        XCTAssertEqual(e.gatewayAvailable, true)
+        XCTAssertEqual(e.gatewayConnected, false)
     }
 
     func testDecodeStateUpdateWithCapabilities() throws {
