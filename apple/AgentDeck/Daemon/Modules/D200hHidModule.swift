@@ -135,6 +135,9 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     private var partialUpdateSupported = true       // fallback if PARTIAL_UPDATE fails
     private var pressDispatchTasks: [Int: Task<Void, Never>] = [:]
     private var lastLabelStyleShowTitle: Bool?
+    private var keyboardWarnedMissing = false
+    private var consumerInputBuffer: UnsafeMutablePointer<UInt8>?
+    private var keyboardInputBuffer: UnsafeMutablePointer<UInt8>?
     private lazy var usbEntitlementPresent: Bool = Self.hasEntitlement("com.apple.security.device.usb")
     private lazy var sandboxEnabled: Bool = Self.hasEntitlement("com.apple.security.app-sandbox")
 
@@ -385,7 +388,11 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             \(extraHint)
             """)
         } else {
-            DaemonLogger.shared.debug("D200H", "\(interfaceName) open failed: \(result) — \(extraHint)")
+            // Promoted from debug → info: a silent open failure here (especially on the
+            // keyboard interface) produces the "display works, buttons dead" symptom
+            // with no visible signal, and it recurs often enough that the debug level
+            // was hiding it from operators.
+            DaemonLogger.shared.info("D200H \(interfaceName) open failed: 0x\(String(result, radix: 16)) (\(result)) — \(extraHint)")
         }
     }
 
@@ -402,7 +409,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             }
             consumerDevice = device
             DaemonLogger.shared.info("D200H Consumer Control interface attached")
-            registerInputCallback(device)
+            registerInputCallback(device, interfaceRole: .consumer)
         } else if usagePage == KEYBOARD_USAGE_PAGE {
             // Open keyboard device — seize not required for D200H custom HID protocol
             // (D200H button reports use 0x7C7C framing, not standard keyboard usage, so hidd doesn't intercept)
@@ -413,10 +420,11 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 return
             }
             keyboardDevice = device
+            keyboardWarnedMissing = false
             DaemonLogger.shared.info("D200H Keyboard interface attached (button events)")
 
             // Register input report callback for button events
-            registerInputCallback(device)
+            registerInputCallback(device, interfaceRole: .keyboard)
         }
 
         if consumerDevice != nil {
@@ -427,6 +435,24 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 // Initial setup deferred if manager not yet open (callback fires during scheduling)
                 if managerOpened {
                     initializeDevice()
+                }
+            }
+            // Keyboard interface often enumerates a few milliseconds after the consumer
+            // one; button reports only arrive on the keyboard interface, so we schedule
+            // a one-shot warning if it's still missing after 2s. This exposes the
+            // "display renders but keys are dead" half-connected state that otherwise
+            // looks identical to a fully healthy device in snapshots and UI badges.
+            if keyboardDevice == nil, !keyboardWarnedMissing {
+                keyboardWarnedMissing = true
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    guard let self, self.connected, self.keyboardDevice == nil else { return }
+                    DaemonLogger.shared.info("""
+                    D200H connected on Consumer Control interface but Keyboard interface is still absent.
+                    The device will render buttons but will not relay presses back. Likely causes: Input Monitoring
+                    permission, another process holding the keyboard interface, or the 4s ADB→HID transition
+                    hasn't completed yet.
+                    """)
                 }
             }
         }
@@ -452,9 +478,19 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         lastStateHash = ""
         updateDisplay()
 
-        // Start heartbeat — periodic full re-render to prevent D200H firmware timeout (~30s)
-        // NOTE: Do NOT send smallWindowPacket here — it overlays a clock widget on the
-        // merged usage button area (slot 13 = col3+col4 row2). Full SET_BUTTONS is sufficient.
+        // Override the Ulanzi stock firmware's built-in clock widget that otherwise
+        // permanently sits in the bottom-right corner of the merged usage slot
+        // (col3+col4 row2). SET_BUTTONS does not reach that layer — only
+        // SET_SMALL_WINDOW does — so without this call the user sees our usage
+        // button *and* the stock clock simultaneously bleeding through. An older
+        // design treated the overlay as harmful and suppressed this call, but in
+        // the current slot-13-as-usage layout the stock clock is strictly worse
+        // than our own text.
+        sendKeepAlive()
+
+        // Start heartbeat — periodic full re-render + small-window refresh to
+        // prevent the D200H firmware from reverting (~30s timeout) back to its
+        // stock UI, which includes the bottom-right clock.
         heartbeatTask?.cancel()
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -462,6 +498,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 guard let self, self.connected, self.managerOpened else { continue }
                 self.lastStateHash = ""  // force re-render
                 self.updateDisplay()
+                self.sendKeepAlive()
             }
         }
     }
@@ -491,12 +528,27 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
 
     // MARK: - Input Report (Button Events)
 
-    private func registerInputCallback(_ device: IOHIDDevice) {
+    private enum InterfaceRole { case consumer, keyboard }
+
+    /// IOKit requires a caller-owned buffer whose lifetime extends for as long
+    /// as the callback is registered. Previously a fresh `UnsafeMutablePointer`
+    /// was allocated on every attach without a matching deallocate, so each
+    /// wake/reattach cycle leaked one buffer; disconnect() now releases them.
+    private func registerInputCallback(_ device: IOHIDDevice, interfaceRole: InterfaceRole) {
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: PACKET_SIZE)
+        switch interfaceRole {
+        case .consumer:
+            consumerInputBuffer?.deallocate()
+            consumerInputBuffer = buffer
+        case .keyboard:
+            keyboardInputBuffer?.deallocate()
+            keyboardInputBuffer = buffer
+        }
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
         IOHIDDeviceRegisterInputReportCallback(
             device,
-            UnsafeMutablePointer<UInt8>.allocate(capacity: PACKET_SIZE),
+            buffer,
             PACKET_SIZE,
             { context, _, _, _, _, report, reportLength in
                 guard let context else { return }
@@ -712,6 +764,10 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             sessionPage: sessionPage,
             focusedSessionId: focusedSessionId
         )
+        if zip.isEmpty {
+            debugLog("SKIP partial send: renderPartialZip returned empty (boundary-invalid)")
+            return
+        }
         dumpZipForAnalysisIfNeeded(zip, command: "partial_update", mode: currentMode, slots: slots)
         let packets = buildZipPackets(zip, command: CMD_PARTIAL_UPDATE)
         for packet in packets { writePacket(packet) }
@@ -812,6 +868,16 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
                 sessionPage: sessionPage,
                 focusedSessionId: focusedSessionId
             )
+            // buildValidatedZip returns empty when the D200H boundary-byte padding
+            // search fails to converge. Writing a malformed ZIP to the device is
+            // what produces the "partial creatures + dead keys + stock clock"
+            // regression cycle, so we drop and let the next state transition
+            // retry with different bytes instead.
+            if zip.isEmpty {
+                lastStateHash = ""
+                debugLog("SKIP full send: renderFullZip returned empty (boundary-invalid)")
+                return
+            }
             dumpZipForAnalysisIfNeeded(zip, command: "set_buttons", mode: currentMode, slots: slots)
             let packets = buildZipPackets(zip)
             for packet in packets { writePacket(packet) }
@@ -913,7 +979,12 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
         if let dev = keyboardDevice { IOHIDDeviceClose(dev, IOOptionBits(kIOHIDOptionsTypeNone)) }
         consumerDevice = nil
         keyboardDevice = nil
+        consumerInputBuffer?.deallocate()
+        consumerInputBuffer = nil
+        keyboardInputBuffer?.deallocate()
+        keyboardInputBuffer = nil
         connected = false
+        keyboardWarnedMissing = false
         lastStateHash = ""
         lastLabelStyleShowTitle = nil
         heartbeatTask?.cancel()
@@ -1993,6 +2064,16 @@ private enum D200hRenderer {
         return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Builds a D200H-compatible ZIP where no packet boundary (offsets 1016,
+    /// 2040, 3064, ...) falls on a 0x00 or 0x7C byte — the firmware treats
+    /// those bytes at those offsets as framing sentinels and rejects the
+    /// whole payload, reverting the display to its stock UI (clock visible,
+    /// buttons blank or partially rendered). Returns an empty `Data` when
+    /// the padding search fails to converge, which the caller MUST treat as
+    /// "drop this frame" rather than writing a malformed ZIP to the device
+    /// — the latter is exactly the failure mode that shows up as half-drawn
+    /// creatures with unresponsive keys and is a significant contributor to
+    /// the recurring regression cycle reflected in `stock-safe-v19`.
     private static func buildValidatedZip(_ files: [(name: String, data: Data)]) -> Data {
         var extraLengths = [Int](repeating: 0, count: files.count)
 
@@ -2018,9 +2099,8 @@ private enum D200hRenderer {
             extraLengths[targetIndex] = normalizedZipExtraLength(extraLengths[targetIndex] + shift)
         }
 
-        let artifact = createZipInMemory(files, extraLengths: extraLengths)
-        DaemonLogger.shared.debug("D200H", "WARNING: ZIP boundary validation still failed after padding search")
-        return artifact.data
+        DaemonLogger.shared.info("D200H ZIP boundary validation failed after 256 padding iterations — dropping this frame to avoid sending a malformed payload to the device")
+        return Data()
     }
 }
 
