@@ -83,6 +83,10 @@ build_macos() {
         DEVELOPMENT_TEAM=R22679GY5Z \
         | tail -5
 
+    echo ">>> Verifying macOS App Store archive invariants..."
+    bash "$APPLE_DIR/scripts/verify-appstore-archive.sh" \
+        "$ARCHIVE_PATH/Products/Applications/AgentDeck.app"
+
     echo ">>> Exporting macOS app..."
     EXPORT_PATH="$DIST_DIR/export_macos"
     rm -rf "$EXPORT_PATH"
