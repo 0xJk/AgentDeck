@@ -323,16 +323,15 @@ struct TopologyRail: View {
     //
     // Behaviour across build variants:
     //
-    //   * App Store build — ADB / serial modules are compiled out (Apple
-    //     2.5.2 bans spawning `adb` + helper processes). `moduleHealth.adb`
-    //     and `.serial` are therefore nil, and we silently omit those rows.
-    //     What the user DOES get: D200H (IOKit HID, sandbox-legal) and
-    //     Pixoo (HTTP). The empty-state hint calls this out so App Store
-    //     users don't wonder why their dashboard is device-empty.
+    //   * App Store build — ADB is the only module compiled out (spawning
+    //     `adb` violates Apple 2.5.2). D200H / Pixoo / ESP32-serial all
+    //     run: `device.usb` and `device.serial` entitlements are granted,
+    //     and serial I/O + Wi-Fi provisioning to ESP32 go through direct
+    //     FileHandle writes (no Process()). So `moduleHealth.adb` is nil
+    //     but `.serial`, `.d200h`, `.pixoo` are all populated.
     //
-    //   * Node CLI / unsigned dev build — all four modules run, so we
-    //     render any module that has data (even if its health says "not
-    //     available" — knowing "ADB not installed" is useful signal).
+    //   * Node CLI / unsigned dev build — every module runs, including
+    //     ADB, so Android / Ulanzi TC001 devices become visible too.
 
     /// True when at least one downstream module is going to render a row.
     /// Computed up-front so the empty-state placeholder only appears when
@@ -344,49 +343,63 @@ struct TopologyRail: View {
         }
         if health.d200h != nil { return true }
         if let pixoo = health.pixoo, pixoo.configuredDeviceCount > 0 { return true }
-        if let serial = health.serial, !serial.connectedPorts.isEmpty { return true }
+        if let serial = health.serial, !serial.connectedBoards.isEmpty { return true }
         return false
     }
 
+    /// Downstream devices grouped by transport / physical family. The
+    /// sub-headers ("USB HID", "Wi-Fi LED", …) make the taxonomy legible
+    /// at a glance — previously every device was a flat row and a user
+    /// with both a Pixoo and an AMOLED ESP32 couldn't tell at first
+    /// glance which was which. Headers only appear when a section has
+    /// content, so sparse setups stay tight.
     private var downstreamRows: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 8) {
             if let health = stateHolder.state.moduleHealth {
-                // ADB — show when the module has *any* signal, including a
-                // lastError so CLI users who haven't installed `adb` see
-                // why the row is dim instead of just missing.
-                if let adb = health.adb,
-                   (adb.available || !adb.devices.isEmpty || adb.lastError != nil) {
-                    DeviceRailRow(
-                        name: "ADB",
-                        status: adb.available ? .ok : (adb.lastError != nil ? .warn : .dim),
-                        detail: {
-                            if !adb.devices.isEmpty {
-                                let devLabel = "\(adb.devices.count) device\(adb.devices.count == 1 ? "" : "s")"
-                                let reverse = adb.reverseReadyCount > 0
-                                    ? " · \(adb.reverseReadyCount) reverse"
-                                    : ""
-                                return devLabel + reverse
-                            }
-                            if let err = adb.lastError, !err.isEmpty { return err }
-                            return "No devices"
-                        }()
-                    )
-                }
-                // D200H — always rendered when the module is loaded (the
-                // connection state itself is the signal).
-                if let d200h = health.d200h {
-                    DeviceRailRow(
-                        name: "D200H",
-                        status: d200h.connected
-                            ? .ok
-                            : (d200h.managerOpened ? .warn : .dim),
-                        detail: d200h.connected
-                            ? "HID · 14 keys"
-                            : (d200h.lastOpenError
-                               ?? (d200h.usbEntitlementPresent ? "Disconnected" : "No USB entitlement"))
-                    )
-                }
-                // Pixoo — one row per configured device IP.
+                usbHidSection(health: health)
+                pixelDisplaySection(health: health)
+                usbSerialSection(health: health)
+                androidSection(health: health)
+            }
+            if !hasAnyDownstreamRow {
+                emptyDownstreamPlaceholder
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func usbHidSection(health: ModuleHealthState) -> some View {
+        if let d200h = health.d200h {
+            VStack(alignment: .leading, spacing: 3) {
+                downstreamSubheader("USB HID")
+                DeviceRailRow(
+                    name: "D200H",
+                    status: d200h.connected
+                        ? .ok
+                        : (d200h.managerOpened ? .warn : .dim),
+                    detail: d200h.connected
+                        ? "HID · 14 keys"
+                        : (d200h.lastOpenError
+                           ?? (d200h.usbEntitlementPresent ? "Disconnected" : "No USB entitlement"))
+                )
+            }
+        }
+    }
+
+    /// LED matrix / pixel displays — Pixoo (Wi-Fi HTTP) and Ulanzi TC001
+    /// (USB-bridged via ADB reverse). Grouped together because they're
+    /// both "pixel art" outputs, not general-purpose displays. The user
+    /// thinks of them as the same family even though one goes over Wi-Fi
+    /// and the other rides ADB.
+    @ViewBuilder
+    private func pixelDisplaySection(health: ModuleHealthState) -> some View {
+        let pixooActive = (health.pixoo?.configuredDeviceCount ?? 0) > 0
+        let tc001Devices = health.adb?.classifiedDevices.filter {
+            $0.deviceClass == AdbDeviceClass.ulanziTc001.rawValue
+        } ?? []
+        if pixooActive || !tc001Devices.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                downstreamSubheader("Pixel displays")
                 if let pixoo = health.pixoo, pixoo.configuredDeviceCount > 0 {
                     ForEach(pixoo.devices, id: \.ip) { dev in
                         DeviceRailRow(
@@ -398,18 +411,110 @@ struct TopologyRail: View {
                         )
                     }
                 }
-                // Serial / ESP32 — one row per connected port.
-                if let serial = health.serial, !serial.connectedPorts.isEmpty {
-                    ForEach(serial.connectedPorts, id: \.self) { port in
-                        let short = port.components(separatedBy: "/").last ?? port
-                        DeviceRailRow(name: "ESP32", status: .ok, detail: short)
+                ForEach(tc001Devices, id: \.serial) { dev in
+                    DeviceRailRow(
+                        name: "TC001",
+                        status: .ok,
+                        detail: dev.model.map { "\($0) · \(dev.serial)" } ?? dev.serial
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func usbSerialSection(health: ModuleHealthState) -> some View {
+        if let serial = health.serial, !serial.connectedBoards.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                downstreamSubheader("USB serial")
+                ForEach(serial.connectedBoards, id: \.port) { info in
+                    let short = info.port.components(separatedBy: "/").last ?? info.port
+                    DeviceRailRow(
+                        name: esp32DisplayName(for: info.board),
+                        status: .ok,
+                        detail: info.firmwareVersion.map { "\($0) · \(short)" } ?? short
+                    )
+                }
+            }
+        }
+    }
+
+    /// Android section — split into e-ink readers (Crema / Pantone /
+    /// Kobo, which need slow low-contrast rendering) and tablets
+    /// (Lenovo + generic, which get normal Android UI). TC001 is
+    /// excluded here — it renders under Pixel displays instead. Only
+    /// present when the module was loaded (CLI build or unsigned dev);
+    /// App Store build has `.adb` == nil so this whole section
+    /// vanishes, which is correct.
+    @ViewBuilder
+    private func androidSection(health: ModuleHealthState) -> some View {
+        if let adb = health.adb {
+            let eInk = adb.classifiedDevices.filter { $0.deviceClass.hasPrefix("e-ink.") }
+            let tablets = adb.classifiedDevices.filter { $0.deviceClass == AdbDeviceClass.androidTablet.rawValue }
+            // Fallback "ADB" aggregate row: when we have a signal
+            // (available / lastError) but no per-device classification yet
+            // — e.g. older daemons or the 1-2s window before `getprop`
+            // completes for the first time.
+            let needsAggregate = adb.classifiedDevices.isEmpty
+                && (adb.available || !adb.devices.isEmpty || adb.lastError != nil)
+
+            if !eInk.isEmpty || !tablets.isEmpty || needsAggregate {
+                VStack(alignment: .leading, spacing: 3) {
+                    downstreamSubheader("Android")
+                    ForEach(eInk, id: \.serial) { dev in
+                        DeviceRailRow(
+                            name: eInkRowName(for: dev.deviceClass),
+                            status: .ok,
+                            detail: dev.model ?? dev.serial
+                        )
+                    }
+                    ForEach(tablets, id: \.serial) { dev in
+                        let label = [dev.manufacturer, dev.model].compactMap { $0 }.joined(separator: " ")
+                        DeviceRailRow(
+                            name: "Tablet",
+                            status: .ok,
+                            detail: label.isEmpty ? dev.serial : label
+                        )
+                    }
+                    if needsAggregate {
+                        DeviceRailRow(
+                            name: "ADB",
+                            status: adb.available ? .ok : (adb.lastError != nil ? .warn : .dim),
+                            detail: {
+                                if !adb.devices.isEmpty {
+                                    let devLabel = "\(adb.devices.count) device\(adb.devices.count == 1 ? "" : "s")"
+                                    let reverse = adb.reverseReadyCount > 0
+                                        ? " · \(adb.reverseReadyCount) reverse"
+                                        : ""
+                                    return devLabel + reverse
+                                }
+                                if let err = adb.lastError, !err.isEmpty { return err }
+                                return "No devices"
+                            }()
+                        )
                     }
                 }
             }
-            if !hasAnyDownstreamRow {
-                emptyDownstreamPlaceholder
-            }
         }
+    }
+
+    private func eInkRowName(for deviceClass: String) -> String {
+        switch deviceClass {
+        case AdbDeviceClass.eInkCrema.rawValue: return "Crema"
+        case AdbDeviceClass.eInkPantone.rawValue: return "Pantone"
+        case AdbDeviceClass.eInkKobo.rawValue: return "Kobo"
+        default: return "E-ink"
+        }
+    }
+
+    /// Subtle mid-weight header for the downstream sub-sections. Sits
+    /// below the main DOWNSTREAM divider so the visual hierarchy reads
+    /// as: DOWNSTREAM > transport family > device row.
+    private func downstreamSubheader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .kerning(1.0)
+            .foregroundStyle(TerrariumHUD.subtext.opacity(0.7))
     }
 
     /// App-Store-aware empty state. Lists the kinds of devices the current
@@ -421,14 +526,14 @@ struct TopologyRail: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext.opacity(0.8))
             #if AGENTDECK_APP_STORE
-            Text("App Store build · Pixoo (HTTP) + Stream Deck+ (USB)")
+            Text("App Store build · D200H (USB) · Pixoo (Wi-Fi) · ESP32 (USB serial)")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext.opacity(0.55))
-            Text("Install the Node CLI for ADB, serial, ESP32")
+            Text("Android / Ulanzi TC001 are unavailable in the App Store build")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext.opacity(0.55))
             #else
-            Text("Pixoo, Stream Deck+, D200H, ADB, ESP32 serial")
+            Text("D200H · Pixoo · ESP32 serial · ADB (Android / TC001)")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext.opacity(0.55))
             #endif
@@ -533,6 +638,20 @@ struct TopologyRail: View {
     }
 
     // MARK: - Formatting helpers
+
+    /// Human-friendly label for an ESP32 board string coming off the wire
+    /// (`DeviceInfoMessage.board`). Unknown or missing boards fall back to
+    /// a plain "ESP32" so the row still renders during the ~2s window
+    /// before the firmware's first `device_info` frame arrives.
+    private func esp32DisplayName(for board: String?) -> String {
+        switch board {
+        case "ips_35": return "ESP32 · IPS 3.5\""
+        case "round_amoled": return "ESP32 · AMOLED"
+        case "86box": return "ESP32 · 86box"
+        case .some(let b) where !b.isEmpty: return "ESP32 · \(b)"
+        default: return "ESP32"
+        }
+    }
 
     private func formatShortDate(_ input: String) -> String {
         let iso = ISO8601DateFormatter()

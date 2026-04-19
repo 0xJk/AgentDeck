@@ -155,10 +155,10 @@ extension AgentStateHolder {
     ///   their Mac, since iPad/iPhone can't install or manage the CLI.
     #if os(macOS)
     /// `@MainActor` because `DaemonService` is itself `@MainActor` —
-    /// reaching its `isSelfDaemon` / `cliInstalled` properties from a
-    /// nonisolated context fails the Swift 6 actor-isolation check. The
-    /// caller (MonitorScreen body) is already on MainActor, so this
-    /// annotation is a no-op at call sites.
+    /// reaching its `isSelfDaemon` property from a nonisolated context
+    /// fails the Swift 6 actor-isolation check. The caller (MonitorScreen
+    /// body) is already on MainActor, so this annotation is a no-op at
+    /// call sites.
     @MainActor
     func setupNeededItems(
         preferences: AppPreferences,
@@ -166,31 +166,19 @@ extension AgentStateHolder {
     ) -> [SetupItem] {
         var items: [SetupItem] = []
 
-        // 1) Claude quota — four distinct states, each with its own copy.
-        //    (a) Non-sandbox build: user just needs to sign in via `claude`.
-        //    (b) Sandbox + no CLI: install the CLI + LaunchAgent together.
-        //    (c) Sandbox + CLI installed + Mac app is the daemon: user did
-        //        `npx @agentdeck/setup` but skipped `agentdeck daemon install`,
-        //        so the sandboxed Swift daemon still owns 9120 and can't
-        //        reach the Claude keychain. Tell them precisely what's
-        //        missing — otherwise they re-read "install CLI" and think
-        //        they already did that.
-        //    (d) Sandbox + external CLI daemon, quota still missing: the
-        //        CLI daemon couldn't read the keychain itself (Claude Code
-        //        never signed in on this machine, or token expired). Point
-        //        at `claude` login instead of the daemon setup.
+        // 1) Claude quota. App Store builds must remain useful without
+        // requiring another executable install (App Review 2.5.2 / 4.2.3),
+        // so sandbox copy does not tell users to install or register a CLI
+        // daemon. If an external terminal-managed daemon is already running,
+        // we can still surface its relay failures accurately.
         if (state.oauthConnected ?? false) == false {
             let hint: String
             if !AgentDeckRuntime.isSandboxed {
                 hint = "Sign in with `claude` in Terminal to populate 5h / 7d quota gauges."
             } else if daemonService.isSelfDaemon {
-                if daemonService.cliInstalled {
-                    hint = "CLI is installed but this Mac app is still the daemon. Quit AgentDeck, run `agentdeck daemon install` once, then relaunch — the CLI daemon will take over quota lookups."
-                } else {
-                    hint = "App Store sandbox can't read Claude's OAuth token. Install AgentDeck CLI and run `agentdeck daemon install` so the CLI daemon handles quota lookups."
-                }
+                hint = "Subscription quota is unavailable inside the App Store sandbox. AgentDeck still monitors sessions through approved hooks; API usage can be shown with an Anthropic Admin API key in Settings."
             } else {
-                hint = "CLI daemon is running but Claude quota is still unavailable. Run `claude` once in Terminal (or `claude setup-token`) so Claude Code has a valid session."
+                hint = "The external terminal daemon is connected, but Claude quota is still unavailable. Sign in with Claude Code in Terminal so that daemon can relay quota."
             }
             items.append(SetupItem(
                 id: "claude",
@@ -215,7 +203,7 @@ extension AgentStateHolder {
                 hint = "Paste the OPENCLAW_GATEWAY_TOKEN value in Settings → Services → OpenClaw."
             case "approval_pending", "pairing_required":
                 title = "OpenClaw awaiting approval"
-                hint = "Run `openclaw devices approve <requestId>` to authorize this Mac."
+                hint = "Approve this Mac in OpenClaw's Web UI to finish pairing."
             case "auth_failed", "token_mismatch", "device_auth_invalid":
                 title = "OpenClaw authentication failed"
                 hint = state.gatewayAuthMessage ?? "Revoke this device in OpenClaw and re-approve it."
@@ -250,10 +238,10 @@ extension AgentStateHolder {
         return items
     }
     #else
-    /// iOS variant — no daemon/CLI concept, and hooks/OpenClaw tokens
-    /// are Mac-side affairs. We still surface the fact that quota
-    /// isn't populating, but the instruction sends the user back to
-    /// their Mac rather than asking them to install a CLI on iPad.
+    /// iOS variant — configuration lives on the Mac side, so the iPad
+    /// surface stays purely informational. Avoids the word "daemon"
+    /// (could be read by App Review as "requires external executable")
+    /// and points users at the Mac Integrations pane instead.
     func setupNeededItems(preferences: AppPreferences) -> [SetupItem] {
         var items: [SetupItem] = []
 
@@ -263,7 +251,7 @@ extension AgentStateHolder {
                 icon: "bolt.badge.clock",
                 tint: .orange,
                 title: "Claude quota unavailable",
-                hint: "Configure this on your Mac — AgentDeck Settings → Integrations guides you through enabling quota lookups on the daemon."
+                hint: "Enable Claude Code hooks in AgentDeck on your Mac — live sessions then appear here automatically."
             ))
         }
 
@@ -273,7 +261,7 @@ extension AgentStateHolder {
                 icon: "lock.shield",
                 tint: .red,
                 title: "OpenClaw not authenticated",
-                hint: "Paste the OPENCLAW_GATEWAY_TOKEN on your Mac. Changes flow here automatically."
+                hint: "Paste the OpenClaw Gateway shared token in AgentDeck on your Mac. Changes flow here automatically."
             ))
         }
 
@@ -291,7 +279,7 @@ struct SetupNeededCard_Previews: PreviewProvider {
             items: [
                 SetupItem(id: "claude", icon: "bolt.badge.clock", tint: .orange,
                           title: "Claude quota unavailable",
-                          hint: "App Store build can't read Claude's OAuth token. Install the AgentDeck CLI."),
+                          hint: "App Store build can't read Claude's OAuth token. Session monitoring still works through approved hooks."),
                 SetupItem(id: "openclaw", icon: "lock.shield", tint: .red,
                           title: "OpenClaw needs a shared token",
                           hint: "Paste the OPENCLAW_GATEWAY_TOKEN value in Settings → Services → OpenClaw."),

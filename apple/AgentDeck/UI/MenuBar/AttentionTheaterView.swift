@@ -198,16 +198,17 @@ struct CalmHeaderView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("All calm")
                     .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(TerrariumHUD.text)
                 Text(subtitle)
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(TerrariumHUD.subtext)
             }
 
             Spacer(minLength: 6)
 
             HStack(spacing: 4) {
                 Circle()
-                    .fill(bridgeConnected ? Color(red: 0.322, green: 0.851, blue: 0.533) : Color.red)
+                    .fill(bridgeConnected ? TerrariumHUD.ledGreen : TerrariumHUD.ledRed)
                     .frame(width: 6, height: 6)
                 if daemonPort > 0 {
                     Text(verbatim: ":\(portString(daemonPort))")
@@ -218,15 +219,15 @@ struct CalmHeaderView: View {
             .padding(.vertical, 3)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(red: 0.322, green: 0.851, blue: 0.533).opacity(0.15))
+                    .fill(Color.white.opacity(0.08))
             )
-            .foregroundStyle(bridgeConnected ? Color(red: 0.102, green: 0.616, blue: 0.290) : .red)
+            .foregroundColor(bridgeConnected ? TerrariumHUD.ledGreen : TerrariumHUD.ledRed)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .overlay(
             Rectangle()
-                .fill(Color.black.opacity(0.06))
+                .fill(Color.white.opacity(0.08))
                 .frame(height: 0.5),
             alignment: .bottom
         )

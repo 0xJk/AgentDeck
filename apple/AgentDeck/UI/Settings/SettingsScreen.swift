@@ -542,6 +542,7 @@ struct SettingsScreen: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
+                #if !AGENTDECK_APP_STORE
                 Text("D200H Helper")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white)
@@ -563,6 +564,7 @@ struct SettingsScreen: View {
                 }
 
                 Divider()
+                #endif
 
                 Toggle(isOn: $preferences.d200hBakeSessionText) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -589,10 +591,12 @@ struct SettingsScreen: View {
                 }
                 .disabled(!preferences.d200hBakeSessionText)
 
+                #if !AGENTDECK_APP_STORE
                 Button("Switch D200H to Bundled Helper Now") {
                     Task { await daemonService.startBundledD200HHelper() }
                 }
                 .buttonStyle(.bordered)
+                #endif
             }
         }
         .onAppear {
@@ -607,9 +611,13 @@ struct SettingsScreen: View {
             return "Local daemon on port \(portString(daemonService.port))"
         }
         if daemonService.isUsingExternalDaemon {
+            #if AGENTDECK_APP_STORE
+            return "External daemon on port \(portString(daemonService.port))"
+            #else
             return daemonService.ownsExternalDaemon
                 ? "Bundled D200H helper on port \(portString(daemonService.port))"
                 : "External daemon on port \(portString(daemonService.port))"
+            #endif
         }
         if daemonService.bindFailureReason != nil {
             return "Daemon bind failed"
@@ -904,9 +912,8 @@ struct SettingsScreen: View {
     // MARK: - Codex auth status row
 
     /// Codex CLI web-auth status. When the daemon runs inside App Sandbox it
-    /// cannot read `~/.codex/auth.json` (outside container) so `codexAuthMode`
-    /// stays nil and users see a blank field — surface a footnote directing
-    /// them to run `codex login` from the real CLI.
+    /// cannot read `~/.codex/auth.json` (outside container), and the reviewed
+    /// app does not launch PTY-backed Codex sessions.
     private var codexAuthRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -927,7 +934,7 @@ struct SettingsScreen: View {
                 }
             }
             if stateHolder.state.codexAuthMode == nil && AgentDeckRuntime.isSandboxed {
-                Text("Codex web auth status unavailable in App Store build. Use `codex login` from CLI.")
+                Text("Codex PTY launch is unavailable in the App Store build. Claude Code monitoring still works through hooks.")
                     .font(.system(size: 11))
                     .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1008,10 +1015,10 @@ struct SettingsScreen: View {
     }
 
     private var openClawGatewayHelpText: String {
-        let base = "AgentDeck는 OpenClaw Gateway에 별도 기기로 등록됩니다. `openclaw devices list`에서 이 기기를 승인하세요."
+        let base = "AgentDeck registers as a separate device with the local OpenClaw Gateway. Approve this Mac in OpenClaw's Web UI."
         let approve = stateHolder.state.gatewayAuthRequestId.map {
-            "Approve this device in OpenClaw: run `openclaw devices approve \($0)` or visit `http://localhost:18789` if the Web UI is enabled."
-        } ?? "Approve this device in OpenClaw: run `openclaw devices approve <requestId>` or visit `http://localhost:18789` if the Web UI is enabled."
+            "Approval request: \($0). Open `http://localhost:18789` in your browser and approve this AgentDeck device."
+        } ?? "Open `http://localhost:18789` in your browser and approve this AgentDeck device."
 
         let tokenHint = "The token is the shared secret set on the OpenClaw Gateway itself — the value you passed as `OPENCLAW_GATEWAY_TOKEN` (env) or `gateway.auth.token` (config). Paste that same value here. AgentDeck cannot read it from the Gateway's config in the App Store build."
 
@@ -1153,8 +1160,8 @@ struct SettingsScreen: View {
     /// consumption (today + last 30 days). This is the only sanctioned
     /// third-party path for Anthropic usage in App Store builds —
     /// subscription OAuth tokens were closed off by Anthropic's Feb 2026
-    /// policy update. Users on Pro/Max without an API key see the
-    /// Setup card direction to install the AgentDeck CLI instead.
+    /// policy update. Users on Pro/Max without an API key still get live
+    /// session monitoring through the hook pipeline.
     private var anthropicAdminApiRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -1313,7 +1320,7 @@ struct SettingsScreen: View {
                 }
             }
             if AgentDeckRuntime.isSandboxed {
-                Text("Android/ADB device integration requires a separately installed `adb` binary; unavailable in App Store build.")
+                Text("Android/ADB bridging requires subprocess access and is disabled in the App Store build.")
                     .font(.system(size: 11))
                     .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)

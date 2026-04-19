@@ -10,8 +10,8 @@
 //   2. External-proxy (CLI is running) — the CLI binds 9120 first; this
 //      DaemonServer never starts. DaemonService instead transitions to
 //      `isUsingExternalDaemon = true` and the Swift app becomes a WS client
-//      of the CLI daemon, while Pixoo/D200H/ESP32 modules continue to run
-//      in-process and listen to the same WS feed.
+//      of the CLI daemon. Hardware rows are shown only from the external
+//      daemon's `state_update.moduleHealth` payload.
 //
 // Gateway flags (`gatewayAvailable`, `gatewayConnected`, `gatewayHasError`)
 // on broadcast events mean:

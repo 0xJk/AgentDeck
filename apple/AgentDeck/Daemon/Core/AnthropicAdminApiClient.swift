@@ -11,8 +11,8 @@
 //
 // Users who paste a key here see cumulative token counts for today +
 // this month across the organization. Users on Pro/Max subscriptions
-// without an API key see nothing from this path (the Setup card still
-// directs them to install the AgentDeck CLI for subscription quota).
+// without an API key still get live session monitoring through the
+// hook pipeline, but not subscription quota gauges in the sandboxed app.
 //
 // Admin API keys are stored in Keychain with the same pattern as the
 // OpenClaw Gateway shared token. Non-App-Store CLI builds can still

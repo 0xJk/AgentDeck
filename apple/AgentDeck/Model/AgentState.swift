@@ -207,8 +207,42 @@ struct ModuleHealthState: Sendable {
 struct AdbHealth: Sendable {
     var available: Bool = false
     var devices: [String] = []
+    var classifiedDevices: [ClassifiedDevice] = []
     var reverseReadyCount: Int = 0
     var lastError: String?
+}
+
+struct ClassifiedDevice: Sendable, Hashable {
+    var serial: String
+    var manufacturer: String?
+    var model: String?
+    /// Raw class string from the wire (e.g. `"e-ink.crema"`, `"ulanzi.tc001"`,
+    /// `"android.tablet"`). Kept as String rather than enum so older
+    /// daemons that emit unknown class names still decode.
+    var deviceClass: String
+}
+
+/// What kind of Android device is attached. Used for raw-value constants
+/// in the UI; wire format is a plain string so unknown classes from
+/// newer daemons still round-trip.
+///
+/// - `.eInkCrema` / `.eInkPantone` / `.eInkKobo`: e-ink devices that need
+///   slow, low-contrast UI and avoid animation. Wrong refresh strategy =
+///   ghosting + flicker.
+/// - `.ulanziTc001`: the LED matrix wall clock — rendered as a 32×8 grid
+///   over ADB reverse, not as a real Android device. Belongs next to
+///   Pixoo in the topology.
+/// - `.androidTablet`: everything else (Lenovo, dev phones, generic).
+///   Full-colour UI, normal refresh.
+///
+/// Not gated by `#if os(macOS)` because the iOS companion's topology view
+/// consumes the same wire format.
+enum AdbDeviceClass: String, Sendable {
+    case eInkCrema = "e-ink.crema"
+    case eInkPantone = "e-ink.pantone"
+    case eInkKobo = "e-ink.kobo"
+    case ulanziTc001 = "ulanzi.tc001"
+    case androidTablet = "android.tablet"
 }
 
 struct D200hHealth: Sendable {
@@ -242,5 +276,12 @@ struct PixooDeviceHealth: Sendable {
 
 struct SerialHealth: Sendable {
     var connectedPorts: [String] = []
+    var connectedBoards: [SerialPortInfo] = []
     var lastError: String?
+}
+
+struct SerialPortInfo: Sendable, Hashable {
+    var port: String
+    var board: String?
+    var firmwareVersion: String?
 }

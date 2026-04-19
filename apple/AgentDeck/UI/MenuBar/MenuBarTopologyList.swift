@@ -20,21 +20,21 @@ struct MenuBarTopologyList: View {
     @EnvironmentObject private var stateHolder: AgentStateHolder
     @EnvironmentObject private var daemonService: DaemonService
 
-    /// Cream-palette colors chosen to contrast against the panel's
-    /// warm off-white background (`Color(red: 0.965, green: 0.953, blue: 0.933)`
-    /// from `ControlTowerPanel`). Kept local so we don't pollute the
-    /// shared `TerrariumHUD` palette, which is tuned for dark HUDs.
+    /// Palette is a thin alias over the shared `TerrariumHUD` /
+    /// `TerrariumColors` tokens so the menu-bar popup reads as part of
+    /// the same visual system as the Dashboard and Monitor HUDs — no
+    /// separate cream palette, no drifting hex codes.
     fileprivate enum Pal {
-        static let text      = Color(red: 0.102, green: 0.102, blue: 0.122)
-        static let subtext   = Color(red: 0.478, green: 0.478, blue: 0.510)
-        static let divider   = Color.black.opacity(0.08)
-        static let cardBg    = Color.white.opacity(0.55)
-        static let hubFill   = Color(red: 0.039, green: 0.125, blue: 0.188)
-        static let hubAccent = Color(red: 0.244, green: 0.839, blue: 0.910)
-        static let ok        = Color(red: 0.133, green: 0.773, blue: 0.369)
-        static let warn      = Color(red: 0.984, green: 0.663, blue: 0.239)
-        static let error     = Color(red: 0.937, green: 0.267, blue: 0.267)
-        static let dim       = Color(red: 0.478, green: 0.478, blue: 0.510).opacity(0.5)
+        static let text      = TerrariumHUD.text
+        static let subtext   = TerrariumHUD.subtext
+        static let divider   = Color.white.opacity(0.10)
+        static let cardBg    = Color.white.opacity(0.04)
+        static let hubFill   = TerrariumColors.midWater
+        static let hubAccent = TerrariumColors.tetraNeon
+        static let ok        = TerrariumHUD.ledGreen
+        static let warn      = TerrariumHUD.ledAmber
+        static let error     = TerrariumHUD.ledRed
+        static let dim       = TerrariumHUD.subtext.opacity(0.5)
     }
 
     var body: some View {
@@ -84,10 +84,10 @@ struct MenuBarTopologyList: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("AgentDeck")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color.white.opacity(0.95))
+                    .foregroundColor(TerrariumHUD.text)
                 Text(verbatim: ":\(hubPortText)")
                     .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundColor(Color.white.opacity(0.55))
+                    .foregroundColor(TerrariumHUD.subtext)
             }
             Spacer(minLength: 0)
         }
@@ -98,7 +98,7 @@ struct MenuBarTopologyList: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(Pal.hubAccent.opacity(0.55), lineWidth: 1)
+                .stroke(Pal.hubAccent.opacity(0.70), lineWidth: 1)
         )
     }
 
@@ -207,14 +207,7 @@ struct MenuBarTopologyList: View {
     private var downstreamRows: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let health = stateHolder.state.moduleHealth {
-                if let adb = health.adb,
-                   (adb.available || !adb.devices.isEmpty || adb.lastError != nil) {
-                    RailRow(
-                        status: adb.available ? .ok : (adb.lastError != nil ? .warn : .dim),
-                        name: "ADB",
-                        subtitle: adbDetail(adb)
-                    )
-                }
+                // D200H first — always the most permanent peripheral.
                 if let d = health.d200h {
                     RailRow(
                         status: d.connected ? .ok : (d.managerOpened ? .warn : .dim),
@@ -225,6 +218,7 @@ struct MenuBarTopologyList: View {
                                 ?? (d.usbEntitlementPresent ? "Disconnected" : "No USB entitlement"))
                     )
                 }
+                // Pixel displays — Pixoo + Ulanzi TC001 (same family).
                 if let pixoo = health.pixoo, pixoo.configuredDeviceCount > 0 {
                     ForEach(pixoo.devices, id: \.ip) { dev in
                         RailRow(
@@ -236,10 +230,46 @@ struct MenuBarTopologyList: View {
                         )
                     }
                 }
-                if let serial = health.serial, !serial.connectedPorts.isEmpty {
-                    ForEach(serial.connectedPorts, id: \.self) { port in
-                        let short = port.components(separatedBy: "/").last ?? port
-                        RailRow(status: .ok, name: "ESP32", subtitle: short)
+                if let adb = health.adb {
+                    ForEach(adb.classifiedDevices.filter {
+                        $0.deviceClass == AdbDeviceClass.ulanziTc001.rawValue
+                    }, id: \.serial) { dev in
+                        RailRow(
+                            status: .ok,
+                            name: "TC001",
+                            subtitle: dev.model ?? dev.serial
+                        )
+                    }
+                }
+                // USB serial / ESP32.
+                if let serial = health.serial, !serial.connectedBoards.isEmpty {
+                    ForEach(serial.connectedBoards, id: \.port) { info in
+                        let short = info.port.components(separatedBy: "/").last ?? info.port
+                        RailRow(
+                            status: .ok,
+                            name: esp32Name(for: info.board),
+                            subtitle: info.firmwareVersion.map { "\($0) · \(short)" } ?? short
+                        )
+                    }
+                }
+                // Android — e-ink + tablet, with aggregate fallback.
+                if let adb = health.adb {
+                    let eInk = adb.classifiedDevices.filter { $0.deviceClass.hasPrefix("e-ink.") }
+                    let tablets = adb.classifiedDevices.filter { $0.deviceClass == AdbDeviceClass.androidTablet.rawValue }
+                    ForEach(eInk, id: \.serial) { dev in
+                        RailRow(status: .ok, name: eInkName(for: dev.deviceClass), subtitle: dev.model ?? dev.serial)
+                    }
+                    ForEach(tablets, id: \.serial) { dev in
+                        let label = [dev.manufacturer, dev.model].compactMap { $0 }.joined(separator: " ")
+                        RailRow(status: .ok, name: "Tablet", subtitle: label.isEmpty ? dev.serial : label)
+                    }
+                    if adb.classifiedDevices.isEmpty,
+                       (adb.available || !adb.devices.isEmpty || adb.lastError != nil) {
+                        RailRow(
+                            status: adb.available ? .ok : (adb.lastError != nil ? .warn : .dim),
+                            name: "ADB",
+                            subtitle: adbDetail(adb)
+                        )
                     }
                 }
             }
@@ -248,6 +278,15 @@ struct MenuBarTopologyList: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(Pal.subtext.opacity(0.85))
             }
+        }
+    }
+
+    private func eInkName(for deviceClass: String) -> String {
+        switch deviceClass {
+        case AdbDeviceClass.eInkCrema.rawValue: return "Crema"
+        case AdbDeviceClass.eInkPantone.rawValue: return "Pantone"
+        case AdbDeviceClass.eInkKobo.rawValue: return "Kobo"
+        default: return "E-ink"
         }
     }
 
@@ -266,8 +305,18 @@ struct MenuBarTopologyList: View {
         if let adb = h.adb, (adb.available || !adb.devices.isEmpty || adb.lastError != nil) { return true }
         if h.d200h != nil { return true }
         if let p = h.pixoo, p.configuredDeviceCount > 0 { return true }
-        if let s = h.serial, !s.connectedPorts.isEmpty { return true }
+        if let s = h.serial, !s.connectedBoards.isEmpty { return true }
         return false
+    }
+
+    private func esp32Name(for board: String?) -> String {
+        switch board {
+        case "ips_35": return "ESP32 · IPS 3.5\""
+        case "round_amoled": return "ESP32 · AMOLED"
+        case "86box": return "ESP32 · 86box"
+        case .some(let b) where !b.isEmpty: return "ESP32 · \(b)"
+        default: return "ESP32"
+        }
     }
 }
 

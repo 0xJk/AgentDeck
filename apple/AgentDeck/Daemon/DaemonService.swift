@@ -3,10 +3,11 @@
 //
 // AgentDeck runs in a hybrid architecture:
 //
-//  - The **CLI** (`npx @agentdeck/setup` / Homebrew) owns agent runtime:
-//    spawning `claude`/`codex`/`opencode` as PTY children, session registry,
-//    file-system integrations (ADB, serial). It cannot be sandboxed, because
-//    Apple 2.5.2 forbids that subprocess path for App Store builds.
+//  - The **terminal-managed daemon** (npm/Homebrew) owns developer-only
+//    runtime paths: spawning `claude`/`codex`/`opencode` as PTY children,
+//    session registry, file-system integrations (ADB, serial). It cannot be
+//    sandboxed, because Apple 2.5.2 forbids that subprocess path for App
+//    Store builds.
 //
 //  - The **Swift app** owns device I/O + message brokering inside the
 //    sandbox: D200H USB HID (needs `com.apple.security.device.usb`
@@ -16,14 +17,14 @@
 // Port 9120 coordination: both processes can listen on 9120. When the CLI
 // gets there first, this `DaemonService` catches `alreadyRunning` below and
 // switches into `isUsingExternalDaemon = true` — the Swift app becomes a WS
-// client of the CLI daemon while keeping its in-process device modules
-// running. When the CLI isn't running, the Swift app binds 9120 itself and
+// client of the CLI daemon. When the CLI isn't running, the Swift app binds 9120 itself and
 // serves pairing/device I/O with session-count zero (which is the right
 // answer: no PTY means no sessions).
 //
-// That's why the app is useful without the CLI: it's still a valid pairing
+// That's why the app is useful on its own: it's still a valid pairing
 // target for iPads and a device controller for hardware. It just can't
-// monitor live Claude Code sessions until the user installs the CLI.
+// monitor live Claude Code sessions until the user enables hooks and runs
+// Claude Code in their own terminal.
 //
 // See `docs/daemon.md` for the full role-split table.
 import Foundation
@@ -39,43 +40,18 @@ final class DaemonService: ObservableObject {
     @Published private(set) var isUsingExternalDaemon = false
 
     /// `true` when the in-process Swift daemon is the one bound to port
-    /// 9120 (not the CLI's Node daemon). Matters for Setup Card
-    /// messaging — "install CLI" advice is only useful when this Mac
-    /// app is the active daemon; if an external (CLI) daemon is
-    /// already running the quota still missing means the CLI-side
-    /// keychain read failed, which is a different problem.
+    /// 9120 (not an external Node daemon). Drives Setup Card messaging —
+    /// sandbox quota guidance differs when this Mac app is the active
+    /// daemon; if an external terminal-managed daemon is already
+    /// running, quota still missing means the daemon-side keychain
+    /// read failed, which is a different problem to surface.
+    ///
+    /// Note: an earlier revision also probed for an `agentdeck` binary
+    /// on disk (`cliInstalled`) to differentiate Setup-card copy. That
+    /// property was removed because App Review 4.2.3 disallows UI that
+    /// varies based on whether a companion executable is installed —
+    /// App Store copy stays identical regardless of external state.
     var isSelfDaemon: Bool { isRunning && !isUsingExternalDaemon }
-
-    /// Existence check for the `agentdeck` CLI binary across common
-    /// install locations. Sandbox allows path-existence queries on
-    /// `/usr/local/bin` and `/opt/homebrew/bin` (metadata access, not
-    /// file reads). Home-relative `.npm-global/bin` uses the real
-    /// home directory via `getpwuid_r` so the sandbox container
-    /// redirect doesn't make us miss it. Computed lazily per call —
-    /// cheap enough at the Setup-card refresh cadence.
-    var cliInstalled: Bool {
-        for path in Self.cliBinaryPaths where FileManager.default.fileExists(atPath: path) {
-            return true
-        }
-        return false
-    }
-
-    /// Ordered search paths for the `agentdeck` binary. Same list as
-    /// the hook-snippet shell discovery keeps in `@agentdeck/hooks`,
-    /// minus the env-var override (that only applies at hook runtime).
-    private static let cliBinaryPaths: [String] = {
-        var paths = ["/usr/local/bin/agentdeck", "/opt/homebrew/bin/agentdeck"]
-        // Real home (not sandbox container) for `~/.npm-global/bin/agentdeck`.
-        var pwd = passwd()
-        var result: UnsafeMutablePointer<passwd>?
-        var buffer = [CChar](repeating: 0, count: 16 * 1024)
-        let rc = getpwuid_r(getuid(), &pwd, &buffer, buffer.count, &result)
-        if rc == 0, result != nil {
-            let home = String(cString: pwd.pw_dir)
-            paths.append("\(home)/.npm-global/bin/agentdeck")
-        }
-        return paths
-    }()
     @Published private(set) var ownsExternalDaemon = false
     @Published private(set) var port: UInt16 = 0
     @Published private(set) var connectedClients = 0
@@ -254,9 +230,10 @@ final class DaemonService: ObservableObject {
         // App Store build: bundled Node helper is intentionally absent (see
         // copy-adb.sh + Apple 2.5.2). Any "promote to bundled helper"
         // trigger from Settings is a no-op here — the direct IOKit HID path
-        // handles the device without a subprocess. Surface a clear message
-        // rather than silently failing so the toggle UX stays honest.
-        errorMessage = "Bundled D200H helper is only available in the CLI / Homebrew build. The App Store build uses the direct IOKit HID path."
+        // handles the device without a subprocess. This path should not be
+        // surfaced by App Store UI, but keep it harmless if stale preferences
+        // from a development build invoke it.
+        errorMessage = "D200H USB control uses the App Store app's direct HID path."
         return
         #else
         errorMessage = nil
@@ -684,6 +661,7 @@ final class DaemonService: ObservableObject {
         // lastOpenError, managerOpened) are launch-session invariants, so a
         // single successful snapshot is all we ever need. Flag resets only on
         // full stop/restart.
+        #if !AGENTDECK_APP_STORE
         if !d200hHelperPromotionAttempted, !isStarting,
            AppPreferences.shared.autoUseBundledD200HHelper {
             if let snapshot = server.d200hStatusSnapshot() {
@@ -696,8 +674,10 @@ final class DaemonService: ObservableObject {
                 }
             }
         }
+        #endif
     }
 
+    #if !AGENTDECK_APP_STORE
     /// Decide whether the D200H helper should be promoted based on the D200H
     /// module's own status snapshot (the same dict that `/health` →
     /// `modules.d200h` exposes). Takes the inner d200h dict directly so the
@@ -732,6 +712,7 @@ final class DaemonService: ObservableObject {
         }
         return "Swift daemon cannot open D200H HID. AgentDeck will switch D200H to the bundled helper."
     }
+    #endif
 
     // MARK: - Signal Handling
 
@@ -895,7 +876,7 @@ struct DeviceSummary: Equatable {
             subtitle = pressCount > 0 ? "\(pressCount) press\(pressCount == 1 ? "" : "es")" : "ready"
         } else if sandboxEnabled && !usbEntitlementPresent {
             status = .error("USB entitlement missing")
-            subtitle = "needs bundled helper"
+            subtitle = "USB access unavailable"
         } else if lastOpenError != 0 {
             status = .error("HID open denied")
             subtitle = "err \(lastOpenError)"

@@ -1,6 +1,8 @@
 #if os(macOS)
-// SessionLauncher.swift — Launch agentdeck claude session from app
-// Bundles Node.js + bridge JS in app Resources, opens Terminal.app
+// SessionLauncher.swift — Launch terminal agent sessions from the app.
+//
+// App Store builds never create shell scripts or open command-line tools. They
+// monitor Claude Code through the opt-in hook pipeline instead.
 
 import Foundation
 import AppKit
@@ -98,17 +100,23 @@ enum SessionLauncher {
     }
 
     /// Back-compat entry point: launches Claude Code session with system default terminal
+    @MainActor
     static func launchSession(project: String? = nil, daemonPort: UInt16? = nil) {
         launchSession(project: project, agent: .claudeCode, terminalApp: .system, daemonPort: daemonPort)
     }
 
     /// Launch a session with full control over agent type and terminal app
+    @MainActor
     static func launchSession(
         project: String?,
         agent: LaunchAgentType,
         terminalApp: TerminalApp,
         daemonPort: UInt16?
     ) {
+        #if AGENTDECK_APP_STORE
+        showAppStoreLaunchInfo(agent: agent)
+        return
+        #else
         guard let plan = resolveLaunchPlan(
             project: project,
             agent: agent,
@@ -122,11 +130,12 @@ enum SessionLauncher {
             claudePath: findClaude()
         ) else {
             DaemonLogger.shared.info("Agent CLI not found, showing install prompt")
-            showClaudeInstallPrompt()
+            showAgentInstallPrompt(agent: agent)
             return
         }
 
         openInTerminal(plan.command, terminal: terminalApp)
+        #endif
     }
 
     /// Check if Claude Code CLI is installed
@@ -249,8 +258,8 @@ enum SessionLauncher {
 
     // MARK: - Terminal Launch
 
+    #if !AGENTDECK_APP_STORE
     private static func openInTerminal(_ command: String, terminal: TerminalApp = .system) {
-        #if !AGENTDECK_APP_STORE
         // iTerm2 branch uses NSAppleScript — that requires Apple Events
         // entitlement + usage description, which we deliberately don't ship
         // in the App Store build. CLI/Homebrew builds keep the richer path.
@@ -258,7 +267,6 @@ enum SessionLauncher {
             openInITerm(command)
             return
         }
-        #endif
 
         // Everyone else: write .command script, open with chosen app or system default
         let tmpDir = FileManager.default.temporaryDirectory
@@ -294,15 +302,12 @@ enum SessionLauncher {
             }
         } catch {
             DaemonLogger.shared.error("Failed to create launch script: \(error)")
-            #if !AGENTDECK_APP_STORE
             // AppleScript fallback requires automation entitlement; omit in
             // App Store build and surface the failure via the log only.
             openInTerminalViaAppleScript(command)
-            #endif
         }
     }
 
-    #if !AGENTDECK_APP_STORE
     private static func openInITerm(_ command: String) {
         let escaped = command
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -350,6 +355,31 @@ enum SessionLauncher {
 
     // MARK: - Install Prompt
 
+    #if AGENTDECK_APP_STORE
+    @MainActor
+    private static func showAppStoreLaunchInfo(agent: LaunchAgentType) {
+        let alert = NSAlert()
+        switch agent {
+        case .claudeCode, .claudePlain:
+            alert.messageText = "Start Claude Code from Terminal"
+            alert.informativeText = """
+            The App Store build does not create shell scripts or launch command-line tools.
+
+            Start Claude Code in Terminal. After hooks are enabled in AgentDeck Settings, live sessions appear here automatically.
+            """
+        case .codex, .opencode:
+            alert.messageText = "\(agent.displayName) launch is unavailable"
+            alert.informativeText = """
+            The App Store build does not launch PTY-backed command-line sessions.
+
+            Claude Code monitoring still works through the approved hook pipeline.
+            """
+        }
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+    #else
     /// Install guide URLs for each supported agent CLI. Prefer the project's
     /// official docs over a generic install.sh so users land on a maintained
     /// page and can follow the current install method (npm, brew, pipx…).
@@ -419,6 +449,7 @@ enum SessionLauncher {
             return
         }
     }
+    #endif
 
     // MARK: - Helpers
 

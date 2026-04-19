@@ -78,7 +78,7 @@ struct SessionJumpRow: View {
                             .frame(width: 7, height: 7)
                             .overlay(
                                 Circle()
-                                    .stroke(Color(nsColor: .controlBackgroundColor), lineWidth: 1.5)
+                                    .stroke(TerrariumColors.deepSea, lineWidth: 1.5)
                             )
                             .offset(x: 3, y: -2)
                     }
@@ -90,7 +90,7 @@ struct SessionJumpRow: View {
                             .lineLimit(1)
                         Text(subtitleText)
                             .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(TerrariumHUD.subtext)
                             .lineLimit(1)
                     }
 
@@ -99,11 +99,11 @@ struct SessionJumpRow: View {
                     if let started = relativeTime(session.startedAt) {
                         Text(started)
                             .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(TerrariumHUD.subtext)
                     }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(TerrariumHUD.subtext)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                 }
                 .padding(.horizontal, 10)
@@ -117,7 +117,7 @@ struct SessionJumpRow: View {
                     Text("JUMP TO")
                         .font(.system(size: 9.5, weight: .semibold))
                         .kerning(0.5)
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(TerrariumHUD.subtext)
                         .padding(.horizontal, 4)
                         .padding(.top, 5)
                         .padding(.bottom, 3)
@@ -132,7 +132,7 @@ struct SessionJumpRow: View {
                 .padding(.bottom, 8)
                 .overlay(
                     Rectangle()
-                        .fill(Color.black.opacity(0.05))
+                        .fill(Color.white.opacity(0.08))
                         .frame(height: 0.5),
                     alignment: .top
                 )
@@ -140,11 +140,11 @@ struct SessionJumpRow: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(expanded ? Color.black.opacity(0.04) : Color(nsColor: .controlBackgroundColor).opacity(0.6))
+                .fill(expanded ? Color.white.opacity(0.07) : Color.white.opacity(0.04))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.black.opacity(0.06), lineWidth: 0.5)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
         )
     }
 
@@ -172,19 +172,19 @@ struct SessionJumpRow: View {
                     .font(.system(size: 13))
                 Text(target.label)
                     .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(TerrariumHUD.subtext)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.white.opacity(0.9))
+                    .fill(Color.white.opacity(0.08))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
             )
-            .foregroundColor(Color(red: 0.29, green: 0.29, blue: 0.322))
+            .foregroundColor(TerrariumHUD.text)
         }
         .buttonStyle(.plain)
     }

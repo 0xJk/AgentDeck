@@ -69,9 +69,22 @@ enum BridgeEventParser {
         var health = ModuleHealthState()
 
         if let adb = raw["adb"] as? [String: Any] {
+            var classified: [ClassifiedDevice] = []
+            if let arr = adb["classifiedDevices"] as? [[String: Any]] {
+                for entry in arr {
+                    guard let serial = entry["serial"] as? String else { continue }
+                    classified.append(ClassifiedDevice(
+                        serial: serial,
+                        manufacturer: entry["manufacturer"] as? String,
+                        model: entry["model"] as? String,
+                        deviceClass: (entry["class"] as? String) ?? "android.tablet"
+                    ))
+                }
+            }
             health.adb = AdbHealth(
                 available: adb["available"] as? Bool ?? false,
                 devices: adb["devices"] as? [String] ?? [],
+                classifiedDevices: classified,
                 reverseReadyCount: adb["reverseReadyCount"] as? Int ?? 0,
                 lastError: adb["lastError"] as? String
             )
@@ -115,8 +128,28 @@ enum BridgeEventParser {
         }
 
         if let serial = raw["serial"] as? [String: Any] {
+            var boards: [SerialPortInfo] = []
+            var ports: [String] = []
+            if let connections = serial["connections"] as? [[String: Any]] {
+                for conn in connections {
+                    guard conn["connected"] as? Bool == true,
+                          let port = conn["port"] as? String else { continue }
+                    let info = conn["deviceInfo"] as? [String: Any]
+                    boards.append(SerialPortInfo(
+                        port: port,
+                        board: info?["board"] as? String,
+                        firmwareVersion: info?["version"] as? String
+                    ))
+                    ports.append(port)
+                }
+            }
+            if ports.isEmpty, let legacy = serial["connectedPorts"] as? [String] {
+                ports = legacy
+                boards = legacy.map { SerialPortInfo(port: $0, board: nil, firmwareVersion: nil) }
+            }
             health.serial = SerialHealth(
-                connectedPorts: serial["connectedPorts"] as? [String] ?? [],
+                connectedPorts: ports,
+                connectedBoards: boards,
                 lastError: serial["lastError"] as? String
             )
         }

@@ -5,6 +5,13 @@
 
 import Foundation
 
+struct ClassifiedAdbDevice: Sendable, Hashable {
+    let serial: String
+    let manufacturer: String?
+    let model: String?
+    let deviceClass: AdbDeviceClass
+}
+
 final class AdbModule: DeviceModule, @unchecked Sendable {
     let name = "adb"
 
@@ -13,7 +20,7 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
     /// When daemon binds a fallback port, ADB reverse maps 9120→actual port.
     private let androidPort: Int = 9120
     private var pollTask: Task<Void, Never>?
-    private var lastKnownDevices: [String] = []
+    private var lastKnownDevices: [ClassifiedAdbDevice] = []
     private var lastError: String?
     private var reverseReadyCount = 0
 
@@ -64,62 +71,88 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
             "available": false,
             "disabled": true,
             "devices": [] as [String],
+            "classifiedDevices": [] as [[String: Any]],
             "reverseReadyCount": 0,
-            "lastError": lastError ?? "ADB disabled in App Store build",
         ]
         #else
-        [
+        let classified = lastKnownDevices.map { dev -> [String: Any] in
+            [
+                "serial": dev.serial,
+                "manufacturer": dev.manufacturer as Any,
+                "model": dev.model as Any,
+                "class": dev.deviceClass.rawValue,
+            ]
+        }
+        return [
             "available": adbAvailable(),
-            "devices": lastKnownDevices,
+            // Backcompat: `devices` stays a plain [String] so older
+            // consumers (Kotlin sibling client, any cached dashboard) keep
+            // working. Rich classification is on `classifiedDevices`.
+            "devices": lastKnownDevices.map(\.serial),
+            "classifiedDevices": classified,
             "reverseReadyCount": reverseReadyCount,
             "lastError": lastError as Any,
         ]
         #endif
     }
 
+    /// Classify a device by (manufacturer, model) strings. Case-insensitive.
+    /// See `AdbDeviceClass` for taxonomy rationale.
+    static func classifyDevice(
+        manufacturer: String?,
+        model: String?
+    ) -> AdbDeviceClass {
+        let m = (manufacturer ?? "").lowercased()
+        let p = (model ?? "").lowercased()
+        // TC001 comes back as model "TC001" on most firmware; some builds
+        // also advertise manufacturer "ulanzi" — check both.
+        if m.contains("ulanzi") || p.contains("tc001") { return .ulanziTc001 }
+        if m.contains("ridi") { return .eInkCrema }
+        if m.contains("onyx") { return .eInkPantone }
+        if m.contains("rakuten") || m.contains("kobo") { return .eInkKobo }
+        return .androidTablet
+    }
+
     // MARK: - ADB Reverse
 
     private func setupAdbReverse() {
-        let devices = getConnectedDevices()
-        lastKnownDevices = devices
+        lastKnownDevices = classifyConnectedDevices()
         reverseReadyCount = 0
-        for serial in devices {
+        for dev in lastKnownDevices {
             // Map Android-side well-known port (9120) → actual daemon port.
             // Android apps always connect to localhost:9120.
-            if shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(androidPort)", "tcp:\(daemonPort)") != nil {
+            if shell(timeout: 5, "adb", "-s", dev.serial, "reverse", "tcp:\(androidPort)", "tcp:\(daemonPort)") != nil {
                 reverseReadyCount += 1
                 lastError = nil
-                DaemonLogger.shared.debug("ADB", "Reverse tunnel set: \(serial) (android:\(androidPort) → daemon:\(daemonPort))")
+                DaemonLogger.shared.debug("ADB", "Reverse tunnel set: \(dev.serial) [\(dev.deviceClass.rawValue)] (android:\(androidPort) → daemon:\(daemonPort))")
             } else {
-                lastError = "adb reverse failed for \(serial)"
+                lastError = "adb reverse failed for \(dev.serial)"
             }
         }
     }
 
     private func pollAdbReverse() {
-        let devices = getConnectedDevices()
-        lastKnownDevices = devices
+        lastKnownDevices = classifyConnectedDevices()
         reverseReadyCount = 0
-        for serial in devices {
-            if let existing = shell(timeout: 5, "adb", "-s", serial, "reverse", "--list"),
+        for dev in lastKnownDevices {
+            if let existing = shell(timeout: 5, "adb", "-s", dev.serial, "reverse", "--list"),
                existing.contains("tcp:\(androidPort)") {
                 reverseReadyCount += 1
             } else {
-                if shell(timeout: 5, "adb", "-s", serial, "reverse", "tcp:\(androidPort)", "tcp:\(daemonPort)") != nil {
+                if shell(timeout: 5, "adb", "-s", dev.serial, "reverse", "tcp:\(androidPort)", "tcp:\(daemonPort)") != nil {
                     reverseReadyCount += 1
                     lastError = nil
-                    DaemonLogger.shared.debug("ADB", "Reverse re-established: \(serial)")
+                    DaemonLogger.shared.debug("ADB", "Reverse re-established: \(dev.serial)")
                 } else {
-                    lastError = "adb reverse re-establish failed for \(serial)"
+                    lastError = "adb reverse re-establish failed for \(dev.serial)"
                 }
             }
         }
     }
 
     private func cleanupAdbReverse() {
-        let devices = getConnectedDevices()
-        for serial in devices {
-            _ = shell(timeout: 3, "adb", "-s", serial, "reverse", "--remove", "tcp:\(androidPort)")
+        for dev in classifyConnectedDevices() {
+            _ = shell(timeout: 3, "adb", "-s", dev.serial, "reverse", "--remove", "tcp:\(androidPort)")
         }
     }
 
@@ -131,6 +164,31 @@ final class AdbModule: DeviceModule, @unchecked Sendable {
             .dropFirst()
             .filter { $0.contains("\tdevice") }
             .compactMap { $0.split(separator: "\t").first.map(String.init) }
+    }
+
+    /// Probe each connected device's `ro.product.manufacturer` +
+    /// `ro.product.model` via `adb shell getprop` and classify into
+    /// `AdbDeviceClass`. Adds a small per-device cost (~50-100ms × N)
+    /// which happens once on setup + every 30s on poll — negligible
+    /// compared to the existing `adb reverse --list` poll.
+    private func classifyConnectedDevices() -> [ClassifiedAdbDevice] {
+        let serials = getConnectedDevices()
+        return serials.map { serial in
+            let manufacturer = shell(
+                timeout: 3, "adb", "-s", serial,
+                "shell", "getprop", "ro.product.manufacturer"
+            )
+            let model = shell(
+                timeout: 3, "adb", "-s", serial,
+                "shell", "getprop", "ro.product.model"
+            )
+            return ClassifiedAdbDevice(
+                serial: serial,
+                manufacturer: manufacturer,
+                model: model,
+                deviceClass: Self.classifyDevice(manufacturer: manufacturer, model: model)
+            )
+        }
     }
 
     /// Resolved adb binary path (searched once at startup)

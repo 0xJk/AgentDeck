@@ -68,10 +68,10 @@ struct ControlTowerPanel: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
             }
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.7))
+            .background(Color.black.opacity(0.35))
             .overlay(
                 Rectangle()
-                    .fill(Color.black.opacity(0.08))
+                    .fill(Color.white.opacity(0.08))
                     .frame(height: 0.5),
                 alignment: .top
             )
@@ -79,11 +79,18 @@ struct ControlTowerPanel: View {
             footerSection
         }
         .frame(width: 380, height: 620)
-        // Cream panel background matches the Option D prototype. Not a
-        // system palette color — the design intent is a warm off-white
-        // that contrasts with the typical macOS menubar popover chrome.
-        .background(Color(red: 0.965, green: 0.953, blue: 0.933))
-        .foregroundColor(Color(red: 0.102, green: 0.102, blue: 0.122))
+        // Dark ocean theme matching Dashboard / Monitor HUD.
+        // `deepSea` → `midWater` gives the popup a subtle gradient so the
+        // top edge reads as shallower water and the bottom reads as the
+        // deck floor, echoing the rest of the app's aquarium metaphor.
+        .background(
+            LinearGradient(
+                colors: [TerrariumColors.deepSea, TerrariumColors.midWater],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .foregroundColor(TerrariumHUD.text)
         .onAppear { refreshStreamDeckDetectionIfStale() }
         .onReceive(
             Timer.publish(every: 5, on: .main, in: .common).autoconnect()
@@ -195,13 +202,13 @@ struct ControlTowerPanel: View {
             Text("SESSIONS")
                 .font(.system(size: 10, weight: .bold))
                 .kerning(0.5)
-                .foregroundStyle(.secondary)
+                .foregroundColor(TerrariumHUD.subtext)
 
             if sortedSessions.isEmpty {
                 VStack(spacing: 6) {
                     Text("No sessions running")
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(TerrariumHUD.subtext)
                     Button {
                         openLaunchSession()
                     } label: {
@@ -300,7 +307,7 @@ struct ControlTowerPanel: View {
             Text("TOPOLOGY")
                 .font(.system(size: 10, weight: .bold))
                 .kerning(0.5)
-                .foregroundStyle(.secondary)
+                .foregroundColor(TerrariumHUD.subtext)
 
             MenuBarTopologyList()
         }
@@ -314,7 +321,7 @@ struct ControlTowerPanel: View {
                 Text("RATE LIMITS")
                     .font(.system(size: 10, weight: .bold))
                     .kerning(0.5)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(TerrariumHUD.subtext)
                 if stateHolder.state.usageStale == true {
                     Text("stale")
                         .font(.system(size: 9))
@@ -357,14 +364,14 @@ struct ControlTowerPanel: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(rateLimitsEmptyMessage)
                 .font(.system(size: 10))
-                .foregroundColor(connected ? .secondary : .orange)
+                .foregroundColor(connected ? TerrariumHUD.subtext : .orange)
                 .fixedSize(horizontal: false, vertical: true)
             if !connected {
                 if #available(macOS 14.0, *) {
                     SettingsLink {
                         Text("Open Settings →")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(Color(red: 0.30, green: 0.43, blue: 0.72))
+                            .foregroundColor(TerrariumColors.tetraNeon)
                     }
                     .buttonStyle(.plain)
                     .simultaneousGesture(TapGesture().onEnded {
@@ -377,7 +384,7 @@ struct ControlTowerPanel: View {
                     } label: {
                         Text("Open Settings →")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(Color(red: 0.30, green: 0.43, blue: 0.72))
+                            .foregroundColor(TerrariumColors.tetraNeon)
                     }
                     .buttonStyle(.plain)
                 }
@@ -389,7 +396,7 @@ struct ControlTowerPanel: View {
     /// line so the menubar popover doesn't grow.
     private var rateLimitsEmptyMessage: String {
         if AgentDeckRuntime.isSandboxed && (stateHolder.state.oauthConnected ?? false) == false {
-            return "Claude quota unavailable — App Store sandbox can't read Claude's OAuth token. Install the AgentDeck CLI (`npx @agentdeck/setup`) and run `agentdeck daemon install` so the CLI daemon owns quota lookups."
+            return "Claude quota unavailable — App Store sandbox can't read Claude's OAuth token. Session monitoring still works through approved hooks; API usage can be shown with an Anthropic Admin API key in Settings."
         }
         if (stateHolder.state.oauthConnected ?? false) == false {
             return "Claude Code isn't signed in. Run `claude` once in Terminal, then the quota gauges will populate here."
@@ -407,10 +414,10 @@ struct ControlTowerPanel: View {
         HStack(spacing: 4) {
             Image(systemName: "bolt.slash")
                 .font(.system(size: 9))
-                .foregroundStyle(.secondary)
+                .foregroundColor(TerrariumHUD.subtext)
             Text("Live session tokens need hook consent — enable in Settings.")
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundColor(TerrariumHUD.subtext)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 2)
@@ -420,8 +427,8 @@ struct ControlTowerPanel: View {
 
     /// Compact org-wide API usage section. Only rendered when the user
     /// has pasted an Anthropic Console Admin API key in Settings —
-    /// subscription users see nothing here (their RATE LIMITS section
-    /// above handles their quota or redirects them to install the CLI).
+    /// subscription users see nothing here; the RATE LIMITS empty state
+    /// explains the sandbox limitation and the hook-based monitoring path.
     /// Fetches are daemon-driven at 10 min cadence so this view just
     /// reflects whatever is currently cached.
     @ViewBuilder
@@ -432,7 +439,7 @@ struct ControlTowerPanel: View {
                     Text("ANTHROPIC API")
                         .font(.system(size: 10, weight: .bold))
                         .kerning(0.5)
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(TerrariumHUD.subtext)
                     if stateHolder.state.adminApiStale == true {
                         Text("stale")
                             .font(.system(size: 9))
@@ -451,7 +458,7 @@ struct ControlTowerPanel: View {
                 if todayIn + todayOut + todayCache + monthIn + monthOut + monthCache == 0 {
                     Text("Awaiting first fetch (~5 min Anthropic data delay)…")
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(TerrariumHUD.subtext)
                 } else {
                     apiUsageRow(label: "Today", input: todayIn, output: todayOut, cache: todayCache)
                     apiUsageRow(label: "30d", input: monthIn, output: monthOut, cache: monthCache)
@@ -460,7 +467,7 @@ struct ControlTowerPanel: View {
                 if !topModels.isEmpty {
                     Text("Top: " + topModels.map { shortModelLabel($0.model) }.joined(separator: " · "))
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary.opacity(0.8))
+                        .foregroundColor(TerrariumHUD.subtext.opacity(0.8))
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -472,7 +479,7 @@ struct ControlTowerPanel: View {
         HStack(spacing: 8) {
             Text(label)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundColor(TerrariumHUD.subtext)
                 .frame(width: 36, alignment: .leading)
             Text("in \(formatApiTokenCount(input))")
                 .font(.system(size: 10, design: .monospaced))
@@ -483,7 +490,7 @@ struct ControlTowerPanel: View {
             if cache > 0 {
                 Text("cache \(formatApiTokenCount(cache))")
                     .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(TerrariumHUD.subtext)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -514,12 +521,12 @@ struct ControlTowerPanel: View {
         return HStack(spacing: 8) {
             Text(label)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundColor(TerrariumHUD.subtext)
                 .frame(width: 22, alignment: .leading)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.black.opacity(0.08))
+                        .fill(Color.white.opacity(0.10))
                     RoundedRectangle(cornerRadius: 3)
                         .fill(color)
                         .frame(width: max(0, min(1, percent / 100.0)) * geo.size.width)
@@ -533,7 +540,7 @@ struct ControlTowerPanel: View {
             if let reset = resetTime, let formatted = formatResetTime(reset) {
                 Text(formatted)
                     .font(.system(size: 10, weight: percent >= 70 ? .semibold : .regular))
-                    .foregroundStyle(percent >= 70 ? .orange : .secondary)
+                    .foregroundColor(percent >= 70 ? .orange : TerrariumHUD.subtext)
                     .frame(width: 48, alignment: .trailing)
             }
         }
@@ -575,10 +582,10 @@ struct ControlTowerPanel: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Daemon offline")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(red: 0.102, green: 0.102, blue: 0.122))
+                    .foregroundColor(TerrariumHUD.text)
                 Text("Evaluation · Pair iPad · Preview require the daemon to be running.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(TerrariumHUD.subtext)
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
@@ -598,10 +605,10 @@ struct ControlTowerPanel: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(Color.orange.opacity(0.10))
+        .background(Color.orange.opacity(0.18))
         .overlay(
             Rectangle()
-                .fill(Color.orange.opacity(0.35))
+                .fill(Color.orange.opacity(0.45))
                 .frame(height: 0.5),
             alignment: .bottom
         )
@@ -615,12 +622,12 @@ struct ControlTowerPanel: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(primary ? .white : Color(red: 0.102, green: 0.102, blue: 0.122))
+                .foregroundColor(primary ? TerrariumColors.deepSea : TerrariumHUD.text)
                 .padding(.horizontal, 11)
                 .padding(.vertical, 5)
                 .background(
                     Capsule()
-                        .fill(primary ? Color(red: 0.102, green: 0.102, blue: 0.122) : Color.black.opacity(0.06))
+                        .fill(primary ? TerrariumColors.tetraNeon : Color.white.opacity(0.08))
                 )
         }
         .buttonStyle(.plain)
@@ -632,10 +639,10 @@ struct ControlTowerPanel: View {
             SettingsLink {
                 Image(systemName: "gearshape")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(Color(red: 0.102, green: 0.102, blue: 0.122))
+                    .foregroundColor(TerrariumHUD.text)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
-                    .background(Capsule().fill(Color.black.opacity(0.06)))
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
             }
             .buttonStyle(.plain)
             .help("Open Settings")
@@ -649,10 +656,10 @@ struct ControlTowerPanel: View {
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(Color(red: 0.102, green: 0.102, blue: 0.122))
+                    .foregroundColor(TerrariumHUD.text)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
-                    .background(Capsule().fill(Color.black.opacity(0.06)))
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
             }
             .buttonStyle(.plain)
         }
@@ -671,7 +678,7 @@ struct ControlTowerPanel: View {
         HStack(spacing: 6) {
             Text(label)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundColor(TerrariumHUD.subtext)
                 .frame(width: 20, alignment: .trailing)
             Text(gaugeString(percent))
                 .font(.system(size: 10, design: .monospaced))
@@ -686,7 +693,7 @@ struct ControlTowerPanel: View {
             if let reset = resetTime, let formatted = formatResetTime(reset) {
                 Text(formatted)
                     .font(.system(size: 10, weight: percent >= 70 ? .semibold : .regular))
-                    .foregroundStyle(percent >= 70 ? .orange : .secondary)
+                    .foregroundColor(percent >= 70 ? .orange : TerrariumHUD.subtext)
             }
         }
     }
@@ -743,7 +750,7 @@ struct ControlTowerPanel: View {
             }
             .font(.system(size: 11))
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundColor(TerrariumHUD.subtext)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
