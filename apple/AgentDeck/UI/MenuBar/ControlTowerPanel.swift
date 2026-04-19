@@ -34,9 +34,14 @@ struct ControlTowerPanel: View {
             // Header: Attention Theater when any session awaits input,
             // otherwise a quiet "all calm" strip with the AgentDeck mark.
             if let awaiting = featuredAwaitingSession {
+                let isFocused = awaiting.id == stateHolder.state.sessionId
                 AttentionTheaterView(
                     session: awaiting,
                     question: questionFor(awaiting),
+                    options: isFocused ? stateHolder.state.options : [],
+                    promptType: isFocused ? stateHolder.state.promptType : nil,
+                    cursorIndex: isFocused ? stateHolder.state.cursorIndex : 0,
+                    navigable: isFocused ? stateHolder.state.navigable : false,
                     respond: { index in respondToAwaiting(index, session: awaiting) }
                 )
             } else {

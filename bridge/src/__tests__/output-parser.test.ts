@@ -2619,6 +2619,89 @@ describe('OutputParser', () => {
     });
   });
 
+  // === Hierarchical CC prompt shapes ===
+  //
+  // Claude Code 2.x surfaces richer prompts than simple yes/no/always: plan
+  // approvals (5+ options), OpenClaw OAuth scope pickers (numbered list with
+  // long labels), etc. The popup UI rewrites itself per step — the parser
+  // just has to classify each step's option set correctly and pass the full
+  // labels through so the dashboard can render them verbatim instead of
+  // collapsing everything into the legacy 3-button shape.
+
+  describe('hierarchical CC prompt shapes', () => {
+    it('captures 5-option plan approval with long labels', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed([
+        'Here is the plan. Proceed?',
+        '❯ 1. Approve and start in auto mode',
+        '  2. Approve in acceptEdits mode',
+        '  3. Approve in default mode',
+        '  4. Keep planning',
+        '  5. Refine with Ultraplan',
+        '',
+        'Enter to confirm · Esc to exit',
+      ].join('\n'));
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      const opts: PromptOption[] = events[0].options;
+      expect(opts).toHaveLength(5);
+      // Full labels must survive — the dashboard button reads the raw label.
+      expect(opts[0].label).toBe('Approve and start in auto mode');
+      expect(opts[2].label).toBe('Approve in default mode');
+      expect(opts[4].label).toBe('Refine with Ultraplan');
+      // Cursor tracked on ❯ line (option 1, re-indexed to 0).
+      expect(events[0].navigable).toBe(true);
+      expect(events[0].cursorIndex).toBe(0);
+    });
+
+    it('captures OpenClaw scope selection (numbered list)', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed([
+        'Select authorization scope:',
+        '❯ 1. user',
+        '  2. project',
+        '  3. session',
+        '',
+        'Enter to confirm · Esc to exit',
+      ].join('\n'));
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      const opts: PromptOption[] = events[0].options;
+      expect(opts).toHaveLength(3);
+      expect(opts.map(o => o.label)).toEqual(['user', 'project', 'session']);
+      expect(events[0].navigable).toBe(true);
+      expect(events[0].cursorIndex).toBe(0);
+    });
+
+    it('captures OpenClaw token-action step (short numbered list)', () => {
+      // After scope pick, Claude often surfaces a small "Grant / Cancel"
+      // style follow-up. This confirms the parser emits it as its own
+      // option_prompt so the popup can re-render per step instead of
+      // freezing on the previous scope picker.
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed([
+        'Open browser to complete OAuth?',
+        '❯ 1. Grant access',
+        '  2. Cancel',
+      ].join('\n'));
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      const opts: PromptOption[] = events[0].options;
+      expect(opts).toHaveLength(2);
+      expect(opts[0].label).toBe('Grant access');
+      expect(opts[1].label).toBe('Cancel');
+    });
+  });
+
   describe('permission scroll does not trigger idle (Bug 1)', () => {
     it('scroll chunk with ❯ option text does NOT cause idle when navigable', () => {
       const p = armParser();

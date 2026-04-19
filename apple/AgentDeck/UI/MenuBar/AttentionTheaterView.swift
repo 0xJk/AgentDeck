@@ -1,9 +1,15 @@
-// AttentionTheaterView.swift — "Attention Theater" hero card
-// Ported from design prototype `option-d.jsx::AttentionTheaterD`.
-// When a session is awaiting (permission / option / diff), we surface it at
-// the top of the menubar popup with a big creature, the question, and three
-// large YES/NO/ALWAYS buttons that dispatch `PluginCommand.respond` upstream.
-// Non-awaiting states render `CalmHeaderView` instead.
+// AttentionTheaterView.swift — "Attention Theater" hero card (MenuBar)
+//
+// Mirrors `AttentionTheaterHUD` (Dashboard variant) but in the cream
+// menubar palette. Renders whatever PromptOption[] the focused session
+// currently needs — the old hardcoded Yes/No/Always trio misrepresented
+// plan approvals, /openclaw scope selection, and any other multi-option
+// CC prompt, so the popup now reflects `DashboardState.options` directly.
+//
+// Layout rules match the dashboard variant: ≤3 short options render in a
+// horizontal row with the classic colored palette; everything else falls
+// back to a scrollable vertical list with neutral tiles, recommended
+// highlighted, deny-style labels tinted red.
 
 #if os(macOS)
 import SwiftUI
@@ -11,20 +17,35 @@ import SwiftUI
 struct AttentionTheaterView: View {
     let session: SessionInfo
     let question: String?
-    /// Button handler — `index` matches `PluginCommand.selectOption`:
-    /// 0=Yes, 1=No, 2=Always. Same convention as D200H hardware buttons
-    /// and Cmd+Y/N keyboard shortcuts.
+    let options: [PromptOption]
+    let promptType: PromptType?
+    let cursorIndex: Int
+    let navigable: Bool
+    /// Button handler — `index` matches `PluginCommand.selectOption`.
     let respond: (Int) -> Void
 
-    /// Scale phase for the badge breathe animation. Matches the JS
-    /// prototype's `breathe 1.8s ease-in-out infinite` — a subtle 4%
-    /// scale oscillation that draws the eye to the pending decision
-    /// without being distracting.
     @State private var breatheLarge: Bool = false
 
     private var agentType: String? { session.agentType }
     private var brandColor: Color { SessionBrand.color(for: agentType) }
     private var agentLabel: String { displayAgentLabel(agentType) }
+
+    private var effectiveOptions: [PromptOption] {
+        if !options.isEmpty { return options }
+        return [
+            PromptOption(index: 0, label: "Yes",    shortcut: "y", recommended: nil, selected: nil),
+            PromptOption(index: 1, label: "No",     shortcut: "n", recommended: nil, selected: nil),
+            PromptOption(index: 2, label: "Always", shortcut: "a", recommended: nil, selected: nil),
+        ]
+    }
+
+    private var useHorizontalLayout: Bool {
+        let opts = effectiveOptions
+        guard opts.count <= 3 else { return false }
+        if promptType == .multiSelect { return false }
+        let maxLen = opts.map(\.label.count).max() ?? 0
+        return maxLen <= 14
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -37,7 +58,6 @@ struct AttentionTheaterView: View {
                 endPoint: .bottomTrailing
             )
             .overlay(
-                // Soft highlight glow in the top-right corner.
                 Circle()
                     .fill(Color.white.opacity(0.45))
                     .frame(width: 140, height: 140)
@@ -79,23 +99,7 @@ struct AttentionTheaterView: View {
                     }
                 }
 
-                HStack(spacing: 6) {
-                    theaterButton(
-                        label: "Yes",
-                        hint: "⌘Y",
-                        bg: Color(red: 0.102, green: 0.616, blue: 0.290)
-                    ) { respond(0) }
-                    theaterButton(
-                        label: "No",
-                        hint: "⌘N",
-                        bg: Color(red: 0.788, green: 0.188, blue: 0.188)
-                    ) { respond(1) }
-                    theaterButton(
-                        label: "Always",
-                        hint: "⌘A",
-                        bg: Color(red: 0.165, green: 0.435, blue: 0.847)
-                    ) { respond(2) }
-                }
+                optionsContent
             }
             .padding(14)
         }
@@ -105,6 +109,27 @@ struct AttentionTheaterView: View {
                 .frame(height: 0.5),
             alignment: .bottom
         )
+    }
+
+    @ViewBuilder
+    private var optionsContent: some View {
+        let opts = effectiveOptions
+        if useHorizontalLayout {
+            HStack(spacing: 6) {
+                ForEach(opts) { option in
+                    theaterButton(option: option, vertical: false)
+                }
+            }
+        } else {
+            ScrollView(.vertical, showsIndicators: opts.count > 5) {
+                VStack(spacing: 6) {
+                    ForEach(opts) { option in
+                        theaterButton(option: option, vertical: true)
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+        }
     }
 
     private var subtitle: String {
@@ -138,30 +163,100 @@ struct AttentionTheaterView: View {
             }
     }
 
-    private func theaterButton(
-        label: String,
-        hint: String,
-        bg: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(spacing: 1) {
-                Text(label)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(hint)
-                    .font(.system(size: 9, design: .monospaced))
-                    .opacity(0.8)
+    private func theaterButton(option: PromptOption, vertical: Bool) -> some View {
+        let isCursor = navigable && option.index == cursorIndex
+        let bg = buttonFill(option: option, vertical: vertical)
+        let fg = buttonTextColor(option: option, vertical: vertical)
+        let hint = shortcutHint(for: option)
+        return Button(action: { respond(option.index) }) {
+            Group {
+                if vertical {
+                    HStack(alignment: .center, spacing: 8) {
+                        if option.selected == true {
+                            Text("✓")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        Text(option.label)
+                            .font(.system(size: 12.5, weight: option.recommended == true ? .semibold : .regular))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(2)
+                        if let hint {
+                            Text(hint)
+                                .font(.system(size: 9, design: .monospaced))
+                                .opacity(0.8)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                } else {
+                    VStack(spacing: 1) {
+                        Text(option.label)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                        if let hint {
+                            Text(hint)
+                                .font(.system(size: 9, design: .monospaced))
+                                .opacity(0.8)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                }
             }
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 9)
+            .foregroundColor(fg)
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(bg)
                     .shadow(color: bg.opacity(0.35), radius: 4, x: 0, y: 2)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.black.opacity(isCursor ? 0.55 : 0), lineWidth: 1.5)
+            )
         }
         .buttonStyle(.plain)
+    }
+
+    /// Horizontal palette mirrors the dashboard variant (index 0/1/2 =
+    /// green/red/blue). Vertical palette uses cream tiles by default with
+    /// recommended lit green and deny-style labels lit red.
+    private func buttonFill(option: PromptOption, vertical: Bool) -> Color {
+        if vertical {
+            if option.recommended == true { return Color(red: 0.102, green: 0.616, blue: 0.290) }
+            if isDenyLabel(option.label) { return Color(red: 0.788, green: 0.188, blue: 0.188) }
+            return Color.white.opacity(0.85)
+        }
+        switch option.index {
+        case 0: return Color(red: 0.102, green: 0.616, blue: 0.290)
+        case 1: return Color(red: 0.788, green: 0.188, blue: 0.188)
+        case 2: return Color(red: 0.165, green: 0.435, blue: 0.847)
+        default: return Color.white.opacity(0.85)
+        }
+    }
+
+    private func buttonTextColor(option: PromptOption, vertical: Bool) -> Color {
+        if vertical {
+            if option.recommended == true || isDenyLabel(option.label) {
+                return .white
+            }
+            return Color(red: 0.102, green: 0.102, blue: 0.122)
+        }
+        return .white
+    }
+
+    private func isDenyLabel(_ label: String) -> Bool {
+        let l = label.lowercased()
+        return l.hasPrefix("no") || l.hasPrefix("deny") || l.contains("don't") || l.contains("don\u{2019}t")
+    }
+
+    private func shortcutHint(for option: PromptOption) -> String? {
+        if let sc = option.shortcut, !sc.isEmpty {
+            return "⌘\(sc.uppercased())"
+        }
+        if option.index < 9 {
+            return "⌘\(option.index + 1)"
+        }
+        return nil
     }
 
     private func shortModel(_ name: String) -> String { displayShortModelName(name) }

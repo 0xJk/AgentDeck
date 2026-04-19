@@ -713,16 +713,22 @@ private fun MonitorHUD(
                 .widthIn(max = 300.dp),
         )
 
-        // Floating attention theater — ported from the Option D macOS
-        // design. When any session is awaiting input we pin a YES/NO/ALWAYS
-        // card to the top-center of the canvas so the user can answer
-        // without opening the menu bar or digging through the session list.
+        // Floating attention theater — renders whatever PromptOption[] the
+        // bridge is currently surfacing. Suppressed on e-ink: the slow
+        // refresh makes interactive popups unusable, so e-ink users
+        // instead see the "?" creature indicator and are expected to
+        // answer from the tablet / phone / Mac dashboards.
         val awaiting = buildAwaitingList(dashState)
         val featuredSession = awaiting.firstOrNull { it.id == dashState.sessionId } ?: awaiting.firstOrNull()
-        if (featuredSession != null) {
+        if (featuredSession != null && !dev.agentdeck.util.EinkDetector.isEinkDevice()) {
+            val isFocused = featuredSession.id == dashState.sessionId
             val featured = buildAttentionFeatured(
                 session = featuredSession,
-                question = if (featuredSession.id == dashState.sessionId) dashState.question else null,
+                question = if (isFocused) dashState.question else null,
+                options = if (isFocused) dashState.options else emptyList(),
+                promptType = if (isFocused) dashState.promptType else null,
+                cursorIndex = if (isFocused) dashState.cursorIndex ?: 0 else 0,
+                navigable = if (isFocused) dashState.navigable ?: false else false,
             )
             AttentionTheaterHUD(
                 featured = featured,

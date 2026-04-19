@@ -131,11 +131,16 @@ struct MonitorScreen: View {
             let awaiting = attentionSessions
             let queued = max(0, awaiting.count - 1)
             let landscape = geo.size.width > geo.size.height
+            let isFeaturedFocused = featured.id == stateHolder.state.sessionId
             VStack {
                 AttentionTheaterHUD(
                     session: featured,
                     question: questionFor(featured),
                     queuedCount: queued,
+                    options: isFeaturedFocused ? stateHolder.state.options : [],
+                    promptType: isFeaturedFocused ? stateHolder.state.promptType : nil,
+                    cursorIndex: isFeaturedFocused ? stateHolder.state.cursorIndex : 0,
+                    navigable: isFeaturedFocused ? stateHolder.state.navigable : false,
                     respond: { index in respondToAwaiting(index, session: featured) },
                     onFocus: { stateHolder.sendCommand(.focusSession(sessionId: featured.id)) }
                 )
@@ -395,28 +400,56 @@ private struct KeyboardShortcutsModifier: ViewModifier {
     }
 
     private func handleCommandKey(_ key: KeyEquivalent) -> KeyPress.Result {
+        // Non-awaiting shortcuts: always live regardless of prompt state.
         switch key {
         case .return:
-            // Cmd+Return: Send "go on" to focused session
             stateHolder.sendCommand(.respond(value: "go on"))
             return .handled
-        case KeyEquivalent("y"):
-            // Cmd+Y: Yes/approve for awaiting session
-            guard stateHolder.state.state.isAwaiting else { return .ignored }
-            stateHolder.sendCommand(.selectOption(index: 0))
-            return .handled
-        case KeyEquivalent("n"):
-            // Cmd+N: No/reject
-            guard stateHolder.state.state.isAwaiting else { return .ignored }
-            stateHolder.sendCommand(.selectOption(index: 1))
-            return .handled
         case KeyEquivalent("."):
-            // Cmd+.: Interrupt/Stop
             stateHolder.sendCommand(.interrupt)
             return .handled
         default:
+            break
+        }
+
+        // Awaiting-only shortcuts: dispatch against the actual options the
+        // bridge is surfacing. Matches by explicit `option.shortcut` first
+        // (e.g. "y"/"n"/"a"/"v"/"d" parsed from labels), then falls back
+        // to index positions 1..9 so long multi-select lists stay
+        // keyboard-drivable even without per-option shortcuts.
+        guard stateHolder.state.state.isAwaiting else { return .ignored }
+        let options = stateHolder.state.options
+        guard !options.isEmpty else {
+            // Defensive legacy fallback — Yes/No only when parser produced
+            // no options (so the old ⌘Y/⌘N muscle memory keeps working).
+            if key == KeyEquivalent("y") {
+                stateHolder.sendCommand(.selectOption(index: 0))
+                return .handled
+            }
+            if key == KeyEquivalent("n") {
+                stateHolder.sendCommand(.selectOption(index: 1))
+                return .handled
+            }
             return .ignored
         }
+
+        // Match by declared shortcut (case-insensitive single char).
+        let keyChar = String(key.character).lowercased()
+        if keyChar.count == 1 {
+            if let hit = options.first(where: { ($0.shortcut ?? "").lowercased() == keyChar }) {
+                stateHolder.sendCommand(.selectOption(index: hit.index))
+                return .handled
+            }
+            // Match by index digit ⌘1..⌘9.
+            if let digit = Int(keyChar), digit >= 1 && digit <= 9 {
+                let target = digit - 1
+                if options.contains(where: { $0.index == target }) {
+                    stateHolder.sendCommand(.selectOption(index: target))
+                    return .handled
+                }
+            }
+        }
+        return .ignored
     }
 }
 #endif

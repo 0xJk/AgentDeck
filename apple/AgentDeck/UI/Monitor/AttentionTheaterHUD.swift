@@ -1,24 +1,33 @@
-// AttentionTheaterHUD.swift — Dashboard variant of the Option D attention theater
+// AttentionTheaterHUD.swift — Dashboard variant of the attention theater
 //
-// Same interaction pattern as the menubar's `AttentionTheaterView` — when any
-// session awaits permission/option/diff input, surface it at the top of the
-// monitor screen with YES/NO/ALWAYS buttons that dispatch directly to the
-// bridge — but rendered in the Terrarium HUD palette rather than the menubar's
-// cream card. Visually reads as a bioluminescent alert suspended above the
-// aquarium: deep-water glass, amber flare, neon underline.
+// Renders whatever PromptOption[] the bridge currently emits for the focused
+// awaiting session. This popup used to hardcode Yes/No/Always, which
+// misrepresented real Claude Code prompts — plan approvals (5+ options),
+// /openclaw scope selection, numbered multi-select lists, etc. Now the UI
+// mirrors `DashboardState.options` directly so each CC step (Scope → Token →
+// Submit etc.) appears as its own option set.
 //
-// Interaction parity with Cmd+Y/N/A: YES = selectOption(0), NO = selectOption(1),
-// ALWAYS = selectOption(2). Matches D200H button mapping and the existing
-// keyboard shortcuts in `MonitorScreen.KeyboardShortcutsModifier`.
+// Layout rules:
+//  • ≤3 short options (≤14 char labels) → horizontal row, color-coded by
+//    index (green/red/cyan) to keep the familiar tool-approval look.
+//  • Anything else → vertical scrollable list, neutral palette with
+//    `recommended` highlighted green and `cursorIndex` highlighted.
+//
+// Button action dispatches `respond(option.index)` — same canonical
+// `select_option` path used by D200H buttons and keyboard shortcuts.
 
 import SwiftUI
 
 struct AttentionTheaterHUD: View {
     let session: SessionInfo
     let question: String?
-    let queuedCount: Int                       // how many other awaiting sessions are behind this one
-    let respond: (Int) -> Void                 // 0=yes 1=no 2=always
-    let onFocus: () -> Void                    // focus this session in the dashboard
+    let queuedCount: Int
+    let options: [PromptOption]
+    let promptType: PromptType?
+    let cursorIndex: Int
+    let navigable: Bool
+    let respond: (Int) -> Void
+    let onFocus: () -> Void
 
     @State private var breatheLarge = false
     @State private var auraPhase = false
@@ -31,6 +40,29 @@ struct AttentionTheaterHUD: View {
         case "opencode":    return "OpenCode"
         default:            return session.agentType?.capitalized ?? "Agent"
         }
+    }
+
+    /// Effective options to render. If the parser delivered an empty array
+    /// (e.g. AWAITING_PERMISSION with no labels extracted), fall back to the
+    /// legacy yes/no/always trio so the card never appears blank.
+    private var effectiveOptions: [PromptOption] {
+        if !options.isEmpty { return options }
+        return [
+            PromptOption(index: 0, label: "Yes",    shortcut: "y", recommended: nil, selected: nil),
+            PromptOption(index: 1, label: "No",     shortcut: "n", recommended: nil, selected: nil),
+            PromptOption(index: 2, label: "Always", shortcut: "a", recommended: nil, selected: nil),
+        ]
+    }
+
+    /// Use the compact horizontal row layout when we have ≤3 options and
+    /// every label is short. This preserves the familiar tool-approval
+    /// look for Yes/No/Always style prompts.
+    private var useHorizontalLayout: Bool {
+        let opts = effectiveOptions
+        guard opts.count <= 3 else { return false }
+        if promptType == .multiSelect { return false }
+        let maxLen = opts.map(\.label.count).max() ?? 0
+        return maxLen <= 14
     }
 
     var body: some View {
@@ -68,26 +100,7 @@ struct AttentionTheaterHUD: View {
                 }
             }
 
-            HStack(spacing: 6) {
-                theaterButton(
-                    label: "Yes",
-                    hint: "⌘Y",
-                    fill: TerrariumHUD.ledGreen,
-                    action: { respond(0) }
-                )
-                theaterButton(
-                    label: "No",
-                    hint: "⌘N",
-                    fill: TerrariumHUD.ledRed,
-                    action: { respond(1) }
-                )
-                theaterButton(
-                    label: "Always",
-                    hint: "⌘A",
-                    fill: TerrariumHUD.tetraNeon,
-                    action: { respond(2) }
-                )
-            }
+            optionsContent
         }
         .padding(12)
         .background(
@@ -96,9 +109,6 @@ struct AttentionTheaterHUD: View {
                     .fill(Color.black.opacity(0.65))
                 RoundedRectangle(cornerRadius: 12)
                     .stroke(TerrariumHUD.ledAmber.opacity(0.45), lineWidth: 1)
-                // Pulsing glow — the "bioluminescent signal" that a creature
-                // needs you. Keeps the peripheral eye aware without stealing
-                // the center of the screen.
                 RoundedRectangle(cornerRadius: 12)
                     .stroke(TerrariumHUD.ledAmber.opacity(auraPhase ? 0.35 : 0.1), lineWidth: 3)
                     .blur(radius: 4)
@@ -112,6 +122,27 @@ struct AttentionTheaterHUD: View {
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 auraPhase = true
             }
+        }
+    }
+
+    @ViewBuilder
+    private var optionsContent: some View {
+        let opts = effectiveOptions
+        if useHorizontalLayout {
+            HStack(spacing: 6) {
+                ForEach(opts) { option in
+                    theaterButton(option: option, vertical: false)
+                }
+            }
+        } else {
+            ScrollView(.vertical, showsIndicators: opts.count > 5) {
+                VStack(spacing: 6) {
+                    ForEach(opts) { option in
+                        theaterButton(option: option, vertical: true)
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
         }
     }
 
@@ -144,34 +175,98 @@ struct AttentionTheaterHUD: View {
         .scaleEffect(breatheLarge ? 1.04 : 1.0)
     }
 
-    private func theaterButton(
-        label: String,
-        hint: String,
-        fill: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(spacing: 1) {
-                Text(label)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(hint)
-                    .font(.system(size: 9, design: .monospaced))
-                    .opacity(0.85)
+    private func theaterButton(option: PromptOption, vertical: Bool) -> some View {
+        let isCursor = navigable && option.index == cursorIndex
+        let fill = buttonFill(option: option, vertical: vertical)
+        let hint = shortcutHint(for: option)
+        return Button(action: { respond(option.index) }) {
+            if vertical {
+                HStack(alignment: .center, spacing: 8) {
+                    if option.selected == true {
+                        Text("✓")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    Text(option.label)
+                        .font(.system(size: 12.5, weight: option.recommended == true ? .semibold : .regular))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(2)
+                    if let hint {
+                        Text(hint)
+                            .font(.system(size: 9, design: .monospaced))
+                            .opacity(0.85)
+                    }
+                }
+                .foregroundColor(Color.black.opacity(0.85))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(fill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(isCursor ? 0.9 : 0), lineWidth: 1.5)
+                )
+            } else {
+                VStack(spacing: 1) {
+                    Text(option.label)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    if let hint {
+                        Text(hint)
+                            .font(.system(size: 9, design: .monospaced))
+                            .opacity(0.85)
+                    }
+                }
+                .foregroundColor(Color.black.opacity(0.85))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(fill)
+                        .shadow(color: fill.opacity(0.45), radius: 6, x: 0, y: 2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(isCursor ? 0.9 : 0), lineWidth: 1.5)
+                )
             }
-            // Dark-on-LED buttons: the button-face is the LED color, text is
-            // near-black so it stays legible against bright fills. Matches
-            // the terrarium HUD convention of using LED colors as the signal
-            // palette rather than as background tints.
-            .foregroundColor(Color.black.opacity(0.85))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(fill)
-                    .shadow(color: fill.opacity(0.45), radius: 6, x: 0, y: 2)
-            )
         }
         .buttonStyle(.plain)
+    }
+
+    /// Pick a fill color. Horizontal layout uses the classic three-button
+    /// palette (green/red/cyan) by index so tool approvals feel familiar.
+    /// Vertical layout uses a neutral base with `recommended` lit green and
+    /// deny-style labels lit red — better for long multi-option lists.
+    private func buttonFill(option: PromptOption, vertical: Bool) -> Color {
+        if vertical {
+            if option.recommended == true { return TerrariumHUD.ledGreen.opacity(0.9) }
+            if isDenyLabel(option.label) { return TerrariumHUD.ledRed.opacity(0.85) }
+            return Color.white.opacity(0.85)
+        }
+        switch option.index {
+        case 0: return TerrariumHUD.ledGreen
+        case 1: return TerrariumHUD.ledRed
+        case 2: return TerrariumHUD.tetraNeon
+        default: return Color.white.opacity(0.85)
+        }
+    }
+
+    private func isDenyLabel(_ label: String) -> Bool {
+        let l = label.lowercased()
+        return l.hasPrefix("no") || l.hasPrefix("deny") || l.contains("don't") || l.contains("don\u{2019}t")
+    }
+
+    private func shortcutHint(for option: PromptOption) -> String? {
+        if let sc = option.shortcut, !sc.isEmpty {
+            return "⌘\(sc.uppercased())"
+        }
+        // Index-based fallback for navigable multi-select (Cmd+1..9)
+        if option.index < 9 {
+            return "⌘\(option.index + 1)"
+        }
+        return nil
     }
 
     private func shortModel(_ name: String) -> String {

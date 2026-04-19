@@ -13,14 +13,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,26 +40,26 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agentdeck.net.AgentState
+import dev.agentdeck.net.PromptOption
 import dev.agentdeck.net.SessionInfo
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.ui.component.BrandIcon
 
 /**
  * Floating attention card surfaced over the terrarium when any session is
- * awaiting input (permission / option / diff). Ports the macOS Option D
- * "attention theater" pattern to the tablet HUD in terrarium palette — a
- * deep-water glass card with an amber bioluminescent signal glow.
+ * awaiting input. Renders whatever `PromptOption[]` the bridge currently
+ * emits — ≤3 short options stay in a horizontal row (the classic
+ * yes/no/always look), everything else spills into a vertical scroll list
+ * so plan approvals and OpenClaw scope selectors can show the full label
+ * text instead of being truncated to three generic buttons.
  *
- * YES / NO / ALWAYS map to the canonical `select_option(0/1/2)` command
- * (same path as D200H hardware buttons and the Swift Cmd+Y/N/A shortcut).
+ * E-ink devices are suppressed upstream in `MonitorScreen.MonitorHUD` via
+ * `EinkDetector.isEinkDevice()` — interactive popups don't work well on
+ * slow-refresh screens, so those users get the "?" creature indicator
+ * instead.
  *
- * Non-interactive creature badge pulses with a subtle breathe animation;
- * the card's amber outer stroke pulses to 1.0s period so the user sees
- * the alert in peripheral vision without it feeling distracting.
- *
- * Rendered only when `featured` is non-null — the caller decides which
- * awaiting session to surface (typically the focused one, or the first in
- * sort order).
+ * `onRespond(index)` dispatches `select_option(index)` via
+ * `BridgeConnection` — same path used by D200H hardware buttons.
  */
 @Composable
 fun AttentionTheaterHUD(
@@ -84,6 +88,9 @@ fun AttentionTheaterHUD(
         label = "aura",
     )
 
+    val effectiveOptions = effectiveOptions(featured.options)
+    val useHorizontal = useHorizontalLayout(effectiveOptions, featured.promptType)
+
     Column(
         modifier = modifier
             .widthIn(max = 460.dp)
@@ -103,7 +110,6 @@ fun AttentionTheaterHUD(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.Top,
         ) {
-            // Breathing creature badge — dark glass tile + amber edge.
             Box(
                 modifier = Modifier
                     .size(50.dp)
@@ -173,29 +179,74 @@ fun AttentionTheaterHUD(
             }
         }
 
-        // YES / NO / ALWAYS — `select_option(0/1/2)` matches the D200H
-        // hardware mapping and the keyboard shortcuts we ship on desktop.
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            TheaterButton(
-                label = "Yes",
-                fill = TerrariumColors.LEDGreen,
-                modifier = Modifier.weight(1f),
-                onClick = { onRespond(0) },
-            )
-            TheaterButton(
-                label = "No",
-                fill = TerrariumColors.LEDRed,
-                modifier = Modifier.weight(1f),
-                onClick = { onRespond(1) },
-            )
-            TheaterButton(
-                label = "Always",
-                fill = TerrariumColors.TetraNeon,
-                modifier = Modifier.weight(1f),
-                onClick = { onRespond(2) },
-            )
+        if (useHorizontal) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                effectiveOptions.forEachIndexed { listIndex, option ->
+                    val idx = option.index ?: listIndex
+                    TheaterButton(
+                        label = option.label,
+                        fill = horizontalFill(idx),
+                        isCursor = featured.navigable && featured.cursorIndex == idx,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onRespond(idx) },
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 260.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(vertical = 2.dp),
+            ) {
+                itemsIndexed(effectiveOptions) { listIndex, option ->
+                    val idx = option.index ?: listIndex
+                    TheaterListRow(
+                        option = option,
+                        isCursor = featured.navigable && featured.cursorIndex == idx,
+                        onClick = { onRespond(idx) },
+                    )
+                }
+            }
         }
     }
+}
+
+/** If the parser delivered no options, fall back to the legacy yes/no/always
+ *  trio so the card never appears blank. Bridge parsers sometimes hit a
+ *  permission prompt whose labels couldn't be extracted — better to show
+ *  the familiar trio than nothing. */
+private fun effectiveOptions(options: List<PromptOption>): List<PromptOption> {
+    if (options.isNotEmpty()) return options
+    return listOf(
+        PromptOption(label = "Yes",    shortcut = "y", index = 0),
+        PromptOption(label = "No",     shortcut = "n", index = 1),
+        PromptOption(label = "Always", shortcut = "a", index = 2),
+    )
+}
+
+private fun useHorizontalLayout(options: List<PromptOption>, promptType: String?): Boolean {
+    if (options.size > 3) return false
+    if (promptType == "multi_select") return false
+    val maxLen = options.maxOfOrNull { it.label.length } ?: 0
+    return maxLen <= 14
+}
+
+private fun horizontalFill(index: Int): Color = when (index) {
+    0 -> TerrariumColors.LEDGreen
+    1 -> TerrariumColors.LEDRed
+    2 -> TerrariumColors.TetraNeon
+    else -> Color.White.copy(alpha = 0.85f)
+}
+
+private fun verticalFill(option: PromptOption): Color = when {
+    option.recommended == true -> TerrariumColors.LEDGreen.copy(alpha = 0.9f)
+    isDenyLabel(option.label) -> TerrariumColors.LEDRed.copy(alpha = 0.85f)
+    else -> Color.White.copy(alpha = 0.85f)
+}
+
+private fun isDenyLabel(label: String): Boolean {
+    val l = label.lowercase()
+    return l.startsWith("no") || l.startsWith("deny") || l.contains("don't") || l.contains("don\u2019t")
 }
 
 /**
@@ -211,12 +262,17 @@ data class AttentionFeatured(
     val modelName: String?,
     val question: String?,
     val subtitle: String,
+    val options: List<PromptOption> = emptyList(),
+    val promptType: String? = null,
+    val cursorIndex: Int = 0,
+    val navigable: Boolean = false,
 )
 
 @Composable
 private fun TheaterButton(
     label: String,
     fill: Color,
+    isCursor: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -224,6 +280,13 @@ private fun TheaterButton(
         modifier = modifier
             .height(40.dp)
             .background(color = fill, shape = RoundedCornerShape(8.dp))
+            .border(
+                border = BorderStroke(
+                    width = 1.5.dp,
+                    color = if (isCursor) Color.White.copy(alpha = 0.9f) else Color.Transparent,
+                ),
+                shape = RoundedCornerShape(8.dp),
+            )
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -233,19 +296,81 @@ private fun TheaterButton(
             color = Color.Black.copy(alpha = 0.85f),
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
+@Composable
+private fun TheaterListRow(
+    option: PromptOption,
+    isCursor: Boolean,
+    onClick: () -> Unit,
+) {
+    val fill = verticalFill(option)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = fill, shape = RoundedCornerShape(8.dp))
+            .border(
+                border = BorderStroke(
+                    width = 1.5.dp,
+                    color = if (isCursor) Color.White.copy(alpha = 0.9f) else Color.Transparent,
+                ),
+                shape = RoundedCornerShape(8.dp),
+            )
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (option.selected == true) {
+                Text(
+                    text = "✓",
+                    color = Color.Black.copy(alpha = 0.85f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            Text(
+                text = option.label,
+                color = Color.Black.copy(alpha = 0.85f),
+                fontSize = 12.5.sp,
+                fontWeight = if (option.recommended == true) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val shortcut = option.shortcut?.uppercase()
+            if (!shortcut.isNullOrEmpty()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = shortcut,
+                    color = Color.Black.copy(alpha = 0.7f),
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+    }
+}
+
 /**
- * Build the `AttentionFeatured` payload from a tablet SessionInfo +
- * optional live question (only the focused session has the question
- * streamed live; non-focused sessions still surface but with a generic
- * prompt).
+ * Build the `AttentionFeatured` payload from a tablet SessionInfo + the
+ * current DashboardState's prompt fields. Only the focused session has
+ * live `options`/`question`/`cursorIndex`, so non-focused sessions
+ * surface with an empty option set and the fallback yes/no/always trio
+ * takes over in the card.
  */
 fun buildAttentionFeatured(
     session: SessionInfo,
     question: String?,
+    options: List<PromptOption> = emptyList(),
+    promptType: String? = null,
+    cursorIndex: Int = 0,
+    navigable: Boolean = false,
 ): AttentionFeatured {
     val agentLabel = when (session.agentType) {
         "claude-code" -> "Claude"
@@ -265,6 +390,10 @@ fun buildAttentionFeatured(
         modelName = session.modelName,
         question = question,
         subtitle = parts.joinToString(" · "),
+        options = options,
+        promptType = promptType,
+        cursorIndex = cursorIndex,
+        navigable = navigable,
     )
 }
 
