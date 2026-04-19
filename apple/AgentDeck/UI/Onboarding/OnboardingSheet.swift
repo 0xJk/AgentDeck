@@ -38,11 +38,21 @@ struct OnboardingSheet: View {
         .frame(width: 640, height: 540)
     }
 
+    /// 4 panes: Welcome → Agent picker → Optional integrations → Pair iPad.
+    /// Adding the integrations pane (Claude Code hooks / OpenClaw /
+    /// Anthropic API) keeps the wizard length reasonable while letting
+    /// first-run users know those surfaces exist before they go hunting
+    /// in Settings. The pane is purely informational — actual token
+    /// paste and hook consent stay in Settings → Integrations to keep
+    /// the wizard short.
+    private static let paneCount = 4
+
     @ViewBuilder
     private var content: some View {
         switch pane {
         case 0: WelcomePane()
         case 1: AgentPickerPane(userHasAgent: $userHasAgent)
+        case 2: IntegrationsPane()
         default: PairIPadPane()
         }
     }
@@ -51,7 +61,7 @@ struct OnboardingSheet: View {
         HStack(spacing: 12) {
             // Progress dots.
             HStack(spacing: 6) {
-                ForEach(0..<3, id: \.self) { idx in
+                ForEach(0..<Self.paneCount, id: \.self) { idx in
                     Circle()
                         .fill(idx == pane ? Color.accentColor : Color.secondary.opacity(0.3))
                         .frame(width: 8, height: 8)
@@ -67,8 +77,8 @@ struct OnboardingSheet: View {
                 .buttonStyle(.bordered)
             }
 
-            Button(pane == 2 ? "Get Started" : "Continue") {
-                if pane < 2 {
+            Button(pane == Self.paneCount - 1 ? "Get Started" : "Continue") {
+                if pane < Self.paneCount - 1 {
                     pane += 1
                 } else {
                     finish()
@@ -270,7 +280,78 @@ private struct AgentPickerPane: View {
     }
 }
 
-// MARK: - Pane 3: Pair iPad
+// MARK: - Pane 3: Optional integrations
+
+/// Informational pane introducing the three Settings integrations that
+/// unlock extra features. Each row is a "what + where" line — no paste
+/// fields here, because token entry in a wizard is brittle (users lose
+/// context, tokens get truncated by IME, etc.). Keeps the wizard short;
+/// the Setup card on the dashboard will nag users who actually need
+/// these to follow through.
+private struct IntegrationsPane: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Optional integrations")
+                    .font(.system(size: 22, weight: .semibold))
+                Text("These unlock extra features. Skip any you don't need — every one of them can be enabled later from Settings → Integrations.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 10) {
+                integrationCard(
+                    icon: "bolt.fill",
+                    title: "Claude Code hooks",
+                    detail: "Live per-turn token counts, tool calls, and timeline events. Requires your consent to edit `~/.claude/settings.local.json`."
+                )
+                integrationCard(
+                    icon: "network",
+                    title: "OpenClaw Gateway",
+                    detail: "Route agent traffic through a local OpenClaw Gateway. Paste the shared `OPENCLAW_GATEWAY_TOKEN` value in Settings."
+                )
+                integrationCard(
+                    icon: "chart.line.uptrend.xyaxis",
+                    title: "Anthropic API usage (optional)",
+                    detail: "Org-wide token consumption for users with an Anthropic Console Admin API key. Separate from Pro/Max subscription quota."
+                )
+            }
+
+            Text("Most people only need hooks. OpenClaw and Admin API usage are for power users.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+        }
+        .padding(24)
+    }
+
+    private func integrationCard(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.08))
+        )
+    }
+}
+
+// MARK: - Pane 4: Pair iPad
 
 private struct PairIPadPane: View {
     var body: some View {

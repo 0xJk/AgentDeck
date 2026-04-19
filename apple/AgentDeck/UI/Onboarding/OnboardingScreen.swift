@@ -29,11 +29,19 @@ struct OnboardingScreen: View {
         .background(Color(.systemBackground))
     }
 
+    /// 4 panes: Welcome → Agent info → Integrations heads-up → Find Mac.
+    /// Added the integrations pane so iPad/iPhone users are at least aware
+    /// of what's happening on the Mac side (hooks, OpenClaw, Admin API)
+    /// and know where to look when they want those features — all of which
+    /// are macOS-only configured.
+    private static let paneCount = 4
+
     @ViewBuilder
     private var content: some View {
         switch pane {
         case 0: WelcomePaneiOS()
         case 1: AgentInfoPaneiOS()
+        case 2: IntegrationsPaneiOS()
         default: FindMacPaneiOS()
         }
     }
@@ -41,7 +49,7 @@ struct OnboardingScreen: View {
     private var footer: some View {
         HStack(spacing: 12) {
             HStack(spacing: 6) {
-                ForEach(0..<3, id: \.self) { idx in
+                ForEach(0..<Self.paneCount, id: \.self) { idx in
                     Circle()
                         .fill(idx == pane ? Color.accentColor : Color.secondary.opacity(0.3))
                         .frame(width: 8, height: 8)
@@ -55,8 +63,8 @@ struct OnboardingScreen: View {
                     .buttonStyle(.bordered)
             }
 
-            Button(pane == 2 ? "Get Started" : "Continue") {
-                if pane < 2 {
+            Button(pane == Self.paneCount - 1 ? "Get Started" : "Continue") {
+                if pane < Self.paneCount - 1 {
                     pane += 1
                 } else {
                     finish()
@@ -137,6 +145,74 @@ private struct AgentInfoPaneiOS: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.08))
+        )
+    }
+}
+
+/// Heads-up for iOS users about the optional integrations that live on
+/// the Mac side. Can't configure them from iOS (Keychain writes + hook
+/// consent are macOS Settings scenes), so this pane is purely
+/// informational — similar to the equivalent `IntegrationsPane` on
+/// macOS but tuned for the companion-app mental model.
+private struct IntegrationsPaneiOS: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Optional Mac integrations")
+                    .font(.system(size: 22, weight: .semibold))
+                Text("AgentDeck on your Mac has a few optional integrations. You don't need them to use the iPad dashboard — but your Mac is where they get turned on.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 10) {
+                integrationCard(
+                    icon: "bolt.fill",
+                    title: "Claude Code hooks",
+                    detail: "Live per-turn token counts and tool calls. Enabled in AgentDeck on your Mac → Settings → Integrations."
+                )
+                integrationCard(
+                    icon: "network",
+                    title: "OpenClaw Gateway",
+                    detail: "Route agent traffic through a local OpenClaw Gateway. Requires the shared token configured on your Mac."
+                )
+                integrationCard(
+                    icon: "chart.line.uptrend.xyaxis",
+                    title: "Anthropic API usage",
+                    detail: "Org-wide token consumption for Anthropic Console admin key holders. Paste the key on your Mac."
+                )
+            }
+
+            Text("Everything you see here on iPad reflects what your Mac reports — no setup on this device.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+        }
+        .padding(24)
+    }
+
+    private func integrationCard(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 10)

@@ -176,6 +176,34 @@ struct SettingsScreen: View {
             case .evaluation:   "chart.bar.doc.horizontal"
             }
         }
+
+        /// One-line subtitle shown under the section title in the detail
+        /// pane. Written as "what this section does" so the user can tell
+        /// at a glance whether they're in the right place without
+        /// reading every control. Avoids terms that require AgentDeck
+        /// internals knowledge (daemon, mDNS, hook JSON, etc.).
+        var subtitle: String {
+            switch self {
+            case .integrations:
+                "Wire up Claude Code, OpenClaw, and Anthropic API — everything AgentDeck talks to."
+            case .dashboard:
+                "What shows up on the terrarium and in the menu bar."
+            case .about:
+                "Version, attributions, and support links."
+            case .connection:
+                "How this Mac/iPad finds the AgentDeck server and handles reconnects."
+            case .daemon:
+                "Port the local server listens on. Leave at 9120 unless something else already uses it."
+            case .pairing:
+                "How iPad or iPhone discovers this Mac. Usually automatic over Wi-Fi."
+            case .display:
+                "Sleep and wake behaviour for the Mac display."
+            case .hardware:
+                "Optional ESP32 boards and Pixoo LED matrix displays."
+            case .evaluation:
+                "APME scores agent turns. Pick a judge backend — local MLX is free."
+            }
+        }
     }
 
     private static let essentialSections: [SettingsSection] = [.integrations, .dashboard, .about]
@@ -215,8 +243,14 @@ struct SettingsScreen: View {
     private var macOSDetail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(selectedSection.title)
-                    .font(.title2.bold())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(selectedSection.title)
+                        .font(.title2.bold())
+                    Text(selectedSection.subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 sectionContent(for: selectedSection)
             }
             .padding(20)
