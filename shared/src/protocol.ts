@@ -158,6 +158,8 @@ export interface StateUpdateEvent {
   gatewayAuthRequestId?: string;
   /** Human-readable OpenClaw auth/pairing diagnostic */
   gatewayAuthMessage?: string;
+  /** Daemon-owned hardware/module health, intentionally loose for cross-version clients */
+  moduleHealth?: Record<string, unknown>;
   /** Voice assistant pipeline state (wake word → STT → LLM → TTS) */
   voiceAssistantState?: VoiceAssistantState;
   /** Transcribed user speech (processing/speaking) */

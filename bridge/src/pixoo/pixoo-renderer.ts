@@ -644,8 +644,9 @@ export function renderFrame(
   const surfaceY = SURFACE_Y;
   const palette = ZONE_BLUE; // Water stays blue — usage shown only via HUD gauge
 
-  // Gateway available: stateEvent flag OR openclaw session in sessions list
-  const hasGateway = (stateEvent?.gatewayAvailable ?? false)
+  // Gateway creature is gated by authenticated connection, not reachability.
+  const hasGateway = (stateEvent?.gatewayConnected ?? false)
+    || (stateEvent?.gatewayHasError ?? false)
     || (sessions?.some(s => s.agentType === 'openclaw') ?? false);
 
   // === Sync creature instances ===

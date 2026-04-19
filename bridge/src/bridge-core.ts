@@ -86,6 +86,7 @@ export class BridgeCore {
   cachedMlxModels: string[] | null = null;
   cachedAntigravityStatus = readAntigravityLocalStatus() ?? null;
   cachedGatewayAvailable = false;
+  cachedGatewayConnected = false;
   cachedGatewayHasError = false;
   cachedModelCatalog: ModelCatalogEntry[] | null = null;
 
@@ -104,6 +105,9 @@ export class BridgeCore {
 
   /** Optional callback to enrich sessions_list (e.g., daemon injects Gateway virtual session) */
   private sessionsEnricher?: (sessions: import('./session-aggregator.js').EnrichedSession[]) => import('./session-aggregator.js').EnrichedSession[];
+
+  /** Optional callback to expose daemon-owned device/module health on state_update. */
+  private moduleHealthProvider?: () => Record<string, unknown>;
 
   /** External client count provider (e.g., ESP32 serial connections) */
   private externalClientCount: () => number = () => 0;
@@ -251,7 +255,9 @@ export class BridgeCore {
       subscriptions: subscriptions ?? undefined,
       antigravityStatus: this.cachedAntigravityStatus ?? undefined,
       gatewayAvailable: this.cachedGatewayAvailable,
+      gatewayConnected: this.cachedGatewayConnected,
       gatewayHasError: this.cachedGatewayHasError,
+      moduleHealth: this.moduleHealthProvider?.(),
       voiceAssistantState: this.cachedVoiceAssistantState !== 'disabled' ? this.cachedVoiceAssistantState : undefined,
       voiceAssistantText: this.cachedVoiceAssistantText,
       voiceAssistantResponseText: this.cachedVoiceAssistantResponseText,
@@ -413,6 +419,7 @@ export class BridgeCore {
       if (status.available && !wasAvailable) {
         onAppeared?.();
       } else if (!status.available && wasAvailable) {
+        this.cachedGatewayConnected = false;
         onDisappeared?.();
       }
       if (status.available !== wasAvailable) {
@@ -487,6 +494,11 @@ export class BridgeCore {
   /** Register a callback to enrich the sessions list before broadcast */
   setSessionsEnricher(fn: (sessions: import('./session-aggregator.js').EnrichedSession[]) => import('./session-aggregator.js').EnrichedSession[]): void {
     this.sessionsEnricher = fn;
+  }
+
+  /** Register daemon module-health provider for dashboard diagnostics. */
+  setModuleHealthProvider(fn: () => Record<string, unknown>): void {
+    this.moduleHealthProvider = fn;
   }
 
   /** Register a provider for non-WS client count (e.g., ESP32 serial connections).

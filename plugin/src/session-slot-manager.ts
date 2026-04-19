@@ -192,23 +192,10 @@ export class SessionSlotManager {
     // Build ordered list: sorted by agentType (openclaw→claude→codex→opencode) then name→startedAt
     const alive = sessions.filter(s => (s.agentType as string) !== 'daemon' && s.alive);
 
-    // Inject virtual OpenClaw entry if gateway available but no real OC session.
-    // The daemon already injects this upstream in normal operation; this is a
-    // belt-and-braces fallback for edge cases where the daemon broadcast races
-    // ahead of cachedGatewayAvailable being set. The 1970 startedAt is the
-    // canonical sort tiebreaker — even if a real openclaw session were ever
-    // added, OC stays pinned at slot 0.
-    if (gatewayAvailable && !alive.some(s => s.agentType === 'openclaw')) {
-      alive.push({
-        id: 'openclaw-gateway',
-        port: 18789,
-        projectName: 'OpenClaw',
-        agentType: 'openclaw',
-        alive: true,
-        state: 'idle',
-        startedAt: '1970-01-01T00:00:00.000Z',
-      });
-    }
+    // OpenClaw virtual sessions are injected by the daemon only after
+    // Gateway authentication succeeds. Reachability alone stays a topology
+    // signal so the plugin does not create an actionable OpenClaw slot for an
+    // unapproved or token-mismatched Gateway.
 
     // Canonical stable sort: agentType rank → projectName → startedAt → id
     this._sessions = sortSessions(alive).slice(0, MAX_SESSIONS);

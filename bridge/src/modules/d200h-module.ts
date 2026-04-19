@@ -155,6 +155,19 @@ export class D200hModule implements DeviceModule {
     this.commandHandler = null;
   }
 
+  statusSnapshot(): Record<string, unknown> {
+    return {
+      connected: this.connected,
+      managerOpened: this.hidModule !== null,
+      writeOK: 0,
+      writeFail: 0,
+      buttonPressCount: 0,
+      hidReportCount: 0,
+      lastWriteError: null,
+      lastOpenError: null,
+    };
+  }
+
   // --- Private methods ---
 
   private async loadHidModule(): Promise<HIDModule | null> {

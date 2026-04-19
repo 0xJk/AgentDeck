@@ -2,13 +2,14 @@ import { execSync } from 'child_process';
 import { debug } from './logger.js';
 
 const TAG = 'adb';
+const ANDROID_PORT = 9120;
 
 /**
  * ADB reverse tunnel management for Android dashboard clients.
  * D200H Deck Dock is now handled by D200hModule (HID protocol) — no ADB needed.
  */
 
-function hasAdb(): boolean {
+export function hasAdb(): boolean {
   try {
     execSync('which adb', { stdio: 'pipe' });
     return true;
@@ -17,7 +18,7 @@ function hasAdb(): boolean {
   }
 }
 
-function getConnectedDevices(): string[] {
+export function getConnectedAdbDevices(): string[] {
   try {
     const output = execSync('adb devices', { stdio: 'pipe', timeout: 5000 }).toString();
     const lines = output.split('\n').slice(1).filter((l) => l.trim().length > 0);
@@ -48,7 +49,7 @@ export function setupAdbReverse(port: number): void {
     return;
   }
 
-  const devices = getConnectedDevices();
+  const devices = getConnectedAdbDevices();
   if (devices.length === 0) {
     debug(TAG, 'no connected devices');
     return;
@@ -56,11 +57,11 @@ export function setupAdbReverse(port: number): void {
 
   for (const serial of devices) {
     try {
-      execSync(`adb -s ${serial} reverse tcp:${port} tcp:${port}`, {
+      execSync(`adb -s ${serial} reverse tcp:${ANDROID_PORT} tcp:${port}`, {
         stdio: 'pipe',
         timeout: 5000,
       });
-      debug(TAG, `adb reverse tcp:${port} → ${serial}`);
+      debug(TAG, `adb reverse ${serial}: android:${ANDROID_PORT} → daemon:${port}`);
     } catch (err) {
       debug(TAG, `adb reverse failed for ${serial}: ${err}`);
     }
@@ -75,7 +76,7 @@ export function startAdbReversePolling(port: number, intervalMs = 30_000): () =>
   if (!hasAdb()) return () => {};
 
   const timer = setInterval(() => {
-    const devices = getConnectedDevices();
+    const devices = getConnectedAdbDevices();
     if (devices.length === 0) return;
 
     for (const serial of devices) {
@@ -85,12 +86,12 @@ export function startAdbReversePolling(port: number, intervalMs = 30_000): () =>
           stdio: 'pipe',
           timeout: 5000,
         }).toString();
-        if (!existing.includes(`tcp:${port}`)) {
-          execSync(`adb -s ${serial} reverse tcp:${port} tcp:${port}`, {
+        if (!existing.includes(`tcp:${ANDROID_PORT}`)) {
+          execSync(`adb -s ${serial} reverse tcp:${ANDROID_PORT} tcp:${port}`, {
             stdio: 'pipe',
             timeout: 5000,
           });
-          debug(TAG, `adb reverse re-established tcp:${port} → ${serial}`);
+          debug(TAG, `adb reverse re-established ${serial}: android:${ANDROID_PORT} → daemon:${port}`);
         }
       } catch (err: any) {
         debug(TAG, `adb reverse poll failed for ${serial}: ${err?.message ?? err}`);
@@ -106,7 +107,7 @@ export function startAdbReversePolling(port: number, intervalMs = 30_000): () =>
  */
 export function getAdbDeviceCount(): number {
   if (!hasAdb()) return 0;
-  return getConnectedDevices().length;
+  return getConnectedAdbDevices().length;
 }
 
 /**
@@ -115,10 +116,10 @@ export function getAdbDeviceCount(): number {
 export function cleanupAdbReverse(port: number): void {
   if (!hasAdb()) return;
 
-  const devices = getConnectedDevices();
+  const devices = getConnectedAdbDevices();
   for (const serial of devices) {
     try {
-      execSync(`adb -s ${serial} reverse --remove tcp:${port}`, {
+      execSync(`adb -s ${serial} reverse --remove tcp:${ANDROID_PORT}`, {
         stdio: 'pipe',
         timeout: 3000,
       });

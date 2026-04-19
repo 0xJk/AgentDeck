@@ -44,10 +44,13 @@ import {
   initModules,
   stopModules,
   createDefaultModules,
+  type DeviceModule,
 } from './modules/index.js';
 import { SerialModule } from './modules/serial-module.js';
-import { esp32ConnectionCount, onESP32Message, sendWifiProvisionToAll, handleESP32Wake } from './esp32-serial.js';
+import { esp32ConnectionCount, getESP32DeviceInfo, onESP32Message, sendWifiProvisionToAll, handleESP32Wake } from './esp32-serial.js';
 import { loadWifiConfig } from './wifi-config.js';
+import { getConnectedAdbDevices, hasAdb } from './adb-reverse.js';
+import { getPixooDeviceDetails, pixooDeviceCount } from './pixoo/pixoo-bridge.js';
 import { getLanIp } from '@agentdeck/shared';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -158,6 +161,67 @@ export interface DaemonOptions {
   wakeWord?: boolean;
 }
 
+function buildNodeModuleHealth(startedModules: DeviceModule[]): Record<string, unknown> {
+  const started = new Set(startedModules.map((m) => m.name));
+  const modules: Record<string, unknown> = {};
+
+  if (started.has('adb')) {
+    const adbAvailable = hasAdb();
+    const devices = adbAvailable ? getConnectedAdbDevices() : [];
+    modules.adb = {
+      available: adbAvailable,
+      devices,
+      classifiedDevices: [],
+      reverseReadyCount: devices.length,
+      lastError: adbAvailable ? null : 'adb not found',
+    };
+  }
+
+  const d200h = startedModules.find((m) => m.name === 'd200h') as DeviceModule & {
+    statusSnapshot?: () => Record<string, unknown>;
+  };
+  if (d200h?.statusSnapshot) {
+    modules.d200h = d200h.statusSnapshot();
+  }
+
+  if (started.has('pixoo') || pixooDeviceCount() > 0) {
+    const details = getPixooDeviceDetails();
+    modules.pixoo = {
+      configuredDeviceCount: pixooDeviceCount(),
+      deviceIps: details.map((d) => d.ip),
+      hasFrame: true,
+      displayDimmed: false,
+      devices: details.map((d) => ({
+        ip: d.ip,
+        name: d.name,
+        online: !d.backedOff,
+        failures: d.failures,
+        backedOff: d.backedOff,
+      })),
+    };
+  }
+
+  if (started.has('serial')) {
+    const connections = getESP32DeviceInfo().map((info) => ({
+      port: info.port,
+      connected: true,
+      deviceInfo: {
+        board: info.board,
+        version: info.version,
+        wifiConfigured: info.wifiConfigured,
+        wifiConnected: info.wifiConnected,
+      },
+    }));
+    modules.serial = {
+      connectedPorts: connections.map((c) => c.port),
+      connections,
+      lastError: null,
+    };
+  }
+
+  return modules;
+}
+
 // ===== startDaemon =====
 
 export async function startDaemon(opts: DaemonOptions): Promise<void> {
@@ -212,6 +276,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // when the first /health request arrives.
   let gatewayAdapter: OpenClawAdapter | null = null;
   let gatewayConnecting = false;
+  let moduleHealthProvider: () => Record<string, unknown> = () => ({});
 
   // ===== HTTP server =====
   const httpServer = createServer((req, res) => {
@@ -246,19 +311,30 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         gateway: gatewayAdapter?.isAlive() ? 'connected' : 'disconnected',
         uptime: process.uptime(), port,
         pairingToken: core.authToken,
+        modules: moduleHealthProvider(),
       }));
       return;
     }
     if (req.method === 'GET' && pathname === '/status') {
       const snap = core.stateMachine.getSnapshot();
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(`<html><body>
-        <h2>AgentDeck Daemon</h2>
-        <p>State: ${snap.state}</p>
-        <p>Gateway: ${gatewayAdapter?.isAlive() ? 'connected' : 'disconnected'}</p>
-        <p>Uptime: ${Math.floor(process.uptime())}s</p>
-        <p>Clients: ${core.wsServer.getClientCount()}</p>
-      </body></html>`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        state: snap.state,
+        daemon: { port, pid: process.pid },
+        gateway: {
+          available: core.cachedGatewayAvailable,
+          connected: core.cachedGatewayConnected,
+          hasError: core.cachedGatewayHasError,
+        },
+        clients: core.wsServer.getClientCount(),
+        modules: moduleHealthProvider(),
+      }));
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/devices') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ devices: [], modules: moduleHealthProvider() }));
       return;
     }
     if (req.method === 'GET' && pathname === '/pixoo/stream') {
@@ -481,8 +557,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         sessionId: focusRelay.getFocusedSessionId(),
         modelCatalog: (evt as any).modelCatalog ?? core.cachedModelCatalog,
         gatewayAvailable: core.cachedGatewayAvailable,
+        gatewayConnected: core.cachedGatewayConnected,
         ollamaStatus: core.cachedOllamaStatus,
         gatewayHasError: (evt as any).gatewayHasError ?? core.cachedGatewayHasError,
+        moduleHealth: moduleHealthProvider(),
       };
       lastStateEvent = merged;
       core.wsServer.broadcast(merged);
@@ -510,6 +588,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     { mdns: true, adb: 'auto', serial: 'auto', pixoo: 'auto', d200h: 'auto' },
     { port, authToken: core.authToken, projectName: 'AgentDeck', wsServer: core.wsServer },
   );
+
+  moduleHealthProvider = () => buildNodeModuleHealth(startedModules);
+  core.setModuleHealthProvider(moduleHealthProvider);
 
   // Serial module state provider (heartbeat needs cached state)
   let lastStateEvent: BridgeEvent | null = null;
@@ -571,12 +652,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // ===== Gateway adapter lifecycle =====
   // (gatewayAdapter + gatewayConnecting declared earlier, before HTTP server)
 
-  // Inject OpenClaw virtual session into sessions_list when Gateway is reachable.
-  // Uses adapter WS connection when available, falls back to TCP probe so that
-  // the session list stays consistent with the terrarium (which uses TCP probe).
+  // Inject OpenClaw virtual session only after Gateway authentication succeeds.
+  // Reachability alone is a topology signal, not proof that commands can route.
   core.setSessionsEnricher((sessions) => {
     const adapterAlive = gatewayAdapter?.isAlive() ?? false;
-    if (!adapterAlive && !core.cachedGatewayAvailable) return sessions;
+    if (!adapterAlive && !core.cachedGatewayConnected) return sessions;
     if (sessions.some(s => s.agentType === 'openclaw')) return sessions;
     const snap = core.stateMachine.getSnapshot();
     return [...sessions, {
@@ -647,6 +727,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           // and show "disconnected" UI. Gateway status is conveyed via state_update
           // (agentType/gatewayAvailable) and sessions_list.
           if (evt.status === 'connected') {
+            core.cachedGatewayAvailable = true;
+            core.cachedGatewayConnected = true;
             bridgeLogStream.start();
             log('[agentdeck] OpenClaw Gateway connected');
             if (core.stateMachine.getSnapshot().state === 'disconnected') {
@@ -664,6 +746,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             core.broadcastUsage();
             core.broadcastSessionsList().catch(() => {});
           } else {
+            core.cachedGatewayConnected = false;
             bridgeLogStream.stop();
             log('[agentdeck] OpenClaw Gateway disconnected');
             core.broadcastSessionsList().catch(() => {});
@@ -681,6 +764,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }).catch((err) => {
       log(`[agentdeck] Failed to connect to Gateway: ${err}`);
       gatewayConnecting = false;
+      core.cachedGatewayConnected = false;
       core.stateMachine.emit('state_changed', core.stateMachine.getSnapshot());
     });
   }
@@ -691,6 +775,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     const wasAlive = gatewayAdapter.isAlive();
     gatewayAdapter.shutdown().catch(() => {});
     gatewayAdapter = null;
+    core.cachedGatewayConnected = false;
     core.cachedModelCatalog = null;
     if (wasAlive) core.stateMachine.handleHookEvent('SessionEnd', {});
     // Do NOT broadcast connection:disconnected — that would make WS clients
