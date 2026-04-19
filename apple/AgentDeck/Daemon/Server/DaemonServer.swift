@@ -633,7 +633,13 @@ final class DaemonServer {
 
             adb.handleBroadcast(json)
             serialRef.wireBroadcast(json)
-            pixooRef.handleEvent(json)
+            // PixooModule is an actor — hop onto its executor via a Task.
+            // Box `json` through SendableDict so the Task closure doesn't
+            // capture a non-Sendable `[String: Any]`. Broadcast ordering
+            // matches Task launch order because the actor serializes
+            // incoming calls.
+            let pixooEventBox = SendableDict(json)
+            Task { await pixooRef.handleEvent(pixooEventBox.value) }
             d200hRef.handleBroadcast(json)
         }
         DaemonLogger.shared.info("startDeviceModules: wsServer.onBroadcast done")

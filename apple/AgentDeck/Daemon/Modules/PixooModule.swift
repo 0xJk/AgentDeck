@@ -10,7 +10,7 @@ struct PixooDevice: Codable {
     var brightness: Int?
 }
 
-final class PixooModule: DeviceModule, @unchecked Sendable {
+actor PixooModule: DeviceModule {
     private struct DeviceLogState: Sendable {
         var successCount = 0
         var consecutiveFailures = 0
@@ -19,7 +19,47 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         var backoffUntil: Date?
     }
 
-    let name = "pixoo"
+    /// Lock-protected mirror of fields that sync cross-actor callers need
+    /// (e.g. @MainActor `DaemonServer.buildModuleHealthSync()` and the
+    /// `/pixoo.bmp` HTTP handler). Actor-isolated methods call
+    /// `refreshShadow()` after each mutation so `statusSnapshot()` can
+    /// stay `nonisolated` — actor isolation protects the real storage
+    /// (`deviceLogStates` etc.) from the torn-read race that crashed the
+    /// daemon on 2026-04-19, while sync callers keep their sync API.
+    private final class Shadow: @unchecked Sendable {
+        private let lock = NSLock()
+        private var snapshot: [String: Any] = [
+            "configuredDeviceCount": 0,
+            "deviceIps": [String](),
+            "hasFrame": false,
+            "displayDimmed": false,
+            "lastPushAtMs": NSNull(),
+            "lastPushError": NSNull(),
+            "devices": [[String: Any]](),
+        ]
+        private var frame: Data?
+
+        func writeSnapshot(_ s: [String: Any]) {
+            lock.lock(); defer { lock.unlock() }
+            snapshot = s
+        }
+        func readSnapshot() -> [String: Any] {
+            lock.lock(); defer { lock.unlock() }
+            return snapshot
+        }
+        func writeFrame(_ f: Data?) {
+            lock.lock(); defer { lock.unlock() }
+            frame = f
+        }
+        func readFrame() -> Data? {
+            lock.lock(); defer { lock.unlock() }
+            return frame
+        }
+    }
+
+    nonisolated let name = "pixoo"
+    private nonisolated let shadow = Shadow()
+
     private var devices: [PixooDevice] = []
     private var renderTask: Task<Void, Never>?
     private var probeTask: Task<Void, Never>?
@@ -29,7 +69,6 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
     private let backoffInitialSec: TimeInterval = 5
     private let backoffMaxSec: TimeInterval = 60
     private let probeIntervalSec: TimeInterval = 10
-    private var lastFrame: Data?
     private var lastPushError: String?
     private var lastPushAt: Date?
     private var devicePicIds: [String: Int] = [:]
@@ -57,6 +96,10 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
             await prepareDevice(device)
         }
 
+        // Capture immutable interval into the probe Task so the unstructured
+        // closure doesn't need to hop back onto the actor just to read a let.
+        let probeInterval = probeIntervalSec
+
         // Start render loop — push frames at ~3 FPS
         renderTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -68,10 +111,12 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         // Probe loop — check backed-off devices periodically for recovery
         probeTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(self?.probeIntervalSec ?? 10))
+                try? await Task.sleep(for: .seconds(probeInterval))
                 await self?.probeBackedOffDevices()
             }
         }
+
+        refreshShadow()
     }
 
     func stop() async {
@@ -98,7 +143,7 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         let targets = devices.filter { !isBackedOff($0.ip) }
         guard !targets.isEmpty else { return }
         let frame = renderer.renderDisconnectedFrame()
-        lastFrame = frame
+        shadow.writeFrame(frame)
 
         let pushes = Task { [weak self] in
             guard let self else { return }
@@ -114,6 +159,7 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         }
         await pushes.value
         deadline.cancel()
+        refreshShadow()
     }
 
     func handleWake() async {
@@ -125,13 +171,30 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         for device in devices {
             await prepareDevice(device)
         }
+        refreshShadow()
     }
 
-    func statusSnapshot() -> [String: Any] {
+    nonisolated func statusSnapshot() -> [String: Any] {
+        shadow.readSnapshot()
+    }
+
+    nonisolated func currentFrame() -> Data? {
+        shadow.readFrame()
+    }
+
+    /// Rebuild the lock-protected shadow from current actor state. Call
+    /// at the end of every actor-isolated mutation that touches a field
+    /// in the snapshot dict (`devices`, `lastPushAt`, `lastPushError`,
+    /// `deviceLogStates`, `displayDimmed`).
+    private func refreshShadow() {
+        shadow.writeSnapshot(buildSnapshot())
+    }
+
+    private func buildSnapshot() -> [String: Any] {
         [
             "configuredDeviceCount": devices.count,
             "deviceIps": devices.map(\.ip),
-            "hasFrame": lastFrame != nil,
+            "hasFrame": shadow.readFrame() != nil,
             "displayDimmed": displayDimmed,
             "lastPushAtMs": lastPushAt.map { Int($0.timeIntervalSince1970 * 1000) } as Any,
             "lastPushError": lastPushError as Any,
@@ -148,26 +211,22 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         ]
     }
 
-    func currentFrame() -> Data? {
-        lastFrame
-    }
+    // Cached state for rendering (actor-isolated; consumed by pushFrame's render)
+    private var cachedState: String = "disconnected"
+    private var cachedProject: String?
+    private var cachedModel: String?
+    private var cachedTool: String?
+    private var cachedAgentType: String?
+    private var cachedSessions: [[String: Any]] = []
+    private var cached5h: Double?
+    private var cached7d: Double?
+    private var cached5hResetsAt: String?
+    private var cached7dResetsAt: String?
+    private var cachedGatewayAvailable = false
+    private var cachedGatewayConnected = false
+    private var cachedGatewayHasError = false
 
-    // Cached state for rendering
-    nonisolated(unsafe) private var cachedState: String = "disconnected"
-    nonisolated(unsafe) private var cachedProject: String?
-    nonisolated(unsafe) private var cachedModel: String?
-    nonisolated(unsafe) private var cachedTool: String?
-    nonisolated(unsafe) private var cachedAgentType: String?
-    nonisolated(unsafe) private var cachedSessions: [[String: Any]] = []
-    nonisolated(unsafe) private var cached5h: Double?
-    nonisolated(unsafe) private var cached7d: Double?
-    nonisolated(unsafe) private var cached5hResetsAt: String?
-    nonisolated(unsafe) private var cached7dResetsAt: String?
-    nonisolated(unsafe) private var cachedGatewayAvailable = false
-    nonisolated(unsafe) private var cachedGatewayConnected = false
-    nonisolated(unsafe) private var cachedGatewayHasError = false
-
-    nonisolated(unsafe) private var displayDimmed = false
+    private var displayDimmed = false
 
     /// Handle broadcast events — update cached state for next render
     func handleEvent(_ event: [String: Any]) {
@@ -209,6 +268,7 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
                 displayDimmed = false
                 Task { await restorePixoo() }
             }
+            refreshShadow()
             return // Don't re-render on display_state
         default: break
         }
@@ -237,6 +297,7 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
                 await prepareDevice(device)
             }
         }
+        refreshShadow()
     }
 
     /// Push current frame to all Pixoo devices via HTTP
@@ -252,11 +313,12 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
         } else {
             frame = renderer.render(dashboardState: currentDashboardState())
         }
-        lastFrame = frame
+        shadow.writeFrame(frame)
 
         for device in devices where !isBackedOff(device.ip) {
             await pushToDevice(device, frame: frame)
         }
+        refreshShadow()
     }
 
     private func pushToDevice(_ device: PixooDevice, frame: Data) async {
@@ -300,6 +362,7 @@ final class PixooModule: DeviceModule, @unchecked Sendable {
                 lastPushError = "brightness failed for \(device.ip)"
             }
         }
+        refreshShadow()
     }
 
     // MARK: - Display Sleep
