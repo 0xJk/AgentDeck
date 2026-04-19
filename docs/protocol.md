@@ -38,7 +38,7 @@ Internal reference for the AgentDeck state machine, WebSocket protocol, and proj
 - Daemon listens on `0.0.0.0:9120` (fallback to 9121+ if port occupied by non-daemon). `~/.agentdeck/daemon.json` records the actual port for local client discovery. Remote clients discover via mDNS (`_agentdeck._tcp`, daemon only advertises).
 - Local clients are auto-trusted; LAN clients must present the auth token (`~/.agentdeck/auth-token`). Pair via `agentdeck qr`.
 - Daemon computes encoder state and relays the Stream Deck slot map. If the plugin is absent, Android falls back to the v3 default layout while staying fully controllable.
-- Voice from Android uploads WAV to `POST /voice/transcribe`; utility actions (volume/brightness/media/timer) go through the daemon's macOS `osascript` proxy, so all surfaces can monitor and steer the agent independently or simultaneously.
+- Voice from Android uploads WAV to `POST /voice/transcribe`; utility actions (volume/brightness/media/timer) go through the Node CLI daemon's macOS `osascript` proxy. The App Store Swift daemon uses native CoreAudio/IOKit code for local utility control and never spawns `osascript`.
 
 ---
 
@@ -182,7 +182,7 @@ AgentDeck/
 │       ├── whisper-server-manager.ts  # Singleton whisper-server lifecycle (port 9100)
 │       ├── mdns.ts               # mDNS advertising (_agentdeck._tcp)
 │       ├── auth.ts               # Auth token management (~/.agentdeck/auth-token)
-│       ├── utility-proxy.ts      # macOS osascript proxy (volume/brightness/media)
+│       ├── utility-proxy.ts      # Node CLI macOS osascript proxy (volume/brightness/media)
 │       ├── ollama-probe.ts       # Ollama process status + running models (5s polling)
 │       ├── model-catalog.ts      # OAuth model catalog fetch
 │       ├── gateway-probe.ts      # OpenClaw Gateway TCP probe + doctor health check

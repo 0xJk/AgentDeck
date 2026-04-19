@@ -72,7 +72,7 @@ macOS 타겟은 `apple/project.yml:61` base setting 으로 `AGENTDECK_APP_STORE`
 
 ### 핵심 설계 결정
 - **`AGENTDECK_APP_STORE` flag 자체는 유지**. CI verifier 의 의미적 앵커이자 향후 회귀 가드. 다만 의미가 "분기 컴파일 조건" 에서 "검증 토큰" 으로 바뀌었다 — 새 subprocess 코드는 어떤 guard 안에서도 들어오면 안 됨 (CLAUDE.md 에 명시).
-- **`OpenClawAdapter` identity (Keychain vs filesystem) 와 `AnthropicAdminApiClient` Keychain 저장소는 유지**. 사용자가 Q1 답변에서 명시적으로 "유지" 지정. 이건 본질적인 환경 분기지 dead code 가 아님.
+- **`OpenClawAdapter` identity 는 App Store Keychain v3 단일 경로로 정리**. 2026-04-19 후속 정리에서 Swift macOS 소스 트리의 file-based `~/.openclaw/identity/` fallback, `Process()` 기반 `openclaw models list`, `/usr/bin/env which openclaw` 경로를 제거했다. v2 file-based identity 는 Node CLI bridge 책임이고, macOS GUI 제품 경로가 아니다. `AnthropicAdminApiClient` Keychain 저장소는 유지.
 - **`!isUsingExternalDaemon` UI 정책: 메시지 대신 hide**. "Subscription quota unavailable inside the sandbox" 같은 친절한 안내 카피는 사용자에게 "결함" 인상을 준다. 외부 daemon 미감지 시 해당 섹션 자체를 안 보여주는 쪽이 standalone 앱 완결성에 유리하다 — 사용자 답변 ("CLI daemon 없이는 보여줄 수 없으니 해당 영역 자체를 숨기면 좋겠다", "완결성있게 기능 제공이 가능한 것 처럼 보여주고 싶다") 직접 반영.
 - **macOS 전용 build configuration variant 는 안 만든다**. 즉 `SWIFT_ACTIVE_COMPILATION_CONDITIONS=""` 로 강제로 끄고 빌드해서 비-AppStore macOS GUI 를 부활시키지 않는다. 그 제품 path 는 더 이상 maintained 가 아니고, full-spec 은 별도 Node.js bridge CLI 의 책임.
 - **iOS 분기는 손대지 않음**. `AGENTDECK_APP_STORE` 는 macOS 전용 flag (project.yml 에 iOS 타겟엔 설정 없음); iOS 는 항상 App Store 전용이라 분기가 필요 없음.

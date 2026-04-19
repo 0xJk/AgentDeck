@@ -44,7 +44,7 @@ Client                               Gateway
 
 서명 페이로드는 2가지 포맷이 공존한다:
 
-**v2** (CLI/non-App-Store 빌드 — file-based identity):
+**v2** (Node CLI bridge — file-based identity):
 ```
 v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce
 ```
@@ -59,16 +59,16 @@ v3|deviceId|clientId|clientMode|role|scopesCSV|signedAtMs|token|nonce|platform|d
 - `deviceId`: **self-generated** Ed25519 공개키(raw 32바이트)의 SHA-256 hex. 앱이 직접 생성하므로 파일 I/O 없음.
 - `token`: 첫 pairing 직후 Gateway 가 `hello-ok.auth.deviceToken` 으로 발급. 이후 재접속은 이 토큰 재사용.
 - `platform`: `darwin` / `deviceFamily`: `mac`.
-- Private key + issued token 은 Keychain (accessibleAfterFirstUnlockThisDeviceOnly) 우선, 실패 시 app container protected file fallback 에 저장.
+- Private key + issued token 은 Keychain (accessibleAfterFirstUnlockThisDeviceOnly)에 저장.
 
 공통:
-- `clientId`: `gateway-client` (CLI) / `agentdeck-dashboard` (App Store).
+- `clientId`: `gateway-client`.
 - `clientMode`: `backend`.
 - `role` / `scopes`: App Store 는 기본 `operator` + `[operator.read, operator.write, operator.approvals]`. device-management UI 필요 시 `operator.pairing` opt-in.
 - `signedAtMs`: `Date.now()`.
 - `nonce`: `event connect.challenge` 에서 수신.
 
-> **샌드박스 호환**: App Store macOS 빌드는 `~/.openclaw/identity/` 읽기 불가이므로 v3 self-gen 경로로 동작. CLI 배포판 (`@agentdeck/setup`) 은 v2 file-based 경로 유지. OpenClaw Gateway 는 두 포맷 모두 수용 (Gateway 2026.4.14+).
+> **샌드박스 호환**: App Store macOS 빌드는 `~/.openclaw/identity/` 읽기 불가이므로 v3 self-gen 경로로 동작. Node CLI bridge (`@agentdeck/setup`) 는 v2 file-based 경로 유지. OpenClaw Gateway 는 두 포맷 모두 수용 (Gateway 2026.4.14+).
 
 ## RPC 메소드
 
