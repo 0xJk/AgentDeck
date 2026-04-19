@@ -19,6 +19,15 @@ struct SettingsScreen: View {
     @State private var anthropicAdminApiKeyError: String?
     #if os(macOS)
     @State private var portInput: String = ""
+    /// Which section is visible in the macOS NavigationSplitView detail.
+    /// Default lands on Integrations so first-run users see the actions
+    /// that actually unblock quota / OpenClaw / hooks, not an "Advanced"
+    /// section that's mostly informational.
+    @State private var selectedSection: SettingsSection = .integrations
+    /// Whether the Advanced group in the sidebar is expanded. Collapsed
+    /// by default so the first read is only 4 rows (Integrations, Dashboard,
+    /// About, Advanced ►).
+    @State private var advancedExpanded: Bool = false
     #endif
     #if os(iOS)
     /// iOS QR pairing scanner modal presentation flag.
@@ -53,33 +62,43 @@ struct SettingsScreen: View {
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, alignment: .center)
 
-                    // Connection Card
-                    settingsCard(title: "Connection") {
-                        connectionContent
-                    }
-
-                    // Discovery Card
-                    settingsCard(title: "Discovery") {
-                        discoveryContent
-                    }
-
-                    // Display Card
-                    settingsCard(title: "Display") {
-                        displayContent
+                    // ─────── Essentials ───────
+                    // Integrations first — this is where a first-run user
+                    // wires up Claude / OpenClaw / Anthropic API.
+                    settingsCard(title: "Integrations") {
+                        servicesContent
                     }
 
                     settingsCard(title: "Dashboard") {
                         dashboardContent
                     }
 
-                    settingsCard(title: "Services") {
-                        servicesContent
+                    settingsCard(title: "Connection") {
+                        connectionContent
                     }
 
-                    // About Card
                     settingsCard(title: "About") {
                         aboutContent
                     }
+
+                    // ─────── Advanced (collapsed by default) ───────
+                    // mDNS pairing + display/sleep behaviour are rarely
+                    // touched after first setup. Hide behind a disclosure
+                    // group so the main list stays short.
+                    DisclosureGroup("Advanced") {
+                        VStack(alignment: .leading, spacing: 16) {
+                            settingsCard(title: "iPad / iPhone pairing") {
+                                discoveryContent
+                            }
+                            settingsCard(title: "Display & sleep") {
+                                displayContent
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
+                    .foregroundStyle(.white)
+                    .tint(.white)
+                    .padding(.horizontal, 4)
 
                     // Close button (matches Android)
                     Button {
@@ -111,65 +130,130 @@ struct SettingsScreen: View {
     // MARK: - macOS
 
     #if os(macOS)
+    /// Navigable sections in the macOS Settings scene. Grouped into
+    /// "Essentials" (shown first, relevant to every user) and "Advanced"
+    /// (collapsed by default, network/hardware/developer concerns).
+    /// Labels are rewritten from the original GroupBox titles to avoid
+    /// jargon like "Daemon" / "Discovery" — first-run users shouldn't
+    /// have to know what those mean to find the right setting.
+    enum SettingsSection: Hashable, Identifiable {
+        case integrations
+        case dashboard
+        case about
+        case connection
+        case daemon
+        case pairing
+        case display
+        case hardware
+        case evaluation
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .integrations: "Integrations"
+            case .dashboard:    "Dashboard"
+            case .about:        "About"
+            case .connection:   "Connection"
+            case .daemon:       "Local server"
+            case .pairing:      "iPad / iPhone pairing"
+            case .display:      "Display & sleep"
+            case .hardware:     "ESP32 & Pixoo"
+            case .evaluation:   "Agent evaluation (APME)"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .integrations: "link"
+            case .dashboard:    "macwindow"
+            case .about:        "info.circle"
+            case .connection:   "network"
+            case .daemon:       "server.rack"
+            case .pairing:      "ipad.and.iphone"
+            case .display:      "display"
+            case .hardware:     "cpu"
+            case .evaluation:   "chart.bar.doc.horizontal"
+            }
+        }
+    }
+
+    private static let essentialSections: [SettingsSection] = [.integrations, .dashboard, .about]
+    private static let advancedSections: [SettingsSection] = [.connection, .daemon, .pairing, .display, .hardware, .evaluation]
+
     private var macOSSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Settings")
-                    .font(.title2.bold())
+        NavigationSplitView {
+            macOSSidebar
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+        } detail: {
+            macOSDetail
+        }
+        .frame(minWidth: 720, minHeight: 520)
+    }
 
-                GroupBox("Connection") {
-                    connectionContent
-                        .padding(8)
-                }
-
-                GroupBox("Daemon") {
-                    daemonContent
-                        .padding(8)
-                }
-
-                GroupBox("Discovery") {
-                    discoveryContent
-                        .padding(8)
-                }
-
-                GroupBox("Display") {
-                    displayContent
-                        .padding(8)
-                }
-
-                GroupBox("Dashboard") {
-                    dashboardContent
-                        .padding(8)
-                }
-
-                GroupBox("Services") {
-                    servicesContent
-                        .padding(8)
-                }
-
-                GroupBox("Hardware Setup") {
-                    hardwareContent
-                        .padding(8)
-                }
-
-                GroupBox("Claude Code Hooks") {
-                    claudeHooksContent
-                        .padding(8)
-                }
-
-                GroupBox("APME") {
-                    apmeContent
-                        .padding(8)
-                }
-
-                GroupBox("About") {
-                    aboutContent
-                        .padding(8)
+    private var macOSSidebar: some View {
+        List(selection: $selectedSection) {
+            Section("Essentials") {
+                ForEach(Self.essentialSections) { section in
+                    Label(section.title, systemImage: section.icon)
+                        .tag(section)
                 }
             }
-            .padding(20)
+            Section(isExpanded: $advancedExpanded) {
+                ForEach(Self.advancedSections) { section in
+                    Label(section.title, systemImage: section.icon)
+                        .tag(section)
+                }
+            } header: {
+                Text("Advanced")
+            }
         }
-        .frame(width: 460, height: 720)
+        .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private var macOSDetail: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(selectedSection.title)
+                    .font(.title2.bold())
+                sectionContent(for: selectedSection)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Renders the content view for the selected section. Integrations
+    /// is a composite (Claude Code hooks + every third-party service
+    /// row in one place) so first-run users don't have to visit two
+    /// sections to wire up Claude + OpenClaw + Admin API.
+    @ViewBuilder
+    private func sectionContent(for section: SettingsSection) -> some View {
+        switch section {
+        case .integrations:
+            VStack(alignment: .leading, spacing: 14) {
+                claudeHooksContent
+                Divider()
+                servicesContent
+            }
+        case .dashboard:
+            dashboardContent
+        case .about:
+            aboutContent
+        case .connection:
+            connectionContent
+        case .daemon:
+            daemonContent
+        case .pairing:
+            discoveryContent
+        case .display:
+            displayContent
+        case .hardware:
+            hardwareContent
+        case .evaluation:
+            apmeContent
+        }
     }
     #endif
 
