@@ -1,80 +1,21 @@
 /**
- * Terminal Status — 3-layer terminal context display.
+ * Terminal Status — lightweight terminal context display.
  *
- * Layer 1: Tab title (OSC 1) — works in all terminals
- *          Visible in tab bar: "● AgentDeck | Edit app.ts"
- * Layer 2: iTerm2 badge (OSC 1337 SetBadgeFormat) — post-it style overlay
- *          Shows project, LLM-summarized context, state, and activity log
- * Layer 3: iTerm2 user variables (OSC 1337 SetUserVar) — for StatusBar
+ * Layer 1: Tab title (OSC 1)                — "{project} · {model}"
+ * Layer 2: iTerm2 badge (OSC 1337 SetBadgeFormat) — post-it style, 2 lines
+ * Layer 3: iTerm2 user variables (OSC 1337 SetUserVar) — agentdeck_project/_model
  *
- * Badge sizing controlled via Dynamic Profiles (child profile inheriting
- * from user's current profile with fixed badge dimensions/color).
- * Badge color adapts to macOS dark/light mode.
+ * Badge sizing is pinned via a Dynamic Profile that inherits from the user's
+ * current profile; color adapts to macOS dark/light mode.
  */
 
-import { State } from './types.js';
 import type { StateSnapshot } from './types.js';
-import { summarizeSessionContext, summarizeRound } from './timeline-summarizer.js';
 import { debug } from './logger.js';
 import { writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 
-// State → icon mapping
-const STATE_ICON: Record<string, string> = {
-  [State.PROCESSING]: '●',
-  [State.IDLE]: '◇',
-  [State.AWAITING_PERMISSION]: '⚠',
-  [State.AWAITING_OPTION]: '?',
-  [State.AWAITING_DIFF]: '△',
-  [State.DISCONNECTED]: '✗',
-};
-
-// State → label
-const STATE_LABEL: Record<string, string> = {
-  [State.PROCESSING]: 'Processing',
-  [State.IDLE]: 'Idle',
-  [State.AWAITING_PERMISSION]: 'Permission',
-  [State.AWAITING_OPTION]: 'Select',
-  [State.AWAITING_DIFF]: 'Diff review',
-  [State.DISCONNECTED]: 'Disconnected',
-};
-
-// Tool → short verb for story
-const TOOL_VERB: Record<string, string> = {
-  Read: 'Read',
-  Edit: 'Edit',
-  Write: 'Write',
-  Bash: 'Run',
-  Grep: 'Search',
-  Glob: 'Find',
-  Agent: 'Agent',
-  WebSearch: 'WebSearch',
-  WebFetch: 'WebFetch',
-};
-
-interface ToolCallRecord {
-  tool: string;
-  input: string | null;
-  time: number;
-}
-
-interface Milestone {
-  time: number;
-  endTime: number;     // last activity timestamp (for merge gap calculation)
-  text: string;        // LLM-summarized or heuristic
-  tools: ToolCallRecord[];  // accumulated tools (for re-summarization on merge)
-}
-
-const MAX_MILESTONES = 5;
-const MAX_TOOL_HISTORY = 20;
-const DEDUP_MS = 2000;
-const SUMMARIZE_DEBOUNCE_MS = 5000;
-const TOOL_COUNT_TRIGGER = 5;
-const MERGE_GAP_MS = 90_000;  // merge rounds within 90s into one milestone
-
-// Dynamic Profile constants
 const DYNAMIC_PROFILE_NAME = 'AgentDeck Postit';
 const DYNAMIC_PROFILE_DIR = join(
   homedir(),
@@ -82,38 +23,15 @@ const DYNAMIC_PROFILE_DIR = join(
 );
 const DYNAMIC_PROFILE_PATH = join(DYNAMIC_PROFILE_DIR, 'agentdeck.json');
 
-// Badge sizing — 0.35 height with 8-line padding keeps font consistent
 const BADGE_MAX_WIDTH_FRACTION = 0.5;
-const BADGE_MAX_HEIGHT_FRACTION = 0.35;
+const BADGE_MAX_HEIGHT_FRACTION = 0.1;
 
 export class TerminalStatus {
   private stdout: NodeJS.WritableStream;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private inTmux: boolean;
-
-  // Badge state
-  private lastTool: string | null = null;
-  private lastToolTime = 0;
-  private lastState: State | null = null;
-  private lastSnapshot: StateSnapshot | null = null;
   private originalProfile: string | null = null;
   private profileInstalled = false;
-
-  // Main topic LLM summarization
-  private toolHistory: ToolCallRecord[] = [];
-  private toolCountSinceLastSummary = 0;
-  private llmSummary: string | null = null;
-  private summarizeTimer: ReturnType<typeof setTimeout> | null = null;
-  private summarizing = false;
-  private lastProjectName: string | null = null;
-
-  // Round-based milestones (PROCESSING→IDLE = one round)
-  private milestones: Milestone[] = [];
-  private roundTools: ToolCallRecord[] = [];  // tools in current processing round
-  private roundStartTime = 0;
-
-  // File edit tracking for heuristic fallback
-  private fileCounts = new Map<string, number>();
 
   constructor(stdout: NodeJS.WritableStream) {
     this.stdout = stdout;
@@ -122,7 +40,6 @@ export class TerminalStatus {
   }
 
   update(snapshot: StateSnapshot): void {
-    this.recordActivity(snapshot);
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => this.render(snapshot), 200);
   }
@@ -132,16 +49,10 @@ export class TerminalStatus {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    if (this.summarizeTimer) {
-      clearTimeout(this.summarizeTimer);
-      this.summarizeTimer = null;
-    }
-    // Clear tab title + badge + user vars
     this.writeOsc('\x1b]1;\x07');
     this.writeIterm('\x1b]1337;SetBadgeFormat=\x07');
-    this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_state=${b64('')}\x07`);
     this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_project=${b64('')}\x07`);
-    this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_tool=${b64('')}\x07`);
+    this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_model=${b64('')}\x07`);
     this.uninstallDynamicProfile();
   }
 
@@ -151,7 +62,6 @@ export class TerminalStatus {
     this.originalProfile = process.env.ITERM_PROFILE || null;
     const parentName = this.originalProfile || 'Default';
 
-    // Detect system dark mode → choose badge text color
     const isDark = detectDarkMode();
     const badgeColor = isDark
       ? { // Soft amber on dark backgrounds
@@ -209,284 +119,27 @@ export class TerminalStatus {
     }
   }
 
-  // ===== Activity tracking =====
-
-  private recordActivity(snapshot: StateSnapshot): void {
-    const now = Date.now();
-    this.lastProjectName = snapshot.projectName ?? 'AgentDeck';
-
-    // Tool call → accumulate for both main topic + current round
-    if (snapshot.state === State.PROCESSING && snapshot.currentTool) {
-      const toolKey = `${snapshot.currentTool}:${snapshot.toolInput ?? ''}`;
-      if (toolKey !== this.lastTool || now - this.lastToolTime > DEDUP_MS) {
-        this.lastTool = toolKey;
-        this.lastToolTime = now;
-
-        // Track file edits for heuristic fallback
-        if (['Edit', 'Write', 'Read'].includes(snapshot.currentTool) && snapshot.toolInput) {
-          const fname = snapshot.toolInput.split('/').pop() ?? snapshot.toolInput;
-          this.fileCounts.set(fname, (this.fileCounts.get(fname) ?? 0) + 1);
-        }
-
-        // Accumulate for main topic LLM summarization
-        const inputForLLM = extractLLMInput(snapshot.currentTool, snapshot.toolInput);
-        const record = { tool: snapshot.currentTool, input: inputForLLM, time: now };
-        this.toolHistory.push(record);
-        if (this.toolHistory.length > MAX_TOOL_HISTORY) {
-          this.toolHistory = this.toolHistory.slice(-MAX_TOOL_HISTORY);
-        }
-        this.toolCountSinceLastSummary++;
-
-        if (this.toolCountSinceLastSummary >= TOOL_COUNT_TRIGGER) {
-          this.scheduleSummarize();
-        }
-
-        // Accumulate for current round milestone
-        this.roundTools.push(record);
-      }
-    }
-
-    // State transitions
-    if (snapshot.state !== this.lastState) {
-      const prev = this.lastState;
-      this.lastState = snapshot.state;
-
-      // Start new round
-      if (snapshot.state === State.PROCESSING && prev !== State.PROCESSING) {
-        this.roundStartTime = now;
-        this.roundTools = [];
-      }
-
-      // PROCESSING→IDLE = round complete → create milestone
-      if (snapshot.state === State.IDLE && prev === State.PROCESSING) {
-        if (this.roundTools.length > 0) {
-          this.finalizeRound(now);
-          this.scheduleSummarize();
-        }
-      }
-    }
-  }
-
-  /** Finalize a processing round into a milestone */
-  private finalizeRound(time: number): void {
-    const roundTools = [...this.roundTools];
-    this.roundTools = [];
-
-    const startTime = this.roundStartTime || time;
-    const lastMs = this.milestones[this.milestones.length - 1];
-    const isContinuous = lastMs && (startTime - lastMs.endTime) < MERGE_GAP_MS;
-
-    let targetIdx: number;
-    if (isContinuous && lastMs) {
-      // Merge into previous milestone — continuous work chunk
-      lastMs.tools.push(...roundTools);
-      lastMs.endTime = time;
-      lastMs.text = this.getMergedHeuristic(lastMs.tools);
-      targetIdx = this.milestones.length - 1;
-    } else {
-      // New milestone
-      const heuristic = this.getRoundHeuristic(roundTools);
-      const milestone: Milestone = {
-        time: startTime, endTime: time, text: heuristic, tools: roundTools,
-      };
-      this.milestones.push(milestone);
-      if (this.milestones.length > MAX_MILESTONES) {
-        this.milestones = this.milestones.slice(-MAX_MILESTONES);
-      }
-      targetIdx = this.milestones.length - 1;
-    }
-
-    // Async LLM enhancement (re-summarize with full tool list)
-    const target = this.milestones[targetIdx];
-    if (target) {
-      void summarizeRound(
-        target.tools.map(tc => ({ tool: tc.tool, input: tc.input })),
-      ).then(result => {
-        if (result && this.milestones[targetIdx] === target) {
-          target.text = result;
-          if (this.lastSnapshot) this.render(this.lastSnapshot);
-        }
-      }).catch(() => { /* keep heuristic */ });
-    }
-  }
-
-  /** Quick heuristic for a round: "Updated X, Y" or "Investigated X" */
-  private getRoundHeuristic(tools: ToolCallRecord[]): string {
-    const editFiles = new Set<string>();
-    let hasSearch = false;
-    let hasBash = false;
-    for (const tc of tools) {
-      if (['Edit', 'Write'].includes(tc.tool) && tc.input) {
-        editFiles.add(tc.input.split('/').pop() ?? tc.input);
-      }
-      if (['Grep', 'Glob'].includes(tc.tool)) hasSearch = true;
-      if (tc.tool === 'Bash') hasBash = true;
-    }
-
-    if (editFiles.size > 0) {
-      const files = Array.from(editFiles).slice(0, 2).join(', ');
-      return `Updated ${files}`;
-    }
-    if (hasBash) return 'Ran commands';
-    if (hasSearch) return 'Code search';
-    return 'Investigation';
-  }
-
-  /** Heuristic for merged milestone: summarize the overall work chunk */
-  private getMergedHeuristic(tools: ToolCallRecord[]): string {
-    const editFiles = new Set<string>();
-    let hasSearch = false;
-    let hasBash = false;
-    let hasAgent = false;
-    for (const tc of tools) {
-      if (['Edit', 'Write'].includes(tc.tool) && tc.input) {
-        editFiles.add(tc.input.split('/').pop() ?? tc.input);
-      }
-      if (['Grep', 'Glob', 'Read'].includes(tc.tool)) hasSearch = true;
-      if (tc.tool === 'Bash') hasBash = true;
-      if (tc.tool === 'Agent') hasAgent = true;
-    }
-
-    const parts: string[] = [];
-    if (editFiles.size > 0) {
-      const files = Array.from(editFiles).slice(0, 3).join(', ');
-      parts.push(files);
-    }
-    if (hasAgent) parts.push('subagents');
-    if (hasBash && editFiles.size === 0) parts.push('commands');
-    if (hasSearch && editFiles.size === 0 && !hasAgent) parts.push('research');
-
-    if (parts.length === 0) return 'Investigation';
-    return parts.join(' + ');
-  }
-
-  // ===== LLM Summarization =====
-
-  private scheduleSummarize(): void {
-    if (this.summarizeTimer) clearTimeout(this.summarizeTimer);
-    this.summarizeTimer = setTimeout(() => {
-      this.summarizeTimer = null;
-      void this.runSummarize();
-    }, SUMMARIZE_DEBOUNCE_MS);
-  }
-
-  private async runSummarize(): Promise<void> {
-    if (this.summarizing || this.toolHistory.length === 0) return;
-    this.summarizing = true;
-    this.toolCountSinceLastSummary = 0;
-
-    try {
-      const result = await summarizeSessionContext(
-        this.toolHistory.map(tc => ({ tool: tc.tool, input: tc.input })),
-        this.lastProjectName ?? 'AgentDeck',
-      );
-      if (result) {
-        this.llmSummary = result;
-        debug('postit', `LLM summary: ${result}`);
-        // Re-render with new summary
-        if (this.lastSnapshot) {
-          this.render(this.lastSnapshot);
-        }
-      }
-    } catch {
-      // Non-blocking — heuristic fallback continues
-    } finally {
-      this.summarizing = false;
-    }
-  }
-
-  /** Heuristic fallback: summarize from most-edited files */
-  private getHeuristicSummary(): string | null {
-    if (this.fileCounts.size === 0) {
-      if (this.toolHistory.length > 0) {
-        const last = this.toolHistory[this.toolHistory.length - 1];
-        const verb = TOOL_VERB[last.tool] ?? last.tool;
-        return `${verb} in progress`;
-      }
-      return null;
-    }
-
-    const sorted = Array.from(this.fileCounts.entries()).sort((a, b) => b[1] - a[1]);
-    const topFiles = sorted.slice(0, 2).map(([f]) => f).join(', ');
-    return `Editing ${topFiles}`;
-  }
-
   // ===== Render =====
 
   private render(snapshot: StateSnapshot): void {
-    this.lastSnapshot = snapshot;
-    const icon = STATE_ICON[snapshot.state] ?? '◇';
     const project = snapshot.projectName ?? 'AgentDeck';
-    const detail = this.getDetail(snapshot);
+    const model = snapshot.modelName ?? '';
 
-    // Layer 1: Tab title
-    const title = detail
-      ? `${icon} ${project} | ${detail}`
-      : `${icon} ${project}`;
+    const title = model ? `${project} · ${model}` : project;
     this.writeOsc(`\x1b]1;${title}\x07`);
 
-    // Layer 2: iTerm2 badge
-    const badge = this.buildBadge(snapshot, project);
-    this.writeIterm(`\x1b]1337;SetBadgeFormat=${b64(badge)}\x07`);
+    this.writeIterm(`\x1b]1337;SetBadgeFormat=${b64(this.buildBadge(project, model))}\x07`);
 
-    // Layer 3: iTerm2 user variables
-    this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_state=${b64(snapshot.state)}\x07`);
     this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_project=${b64(project)}\x07`);
-    this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_tool=${b64(snapshot.currentTool ?? '')}\x07`);
+    this.writeIterm(`\x1b]1337;SetUserVar=agentdeck_model=${b64(model)}\x07`);
   }
 
-  private buildBadge(snapshot: StateSnapshot, project: string): string {
-    // 8 lines: project / model+state / main topic / milestones×5
-    const lines: string[] = [];
-    const icon = STATE_ICON[snapshot.state] ?? '◇';
-    const model = snapshot.modelName ?? '';
-    const stateLabel = STATE_LABEL[snapshot.state] ?? snapshot.state;
-
-    // Line 1: project
-    lines.push(`📂 ${project}`);
-
-    // Line 2: model + state combined
-    if (model) {
-      lines.push(`${model} · ${icon} ${stateLabel}`);
-    } else {
-      lines.push(`${icon} ${stateLabel}`);
-    }
-
-    // Line 3: main topic (LLM summary)
-    const summary = this.llmSummary ?? this.getHeuristicSummary();
-    if (summary) {
-      lines.push(summary);
-    }
-
-    // Lines 4-8: milestones (LLM-summarized work rounds)
-    for (const ms of this.milestones.slice(-MAX_MILESTONES)) {
-      lines.push(`${formatTime(ms.time)}  ${ms.text}`);
-    }
-
-    // Pad to 8 lines with braille blank (U+2800) — empty strings are ignored by iTerm2
-    while (lines.length < 8) lines.push('\u2800');
-
+  private buildBadge(project: string, model: string): string {
+    const lines: string[] = [`📂 ${project}`];
+    if (model) lines.push(model);
+    // Pad to 3 lines with braille blank — keeps badge height stable when model is absent.
+    while (lines.length < 3) lines.push('\u2800');
     return lines.join('\n');
-  }
-
-  private getDetail(snapshot: StateSnapshot): string | null {
-    switch (snapshot.state) {
-      case State.PROCESSING: {
-        if (snapshot.currentTool) {
-          const input = truncate(snapshot.toolInput, 40);
-          return input ? `${snapshot.currentTool} ${input}` : snapshot.currentTool;
-        }
-        return null;
-      }
-      case State.IDLE:
-        return snapshot.modelName ?? null;
-      case State.AWAITING_PERMISSION:
-      case State.AWAITING_OPTION:
-      case State.AWAITING_DIFF:
-        return truncate(snapshot.question, 50) ?? snapshot.state;
-      default:
-        return null;
-    }
   }
 
   private writeOsc(seq: string): void {
@@ -506,35 +159,6 @@ function b64(s: string): string {
   return Buffer.from(s, 'utf-8').toString('base64');
 }
 
-function truncate(s: string | null, max: number): string | null {
-  if (!s) return null;
-  return s.length > max ? s.slice(0, max - 1) + '…' : s;
-}
-
-/** Extract meaningful target from tool input */
-function extractTarget(tool: string, input: string | null): string | null {
-  if (!input) return null;
-  if (['Read', 'Edit', 'Write'].includes(tool)) {
-    return input.split('/').pop() ?? input;
-  }
-  if (tool === 'Bash') return truncate(input, 30);
-  if (tool === 'Grep' || tool === 'Glob') return truncate(input, 25);
-  return truncate(input, 25);
-}
-
-/** Extract concise input for LLM context */
-function extractLLMInput(tool: string, input: string | null): string | null {
-  if (!input) return null;
-  if (['Read', 'Edit', 'Write'].includes(tool)) {
-    const parts = input.split('/');
-    return parts.slice(-3).join('/');
-  }
-  if (tool === 'Bash') return input.length > 60 ? input.slice(0, 57) + '...' : input;
-  if (tool === 'Grep' || tool === 'Glob') return input.length > 40 ? input.slice(0, 37) + '...' : input;
-  return input.length > 40 ? input.slice(0, 37) + '...' : input;
-}
-
-/** Detect macOS dark mode. Returns true if dark (default assumption). */
 function detectDarkMode(): boolean {
   try {
     const result = execSync('defaults read -g AppleInterfaceStyle', {
@@ -547,12 +171,4 @@ function detectDarkMode(): boolean {
     // Command fails when in light mode (key doesn't exist) — default to dark
     return true;
   }
-}
-
-/** Format timestamp as HH:MM */
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  const h = String(d.getHours()).padStart(2, '0');
-  const m = String(d.getMinutes()).padStart(2, '0');
-  return `${h}:${m}`;
 }
