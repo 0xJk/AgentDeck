@@ -189,8 +189,11 @@ interface DashState {
   modelName: string;
   agentType: string;
   mode: string;
-  fiveHourPercent: number;
-  sevenDayPercent: number;
+  // Undefined when upstream has no live Claude usage data (e.g. in-process
+  // daemon without OAuth relay). Keys 8/9 render as idle blanks in that
+  // case — a "0%" would be indistinguishable from actual zero usage.
+  fiveHourPercent?: number;
+  sevenDayPercent?: number;
   totalTokens: number;
   totalCost: number;
   options: string[];
@@ -204,8 +207,8 @@ function parseState(evt: any): DashState {
     modelName: evt?.modelName ?? '',
     agentType: evt?.agentType ?? 'claude-code',
     mode: evt?.mode ?? 'default',
-    fiveHourPercent: evt?.fiveHourPercent ?? 0,
-    sevenDayPercent: evt?.sevenDayPercent ?? 0,
+    fiveHourPercent: typeof evt?.fiveHourPercent === 'number' ? evt.fiveHourPercent : undefined,
+    sevenDayPercent: typeof evt?.sevenDayPercent === 'number' ? evt.sevenDayPercent : undefined,
     totalTokens: evt?.totalTokens ?? 0,
     totalCost: evt?.totalCost ?? 0,
     options: (evt?.options ?? []).map((o: any) => o?.label ?? o ?? ''),
@@ -271,15 +274,19 @@ function renderKey(fb: Buffer, key: KeyDef, state: DashState): void {
     case 8: // 5h Rate
       fillRect(fb, x1, y1, x2, y2, COLOR_IDLE);
       drawTextCentered(fb, cx, y1 + 20, '5h', 2, COLOR_DIM);
-      drawGauge(fb, x1 + 10, cy - 4, x2 - x1 - 20, 12, state.fiveHourPercent, COLOR_BAR_5H);
-      drawTextCentered(fb, cx, y2 - 25, `${Math.round(state.fiveHourPercent)}%`, 3, COLOR_TEXT);
+      if (state.fiveHourPercent != null) {
+        drawGauge(fb, x1 + 10, cy - 4, x2 - x1 - 20, 12, state.fiveHourPercent, COLOR_BAR_5H);
+        drawTextCentered(fb, cx, y2 - 25, `${Math.round(state.fiveHourPercent)}%`, 3, COLOR_TEXT);
+      }
       break;
 
     case 9: // 7d Rate
       fillRect(fb, x1, y1, x2, y2, COLOR_IDLE);
       drawTextCentered(fb, cx, y1 + 20, '7d', 2, COLOR_DIM);
-      drawGauge(fb, x1 + 10, cy - 4, x2 - x1 - 20, 12, state.sevenDayPercent, COLOR_BAR_7D);
-      drawTextCentered(fb, cx, y2 - 25, `${Math.round(state.sevenDayPercent)}%`, 3, COLOR_TEXT);
+      if (state.sevenDayPercent != null) {
+        drawGauge(fb, x1 + 10, cy - 4, x2 - x1 - 20, 12, state.sevenDayPercent, COLOR_BAR_7D);
+        drawTextCentered(fb, cx, y2 - 25, `${Math.round(state.sevenDayPercent)}%`, 3, COLOR_TEXT);
+      }
       break;
 
     case 10: // STOP

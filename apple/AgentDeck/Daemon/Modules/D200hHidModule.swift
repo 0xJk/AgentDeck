@@ -80,7 +80,7 @@ private final class HIDRunLoopThread: @unchecked Sendable {
             }
         }
         thread.name = "bound.serendipity.agentdeck.d200h-hid-runloop"
-        thread.qualityOfService = .utility
+        thread.qualityOfService = .userInitiated
         thread.start()
         ready.wait()
         self.runLoop = captured!
@@ -1679,19 +1679,33 @@ private enum D200hRenderer {
 
         if !optionMode {
             // Slot 13: big merged usage button spans col3+col4 at row2.
-            let usagePct5 = usageEvent?["fiveHourPercent"] as? Double ?? stateEvent?["fiveHourPercent"] as? Double ?? 0
-            let usagePct7 = usageEvent?["sevenDayPercent"] as? Double ?? stateEvent?["sevenDayPercent"] as? Double ?? 0
-            let reset5 = usageEvent?["fiveHourResetsAt"] as? String ?? stateEvent?["fiveHourResetsAt"] as? String
-            let reset7 = usageEvent?["sevenDayResetsAt"] as? String ?? stateEvent?["sevenDayResetsAt"] as? String
+            // When upstream has no live Claude usage (in-process daemon with
+            // no CLI relay, OAuth missing, stale flag set) render a neutral
+            // blank tile instead of gauge+"STALE" text — a frozen number
+            // reads as current, even with a stale marker. Matches the
+            // blank-when-nil behavior on every other AgentDeck surface.
+            let pct5Opt = usageEvent?["fiveHourPercent"] as? Double ?? stateEvent?["fiveHourPercent"] as? Double
+            let pct7Opt = usageEvent?["sevenDayPercent"] as? Double ?? stateEvent?["sevenDayPercent"] as? Double
             let usageStale = usageEvent?["usageStale"] as? Bool ?? stateEvent?["usageStale"] as? Bool ?? false
-            let renewal = billingSummary(from: usageEvent) ?? billingSummary(from: stateEvent)
-            let png = renderUsageWideButton(pct5: usagePct5, pct7: usagePct7, reset5: reset5, reset7: reset7, renewal: renewal, stale: usageStale)
+            let usageLive = !usageStale && (pct5Opt != nil || pct7Opt != nil)
+
+            let png: Data
+            let label: String
+            if usageLive {
+                let pct5 = pct5Opt ?? 0
+                let pct7 = pct7Opt ?? 0
+                let reset5 = usageEvent?["fiveHourResetsAt"] as? String ?? stateEvent?["fiveHourResetsAt"] as? String
+                let reset7 = usageEvent?["sevenDayResetsAt"] as? String ?? stateEvent?["sevenDayResetsAt"] as? String
+                let renewal = billingSummary(from: usageEvent) ?? billingSummary(from: stateEvent)
+                png = renderUsageWideButton(pct5: pct5, pct7: pct7, reset5: reset5, reset7: reset7, renewal: renewal, stale: false)
+                label = hidesNativeSessionLabels ? "" : usageText(window: "5H", percent: pct5)
+            } else {
+                png = renderBlankWideButton()
+                label = ""
+            }
+
             let iconPath = iconFilePath(slotId: 13, suffix: "wide", data: png)
-            manifest["3_2"] = manifestEntry(
-                text: hidesNativeSessionLabels ? "" : (usageStale ? "STALE" : usageText(window: "5H", percent: usagePct5)),
-                iconPath: iconPath,
-                clearAction: true
-            )
+            manifest["3_2"] = manifestEntry(text: label, iconPath: iconPath, clearAction: true)
             files.append((iconPath, png))
         } else {
             // Option-select mode: slot 13 is the BACK affordance, rendered as a
@@ -1765,6 +1779,29 @@ private enum D200hRenderer {
     // MARK: - Usage Merged Button (slot 13, 2 columns wide)
 
     /// Render the merged 5H/7D window as one 392x196 image, matching the D200H simulator.
+    /// Neutral empty wide tile for slot 13 when Claude usage data isn't
+    /// live. Just the dark card background — no gauges, no text, no stale
+    /// marker. Firmware still gets a valid PNG so it doesn't fall back to
+    /// the stock clock overlay on that slot.
+    private static func renderBlankWideButton() -> Data {
+        let width = ICON_SIZE * 2
+        let height = ICON_SIZE
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return Data() }
+        let w = CGFloat(width)
+        let h = CGFloat(height)
+        drawInTopDownCoordinates(ctx, canvasHeight: h) {
+            ctx.setFillColor(rgb(15, 23, 42))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        return pngImage(ctx)
+    }
+
     private static func renderUsageWideButton(
         pct5: Double, pct7: Double,
         reset5: String? = nil, reset7: String? = nil,

@@ -44,7 +44,12 @@ fun UsageSummaryCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // Row 1: Rate limit bars with reset times
-            if (usage.fiveHourPercent != null || usage.sevenDayPercent != null) {
+            // Treat stale upstream data as "no data" — a frozen "12%" from an
+            // old CLI session reads as current. Every other AgentDeck surface
+            // (macOS dashboard, Pixoo, D200H, plugin) collapses its usage
+            // region on the same criteria.
+            val usageLive = usage.usageStale != true
+            if (usageLive && (usage.fiveHourPercent != null || usage.sevenDayPercent != null)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -69,7 +74,7 @@ fun UsageSummaryCard(
             }
 
             // Extra usage bar
-            if (usage.extraUsageEnabled == true && usage.extraUsageUtilization != null) {
+            if (usageLive && usage.extraUsageEnabled == true && usage.extraUsageUtilization != null) {
                 CompactGauge(
                     label = "Extra",
                     percent = usage.extraUsageUtilization,

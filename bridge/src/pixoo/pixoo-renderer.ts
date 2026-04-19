@@ -570,7 +570,12 @@ function formatResetDetailed(resetsAt: string | undefined): string {
 function drawUsageHUD(
   buf: Uint8Array, usageEvent: UsageEvent | null, animFrame: number,
 ): void {
+  // Hide the HUD entirely when upstream flags the data as stale — otherwise
+  // an old "12%" frozen on-screen looks authoritative to the user even though
+  // the CLI daemon isn't live to produce a fresh fetch. Matches the collapse
+  // behavior on every other surface (macOS dashboard, plugin, Android, D200H).
   if (!usageEvent || usageEvent.fiveHourPercent == null) return;
+  if (usageEvent.usageStale === true) return;
 
   const textY = 58;
   const bgTop = textY - 1;

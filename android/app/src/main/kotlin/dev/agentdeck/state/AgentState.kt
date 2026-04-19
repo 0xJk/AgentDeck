@@ -145,14 +145,32 @@ class AgentStateHolder private constructor() {
             }
 
             is BridgeEvent.Usage -> {
+                // Scrub upstream subscription-quota numbers when the daemon
+                // flags the data as stale (no live CLI to fetch a fresh
+                // value). Every surface that reads state.usage.fiveHourPercent
+                // / sevenDayPercent / extraUsage* then collapses on null,
+                // matching macOS/Pixoo/D200H/plugin behavior without each
+                // downstream view needing its own stale check.
+                val incoming = if (event.data.usageStale == true) {
+                    event.data.copy(
+                        fiveHourPercent = null,
+                        sevenDayPercent = null,
+                        fiveHourResetsAt = null,
+                        sevenDayResetsAt = null,
+                        extraUsageEnabled = null,
+                        extraUsageMonthlyLimit = null,
+                        extraUsageUsedCredits = null,
+                        extraUsageUtilization = null,
+                    )
+                } else event.data
                 _state.update { it.copy(
-                    usage = event.data,
-                    oauthConnected = event.data.oauthConnected ?: it.oauthConnected,
-                    ollamaStatus = event.data.ollamaStatus ?: it.ollamaStatus,
-                    modelCatalog = event.data.modelCatalog ?: it.modelCatalog,
-                    mlxModels = event.data.mlxModels ?: it.mlxModels,
-                    subscriptions = event.data.subscriptions ?: it.subscriptions,
-                    antigravityStatus = event.data.antigravityStatus ?: it.antigravityStatus,
+                    usage = incoming,
+                    oauthConnected = incoming.oauthConnected ?: it.oauthConnected,
+                    ollamaStatus = incoming.ollamaStatus ?: it.ollamaStatus,
+                    modelCatalog = incoming.modelCatalog ?: it.modelCatalog,
+                    mlxModels = incoming.mlxModels ?: it.mlxModels,
+                    subscriptions = incoming.subscriptions ?: it.subscriptions,
+                    antigravityStatus = incoming.antigravityStatus ?: it.antigravityStatus,
                 ) }
                 lastKnownState = _state.value
                 SessionMetrics.instance.onMessageReceived()

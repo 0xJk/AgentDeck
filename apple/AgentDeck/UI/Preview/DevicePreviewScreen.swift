@@ -31,12 +31,13 @@ struct DevicePreviewScreen: View {
     /// this flag — don't leak the side-effect into subviews.
     @EnvironmentObject private var preferences: AppPreferences
 
+    private let sessionCountOptions: [Int] = [0, 1, 2, 4]
+
+#if os(macOS)
     /// External CLI daemon presence gates the desktop-bridge-only device
     /// previews. When absent, the picker hides Android / e-ink / TC001
     /// rows so the catalog reflects only what this app can drive itself.
     @EnvironmentObject private var daemonService: DaemonService
-
-    private let sessionCountOptions: [Int] = [0, 1, 2, 4]
 
     private var visibleDevices: [PreviewDevice] {
         if daemonService.isUsingExternalDaemon {
@@ -44,6 +45,11 @@ struct DevicePreviewScreen: View {
         }
         return PreviewDevice.allCases.filter { !$0.requiresDesktopBridge }
     }
+#else
+    private var visibleDevices: [PreviewDevice] {
+        PreviewDevice.allCases.filter { !$0.requiresDesktopBridge }
+    }
+#endif
 
     var body: some View {
         #if os(macOS)
@@ -95,11 +101,13 @@ struct DevicePreviewScreen: View {
             }
         }
         .listStyle(.sidebar)
+#if os(macOS)
         .onChange(of: daemonService.isUsingExternalDaemon) { _ in
             if !pool.contains(selection.device), let first = pool.first {
                 selection.device = first
             }
         }
+#endif
     }
 
     // MARK: - Detail

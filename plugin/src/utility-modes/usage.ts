@@ -17,6 +17,11 @@ export interface UsageModeData {
   extraUsageMonthlyLimit?: number;
   extraUsageUsedCredits?: number;
   subscriptions?: { name: string; until?: string }[];
+  // True when upstream daemon couldn't produce a live usage fetch (App Store
+  // sandbox without a CLI relay, OAuth missing, etc.). Plugin treats stale the
+  // same as "no data" and renders the disconnected placeholder — a stale
+  // number on the encoder LCD reads as current.
+  usageStale?: boolean;
 }
 
 let sharedData: UsageModeData = {};

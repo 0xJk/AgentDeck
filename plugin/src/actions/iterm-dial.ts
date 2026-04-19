@@ -129,7 +129,13 @@ function refreshUsageDials(): void {
   const data = getUsageModeData();
   let svg: string;
 
-  if (!hasReceivedData) {
+  // Collapse the dial to the disconnected placeholder when upstream has no
+  // live usage to show: either no data yet, flagged stale, or the percentages
+  // were suppressed by the daemon (in-process sandbox with no relay). Every
+  // other surface (macOS dashboard, Pixoo, D200H, Android) hides its usage
+  // region on the same criteria — keep the plugin consistent.
+  const usageUnavailable = data.usageStale === true || data.fiveHourPercent == null;
+  if (!hasReceivedData || usageUnavailable) {
     svg = renderUsageDisconnected(currentState !== State.DISCONNECTED);
   } else {
     const page = USAGE_PAGES[pageIdx];
