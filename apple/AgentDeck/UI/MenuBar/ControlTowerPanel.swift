@@ -20,7 +20,8 @@ struct ControlTowerPanel: View {
     /// the previous verdict until the timer fires.
     @State private var streamDeckDetection: StreamDeckDetection = StreamDeckDetection(
         elgatoAppInstalled: false,
-        streamDeckPlusConnected: false
+        streamDeckPlusConnected: false,
+        pluginInstalled: false
     )
     @State private var streamDeckDetectionLastRun: Date? = nil
 
@@ -282,26 +283,39 @@ struct ControlTowerPanel: View {
         }
     }
 
-    /// Inline Stream Deck nudge — only renders when hardware is detected.
-    /// Replaces the full device-section prompt that used to live here.
+    /// Inline Stream Deck nudge — only renders when hardware is detected AND
+    /// something still needs to be set up. Three cases:
+    ///   • Elgato app missing  → "Stream Deck+ setup"  (opens downloads page)
+    ///   • Elgato app present, plugin missing → "Install SD plugin" (opens bundled plugin / README)
+    ///   • Everything present → no nudge (button hidden; nothing to do)
     @ViewBuilder
     private var streamDeckPromptCompact: some View {
         if streamDeckDetection.streamDeckPlusConnected {
-            Button {
-                if streamDeckDetection.elgatoAppInstalled {
-                    openStreamDeckPluginInstaller()
-                } else {
+            if !streamDeckDetection.elgatoAppInstalled {
+                Button {
                     openStreamDeckDownloadPage()
+                } label: {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.orange).frame(width: 5, height: 5)
+                        Text("Stream Deck+ setup")
+                            .font(.system(size: 10, weight: .medium))
+                    }
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Circle().fill(Color.orange).frame(width: 5, height: 5)
-                    Text(streamDeckDetection.elgatoAppInstalled ? "Install SD plugin" : "Stream Deck+ setup")
-                        .font(.system(size: 10, weight: .medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+            } else if !streamDeckDetection.pluginInstalled {
+                Button {
+                    openStreamDeckPluginInstaller()
+                } label: {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.orange).frame(width: 5, height: 5)
+                        Text("Install SD plugin")
+                            .font(.system(size: 10, weight: .medium))
+                    }
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.orange)
         }
     }
 
@@ -874,13 +888,18 @@ struct ControlTowerPanel: View {
 /// `streamDeckPlusConnected` — any Elgato HID device (VID `0x0FD9`) is
 /// currently attached. We don't care which model since the companion prompt
 /// is identical regardless.
+/// `pluginInstalled` — our `.sdPlugin` directory exists in Elgato's plugin
+/// folder. Used to suppress the "Install SD plugin" nudge once the plugin is
+/// already there. Returns `false` under App Sandbox when the real user home
+/// isn't reachable — that's fine: the nudge is always a hint, never a gate.
 ///
-/// Neither probe opens the HID device (no `IOHIDManagerOpen`), so USB
+/// None of these probes opens the HID device (no `IOHIDManagerOpen`), so USB
 /// entitlement state doesn't affect detection. Returns `false` on any
 /// failure — the Control Tower treats this as a hint, never a hard gate.
 struct StreamDeckDetection {
     let elgatoAppInstalled: Bool
     let streamDeckPlusConnected: Bool
+    let pluginInstalled: Bool
 
     static func detect() -> StreamDeckDetection {
         let appInstalled = NSWorkspace.shared.urlForApplication(
@@ -888,8 +907,23 @@ struct StreamDeckDetection {
         ) != nil
         return StreamDeckDetection(
             elgatoAppInstalled: appInstalled,
-            streamDeckPlusConnected: detectElgatoHardware()
+            streamDeckPlusConnected: detectElgatoHardware(),
+            pluginInstalled: detectPluginInstalled()
         )
+    }
+
+    /// Check whether `bound.serendipity.agentdeck.sdPlugin` is present in the
+    /// Elgato Plugins folder. Uses `getpwuid` to resolve the real user home
+    /// since the App Sandbox-mapped home is useless here. When the sandbox
+    /// blocks the read we get a silent `false` — acceptable because the nudge
+    /// is only a hint; worst case a user sees "Install SD plugin" once more.
+    private static func detectPluginInstalled() -> Bool {
+        guard let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir else {
+            return false
+        }
+        let homeStr = String(cString: home)
+        let path = "\(homeStr)/Library/Application Support/com.elgato.StreamDeck/Plugins/bound.serendipity.agentdeck.sdPlugin/manifest.json"
+        return FileManager.default.fileExists(atPath: path)
     }
 
     /// Enumerate HID devices matching Elgato VID without opening the manager.
