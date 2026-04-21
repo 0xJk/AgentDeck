@@ -58,8 +58,9 @@ APME는 **수집**과 **평가**를 분리한다:
 - **Session bridge** (`agentdeck claude/codex/opencode/monitor`): 세션 시작~종료 동안 runs, turns, steps, usage, git diff artifact 를 SQLite에 기록. 세션 종료 시 eval 은 실행하지 않음 (프로세스가 2초 내 exit).
 - **Daemon** (`agentdeck daemon start`): 30초마다 복구 루프를 돈다 — 미평가 run을 eval 큐에 넣고, 10초 이상 닫힌 run의 outcome을 계산하고, `task_category IS NULL` run을 재분류하고, orphan run을 태깅. 장수 프로세스이므로 deterministic (lint/build/test) + LLM judge 를 여유롭게 실행.
 - **Turn-level 즉시 평가** (runner 내부): 비코딩 카테고리는 턴 완료 직후 daemon 없이도 judge 호출 — conversation/planning/research/review 세션은 실시간 피드백 루프.
+- **Task-level 즉시 평가** (runner 내부): `TodoWrite all-completed` 나 `/clear` 등 task 경계 신호가 감지되면, 해당 태스크에 속한 여러 턴을 모아 `task_rollup` 루브릭으로 즉시 평가.
 
-daemon 없이 session bridge 단독 사용 시 데이터만 축적되고 coding eval 은 daemon 기동 후 자동 처리된다. Turn-level eval은 세션 중에도 작동한다.
+daemon 없이 session bridge 단독 사용 시 데이터만 축적되고 coding eval 은 daemon 기동 후 자동 처리된다. Turn/Task-level eval은 세션 중에도 작동한다.
 
 ## File map
 
@@ -246,10 +247,10 @@ APME의 핵심 결정: **카테고리마다 평가 방법이 다르다.**
 │ refactoring     │  run-level       │ deterministic + llm_judge │
 │ debugging       │  (세션 종료 후)   │ (카테고리별 루브릭)         │
 ├─────────────────┼──────────────────┼────────────────────────────┤
-│ conversation    │                  │                            │
-│ planning        │  turn-level      │ llm_judge only             │
-│ research        │  (턴 완료 직후)   │ (결정론 레이어 없음)        │
-│ review          │                  │                            │
+│ conversation    │  turn-level      │                            │
+│ planning        │  (턴 직후)       │ llm_judge only             │
+│ research        │  task-level      │ (결정론 레이어 없음)        │
+│ review          │  (태스크 경계)   │                            │
 ├─────────────────┼──────────────────┼────────────────────────────┤
 │ ops             │                  │                            │
 │ multi_agent     │  run-level       │ deterministic + general    │
@@ -277,6 +278,7 @@ APME의 핵심 결정: **카테고리마다 평가 방법이 다르다.**
 2. `buildJudgePrompt()` — 루브릭 prompt + task_prompt + git diff + deterministic 결과 + 메타데이터
 3. `callJudge()` — 백엔드 분기:
    - `mlx` → `http://127.0.0.1:8800/v1/chat/completions` (OpenAI-compatible, **기본값**)
+   - `foundationModels` → `http://127.0.0.1:port/apme/judge/foundation-models` (Swift daemon 경유 Apple Intelligence, App Store 빌드 전용)
    - `openclaw` → `http://127.0.0.1:18789/chat` (Gateway 라우팅, 보조)
 4. `parseJudgeJson()` — JSON 추출, 0-10 스케일 자동 정규화, 코드펜스 관용
 5. 결과 → `evals` 테이블에 `layer='llm_judge'`, 카테고리별 axis metrics (예: debugging → `diagnosis/fix_quality/verification/overall`)
@@ -292,6 +294,16 @@ APME의 핵심 결정: **카테고리마다 평가 방법이 다르다.**
 3. Judge 입력: turn prompt + response만 (전체 diff 없음)
 4. `evals` 테이블에 `layer='turn_judge'`, `turn_id` 연결
 5. `onResult()` 콜백 → `apme_eval` WS 브로드캐스트 → 대시보드 Turn 카드에 즉시 표시
+
+### Task-level judge (`runner.enqueueTask`)
+
+`TodoWrite all-completed`, `/clear`, 세션 종료 등의 boundary signal이 감지되면 Task 단위로 묶어서 평가:
+
+1. `enqueueTask({ runId, taskId, category, boundarySignal })` 호출
+2. 턴들을 모아 `task_rollup` 루브릭 (없으면 카테고리/general) 적용
+3. 턴 텍스트들을 묶어 Judge 에 전송
+4. `evals` 테이블에 `layer='task_judge'` 기록 및 `tasks` 테이블에 `compositeScore`, `summary` 업데이트
+5. `onResult()` 콜백 트리거
 
 ### Outcome & composite score
 
@@ -422,7 +434,7 @@ composite = 0.40 × outcomeScore
 | `deterministic.enabled` | `true` | Layer 1 (lint/build/test) 실행 여부 |
 | `deterministic.timeoutSec` | `180` | 단계별 하드 타임아웃 (초) |
 | `deterministic.commands` | `{}` | 언어별 명령 override |
-| `judge.backend` | `"mlx"` | `"mlx"` \| `"openclaw"` |
+| `judge.backend` | `"mlx"` | `"mlx"` \| `"foundationModels"` \| `"openclaw"` \| `"api"` |
 | `judge.model` | `"qwen3-30b"` | 백엔드에서 사용할 모델 id |
 | `judge.sampleRate` | `1.0` | judge 호출 비율 (0..1) — 로컬 MLX는 비용 0이므로 전수 평가 기본 |
 | `judge.onlyWhenDisagreement` | `false` | `true`면 결정론 clear pass는 judge skip |

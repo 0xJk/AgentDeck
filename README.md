@@ -590,7 +590,7 @@ The key architectural decision: **evaluation method differs per task category.**
 | Categories | Timing | Layers |
 |---|---|---|
 | `coding` · `refactoring` · `debugging` | **Run-level** (after session ends) | Deterministic (lint/build/test) + LLM judge with category rubric |
-| `conversation` · `planning` · `research` · `review` | **Turn-level** (immediately after each turn) | LLM judge only — no git diff needed |
+| `conversation` · `planning` · `research` · `review` | **Turn-level / Task-level** (immediately after each turn, or after a task boundary like `/clear`) | LLM judge only — no git diff needed |
 | `ops` · `multi_agent` · `unknown` | Run-level | Deterministic + general rubric fallback |
 
 Seven dedicated rubrics — conversation scores `accuracy · helpfulness · conciseness`, debugging scores `diagnosis · fix_quality · verification`, and so on. Same model can be great at debugging and average at conversation — that's **normal**, and the scorecard surfaces it.
@@ -640,7 +640,8 @@ Judge runs on **local backends only** so `sampleRate: 1.0` (evaluate everything)
 
 | Backend | Endpoint | Role |
 |---|---|---|
-| `mlx` | `127.0.0.1:8800` (Qwen3.5-30B) | Primary |
+| `mlx` | `127.0.0.1:8800` (Qwen3.5-30B) | Primary (Node CLI/Brew) |
+| `foundationModels` | in-process Swift daemon | Primary (App Store macOS build via Apple Intelligence) |
 | `openclaw` | `127.0.0.1:18789` (Gateway) | Secondary |
 
 ### Self-healing Daemon Loop + Device Broadcast
