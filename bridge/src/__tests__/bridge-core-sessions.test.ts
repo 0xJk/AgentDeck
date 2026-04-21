@@ -58,7 +58,7 @@ describe('BridgeCore sessions_list', () => {
 
     await core.broadcastSessionsList();
 
-    expect(mockBuildEnrichedSessionsList).toHaveBeenCalledWith(core.sessionId, 'idle', undefined);
+    expect(mockBuildEnrichedSessionsList).toHaveBeenCalledWith(core.sessionId, 'idle', undefined, undefined);
     expect(broadcastSpy).toHaveBeenCalledWith({
       type: 'sessions_list',
       sessions: [
@@ -129,6 +129,6 @@ describe('BridgeCore sessions_list', () => {
       ]);
     });
 
-    expect(mockBuildEnrichedSessionsList).toHaveBeenCalledWith(core.sessionId, 'idle', undefined);
+    expect(mockBuildEnrichedSessionsList).toHaveBeenCalledWith(core.sessionId, 'idle', undefined, undefined);
   });
 });

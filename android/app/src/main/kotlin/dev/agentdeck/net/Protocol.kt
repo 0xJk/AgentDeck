@@ -228,6 +228,7 @@ data class SessionInfo(
     val alive: Boolean = true,
     val state: String? = null,
     val modelName: String? = null,
+    val effortLevel: String? = null,
 )
 
 // --- Bridge timeline entry (rich OpenClaw events) ---

@@ -58,6 +58,59 @@
       ],
       "type": "object"
     },
+    "ClientRegisterCommand": {
+      "additionalProperties": false,
+      "description": "Self-announcement from a rich UI client (Elgato Stream Deck plugin, a future Android companion app, etc.) so the daemon can surface the hardware under its rightful Downstream row instead of treating every WS connection as an anonymous dashboard viewer. Sent once per connect, immediately after the WebSocket opens. Daemon wipes the cached entry when the WS connection closes.",
+      "properties": {
+        "clientLabel": {
+          "description": "Human-readable label for the surface (appears verbatim in diagnostics).",
+          "type": "string"
+        },
+        "clientType": {
+          "description": "Short stable id — \"streamdeck-plugin\", \"android-companion\", etc.",
+          "type": "string"
+        },
+        "devices": {
+          "description": "Physical device roster this client is driving, if any.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "columns": {
+                "type": "number"
+              },
+              "family": {
+                "description": "\"streamdeck\" | \"streamdeckplus\" | \"streamdeckmini\" | ... — free-form.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "rows": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "type": {
+          "const": "client_register",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "clientType"
+      ],
+      "type": "object"
+    },
     "DiagCommand": {
       "additionalProperties": false,
       "properties": {
@@ -186,6 +239,9 @@
         },
         {
           "$ref": "#/definitions/SessionCommand"
+        },
+        {
+          "$ref": "#/definitions/ClientRegisterCommand"
         },
         {
           "$ref": "#/definitions/ApmeVibeFeedbackCommand"

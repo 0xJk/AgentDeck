@@ -13,10 +13,40 @@ extern DashboardState g_state;
 namespace Matrix {
 
 static CRGB leds[MATRIX_LEDS];
-static Page currentPage = Page::USAGE;
+// Boot onto AGENTS, not USAGE. USAGE is gated by `hasUsageData()` below — an
+// empty USAGE page shows "---" which is awkward for the user's first glance.
+// Once usage data arrives, `autoCycle` will rotate to USAGE naturally.
+static Page currentPage = Page::AGENTS;
 static float animTime = 0.0f;
 static bool autoCycle = true;
 static float pageCycleTimer = 0.0f;
+
+/// True when the daemon has pushed at least one rate-limit sample. Sentinel
+/// `-1.0f` on `fiveHourPercent` means "no data" — when that's the case we
+/// refuse to navigate to the USAGE page so the matrix stays on a useful
+/// screen instead of displaying dashes.
+static bool hasUsageData() {
+    lockState();
+    bool has = (g_state.fiveHourPercent >= 0.0f || g_state.sevenDayPercent >= 0.0f);
+    unlockState();
+    return has;
+}
+
+/// Advance `currentPage` to the next non-empty page. With only USAGE +
+/// AGENTS, this is "skip USAGE when empty, otherwise alternate". Extended
+/// to safely handle future pages by looping until a renderable page is
+/// found, capped by PAGE_COUNT iterations to avoid infinite loops.
+static Page skipEmpty(Page p) {
+    const uint8_t count = static_cast<uint8_t>(Page::PAGE_COUNT);
+    for (uint8_t i = 0; i < count; i++) {
+        if (p == Page::USAGE && !hasUsageData()) {
+            p = static_cast<Page>((static_cast<uint8_t>(p) + 1) % count);
+            continue;
+        }
+        return p;
+    }
+    return p;
+}
 float smoothBrightness = MATRIX_BRIGHTNESS_DEF;  // non-static: accessed by matrix_pages
 
 void init() {
@@ -31,15 +61,17 @@ void init() {
 }
 
 void nextPage() {
-    currentPage = static_cast<Page>((static_cast<uint8_t>(currentPage) + 1) % static_cast<uint8_t>(Page::PAGE_COUNT));
+    const uint8_t count = static_cast<uint8_t>(Page::PAGE_COUNT);
+    Page next = static_cast<Page>((static_cast<uint8_t>(currentPage) + 1) % count);
+    currentPage = skipEmpty(next);
     pageCycleTimer = 0.0f;
     MatrixButtons::beep(30);
 }
 
 void prevPage() {
-    uint8_t p = static_cast<uint8_t>(currentPage);
-    uint8_t count = static_cast<uint8_t>(Page::PAGE_COUNT);
-    currentPage = static_cast<Page>((p + count - 1) % count);
+    const uint8_t count = static_cast<uint8_t>(Page::PAGE_COUNT);
+    Page prev = static_cast<Page>((static_cast<uint8_t>(currentPage) + count - 1) % count);
+    currentPage = skipEmpty(prev);
     pageCycleTimer = 0.0f;
     MatrixButtons::beep(30);
 }
@@ -85,7 +117,9 @@ void update(float dt) {
         pageCycleTimer += dt;
         if (pageCycleTimer >= PAGE_AUTO_CYCLE_MS / 1000.0f) {
             pageCycleTimer = 0.0f;
-            currentPage = static_cast<Page>((static_cast<uint8_t>(currentPage) + 1) % static_cast<uint8_t>(Page::PAGE_COUNT));
+            const uint8_t count = static_cast<uint8_t>(Page::PAGE_COUNT);
+            Page next = static_cast<Page>((static_cast<uint8_t>(currentPage) + 1) % count);
+            currentPage = skipEmpty(next);
         }
     }
 

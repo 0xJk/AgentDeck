@@ -20,6 +20,7 @@ import type {
   SwitchAgentCommand,
   FocusSessionCommand,
   SessionCommand,
+  ClientRegisterCommand,
   ApmeVibeFeedbackCommand,
   ApmeRecommendCommand,
 } from "./protocol.js";
@@ -66,6 +67,9 @@ export const agentCommand = {
   },
   sessionCommand(sessionId: string, command: { type: string; [key: string]: unknown; }): SessionCommand {
     return { type: "session_command", sessionId, command };
+  },
+  clientRegister(): ClientRegisterCommand {
+    return { type: "client_register" };
   },
   apmeVibe(runId: string, verdict: 'approve' | 'reject' | 'neutral', note?: string): ApmeVibeFeedbackCommand {
     return { type: "apme_vibe", runId, verdict, note };

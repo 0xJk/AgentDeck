@@ -164,7 +164,7 @@ initSessionSlots((result) => {
       }
 
       // Update detail view with current state (will be refreshed on state_update)
-      updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string);
+      updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string, currentEffortLevel);
       broadcastStateUpdate();  // refresh encoders (timeline ↔ normal)
       break;
     }
@@ -198,7 +198,7 @@ initSessionSlots((result) => {
       connMgr.send({ type: 'send_prompt', text: '/model' });
       // Refresh to show loading state immediately
       if (isInDetailView()) {
-        updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string);
+        updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string, currentEffortLevel);
       }
       break;
     }
@@ -302,7 +302,7 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
 
   // v4: Update detail view state if in detail mode
   if (isInDetailView()) {
-    updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string);
+    updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string, currentEffortLevel);
   }
 
   broadcastStateUpdate();
@@ -313,7 +313,7 @@ connMgr.on('prompt_options', (ev: PromptOptionsEvent) => {
   currentOptions = ev.options;
   if (ev.question) currentQuestion = ev.question;
   if (isInDetailView()) {
-    updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string);
+    updateDetailViewState(currentState, currentOptions, currentTool, currentToolInput, currentQuestion, currentModelName, currentMode as string, currentEffortLevel);
   }
   broadcastStateUpdate();
 });

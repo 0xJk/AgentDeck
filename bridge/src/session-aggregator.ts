@@ -10,28 +10,29 @@ export interface EnrichedSession {
   alive: boolean;
   state?: string;
   modelName?: string;
+  effortLevel?: string;
   startedAt?: string;
 }
 
 /** Cache last-known sibling state to avoid propagating undefined on transient fetch failures */
-const siblingStateCache = new Map<string, { state: string; modelName?: string }>();
+const siblingStateCache = new Map<string, { state: string; modelName?: string; effortLevel?: string }>();
 
 /** Push-channel state cache — populated by DaemonWsClient session_push_state messages */
-const pushStateCache = new Map<string, { state: string; modelName?: string; updatedAt: number }>();
+const pushStateCache = new Map<string, { state: string; modelName?: string; effortLevel?: string; updatedAt: number }>();
 
 /** Update push-channel cache (called from daemon-server when session_push_state arrives) */
-export function updatePushState(sessionId: string, state: string, modelName?: string): void {
-  pushStateCache.set(sessionId, { state, modelName, updatedAt: Date.now() });
+export function updatePushState(sessionId: string, state: string, modelName?: string, effortLevel?: string): void {
+  pushStateCache.set(sessionId, { state, modelName, effortLevel, updatedAt: Date.now() });
   // Also update sibling cache so it stays consistent
-  siblingStateCache.set(sessionId, { state, modelName });
+  siblingStateCache.set(sessionId, { state, modelName, effortLevel });
 }
 
 /** Check if push-channel has fresh state (< 30s old) */
-export function getPushState(sessionId: string): { state: string; modelName?: string } | undefined {
+export function getPushState(sessionId: string): { state: string; modelName?: string; effortLevel?: string } | undefined {
   const entry = pushStateCache.get(sessionId);
   if (!entry) return undefined;
   if (Date.now() - entry.updatedAt > 30_000) return undefined; // stale
-  return { state: entry.state, modelName: entry.modelName };
+  return { state: entry.state, modelName: entry.modelName, effortLevel: entry.effortLevel };
 }
 
 /** Clear cache entry when a session is removed (call from session-registry cleanup) */
@@ -51,6 +52,7 @@ export async function enrichSessionsWithState(
   ownSessionId: string,
   ownState: string,
   ownModelName?: string,
+  ownEffortLevel?: string,
 ): Promise<EnrichedSession[]> {
   return Promise.all(sessions.map(async (s) => {
     const base: EnrichedSession = {
@@ -61,21 +63,21 @@ export async function enrichSessionsWithState(
       alive: true,
       startedAt: s.startedAt,
     };
-    if (s.id === ownSessionId) return { ...base, state: ownState, modelName: ownModelName };
+    if (s.id === ownSessionId) return { ...base, state: ownState, modelName: ownModelName, effortLevel: ownEffortLevel };
     // 1. Use fresh push-channel state if available (< 30s old)
     const pushed = getPushState(s.id);
-    if (pushed) return { ...base, state: pushed.state, modelName: pushed.modelName };
+    if (pushed) return { ...base, state: pushed.state, modelName: pushed.modelName, effortLevel: pushed.effortLevel };
     // 2. Fall back to HTTP polling
     try {
       const res = await fetch(`http://127.0.0.1:${s.port}/health`, { signal: AbortSignal.timeout(2000) });
-      const data = await res.json() as { state?: string; modelName?: string };
+      const data = await res.json() as { state?: string; modelName?: string; effortLevel?: string };
       if (data.state) {
-        siblingStateCache.set(s.id, { state: data.state, modelName: data.modelName });
+        siblingStateCache.set(s.id, { state: data.state, modelName: data.modelName, effortLevel: data.effortLevel });
       }
-      return { ...base, state: data.state, modelName: data.modelName };
+      return { ...base, state: data.state, modelName: data.modelName, effortLevel: data.effortLevel };
     } catch {
       const cached = siblingStateCache.get(s.id);
-      if (cached) return { ...base, state: cached.state, modelName: cached.modelName };
+      if (cached) return { ...base, state: cached.state, modelName: cached.modelName, effortLevel: cached.effortLevel };
       return base;
     }
   }));
@@ -88,8 +90,9 @@ export async function buildEnrichedSessionsList(
   ownSessionId: string,
   ownState: string,
   ownModelName?: string,
+  ownEffortLevel?: string,
 ): Promise<EnrichedSession[]> {
   const siblings = listActiveSessions().filter(s => s.agentType !== 'daemon' && s.id !== ownSessionId);
-  const enriched = await enrichSessionsWithState(siblings, ownSessionId, ownState, ownModelName);
+  const enriched = await enrichSessionsWithState(siblings, ownSessionId, ownState, ownModelName, ownEffortLevel);
   return sortSessions(enriched);
 }

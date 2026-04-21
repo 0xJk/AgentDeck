@@ -282,7 +282,7 @@ function computeLayout(state: DashState): KeySlot[] {
       const sess = sessionsToDisplay[i];
       if (sess) {
         const isActive = sess.projectName === activeSession.projectName && sess.agentType === activeSession.agentType;
-        slots.push({ col, row: 0, svg: renderSessionSlot(sess, isActive, 0), label: '' });
+        slots.push({ col, row: 0, svg: renderSessionSlot(sess, isActive, 0, undefined, { animated: false }), label: '' });
       } else {
         slots.push({ col, row: 0, svg: renderEmptySlot(), label: '' });
       }
@@ -306,7 +306,7 @@ function computeLayout(state: DashState): KeySlot[] {
 
     // Row 0: Mode, Hero Session, Extended Detail
     slots.push({ col: 0, row: 0, svg: renderModeButton(state.mode), label: '' });
-    slots.push({ col: 1, row: 0, svg: renderSessionSlot(sessionsToDisplay[0], true, 0), label: '' });
+    slots.push({ col: 1, row: 0, svg: renderSessionSlot(sessionsToDisplay[0], true, 0, undefined, { animated: false }), label: '' });
     slots.push({ col: 2, row: 0, svg: renderDetailInfo(sessionsToDisplay[0], state.state.toLowerCase() as State, state.currentTool, state.modelName, state.mode), label: '' });
 
     // Options mapping identically to old 13-slot original design

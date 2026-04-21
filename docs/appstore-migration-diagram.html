@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>AgentDeck — App Store Migration</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #111318;
+  font-family: 'JetBrains Mono', monospace;
+  color: #c9d1d9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 32px;
+  min-height: 100vh;
+}
+
+h1 {
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.25em;
+  color: #484f58;
+  text-transform: uppercase;
+  margin-bottom: 40px;
+}
+
+/* ── Two-column diagram ── */
+.diagram {
+  display: grid;
+  grid-template-columns: 440px 120px 440px;
+  align-items: start;
+  gap: 0;
+  width: 1000px;
+}
+
+/* ── Column headers ── */
+.col-head {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  text-align: center;
+  padding-bottom: 20px;
+  font-weight: 500;
+}
+.col-head.before { color: #f85149; }
+.col-head.after  { color: #3fb950; }
+
+/* ── System boundary box ── */
+.system {
+  border: 1px dashed;
+  border-radius: 4px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.system.before { border-color: rgba(248,81,73,0.3); }
+.system.after  { border-color: rgba(63,185,80,0.3); }
+
+/* ── Node (component box) ── */
+.node {
+  border-radius: 3px;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid;
+  position: relative;
+}
+
+.node-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.node-detail {
+  font-size: 11px;
+  color: #484f58;
+  line-height: 1.4;
+}
+
+.node-detail span {
+  display: block;
+  padding: 1px 0;
+}
+
+/* node variants */
+.node-removed {
+  background: rgba(248,81,73,0.06);
+  border-color: rgba(248,81,73,0.3);
+}
+.node-removed .node-label { color: #f85149; }
+
+.node-new {
+  background: rgba(63,185,80,0.06);
+  border-color: rgba(63,185,80,0.3);
+}
+.node-new .node-label { color: #3fb950; }
+
+.node-kept {
+  background: rgba(110,118,129,0.1);
+  border-color: rgba(110,118,129,0.2);
+}
+.node-kept .node-label { color: #8b949e; }
+
+.node-highlight {
+  background: rgba(88,166,255,0.06);
+  border-color: rgba(88,166,255,0.25);
+}
+.node-highlight .node-label { color: #58a6ff; }
+
+/* strike-through for removed items */
+.strike { text-decoration: line-through; opacity: 0.4; }
+
+/* child nodes (indented) */
+.node-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border: 1px solid rgba(63,185,80,0.15);
+  border-radius: 3px;
+  background: rgba(63,185,80,0.03);
+  margin-top: -4px;
+}
+
+.child {
+  font-size: 11px;
+  color: #8b949e;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.child::before {
+  content: '├';
+  color: #30363d;
+  flex-shrink: 0;
+}
+
+.child:last-child::before { content: '└'; }
+
+.child .via {
+  font-size: 10px;
+  color: #30363d;
+  margin-left: 4px;
+}
+
+.child .tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  margin-left: auto;
+}
+.tag-removed { background: rgba(248,81,73,0.15); color: #f85149; }
+.tag-new     { background: rgba(63,185,80,0.15);  color: #3fb950; }
+
+/* ── Center column (transform arrows) ── */
+.center-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 44px;
+  gap: 0;
+}
+
+.transform-row {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  position: relative;
+}
+
+/* ── Arrow SVG ── */
+.arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+}
+
+/* ── Summary bar ── */
+.summary {
+  display: flex;
+  gap: 32px;
+  margin-top: 40px;
+  padding: 16px 24px;
+  border: 1px solid rgba(110,118,129,0.2);
+  border-radius: 4px;
+  background: rgba(110,118,129,0.05);
+}
+
+.stat {
+  text-align: center;
+}
+
+.stat-num {
+  font-size: 24px;
+  font-weight: 500;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: #484f58;
+  letter-spacing: 0.1em;
+}
+
+.stat-num.red   { color: #f85149; }
+.stat-num.green { color: #3fb950; }
+.stat-num.blue  { color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<h1>AgentDeck · App Store Migration · 2026-04-19</h1>
+
+<div class="diagram">
+
+  <!-- BEFORE header -->
+  <div class="col-head before">Before</div>
+  <div></div>
+  <div class="col-head after">After (App Store)</div>
+
+  <!-- BEFORE system -->
+  <div class="system before">
+
+    <div class="node node-removed">
+      <div class="node-label">Bundled Assets</div>
+      <div class="node-detail">
+        <span class="strike">Contents/Helpers/node</span>
+        <span class="strike">Contents/Helpers/adb</span>
+        <span class="strike">bridge/cli.js</span>
+        <span class="strike">agentdeck-d200h-helper.sh</span>
+      </div>
+    </div>
+
+    <div class="node node-removed">
+      <div class="node-label">SessionLauncher &nbsp;<span style="color:#484f58;font-size:10px">461줄</span></div>
+      <div class="node-detail">
+        <span class="strike">Terminal.app / iTerm 자동 실행</span>
+        <span class="strike">.command 스크립트 생성 후 exec</span>
+        <span class="strike">6종 agent (claude/codex/opencode…)</span>
+        <span class="strike">NSWorkspace → AppleScript fallback</span>
+      </div>
+    </div>
+
+    <div class="node node-removed">
+      <div class="node-label">DaemonService &nbsp;<span style="color:#484f58;font-size:10px">1,033줄</span></div>
+      <div class="node-detail">
+        <span class="strike">Node.js bridge 프로세스 spawn</span>
+        <span class="strike">D200H helper 스크립트 spawn</span>
+        <span class="strike">externalDaemonProcess 추적</span>
+      </div>
+    </div>
+
+    <div class="node node-removed">
+      <div class="node-label">Subprocess 호출</div>
+      <div class="node-detail">
+        <span class="strike">/usr/bin/security &nbsp;(Keychain)</span>
+        <span class="strike">/usr/bin/sqlite3 &nbsp;(쿠키 DB)</span>
+        <span class="strike">networksetup &nbsp;(Wi-Fi SSID)</span>
+        <span class="strike">whisper-cli &nbsp;(음성 전사)</span>
+        <span class="strike">openclaw doctor / logs</span>
+      </div>
+    </div>
+
+    <div class="node node-removed">
+      <div class="node-label">File Access</div>
+      <div class="node-detail">
+        <span class="strike">home-relative-path entitlement</span>
+        <span style="color:#484f58">~/.agentdeck/ 직접 접근</span>
+        <span style="color:#f85149;font-size:10px">→ App Review 2.5.2 거부 사유</span>
+      </div>
+    </div>
+
+    <div class="node node-removed">
+      <div class="node-label">Session 감지</div>
+      <div class="node-detail">
+        <span class="strike">~/.agentdeck/sessions.json 파일시스템 감시</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- CENTER: arrows -->
+  <div class="center-col">
+    <svg width="80" height="520" viewBox="0 0 80 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- vertical spine -->
+      <line x1="40" y1="0" x2="40" y2="520" stroke="#21262d" stroke-width="1"/>
+      <!-- arrow heads at each transform row -->
+      <g opacity="0.5">
+        <line x1="20" y1="62"  x2="60" y2="62"  stroke="#484f58" stroke-width="1.5"/>
+        <polygon points="54,58 62,62 54,66" fill="#484f58"/>
+      </g>
+      <g opacity="0.5">
+        <line x1="20" y1="175" x2="60" y2="175" stroke="#484f58" stroke-width="1.5"/>
+        <polygon points="54,171 62,175 54,179" fill="#484f58"/>
+      </g>
+      <g opacity="0.5">
+        <line x1="20" y1="280" x2="60" y2="280" stroke="#484f58" stroke-width="1.5"/>
+        <polygon points="54,276 62,280 54,284" fill="#484f58"/>
+      </g>
+      <g opacity="0.3">
+        <line x1="20" y1="365" x2="60" y2="365" stroke="#f85149" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <polygon points="54,361 62,365 54,369" fill="#f85149"/>
+      </g>
+      <g opacity="0.5">
+        <line x1="20" y1="430" x2="60" y2="430" stroke="#484f58" stroke-width="1.5"/>
+        <polygon points="54,426 62,430 54,434" fill="#484f58"/>
+      </g>
+      <g opacity="0.5">
+        <line x1="20" y1="490" x2="60" y2="490" stroke="#484f58" stroke-width="1.5"/>
+        <polygon points="54,486 62,490 54,494" fill="#484f58"/>
+      </g>
+    </svg>
+  </div>
+
+  <!-- AFTER system -->
+  <div class="system after">
+
+    <div class="node node-new">
+      <div class="node-label">No Bundled Assets</div>
+      <div class="node-detail">
+        <span style="color:#3fb950">verify-appstore-archive.sh — CI 자동 차단</span>
+        <span style="color:#484f58">Mach-O에서 /bin/sh, sqlite3, npm 문자열 grep</span>
+        <span style="color:#484f58">D200H: IOKit HID 직접 접근 (entitlement)</span>
+      </div>
+    </div>
+
+    <div class="node node-new">
+      <div class="node-label">SessionLauncher &nbsp;<span style="color:#3fb950;font-size:10px">67줄 (85% 축소)</span></div>
+      <div class="node-detail">
+        <span style="color:#c9d1d9">NSAlert — "터미널에서 직접 실행하세요"</span>
+        <span style="color:#484f58">Hook 활성화 시 세션 자동 감지</span>
+        <span style="color:#484f58">쉘 스크립트·프로세스 spawn 없음</span>
+        <span style="color:#3fb950;font-size:10px">→ App Review 4.2.3 통과</span>
+      </div>
+    </div>
+
+    <div class="node node-new">
+      <div class="node-label">Swift Daemon (in-process) &nbsp;<span style="color:#3fb950;font-size:10px">813줄</span></div>
+      <div class="node-detail">
+        <span style="color:#c9d1d9">WS Server :9120 (iPad/Web 페어링)</span>
+        <span style="color:#c9d1d9">IOKit HID → D200H</span>
+        <span style="color:#c9d1d9">Serial → ESP32</span>
+        <span style="color:#c9d1d9">HTTP → Pixoo</span>
+        <span style="color:#58a6ff;font-size:10px">alreadyRunning → WS client 전환 (CLI 공존)</span>
+      </div>
+    </div>
+
+    <div class="node node-kept">
+      <div class="node-label">Entitlements only</div>
+      <div class="node-detail">
+        <span>device.usb · device.serial · audio-input</span>
+        <span>network.client · network.server</span>
+        <span style="color:#484f58">subprocess 없이 직접 API 접근</span>
+      </div>
+    </div>
+
+    <div class="node node-new">
+      <div class="node-label">File Access — Group Container</div>
+      <div class="node-detail">
+        <span style="color:#c9d1d9">application-groups entitlement</span>
+        <span style="color:#484f58">~/Library/Group Containers/group.bound…/</span>
+        <span style="color:#484f58">AgentDeckPaths.swift — 단일 라우터</span>
+        <span style="color:#484f58">첫 실행: ~/.agentdeck/ → 자동 마이그레이션</span>
+      </div>
+    </div>
+
+    <div class="node node-new">
+      <div class="node-label">Hook HTTP Receiver + Progressive UI</div>
+      <div class="node-detail">
+        <span style="color:#c9d1d9">~/.claude/settings.json hook → SessionStart POST</span>
+        <span style="color:#c9d1d9">isUsingExternalDaemon → 미지원 섹션 숨김</span>
+        <span style="color:#484f58">"Sandbox 제한" 안내 없음 — feature-complete로 보임</span>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<!-- Summary stats -->
+<div class="summary">
+  <div class="stat">
+    <span class="stat-num red">−1,750</span>
+    <div class="stat-label">줄 삭제</div>
+  </div>
+  <div class="stat">
+    <span class="stat-num green">+247</span>
+    <div class="stat-label">줄 추가</div>
+  </div>
+  <div class="stat">
+    <span class="stat-num red">85%</span>
+    <div class="stat-label">SessionLauncher 축소</div>
+  </div>
+  <div class="stat">
+    <span class="stat-num red">80%</span>
+    <div class="stat-label">AdbModule 축소</div>
+  </div>
+  <div class="stat">
+    <span class="stat-num blue">22</span>
+    <div class="stat-label">파일 수정</div>
+  </div>
+  <div class="stat">
+    <span class="stat-num blue">69</span>
+    <div class="stat-label">테스트 케이스 삭제</div>
+  </div>
+</div>
+
+</body>
+</html>

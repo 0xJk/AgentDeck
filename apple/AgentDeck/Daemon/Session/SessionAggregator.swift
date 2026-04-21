@@ -10,6 +10,7 @@ struct EnrichedSession: Sendable {
     var projectName: String?
     var agentType: String?
     var modelName: String?
+    var effortLevel: String?
     var alive: Bool
 }
 
@@ -52,6 +53,7 @@ enum SessionAggregator {
                 projectName: json["projectName"] as? String ?? session.projectName,
                 agentType: json["agentType"] as? String ?? session.agentType,
                 modelName: json["modelName"] as? String,
+                effortLevel: json["effortLevel"] as? String,
                 alive: true
             )
         } catch {

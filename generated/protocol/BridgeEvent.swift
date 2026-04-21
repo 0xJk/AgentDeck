@@ -42,6 +42,8 @@ struct ADBridgeEvent: Codable, Equatable {
     var mlxModels: [String]?
     var modelCatalog: [ADModelCatalogEntry]?
     var modelName: String?
+    /// Daemon-owned hardware/module health, intentionally loose for cross-version clients
+    var moduleHealth: [String: JSONAny]?
     var navigable: Bool?
     /// Ollama process status + running models
     var ollamaStatus: ADOllamaStatus?
@@ -136,6 +138,7 @@ struct ADBridgeEvent: Codable, Equatable {
         case mlxModels = "mlxModels"
         case modelCatalog = "modelCatalog"
         case modelName = "modelName"
+        case moduleHealth = "moduleHealth"
         case navigable = "navigable"
         case ollamaStatus = "ollamaStatus"
         case options = "options"
@@ -240,6 +243,7 @@ extension ADBridgeEvent {
         mlxModels: [String]?? = nil,
         modelCatalog: [ADModelCatalogEntry]?? = nil,
         modelName: String?? = nil,
+        moduleHealth: [String: JSONAny]?? = nil,
         navigable: Bool?? = nil,
         ollamaStatus: ADOllamaStatus?? = nil,
         options: [ADPromptOption]?? = nil,
@@ -324,6 +328,7 @@ extension ADBridgeEvent {
             mlxModels: mlxModels ?? self.mlxModels,
             modelCatalog: modelCatalog ?? self.modelCatalog,
             modelName: modelName ?? self.modelName,
+            moduleHealth: moduleHealth ?? self.moduleHealth,
             navigable: navigable ?? self.navigable,
             ollamaStatus: ollamaStatus ?? self.ollamaStatus,
             options: options ?? self.options,
@@ -964,6 +969,7 @@ enum ADGatewayAuthStatus: String, Codable, Equatable {
     case deviceAuthInvalid = "device_auth_invalid"
     case gatewayNotFound = "gateway_not_found"
     case gatewayReachable = "gateway_reachable"
+    case gatewayTokenMissing = "gateway_token_missing"
     case pairingRequired = "pairing_required"
     case tokenMismatch = "token_mismatch"
     case unsupportedProtocol = "unsupported_protocol"
@@ -1414,6 +1420,7 @@ extension ADApmeEvalRow {
 enum ADLayer: String, Codable, Equatable {
     case deterministic = "deterministic"
     case llmJudge = "llm_judge"
+    case taskJudge = "task_judge"
     case turnJudge = "turn_judge"
     case vibe = "vibe"
 }
@@ -1579,6 +1586,7 @@ extension ADOcSessionStatus {
 struct ADSessionInfo: Codable, Equatable {
     var agentType: ADAgentType?
     var alive: Bool
+    var effortLevel: String?
     var id: String
     var modelName: String?
     var port: Double
@@ -1589,6 +1597,7 @@ struct ADSessionInfo: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case agentType = "agentType"
         case alive = "alive"
+        case effortLevel = "effortLevel"
         case id = "id"
         case modelName = "modelName"
         case port = "port"
@@ -1619,6 +1628,7 @@ extension ADSessionInfo {
     func with(
         agentType: ADAgentType?? = nil,
         alive: Bool? = nil,
+        effortLevel: String?? = nil,
         id: String? = nil,
         modelName: String?? = nil,
         port: Double? = nil,
@@ -1629,6 +1639,7 @@ extension ADSessionInfo {
         return ADSessionInfo(
             agentType: agentType ?? self.agentType,
             alive: alive ?? self.alive,
+            effortLevel: effortLevel ?? self.effortLevel,
             id: id ?? self.id,
             modelName: modelName ?? self.modelName,
             port: port ?? self.port,

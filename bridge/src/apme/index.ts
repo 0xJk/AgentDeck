@@ -50,6 +50,19 @@ export async function initApme(dbPath?: string): Promise<ApmeModule | null> {
   const recommender = new ApmeRecommender(store);
   singleton = { store, collector, runner, tuner, hwSampler, recommender };
 
+  // Wire task-level judge: whenever the collector closes a task (TodoWrite
+  // all-completed / /clear / session_end), enqueue a task_rollup judge call.
+  // Kept here — not in the collector constructor — so the collector has no
+  // hard dependency on the runner.
+  collector.onTaskClosed = ({ taskId, runId, boundarySignal, taskCategory }) => {
+    runner.enqueueTask({
+      runId,
+      taskId,
+      category: taskCategory ?? undefined,
+      boundarySignal,
+    });
+  };
+
   // Write dashboard HTML for Swift daemon to pick up.
   try {
     const dataDir = process.env.AGENTDECK_DATA_DIR || join(homedir(), '.agentdeck');

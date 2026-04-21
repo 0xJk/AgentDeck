@@ -59,9 +59,11 @@ const MODE_DEFAULT = /\?\s*for\s*shortcuts/;
 const MODEL_INFO = /((?:Opus|Sonnet|Haiku)[ \t]*[\d.]+|Claude[ \t]*[\d.]+[ \t]*(?:Opus|Sonnet|Haiku))(?:[ \t]*(?:\([^)]+\))?[ \t]*[·•][ \t]*(.+))?/i;
 
 // Effort level: "/model" UI shows "High effort ← → to adjust" during selection
-// and "with high effort" in the confirmation line. Levels: high, medium, low.
-// Also handle ANSI-stripped compact forms and the legacy "Effort: high" pattern.
-const EFFORT_LEVEL = /\b(high|medium|low)\s+effort\b/i;
+// and "with high effort" in the confirmation line.
+// Claude Code 2.1+ adds per-model variants: Opus 4.7 exposes default/max/xhigh/
+// high/medium/low; Opus 4.6 adds "fast". Older builds only had high/medium/low.
+// Keep the whitelist explicit so unrelated "<word> effort" phrases don't match.
+const EFFORT_LEVEL = /\b(max|xhigh|high|medium|low|default|fast)\s+effort\b/i;
 
 const SPINNER_DEBOUNCE_MS = 2000;
 const IDLE_DEBOUNCE_MS = 300;

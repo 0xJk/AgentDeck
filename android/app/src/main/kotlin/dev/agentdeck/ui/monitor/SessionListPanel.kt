@@ -133,7 +133,8 @@ fun SessionListPanel(
         entries.forEach { entry ->
             val stateMarker = compactStateMarker(entry.agentState)
             val modelEffort = when {
-                entry.modelName != null && entry.effortLevel != null && entry.effortLevel != "medium" ->
+                entry.modelName != null && entry.effortLevel != null
+                    && entry.effortLevel != "medium" && entry.effortLevel != "default" ->
                     "${entry.modelName} \u00B7 ${entry.effortLevel}"
                 entry.modelName != null -> entry.modelName
                 else -> null

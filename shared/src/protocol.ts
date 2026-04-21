@@ -278,6 +278,7 @@ export interface SessionInfo {
   alive: boolean;
   state?: string;  // sibling's current state from /health query
   modelName?: string;  // sibling's current model from /health query
+  effortLevel?: string;  // sibling's current effort (max/xhigh/high/medium/low/default/fast)
   startedAt?: string;  // ISO 8601 session start time
 }
 
@@ -301,7 +302,7 @@ export interface TimelineHistoryMsg {
 
 /** A single evaluation score on a completed run. */
 export interface ApmeEvalRow {
-  layer: 'deterministic' | 'llm_judge' | 'vibe' | 'turn_judge';
+  layer: 'deterministic' | 'llm_judge' | 'vibe' | 'turn_judge' | 'task_judge';
   metric: string;           // e.g. 'build_ok', 'tests_pass', 'intent', 'overall'
   score: number;            // 0.0 - 1.0
   rubricVer?: number;

@@ -257,9 +257,17 @@ final class ApmeCollector {
         guard let runId, let turnId else { return nil }
 
         // Persist response (capped to 10k chars to match TS runner.ts).
+        // Tag response_kind='text' in efficiency_json so ApmeRunner.runTurnEval
+        // skips tool_only / empty turns (judging silence generates noise scores).
+        // Parity with bridge/src/apme/collector.ts mergeEfficiencyJson.
         let clamped = String(response.prefix(10_000))
-        store.updateTurn(id: turnId, fields: ["response": clamped])
-        DaemonLogger.shared.debug("APME", "setTurnResponse turn=\(turnId.prefix(8)) respLen=\(clamped.count)")
+        let existingTurn = store.getTurn(id: turnId)
+        let efficiencyJson = Self.mergeEfficiencyJson(existing: existingTurn, patch: ["response_kind": "text"])
+        store.updateTurn(id: turnId, fields: [
+            "response": clamped,
+            "efficiencyJson": efficiencyJson,
+        ])
+        DaemonLogger.shared.debug("APME", "setTurnResponse turn=\(turnId.prefix(8)) respLen=\(clamped.count) kind=text")
 
         // Mid-session classification: the TS bug this fixes was that the
         // classifier only ran on closeRun(), so run.taskCategory was nil at
@@ -312,6 +320,28 @@ final class ApmeCollector {
             toolName: toolName,
             payload: jsonString(data)
         )
+    }
+
+    /// Merge `patch` into an existing turns.efficiency_json string without
+    /// losing sibling keys. Returns a JSON string suitable for the column.
+    /// Parity with bridge/src/apme/collector.ts mergeEfficiencyJson.
+    static func mergeEfficiencyJson(
+        existing turn: [String: Any]?,
+        patch: [String: Any]
+    ) -> String {
+        var base: [String: Any] = [:]
+        if let raw = turn?["efficiency_json"] as? String,
+           !raw.isEmpty,
+           let data = raw.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            base = parsed
+        }
+        for (k, v) in patch { base[k] = v }
+        if let data = try? JSONSerialization.data(withJSONObject: base),
+           let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "{}"
     }
 
     private func nowMs() -> Int { Int(Date().timeIntervalSince1970 * 1000) }

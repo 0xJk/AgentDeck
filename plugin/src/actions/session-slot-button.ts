@@ -79,8 +79,9 @@ export function updateDetailViewState(
   question?: string,
   modelName?: string,
   mode?: string,
+  effortLevel?: string,
 ): void {
-  manager.updateDetailState(state, options, tool, toolInput, question, modelName, mode);
+  manager.updateDetailState(state, options, tool, toolInput, question, modelName, mode, effortLevel);
   if (manager.view === 'detail') refreshAll();
 }
 
@@ -193,6 +194,8 @@ function renderSlotSvg(config: SessionSlotConfig, _slot: number): string {
           undefined, // tool shown separately
           manager.detailModelName ?? config.session.modelName,
           undefined,
+          undefined,
+          manager.detailEffortLevel ?? config.session.effortLevel,
         );
       }
       return renderInfoSlot(config.label ?? '---');

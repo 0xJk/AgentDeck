@@ -15,6 +15,12 @@ import Foundation
 /// bridge. Enables direct control of a specific session from any client (MenuBarExtra,
 /// Dashboard, etc.)
 ///
+/// Self-announcement from a rich UI client (Elgato Stream Deck plugin, a future Android
+/// companion app, etc.) so the daemon can surface the hardware under its rightful Downstream
+/// row instead of treating every WS connection as an anonymous dashboard viewer. Sent once
+/// per connect, immediately after the WebSocket opens. Daemon wipes the cached entry when
+/// the WS connection closes.
+///
 /// APME vibe check — user approves or rejects a completed run's output quality.
 ///
 /// Ask bridge/daemon for model recommendation given a task context.
@@ -30,6 +36,12 @@ struct ADPluginCommand: Codable, Equatable {
     var agent: ADAgent?
     var sessionId: String?
     var command: ADCommand?
+    /// Human-readable label for the surface (appears verbatim in diagnostics).
+    var clientLabel: String?
+    /// Short stable id — "streamdeck-plugin", "android-companion", etc.
+    var clientType: String?
+    /// Physical device roster this client is driving, if any.
+    var devices: [ADDevice]?
     var note: String?
     var runId: String?
     var verdict: ADVerdict?
@@ -49,6 +61,9 @@ struct ADPluginCommand: Codable, Equatable {
         case agent = "agent"
         case sessionId = "sessionId"
         case command = "command"
+        case clientLabel = "clientLabel"
+        case clientType = "clientType"
+        case devices = "devices"
         case note = "note"
         case runId = "runId"
         case verdict = "verdict"
@@ -88,6 +103,9 @@ extension ADPluginCommand {
         agent: ADAgent?? = nil,
         sessionId: String?? = nil,
         command: ADCommand?? = nil,
+        clientLabel: String?? = nil,
+        clientType: String?? = nil,
+        devices: [ADDevice]?? = nil,
         note: String?? = nil,
         runId: String?? = nil,
         verdict: ADVerdict?? = nil,
@@ -107,6 +125,9 @@ extension ADPluginCommand {
             agent: agent ?? self.agent,
             sessionId: sessionId ?? self.sessionId,
             command: command ?? self.command,
+            clientLabel: clientLabel ?? self.clientLabel,
+            clientType: clientType ?? self.clientType,
+            devices: devices ?? self.devices,
             note: note ?? self.note,
             runId: runId ?? self.runId,
             verdict: verdict ?? self.verdict,
@@ -195,6 +216,73 @@ extension ADCommand {
     }
 }
 
+//
+// Hashable or Equatable:
+// The compiler will not be able to synthesize the implementation of Hashable or Equatable
+// for types that require the use of JSONAny, nor will the implementation of Hashable be
+// synthesized for types that have collections (such as arrays or dictionaries).
+
+// MARK: - ADDevice
+struct ADDevice: Codable, Equatable {
+    var columns: Double?
+    /// "streamdeck" | "streamdeckplus" | "streamdeckmini" | ... — free-form.
+    var family: String?
+    var id: String
+    var name: String
+    var rows: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case columns = "columns"
+        case family = "family"
+        case id = "id"
+        case name = "name"
+        case rows = "rows"
+    }
+}
+
+// MARK: ADDevice convenience initializers and mutators
+
+extension ADDevice {
+    init(data: Data) throws {
+        self = try newJSONDecoder().decode(ADDevice.self, from: data)
+    }
+
+    init(_ json: String, using encoding: String.Encoding = .utf8) throws {
+        guard let data = json.data(using: encoding) else {
+            throw NSError(domain: "JSONDecoding", code: 0, userInfo: nil)
+        }
+        try self.init(data: data)
+    }
+
+    init(fromURL url: URL) throws {
+        try self.init(data: try Data(contentsOf: url))
+    }
+
+    func with(
+        columns: Double?? = nil,
+        family: String?? = nil,
+        id: String? = nil,
+        name: String? = nil,
+        rows: Double?? = nil
+    ) -> ADDevice {
+        return ADDevice(
+            columns: columns ?? self.columns,
+            family: family ?? self.family,
+            id: id ?? self.id,
+            name: name ?? self.name,
+            rows: rows ?? self.rows
+        )
+    }
+
+    func jsonData() throws -> Data {
+        return try newJSONEncoder().encode(self)
+    }
+
+    func jsonString(encoding: String.Encoding = .utf8) throws -> String? {
+        return String(data: try self.jsonData(), encoding: encoding)
+    }
+}
+
 enum ADDirection: String, Codable, Equatable {
     case down = "down"
     case up = "up"
@@ -209,6 +297,7 @@ enum ADMode: String, Codable, Equatable {
 enum ADType: String, Codable, Equatable {
     case apmeRecommend = "apme_recommend"
     case apmeVibe = "apme_vibe"
+    case clientRegister = "client_register"
     case diag = "diag"
     case escape = "escape"
     case focusSession = "focus_session"

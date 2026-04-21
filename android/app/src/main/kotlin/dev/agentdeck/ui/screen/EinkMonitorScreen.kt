@@ -869,7 +869,8 @@ private fun EinkPortraitHeader(
                 }
                 val abbrevModel = entry.modelName?.let { abbreviateModelName(it) }
                 val modelPart = when {
-                    abbrevModel != null && entry.effortLevel != null && entry.effortLevel != "medium" ->
+                    abbrevModel != null && entry.effortLevel != null
+                        && entry.effortLevel != "medium" && entry.effortLevel != "default" ->
                         "$abbrevModel\u00B7${entry.effortLevel}"
                     abbrevModel != null -> abbrevModel
                     else -> null

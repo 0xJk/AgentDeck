@@ -36,7 +36,7 @@ export class HookServer extends EventEmitter {
   pairingToken: string | null = null;
 
   // Metadata for status page / health
-  private meta: { agentType?: string; projectName?: string; clientCount?: number; state?: string; modelName?: string } = {};
+  private meta: { agentType?: string; projectName?: string; clientCount?: number; state?: string; modelName?: string; effortLevel?: string } = {};
 
   constructor() {
     super();
@@ -52,7 +52,7 @@ export class HookServer extends EventEmitter {
   }
 
   /** Update metadata shown on /health and /status */
-  setMeta(meta: { agentType?: string; projectName?: string; clientCount?: number; state?: string; modelName?: string }): void {
+  setMeta(meta: { agentType?: string; projectName?: string; clientCount?: number; state?: string; modelName?: string; effortLevel?: string }): void {
     Object.assign(this.meta, meta);
   }
 
@@ -122,6 +122,7 @@ export class HookServer extends EventEmitter {
         projectName: this.meta.projectName,
         state: this.meta.state,
         modelName: this.meta.modelName,
+        effortLevel: this.meta.effortLevel,
         wsClients: this.meta.clientCount ?? 0,
         sseClients: this.sseClients.length,
         pairingToken: this.pairingToken,

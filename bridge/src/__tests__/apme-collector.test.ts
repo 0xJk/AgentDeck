@@ -226,6 +226,34 @@ describe('ApmeCollector', () => {
     expect(t?.response).toBe('delayed response text');
   });
 
+  it('setTurnResponse tags efficiency_json.response_kind (text / tool_only / empty)', async () => {
+    const collector = new ApmeCollector(store);
+    collector.openRun({ sessionId: 's-kind', agentType: 'claude-code', projectName: 'p' });
+
+    // Case 1: text response → response_kind='text'
+    collector.ingestHook('s-kind', 'UserPromptSubmit', { message: { content: 'what is 2+2?' } });
+    const t1 = collector.getActiveTurnId('s-kind');
+    collector.setTurnResponse('s-kind', '4');
+    const row1 = store.getTurn(t1!);
+    expect(JSON.parse((row1!.efficiency_json as string) ?? '{}').response_kind).toBe('text');
+
+    // Case 2: empty response + tool calls → response_kind='tool_only'
+    collector.ingestHook('s-kind', 'UserPromptSubmit', { message: { content: 'read the file' } });
+    collector.ingestHook('s-kind', 'PreToolUse', { tool_name: 'Read' });
+    collector.ingestHook('s-kind', 'PreToolUse', { tool_name: 'Bash' });
+    const t2 = collector.getActiveTurnId('s-kind');
+    collector.setTurnResponse('s-kind', '');
+    const row2 = store.getTurn(t2!);
+    expect(JSON.parse((row2!.efficiency_json as string) ?? '{}').response_kind).toBe('tool_only');
+
+    // Case 3: empty response + zero tool calls → response_kind='empty'
+    collector.ingestHook('s-kind', 'UserPromptSubmit', { message: { content: 'hi' } });
+    const t3 = collector.getActiveTurnId('s-kind');
+    collector.setTurnResponse('s-kind', '   ');
+    const row3 = store.getTurn(t3!);
+    expect(JSON.parse((row3!.efficiency_json as string) ?? '{}').response_kind).toBe('empty');
+  });
+
   it('no-op gracefully when store is disabled', () => {
     const dummy = new ApmeStore('/nonexistent/_disabled');
     // init() never called, so enabled=false

@@ -880,9 +880,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       return true; // consumed
     }
     if (msg.type === 'session_push_state') {
-      const { sessionId, state, modelName } = msg as any;
+      const { sessionId, state, modelName, effortLevel } = msg as any;
       if (sessionId && state) {
-        updatePushState(sessionId, state, modelName);
+        updatePushState(sessionId, state, modelName, effortLevel);
         // Trigger sessions list broadcast so clients get fresh state
         core.maybeBroadcastSessionsList();
       }

@@ -742,14 +742,23 @@ final class DaemonServer {
         await httpServer.get("/health") { [weak self] _ in
             let health = await self?.buildModuleHealth().value ?? ["state": "disconnected"]
             let state = health["state"] as? String ?? "disconnected"
-            return .json([
+            // Surface focused session's model + effort on /health so sibling
+            // bridges and external dashboards can mirror them without a
+            // separate state_update subscription.
+            let focus: (model: String?, effort: String?) = await MainActor.run { [weak self] in
+                (self?.stateMachine.modelName, self?.stateMachine.effortLevel)
+            }
+            var payload: [String: Any] = [
                 "status": "ok", "mode": "daemon", "port": daemonPort,
                 "pid": ProcessInfo.processInfo.processIdentifier,
                 "uptime": ProcessInfo.processInfo.systemUptime,
                 "state": state,
                 "pairingToken": AuthManager.shared.token,
                 "modules": health["modules"] as Any,
-            ] as [String: Any])
+            ]
+            if let m = focus.model { payload["modelName"] = m }
+            if let e = focus.effort { payload["effortLevel"] = e }
+            return .json(payload)
         }
 
         await httpServer.get("/status") { [weak self] _ in
@@ -1339,6 +1348,7 @@ final class DaemonServer {
         }
         if let state = cmd["state"] as? String { entry.state = state }
         if let modelName = cmd["modelName"] as? String { entry.modelName = modelName }
+        if let effortLevel = cmd["effortLevel"] as? String { entry.effortLevel = effortLevel }
         if let projectName = cmd["projectName"] as? String, !projectName.isEmpty {
             entry = DaemonSessionEntry(
                 id: entry.id,
@@ -1593,9 +1603,19 @@ final class DaemonServer {
         case "user_prompt_submit":
             _ = stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
             updateSessionHookState(sessionId: sessionId, state: "processing")
+            // Timeline: user's question opens a chat turn so the dashboard
+            // renders Claude Code activity alongside OpenClaw/OpenCode. Before
+            // this, only tool_start/tool_end entries appeared (via OpenClaw
+            // path) and Claude Code conversations looked empty on the timeline.
+            appendClaudeCodeChatStart(json: json, sessionId: sessionId)
         case "stop":
             _ = stateMachine.transition(trigger: "stop", source: .hook)
             updateSessionHookState(sessionId: sessionId, state: "idle", clearTool: true)
+            // Timeline: close the turn. `last_assistant_message` is the hook
+            // payload field Claude Code populates (~18% reliable per DEV log
+            // note) — when present we emit a chat_response; otherwise just
+            // chat_end. Tool-only turns fall through to empty chat_end.
+            appendClaudeCodeChatEnd(json: json, sessionId: sessionId)
         case "session_end":
             _ = stateMachine.transition(trigger: "session_end", source: .hook)
             if let sessionId {
@@ -2292,6 +2312,7 @@ final class DaemonServer {
                         s.agentType = health["agentType"] as? String ?? s.agentType
                         s.state = health["state"] as? String
                         s.modelName = health["modelName"] as? String
+                        s.effortLevel = health["effortLevel"] as? String
                         s.currentTool = health["currentTool"] as? String
                         s.navigable = health["navigable"] as? Bool
                         if let rawOptions = health["options"] as? [[String: Any]] {
@@ -3090,6 +3111,7 @@ final class DaemonServer {
         if let a = s.agentType { d["agentType"] = a }
         if let st = s.state { d["state"] = st }
         if let mn = s.modelName { d["modelName"] = mn }
+        if let ef = s.effortLevel { d["effortLevel"] = ef }
         if let tool = s.currentTool { d["currentTool"] = tool }
         if let options = s.options {
             d["options"] = options.map { option in
@@ -3234,6 +3256,115 @@ final class DaemonServer {
             automated: nil
         )
         Task { await timelineStore.add(entry) }
+    }
+
+    /// Append a `chat_start` timeline entry for a Claude Code UserPromptSubmit
+    /// hook. Without this, Claude Code conversations appeared empty on the
+    /// dashboard timeline while OpenClaw/OpenCode sessions showed full turns.
+    @MainActor
+    private func appendClaudeCodeChatStart(json: [String: Any], sessionId: String?) {
+        let prompt = claudeCodePromptText(from: json)
+        guard !prompt.isEmpty else { return }
+        let snippet = String(prompt.prefix(200))
+        let detail: String? = prompt.count > 100
+            ? String(prompt.prefix(1000))
+            : nil
+        let ts = Date().timeIntervalSince1970 * 1000
+        var entry = DaemonTimelineEntry(
+            ts: ts,
+            type: "chat_start",
+            raw: snippet,
+            detail: detail,
+            approvalId: nil,
+            status: nil,
+            agentType: "claude-code",
+            repeatCount: nil,
+            automated: nil
+        )
+        entry.sessionId = sessionId
+        entry.projectName = pushedSessionsById[sessionId ?? ""]?.projectName
+        Task { await timelineStore.add(entry) }
+        broadcastRaw([
+            "type": "timeline_event",
+            "entry": claudeCodeEntryDict(entry),
+        ] as [String: Any])
+    }
+
+    /// Append a `chat_response` (when `last_assistant_message` arrived) + a
+    /// terminating `chat_end` for a Claude Code Stop hook.
+    @MainActor
+    private func appendClaudeCodeChatEnd(json: [String: Any], sessionId: String?) {
+        let assistantText = (json["last_assistant_message"] as? String) ?? ""
+        let now = Date().timeIntervalSince1970 * 1000
+        let projectName = pushedSessionsById[sessionId ?? ""]?.projectName
+        if !assistantText.isEmpty {
+            let snippet = String(assistantText.prefix(200))
+            let detail: String? = assistantText.count > 100
+                ? String(assistantText.prefix(1000))
+                : nil
+            var respEntry = DaemonTimelineEntry(
+                ts: now - 1,
+                type: "chat_response",
+                raw: snippet,
+                detail: detail,
+                approvalId: nil,
+                status: nil,
+                agentType: "claude-code",
+                repeatCount: nil,
+                automated: nil
+            )
+            respEntry.sessionId = sessionId
+            respEntry.projectName = projectName
+            Task { await timelineStore.add(respEntry) }
+            broadcastRaw([
+                "type": "timeline_event",
+                "entry": claudeCodeEntryDict(respEntry),
+            ] as [String: Any])
+        }
+        var endEntry = DaemonTimelineEntry(
+            ts: now,
+            type: "chat_end",
+            raw: assistantText.isEmpty ? "Completed" : String(assistantText.prefix(200)),
+            detail: nil,
+            approvalId: nil,
+            status: nil,
+            agentType: "claude-code",
+            repeatCount: nil,
+            automated: nil
+        )
+        endEntry.sessionId = sessionId
+        endEntry.projectName = projectName
+        Task { await timelineStore.add(endEntry) }
+        broadcastRaw([
+            "type": "timeline_event",
+            "entry": claudeCodeEntryDict(endEntry),
+        ] as [String: Any])
+    }
+
+    /// Pull the user's prompt from either Claude Code's legacy `prompt` field
+    /// or the newer `message.content` shape. Mirrors the collector's parsing.
+    private func claudeCodePromptText(from json: [String: Any]) -> String {
+        if let s = json["prompt"] as? String, !s.isEmpty { return s }
+        if let message = json["message"] as? [String: Any],
+           let content = message["content"] as? String {
+            return content
+        }
+        return ""
+    }
+
+    /// Encode a DaemonTimelineEntry into the dict shape broadcastRaw expects —
+    /// matches the key set `appendGatewayTimelineEntry` uses for round-trip.
+    private func claudeCodeEntryDict(_ e: DaemonTimelineEntry) -> [String: Any] {
+        var dict: [String: Any] = [
+            "ts": e.ts,
+            "type": e.type,
+            "raw": e.raw,
+        ]
+        if let v = e.detail { dict["detail"] = v }
+        if let v = e.agentType { dict["agentType"] = v }
+        if let v = e.sessionId { dict["sessionId"] = v }
+        if let v = e.projectName { dict["projectName"] = v }
+        return dict
     }
 
     @MainActor

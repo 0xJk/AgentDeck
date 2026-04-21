@@ -57,13 +57,40 @@ export interface ApmeArtifactRow {
 export interface ApmeEvalRowDb {
   id?: number;
   runId: string;
-  layer: 'deterministic' | 'llm_judge' | 'vibe' | 'turn_judge';
+  layer: 'deterministic' | 'llm_judge' | 'vibe' | 'turn_judge' | 'task_judge';
   metric: string;
   score: number;
   raw?: string | null;       // JSON
   rubricVer?: number | null;
   judgeModel?: string | null;
   createdAt: number;
+}
+
+/** A `task` groups consecutive turns within a run. Boundaries are detected
+ *  automatically from Claude Code hook payloads:
+ *   - `todo_complete`  — TodoWrite PostToolUse where every todo.status === 'completed'
+ *   - `clear`          — UserPromptSubmit `/clear` (also splits the run)
+ *   - `session_end`    — closeRun finalization
+ *   - `manual`         — reserved for a future explicit task-end marker
+ *
+ *  A task-level judge reads all turns belonging to the task and writes a
+ *  one-line `summary` + `composite_score`. Individual axis scores land in
+ *  `evals` rows with `layer='task_judge'` and `task_id` set.
+ */
+export interface ApmeTaskRow {
+  id: string;
+  runId: string;
+  taskIndex: number;
+  boundarySignal: 'todo_complete' | 'clear' | 'session_end' | 'manual' | string;
+  startedAt: number;
+  endedAt?: number | null;
+  firstTurnIndex?: number | null;
+  lastTurnIndex?: number | null;
+  summary?: string | null;
+  outcome?: string | null;
+  compositeScore?: number | null;
+  taskCategory?: string | null;
+  notesJson?: string | null; // raw judge JSON (done/missed/reasoning)
 }
 
 export interface ApmeRubricRow {

@@ -91,6 +91,12 @@ data class BridgeEvent (
 
     val modelCatalog: List<ModelCatalogEntry>? = null,
     val modelName: String? = null,
+
+    /**
+     * Daemon-owned hardware/module health, intentionally loose for cross-version clients
+     */
+    val moduleHealth: Map<String, Any?>? = null,
+
     val navigable: Boolean? = null,
 
     /**
@@ -475,22 +481,24 @@ enum class GatewayAuthStatus(val value: String) {
     DeviceAuthInvalid("device_auth_invalid"),
     GatewayNotFound("gateway_not_found"),
     GatewayReachable("gateway_reachable"),
+    GatewayTokenMissing("gateway_token_missing"),
     PairingRequired("pairing_required"),
     TokenMismatch("token_mismatch"),
     UnsupportedProtocol("unsupported_protocol");
 
     companion object {
         public fun fromValue(value: String): GatewayAuthStatus = when (value) {
-            "approval_pending"     -> ApprovalPending
-            "auth_failed"          -> AuthFailed
-            "connected"            -> Connected
-            "device_auth_invalid"  -> DeviceAuthInvalid
-            "gateway_not_found"    -> GatewayNotFound
-            "gateway_reachable"    -> GatewayReachable
-            "pairing_required"     -> PairingRequired
-            "token_mismatch"       -> TokenMismatch
-            "unsupported_protocol" -> UnsupportedProtocol
-            else                   -> throw IllegalArgumentException()
+            "approval_pending"      -> ApprovalPending
+            "auth_failed"           -> AuthFailed
+            "connected"             -> Connected
+            "device_auth_invalid"   -> DeviceAuthInvalid
+            "gateway_not_found"     -> GatewayNotFound
+            "gateway_reachable"     -> GatewayReachable
+            "gateway_token_missing" -> GatewayTokenMissing
+            "pairing_required"      -> PairingRequired
+            "token_mismatch"        -> TokenMismatch
+            "unsupported_protocol"  -> UnsupportedProtocol
+            else                    -> throw IllegalArgumentException()
         }
     }
 }
@@ -608,6 +616,7 @@ data class ApmeEvalRow (
 enum class Layer(val value: String) {
     Deterministic("deterministic"),
     LlmJudge("llm_judge"),
+    TaskJudge("task_judge"),
     TurnJudge("turn_judge"),
     Vibe("vibe");
 
@@ -615,6 +624,7 @@ enum class Layer(val value: String) {
         public fun fromValue(value: String): Layer = when (value) {
             "deterministic" -> Deterministic
             "llm_judge"     -> LlmJudge
+            "task_judge"    -> TaskJudge
             "turn_judge"    -> TurnJudge
             "vibe"          -> Vibe
             else            -> throw IllegalArgumentException()
@@ -674,6 +684,7 @@ data class OcSessionStatus (
 data class SessionInfo (
     val agentType: AgentType? = null,
     val alive: Boolean,
+    val effortLevel: String? = null,
     val id: String,
     val modelName: String? = null,
     val port: Double,

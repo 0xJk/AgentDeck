@@ -1278,7 +1278,8 @@ private struct ButtonSlot {
         case none
         case awaitingPulse(color: CGColor, frame: Int)    // glow pulse
         case processingDash(color: CGColor, frame: Int)   // flowing dash
-        case solid(color: CGColor)                        // static border
+        case processingSolid(color: CGColor)              // static "working" (animation disabled)
+        case solid(color: CGColor)                        // static hint border
     }
 
     enum IconGlyph {
@@ -1306,6 +1307,7 @@ private struct ButtonSlot {
         case .none: borderKey = "n"
         case .awaitingPulse: borderKey = "a"
         case .processingDash: borderKey = "p"
+        case .processingSolid: borderKey = "ps"
         case .solid: borderKey = "s"
         }
 
@@ -1322,7 +1324,8 @@ private struct ButtonSlot {
     func pressedFlash() -> ButtonSlot {
         let baseBorderColor: CGColor
         switch borderStyle {
-        case .awaitingPulse(let color, _), .processingDash(let color, _), .solid(let color):
+        case .awaitingPulse(let color, _), .processingDash(let color, _),
+             .processingSolid(let color), .solid(let color):
             baseBorderColor = blendColor(color, toward: (1, 1, 1), ratio: 0.45)
         case .none:
             baseBorderColor = rgb(248, 250, 252)
@@ -1465,12 +1468,18 @@ private enum D200hRenderer {
             // In stable-stock mode the animation loop is forcibly disabled
             // (see setNeedsAnimation). Pin the pulse frame to a sin-peak so the
             // frozen snapshot renders bright instead of landing on a dim phase.
+            // For processing, swap the flowing-dash border for a solid glow:
+            // a frozen dasharray reads as "broken animation" instead of
+            // "working", while a solid bright amber ring reads cleanly as
+            // active.
             let pulseFrame = isStable ? 5 : animFrame  // sin(5*0.3) ≈ 0.997
             if session.isAwaiting {
                 border = .awaitingPulse(color: sColor, frame: pulseFrame)
                 needsAnim = needsAnim || !isStable
             } else if session.isProcessing {
-                border = .processingDash(color: sColor, frame: animFrame)
+                border = isStable
+                    ? .processingSolid(color: sColor)
+                    : .processingDash(color: sColor, frame: animFrame)
                 needsAnim = needsAnim || !isStable
             } else {
                 border = .none
@@ -2282,6 +2291,24 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         ctx.setAlpha(1.0)
         ctx.setLineDash(phase: 0, lengths: [])
 
+    case .processingSolid(let color):
+        // Static "WORKING" variant for when the animation loop is disabled
+        // (stable-stock mode). Solid glowing ring reads as "active" via color
+        // alone — the frozen dashes in `.processingDash` looked awkward when
+        // the tick wasn't advancing.
+        ctx.setShadow(offset: .zero, blur: 8, color: color.copy(alpha: 0.60))
+        ctx.setStrokeColor(color)
+        ctx.setAlpha(0.95)
+        ctx.setLineWidth(5.5)
+        ctx.addPath(innerPath)
+        ctx.strokePath()
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        ctx.setAlpha(1.0)
+        ctx.setLineWidth(2)
+        ctx.addPath(innerPath)
+        ctx.strokePath()
+        ctx.setAlpha(1.0)
+
     case .solid(let color):
         ctx.setStrokeColor(color)
         ctx.setAlpha(0.6)
@@ -2298,7 +2325,7 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     if slot.enabled && isBrandTile {
         let stripColor: CGColor
         switch slot.borderStyle {
-        case .awaitingPulse, .processingDash, .solid:
+        case .awaitingPulse, .processingDash, .processingSolid, .solid:
             stripColor = slot.statusColor ?? rgb(59, 130, 246)
         case .none:
             stripColor = slot.iconColor ?? rgb(59, 130, 246)

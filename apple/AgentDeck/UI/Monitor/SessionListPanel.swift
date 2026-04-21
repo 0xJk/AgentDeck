@@ -165,7 +165,7 @@ struct SessionListPanel: View {
                 projectName: sibling.projectName ?? "Agent",
                 agentType: sibling.agentType,
                 modelName: sibling.modelName,
-                effortLevel: nil,
+                effortLevel: sibling.effortLevel,
                 // alive=true (we already filter siblings via isDaemonLike, and the
                 // wire payload always sets alive=true for the OC virtual session)
                 // — fall back to .idle for unknown/empty state to match
@@ -281,7 +281,10 @@ struct SessionListPanel: View {
         if let model = entry.modelName {
             parts.append(model)
         }
-        if let effort = entry.effortLevel, effort != "medium" {
+        // Skip neutral efforts — "medium" (legacy default) and "default"
+        // (Claude Code 2.1+ per-model default). Show everything else
+        // (max/xhigh/high/low/fast) so users can see non-default choices.
+        if let effort = entry.effortLevel, effort != "medium", effort != "default" {
             parts.append(effort)
         }
         if !parts.isEmpty {

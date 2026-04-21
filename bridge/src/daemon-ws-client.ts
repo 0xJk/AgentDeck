@@ -23,6 +23,7 @@ export interface SessionPushState {
   sessionId: string;
   state: string;
   modelName?: string;
+  effortLevel?: string;
   projectName?: string;
   agentType?: string;
 }
@@ -79,13 +80,14 @@ export class DaemonWsClient {
   }
 
   /** Push state update to daemon */
-  pushState(state: string, modelName?: string): void {
+  pushState(state: string, modelName?: string, effortLevel?: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const msg: SessionPushState = {
       type: 'session_push_state',
       sessionId: this.sessionId,
       state,
       modelName,
+      effortLevel,
       projectName: this.projectName,
       agentType: this.agentType,
     };

@@ -137,6 +137,7 @@ export class SessionSlotManager {
   private _detailToolInput: string | undefined;
   private _detailQuestion: string | undefined;
   private _detailModelName: string | undefined;
+  private _detailEffortLevel: string | undefined;
   private _detailMode: string | undefined;
   private _modelSwitching = false;
   private _prevModelName: string | undefined;
@@ -154,6 +155,7 @@ export class SessionSlotManager {
   get detailState(): State { return this._detailState; }
   get detailOptions(): PromptOption[] { return this._detailOptions; }
   get detailModelName(): string | undefined { return this._detailModelName; }
+  get detailEffortLevel(): string | undefined { return this._detailEffortLevel; }
   get modelSwitching(): boolean { return this._modelSwitching; }
 
   startModelSwitch(): void {
@@ -227,13 +229,14 @@ export class SessionSlotManager {
 
   // ---- Detail view state updates ----
 
-  updateDetailState(state: State, options: PromptOption[], tool?: string, toolInput?: string, question?: string, modelName?: string, mode?: string): void {
+  updateDetailState(state: State, options: PromptOption[], tool?: string, toolInput?: string, question?: string, modelName?: string, mode?: string, effortLevel?: string): void {
     this._detailState = state;
     this._detailOptions = options;
     this._detailTool = tool;
     this._detailToolInput = toolInput;
     this._detailQuestion = question;
     this._detailModelName = modelName;
+    this._detailEffortLevel = effortLevel;
     this._detailMode = mode;
     if (!this.isAwaitingDetailState()) {
       this._detailPage = 0;

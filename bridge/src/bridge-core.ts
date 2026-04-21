@@ -515,7 +515,12 @@ export class BridgeCore {
   /** Broadcast enriched sessions list (debounced 2s from state_changed) */
   async broadcastSessionsList(): Promise<void> {
     const snapshot = this.stateMachine.getSnapshot();
-    let sessions = await buildEnrichedSessionsList(this.sessionId, snapshot.state, snapshot.modelName ?? undefined);
+    let sessions = await buildEnrichedSessionsList(
+      this.sessionId,
+      snapshot.state,
+      snapshot.modelName ?? undefined,
+      snapshot.effortLevel ?? undefined,
+    );
     if (this.sessionsEnricher) sessions = this.sessionsEnricher(sessions);
     this.wsServer.broadcast({ type: 'sessions_list', sessions } as BridgeEvent);
   }
@@ -577,7 +582,12 @@ export class BridgeCore {
     }
 
     // Sessions list
-    buildEnrichedSessionsList(this.sessionId, snapshot.state, snapshot.modelName ?? undefined).then((sessions) => {
+    buildEnrichedSessionsList(
+      this.sessionId,
+      snapshot.state,
+      snapshot.modelName ?? undefined,
+      snapshot.effortLevel ?? undefined,
+    ).then((sessions) => {
       const enriched = this.sessionsEnricher ? this.sessionsEnricher(sessions) : sessions;
       this.wsServer.sendTo(ws, { type: 'sessions_list', sessions: enriched } as BridgeEvent);
     }).catch(() => {});

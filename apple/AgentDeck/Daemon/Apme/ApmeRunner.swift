@@ -139,6 +139,15 @@ actor ApmeRunner {
         let prompt = (turn["prompt"] as? String) ?? ""
         let response = (turn["response"] as? String) ?? ""
         if prompt.isEmpty && response.isEmpty { return }
+        // Skip turns the agent answered with tool calls only (or nothing) —
+        // the rubric prompt can't score "silence" meaningfully. The collector
+        // tags turns.efficiency_json.response_kind on setTurnResponse so we
+        // can distinguish these from genuine short answers like "4".
+        let kind = Self.readResponseKind(turn: turn)
+        if kind == "tool_only" || kind == "empty" {
+            DaemonLogger.shared.debug("APME", "runTurnEval skip turn=\(turnId.prefix(8)) kind=\(kind)")
+            return
+        }
 
         // Select category rubric, fall back to conversation (the closest
         // non-code rubric) if the specific category rubric is missing.
@@ -329,6 +338,29 @@ actor ApmeRunner {
         case .api:              return ApmeJudgeApi.judgeModelLabel
         case .openclaw:         return "openclaw:\(config.judge.model)"
         }
+    }
+
+    // MARK: - Response-kind helper (parity with TS runner.ts readResponseKind)
+
+    /// Inspect `turns.efficiency_json.response_kind` written by the collector on
+    /// `setTurnResponse`. Falls back to heuristic classification when the tag is
+    /// missing (older rows or third-party callers).
+    ///
+    /// Returned values: "text" | "tool_only" | "empty" — the runner skips judge
+    /// for anything other than "text".
+    static func readResponseKind(turn: [String: Any]) -> String {
+        if let raw = turn["efficiency_json"] as? String,
+           !raw.isEmpty,
+           let data = raw.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let k = obj["response_kind"] as? String,
+           ["text", "tool_only", "empty"].contains(k) {
+            return k
+        }
+        let response = ((turn["response"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let toolCalls = (turn["tool_calls"] as? Int) ?? 0
+        if !response.isEmpty { return "text" }
+        return toolCalls > 0 ? "tool_only" : "empty"
     }
 
     // MARK: - Prompt builders

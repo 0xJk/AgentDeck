@@ -25,6 +25,7 @@ import type {
   ApmeRubricRow,
   ApmeVibeRow,
   ApmeScorecardRow,
+  ApmeTaskRow,
 } from './types.js';
 
 // ─── Schema ────────────────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS steps (
 CREATE TABLE IF NOT EXISTS turns (
   id          TEXT PRIMARY KEY,
   run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  task_id     TEXT,
   turn_index  INTEGER NOT NULL,
   prompt      TEXT,
   response    TEXT,
@@ -85,6 +87,25 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_run ON turns(run_id);
+CREATE INDEX IF NOT EXISTS idx_turns_task ON turns(task_id);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id               TEXT PRIMARY KEY,
+  run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  task_index       INTEGER NOT NULL,
+  boundary_signal  TEXT NOT NULL,
+  started_at       INTEGER NOT NULL,
+  ended_at         INTEGER,
+  first_turn_index INTEGER,
+  last_turn_index  INTEGER,
+  summary          TEXT,
+  outcome          TEXT,
+  composite_score  REAL,
+  task_category    TEXT,
+  notes_json       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_run ON tasks(run_id);
 
 CREATE TABLE IF NOT EXISTS artifacts (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +120,7 @@ CREATE TABLE IF NOT EXISTS evals (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   turn_id     TEXT REFERENCES turns(id) ON DELETE CASCADE,
+  task_id     TEXT REFERENCES tasks(id) ON DELETE CASCADE,
   layer       TEXT NOT NULL,
   metric      TEXT NOT NULL,
   score       REAL,
@@ -317,6 +339,34 @@ Return strict JSON: {"correctness":N,"safety":N,"completeness":N,"overall":N,"re
     weights: JSON.stringify({ correctness: 0.4, safety: 0.35, completeness: 0.25 }),
     notes: 'ops/DevOps evaluation',
   },
+  task_rollup: {
+    purpose: 'task_rollup',
+    prompt: `You are evaluating a multi-turn AI agent task that the agent itself has just signaled as complete
+(for example: every TodoWrite item was marked \`completed\`, or the user issued \`/clear\` to reset context).
+
+You will be given the full sequence of turns (user prompt → agent response) that make up this task.
+Produce a concise rollup: a single-sentence summary plus axis scores.
+
+Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+
+Axes:
+- completion: Did the agent actually finish what the task was about? A high score means the task was
+  delivered end-to-end; low if large pieces were skipped or declared done without evidence.
+- coherence: Did the turns build on each other toward a single goal? Penalize incoherent jumps,
+  redundant re-planning, or lost context between turns.
+- efficiency: Were the turns appropriately scoped? Penalize unnecessary back-and-forth, repeated
+  tool calls with the same inputs, or churn. Reward focused, decisive progress.
+- overall: Holistic judgment. Weight completion most heavily — an efficient, coherent task that
+  never actually finishes is worse than a slightly messier task that delivered.
+
+Summary guidance: one sentence, ≤ 140 characters, past tense, describing what the task accomplished.
+Start with a verb (e.g. "Added", "Fixed", "Investigated", "Refactored"). No hedging.
+
+Return strict JSON exactly:
+{"summary":"<one sentence>","completion":N,"coherence":N,"efficiency":N,"overall":N,"reasoning":"...","done":["item1"],"missed":["item1"]}.`,
+    weights: JSON.stringify({ completion: 0.5, coherence: 0.25, efficiency: 0.25 }),
+    notes: 'task-unit rollup (TodoWrite all-completed / /clear / session_end)',
+  },
 };
 
 // ─── Store ─────────────────────────────────────────────────────────────────────
@@ -394,6 +444,18 @@ export class ApmeStore {
       if (!cols.includes(col)) {
         try { this.db.exec(sql); } catch { /* column may already exist from partial migration */ }
       }
+    }
+    // Tasks table — created via CREATE TABLE IF NOT EXISTS above, but older
+    // DBs need ALTER for turns.task_id and evals.task_id.
+    const turnCols = (this.db.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map(c => c.name);
+    if (!turnCols.includes('task_id')) {
+      try { this.db.exec('ALTER TABLE turns ADD COLUMN task_id TEXT'); } catch { /* ignore */ }
+      try { this.db.exec('CREATE INDEX IF NOT EXISTS idx_turns_task ON turns(task_id)'); } catch { /* ignore */ }
+    }
+    const evalCols = (this.db.prepare("PRAGMA table_info(evals)").all() as Array<{ name: string }>).map(c => c.name);
+    if (!evalCols.includes('task_id')) {
+      try { this.db.exec('ALTER TABLE evals ADD COLUMN task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE'); }
+      catch { /* ignore */ }
     }
   }
 
@@ -532,11 +594,11 @@ export class ApmeStore {
 
   // ─── Turns ──────────────────────────────────────────────────────────────────
 
-  insertTurn(turn: { id: string; runId: string; turnIndex: number; prompt?: string; startedAt: number; gitBefore?: string }): void {
+  insertTurn(turn: { id: string; runId: string; taskId?: string | null; turnIndex: number; prompt?: string; startedAt: number; gitBefore?: string }): void {
     if (!this.db) return;
     this.db.prepare(
-      `INSERT INTO turns (id, run_id, turn_index, prompt, started_at, git_before) VALUES (?,?,?,?,?,?)`,
-    ).run(turn.id, turn.runId, turn.turnIndex, turn.prompt ?? null, turn.startedAt, turn.gitBefore ?? null);
+      `INSERT INTO turns (id, run_id, task_id, turn_index, prompt, started_at, git_before) VALUES (?,?,?,?,?,?,?)`,
+    ).run(turn.id, turn.runId, turn.taskId ?? null, turn.turnIndex, turn.prompt ?? null, turn.startedAt, turn.gitBefore ?? null);
   }
 
   updateTurn(id: string, fields: Record<string, unknown>): void {
@@ -545,7 +607,7 @@ export class ApmeStore {
       endedAt: 'ended_at', toolCalls: 'tool_calls', filesModified: 'files_modified',
       filesCreated: 'files_created', gitAfter: 'git_after', taskCategory: 'task_category',
       outcome: 'outcome', compositeScore: 'composite_score', efficiencyJson: 'efficiency_json',
-      prompt: 'prompt', response: 'response',
+      prompt: 'prompt', response: 'response', taskId: 'task_id',
     };
     const sets: string[] = []; const vals: unknown[] = [];
     for (const [k, v] of Object.entries(fields)) {
@@ -565,6 +627,106 @@ export class ApmeStore {
   listTurns(runId: string): Array<Record<string, unknown>> {
     if (!this.db) return [];
     return this.db.prepare('SELECT * FROM turns WHERE run_id = ? ORDER BY turn_index ASC').all(runId) as Array<Record<string, unknown>>;
+  }
+
+  // ─── Tasks ──────────────────────────────────────────────────────────────────
+
+  insertTask(row: ApmeTaskRow): void {
+    if (!this.db) return;
+    this.db.prepare(
+      `INSERT INTO tasks (id, run_id, task_index, boundary_signal, started_at, first_turn_index)
+       VALUES (?,?,?,?,?,?)`,
+    ).run(
+      row.id, row.runId, row.taskIndex, row.boundarySignal, row.startedAt,
+      row.firstTurnIndex ?? null,
+    );
+  }
+
+  updateTask(id: string, patch: Partial<ApmeTaskRow>): void {
+    if (!this.db) return;
+    const map: Record<string, string> = {
+      endedAt: 'ended_at',
+      firstTurnIndex: 'first_turn_index',
+      lastTurnIndex: 'last_turn_index',
+      summary: 'summary',
+      outcome: 'outcome',
+      compositeScore: 'composite_score',
+      taskCategory: 'task_category',
+      notesJson: 'notes_json',
+      boundarySignal: 'boundary_signal',
+    };
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      const col = map[k];
+      if (!col || v === undefined) continue;
+      sets.push(`${col} = ?`);
+      vals.push(v);
+    }
+    if (sets.length === 0) return;
+    vals.push(id);
+    this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  getTask(id: string): ApmeTaskRow | null {
+    if (!this.db) return null;
+    const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return row ? rowToTask(row) : null;
+  }
+
+  listTasksForRun(runId: string): ApmeTaskRow[] {
+    if (!this.db) return [];
+    const rows = this.db.prepare(
+      'SELECT * FROM tasks WHERE run_id = ? ORDER BY task_index ASC',
+    ).all(runId) as Array<Record<string, unknown>>;
+    return rows.map(rowToTask);
+  }
+
+  listTurnsForTask(taskId: string): Array<Record<string, unknown>> {
+    if (!this.db) return [];
+    return this.db.prepare(
+      'SELECT * FROM turns WHERE task_id = ? ORDER BY turn_index ASC',
+    ).all(taskId) as Array<Record<string, unknown>>;
+  }
+
+  /** Ended tasks (boundary hit) that haven't been judged yet — backfill candidates. */
+  listTasksNeedingSummary(limit: number = 20): Array<{ id: string; runId: string; taskCategory: string | null }> {
+    if (!this.db) return [];
+    const rows = this.db.prepare(
+      `SELECT t.id, t.run_id, t.task_category FROM tasks t
+       WHERE t.ended_at IS NOT NULL
+         AND t.summary IS NULL
+       ORDER BY t.ended_at DESC
+       LIMIT ?`,
+    ).all(limit) as Array<{ id: string; run_id: string; task_category: string | null }>;
+    return rows.map((r) => ({ id: r.id, runId: r.run_id, taskCategory: r.task_category }));
+  }
+
+  insertEvalForTask(row: ApmeEvalRowDb & { taskId: string }): void {
+    if (!this.db) return;
+    this.db.prepare(
+      `INSERT INTO evals (run_id, task_id, layer, metric, score, raw, rubric_ver, judge_model, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(row.runId, row.taskId, row.layer, row.metric, row.score,
+      row.raw ?? null, row.rubricVer ?? null, row.judgeModel ?? null, row.createdAt);
+  }
+
+  listEvalsForTask(taskId: string): ApmeEvalRowDb[] {
+    if (!this.db) return [];
+    const rows = this.db.prepare(
+      'SELECT * FROM evals WHERE task_id = ? ORDER BY created_at ASC',
+    ).all(taskId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: r.id as number,
+      runId: r.run_id as string,
+      layer: r.layer as ApmeEvalRowDb['layer'],
+      metric: r.metric as string,
+      score: r.score as number,
+      raw: (r.raw as string | null) ?? null,
+      rubricVer: (r.rubric_ver as number | null) ?? null,
+      judgeModel: (r.judge_model as string | null) ?? null,
+      createdAt: r.created_at as number,
+    }));
   }
 
   listEvalsForTurn(turnId: string): ApmeEvalRowDb[] {
@@ -814,6 +976,24 @@ function rowToRun(r: Record<string, unknown>): ApmeRunRow {
     outcomeConfidence: (r.outcome_confidence as string | null) ?? null,
     efficiencyJson: (r.efficiency_json as string | null) ?? null,
     compositeScore: (r.composite_score as number | null) ?? null,
+  };
+}
+
+function rowToTask(r: Record<string, unknown>): ApmeTaskRow {
+  return {
+    id: r.id as string,
+    runId: r.run_id as string,
+    taskIndex: r.task_index as number,
+    boundarySignal: r.boundary_signal as string,
+    startedAt: r.started_at as number,
+    endedAt: (r.ended_at as number | null) ?? null,
+    firstTurnIndex: (r.first_turn_index as number | null) ?? null,
+    lastTurnIndex: (r.last_turn_index as number | null) ?? null,
+    summary: (r.summary as string | null) ?? null,
+    outcome: (r.outcome as string | null) ?? null,
+    compositeScore: (r.composite_score as number | null) ?? null,
+    taskCategory: (r.task_category as string | null) ?? null,
+    notesJson: (r.notes_json as string | null) ?? null,
   };
 }
 

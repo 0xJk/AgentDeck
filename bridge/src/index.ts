@@ -7,6 +7,7 @@
 
 import { BridgeCore } from './bridge-core.js';
 import { initApme } from './apme/index.js';
+import { readLastTurn as readClaudeTranscriptLastTurn } from './apme/claude-transcript-reader.js';
 import { VoiceManager } from './voice.js';
 import { checkDependencies } from './check-deps.js';
 import { enableDebugLog, log, logError, debug, setPtyMode } from './logger.js';
@@ -703,7 +704,11 @@ export async function startSession(opts: SessionOptions): Promise<void> {
       }
     }
 
-    hookServer?.setMeta({ state: snapshot.state, modelName: snapshot.modelName ?? undefined });
+    hookServer?.setMeta({
+      state: snapshot.state,
+      modelName: snapshot.modelName ?? undefined,
+      effortLevel: snapshot.effortLevel ?? undefined,
+    });
     apme?.collector.updateModel(core.sessionId, snapshot.modelName ?? null);
     journal.write('state_change', 'internal', { state: snapshot.state, permissionMode: snapshot.permissionMode, suggestedPrompt: snapshot.suggestedPrompt });
 
@@ -735,7 +740,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     core.broadcastUsage();
 
     // Push state to daemon via internal WS
-    daemonWsClient.pushState(snapshot.state, snapshot.modelName ?? undefined);
+    daemonWsClient.pushState(snapshot.state, snapshot.modelName ?? undefined, snapshot.effortLevel ?? undefined);
 
     // Encoder + button state
     const encEvt = computeEncoderState();
@@ -1067,7 +1072,13 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 
     // Slot 1: Session/Status
     if (st === State.IDLE) {
-      const effortSuffix = snapshot.effortLevel && snapshot.effortLevel !== 'medium' ? snapshot.effortLevel : null;
+      // Skip model-agnostic neutral levels — "medium" (legacy default) and "default"
+      // (Claude Code 2.1+ name for the per-model default). Show everything else
+      // including max/xhigh/high/low/fast as an informational suffix.
+      const effortSuffix = snapshot.effortLevel
+        && snapshot.effortLevel !== 'medium'
+        && snapshot.effortLevel !== 'default'
+        ? snapshot.effortLevel : null;
       const sessionSubtitle = effortSuffix && snapshot.modelName
         ? `${snapshot.modelName} \u00B7 ${effortSuffix}` : snapshot.modelName ?? undefined;
       buttons.push({
@@ -1546,7 +1557,29 @@ function wireClaudeCodeTimeline(
         if (ccPendingChatStart) emitChatStart('');
         const duration = ccChatStart ? Math.round((now - ccChatStart) / 1000) : null;
         const toolSummary = core.usageTracker.getToolSummary();
-        const lastAssistantMsg = (evt.data?.last_assistant_message as string) || '';
+
+        // Response capture priority (CLI bridge only — the App Store Swift
+        // daemon is sandboxed off the projects/ path and relies on
+        // Task 2's response_kind heuristic instead):
+        //   1. transcript_path JSONL — authoritative; Claude Code writes
+        //      every user/assistant/tool block here, and the Stop hook
+        //      payload points at it.
+        //   2. last_assistant_message — ~18% reliable field on the hook
+        //      payload; honoured when the transcript isn't reachable.
+        //   3. PTY ringbuffer — last-resort fallback already handled by
+        //      the existing spinner_stop pathway.
+        const transcriptPath = (evt.data?.transcript_path as string) || '';
+        let lastAssistantMsg = (evt.data?.last_assistant_message as string) || '';
+        if (transcriptPath) {
+          try {
+            const excerpt = readClaudeTranscriptLastTurn(transcriptPath);
+            if (excerpt?.hasAssistantText) {
+              lastAssistantMsg = excerpt.assistantText;
+            }
+          } catch (err) {
+            debug('agentdeck', `transcript read skipped: ${String(err)}`);
+          }
+        }
 
         // APME: store Claude's response on the current turn
         const apmeRef = core.getApme();

@@ -196,7 +196,7 @@ internal fun EinkAgentBlock(
     val stateMarker = compactStateMarker(agentState)
     val abbrevModel = modelName?.let { abbreviateModelName(it) }
     val modelEffort = when {
-        abbrevModel != null && effortLevel != null && effortLevel != "medium" -> "$abbrevModel \u00B7 $effortLevel"
+        abbrevModel != null && effortLevel != null && effortLevel != "medium" && effortLevel != "default" -> "$abbrevModel \u00B7 $effortLevel"
         abbrevModel != null -> abbrevModel
         else -> null
     }

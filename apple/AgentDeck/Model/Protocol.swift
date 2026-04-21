@@ -366,6 +366,7 @@ struct SessionInfo: Codable, Sendable, Identifiable {
     var alive: Bool = true
     var state: String?
     var modelName: String?
+    var effortLevel: String?
     var startedAt: String?
 }
 

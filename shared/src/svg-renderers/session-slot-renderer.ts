@@ -50,6 +50,23 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max - 1) + '\u2026';
 }
 
+/**
+ * Format "Model · effort" suffix for session tile / detail view.
+ * Skips neutral efforts ("medium" legacy, "default" is Claude Code 2.1+
+ * per-model default) so they don't clutter the tile. Truncates the model
+ * name preferentially so the effort label survives in tight pixel budgets.
+ */
+export function formatModelEffort(modelName?: string, effortLevel?: string, maxLen = 14): string {
+  if (!modelName) return '';
+  const showEffort = effortLevel && effortLevel !== 'medium' && effortLevel !== 'default';
+  if (!showEffort) return truncate(modelName, maxLen);
+  const combined = `${modelName} · ${effortLevel}`;
+  if (combined.length <= maxLen) return combined;
+  const effortSuffix = ` · ${effortLevel}`;
+  const modelBudget = Math.max(4, maxLen - effortSuffix.length);
+  return truncate(modelName, modelBudget) + effortSuffix;
+}
+
 // ---- Session List Button ----
 
 export function renderSessionSlot(
@@ -57,14 +74,25 @@ export function renderSessionSlot(
   isActive: boolean,
   animFrame: number,
   displayName?: string,
+  options?: { animated?: boolean },
 ): string {
   const isWorking = session.state === 'processing';
   const isAsking = session.state?.startsWith('awaiting') ?? false;
   const isIdle = !isWorking && !isAsking;
-  
+  // Stream Deck / SD+ run a 150ms tick — animated. D200H's TypeScript image
+  // pipeline (bridge/src/d200h/image-renderer.ts) has no such loop: passing
+  // animFrame=0 every time freezes dashed strokes and leaves the sin-based
+  // pulse at a dim phase. Callers without a loop should pass animated:false
+  // so we emit a motion-free visual (solid borders + badges) that still
+  // clearly distinguishes working vs awaiting vs idle.
+  const animated = options?.animated ?? true;
+
   const agent = (session.agentType as AgentType) || 'claude-code';
   const nameForDisplay = displayName ?? session.projectName;
-  const modelText = session.modelName ? truncate(session.modelName, 12) : '';
+  // Bottom line budget: tile width ~124px at 14px font ≈ 16 chars. Leave a
+  // little headroom so "Opus 4.7 · max" fits without running into the
+  // watermark on the right.
+  const modelText = formatModelEffort(session.modelName, session.effortLevel, 15);
 
   // Custom palette mimicking the premium demo
   const p1 = agent === 'claude-code' ? '#D97757' : agent === 'codex-cli' ? '#8BA4FF' : agent === 'openclaw' ? '#FF6B6B' : '#F1ECEC';
@@ -87,6 +115,7 @@ export function renderSessionSlot(
 
   let glowBorder = '';
   let askDot = '';
+  let runBadge = '';
   const filterId = `pg-${animFrame}`;
   const blurDef = `
       <filter id="${filterId}" x="-10%" y="-10%" width="120%" height="120%">
@@ -94,7 +123,12 @@ export function renderSessionSlot(
       </filter>
     `;
   if (isAsking) {
-    const pulseOpacity = 0.55 + 0.45 * Math.abs(Math.sin(animFrame * 0.15));
+    // Animated callers pulse the opacity (0.55…1.0 over a sin wave). Static
+    // callers (D200H) pin to a near-peak value so the frozen snapshot reads
+    // as bright and attention-grabbing instead of dim.
+    const pulseOpacity = animated
+      ? 0.55 + 0.45 * Math.abs(Math.sin(animFrame * 0.15))
+      : 0.95;
     defs += blurDef;
     // Thick outer glow + crisp inner ring — distinct "breathing" solid border.
     glowBorder =
@@ -105,15 +139,29 @@ export function renderSessionSlot(
       <circle cx="114" cy="24" r="3" fill="#ffffff" />
     `;
   } else if (isWorking) {
-    // Flowing-light dashed border. On SD/SD+ the 150ms animation tick advances
-    // animFrame → dashoffset drifts → chasing light. On D200H there is no
-    // frame loop so the same SVG renders as a thick dashed glow ring.
-    const perimeter = 128 * 4; // approx perimeter of inner rounded rect
-    const dashOffset = ((animFrame * 4) % perimeter).toFixed(0);
-    defs += blurDef;
-    glowBorder =
-      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="4.5" stroke-dasharray="22 14" stroke-dashoffset="-${dashOffset}" opacity="0.85" filter="url(#${filterId})"/>` +
-      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="1.5" stroke-dasharray="22 14" stroke-dashoffset="-${dashOffset}" opacity="0.95"/>`;
+    if (animated) {
+      // Flowing-light dashed border — SD/SD+ 150ms tick advances animFrame
+      // → dashoffset drifts → chasing light.
+      const perimeter = 128 * 4;
+      const dashOffset = ((animFrame * 4) % perimeter).toFixed(0);
+      defs += blurDef;
+      glowBorder =
+        `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="4.5" stroke-dasharray="22 14" stroke-dashoffset="-${dashOffset}" opacity="0.85" filter="url(#${filterId})"/>` +
+        `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="1.5" stroke-dasharray="22 14" stroke-dashoffset="-${dashOffset}" opacity="0.95"/>`;
+    } else {
+      // Non-animated callers (D200H still-image pipeline): render a solid
+      // glowing border + a play-chevron badge so WORKING is obvious without
+      // motion. The amber border is still the primary signal; the ▶ badge
+      // distinguishes this from the red awaiting state at a glance.
+      defs += blurDef;
+      glowBorder =
+        `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="4.5" opacity="0.9" filter="url(#${filterId})"/>` +
+        `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="1.5" opacity="0.95"/>`;
+      runBadge = `
+        <rect x="100" y="14" width="28" height="16" rx="8" fill="${sColor}" opacity="0.9" />
+        <text x="114" y="26" font-size="11" font-weight="800" text-anchor="middle" fill="#0C0C0E" font-family="${fontFam}">▶ RUN</text>
+      `;
+    }
   }
 
   // Simplified Agent watermark at bottom-right
@@ -145,6 +193,7 @@ export function renderSessionSlot(
     watermark,
     spinner,
     askDot,
+    runBadge,
     badgeObj,
     `<text x="20" y="32" font-size="17" font-weight="800" text-anchor="start" fill="${colorText}" font-family="${fontFam}">${escXml(stateLbl)}</text>`,
     `<text x="20" y="52" font-size="13" font-weight="600" text-anchor="start" fill="#E2E8F0" font-family="${fontFam}">${escXml(truncate(nameForDisplay, 13))}</text>`,
@@ -212,7 +261,7 @@ export function renderStopButton(active = true): string {
 
 // ---- Detail View: Session Info ----
 
-export function renderDetailInfo(session: SessionInfo | undefined, state: State, tool?: string, modelName?: string, mode?: string, displayName?: string): string {
+export function renderDetailInfo(session: SessionInfo | undefined, state: State, tool?: string, modelName?: string, mode?: string, displayName?: string, effortLevel?: string): string {
   if (!session) return renderEmptySlot();
 
   const agent = (session.agentType as AgentType) || 'claude-code';
@@ -252,8 +301,9 @@ export function renderDetailInfo(session: SessionInfo | undefined, state: State,
     badgeObj,
     // Title
     `<text x="20" y="34" font-size="18" font-weight="800" text-anchor="start" fill="#ffffff" font-family="${fontFam}">${escXml(truncate(nameForDisplay, 10))}</text>`,
-    // Model/Mode
-    (modelName && agent !== 'openclaw') ? `<text x="20" y="56" font-size="12" font-weight="600" text-anchor="start" fill="#94a3b8" font-family="${fontFam}">${escXml(truncate(modelName, 16))}</text>` : '',
+    // Model/Mode — effort renders inline with model (e.g. "Opus 4.7 · max")
+    // so the permission-mode chip below keeps its y=74 slot.
+    (modelName && agent !== 'openclaw') ? `<text x="20" y="56" font-size="12" font-weight="600" text-anchor="start" fill="#94a3b8" font-family="${fontFam}">${escXml(formatModelEffort(modelName, effortLevel, 17))}</text>` : '',
     (mode && mode !== 'default' && agent !== 'openclaw') ? `<text x="20" y="74" font-size="11" font-weight="700" text-anchor="start" fill="#a78bfa" font-family="${fontFam}">${escXml(mode.toUpperCase())}</text>` : '',
     // Tool/State
     `<text x="20" y="120" font-size="12" font-weight="700" text-anchor="start" fill="${tool ? '#fbbf24' : sColor}" font-family="${fontFam}">${escXml(toolDisplay)}</text>`,

@@ -166,6 +166,16 @@ sealed class AgentCommand {
         }
     }
 
+    object ClientRegister : AgentCommand() {
+        override val typeTag: String = "client_register"
+        override fun toJson(): String {
+            val buf = StringBuilder()
+            buf.append("{\"type\":\"client_register\"")
+            buf.append("}")
+            return buf.toString()
+        }
+    }
+
     data class ApmeVibe(val runId: String, val verdict: String, val note: String? = null) : AgentCommand() {
         override val typeTag: String = "apme_vibe"
         override fun toJson(): String {

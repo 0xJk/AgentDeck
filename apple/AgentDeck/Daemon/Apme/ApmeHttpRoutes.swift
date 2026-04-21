@@ -124,6 +124,36 @@ enum ApmeHttpRoutes {
             return .json(["candidates": json])
         }
 
+        // Foundation Models judge — routes TS bridge `callFoundationModels`
+        // (bridge/src/apme/runner.ts) into `ApmeJudgeFoundationModels.judge`.
+        // Phase 1: no auth header — caller already reached the daemon's bound
+        // 127.0.0.1 port, which is same-machine-only per App Review notes.
+        //
+        // Contract (matches bridge/src/apme/runner.ts callFoundationModels):
+        //   Request : { "prompt": "..." }
+        //   Response: { "text": "..." } | { "error": "unavailable", "reason": "..." }
+        await httpServer.post("/apme/judge/foundation-models") { request in
+            guard let body = request.body,
+                  let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let prompt = json["prompt"] as? String,
+                  !prompt.isEmpty else {
+                return .json(["error": "bad_request", "reason": "expected { prompt: string }"], status: 400)
+            }
+            if !ApmeJudgeFoundationModels.isAvailable {
+                return .json([
+                    "error": "unavailable",
+                    "reason": ApmeJudgeFoundationModels.unavailableReason,
+                ])
+            }
+            guard let text = await ApmeJudgeFoundationModels.judge(prompt: prompt) else {
+                return .json([
+                    "error": "unavailable",
+                    "reason": "judge returned nil (content filter, timeout, or session error)",
+                ])
+            }
+            return .json(["text": text])
+        }
+
         await httpServer.post("/apme/vibe") { request in
             guard let body = request.body,
                   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],

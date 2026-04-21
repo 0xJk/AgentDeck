@@ -46,10 +46,38 @@ interface ActiveTurn {
   gitBefore: string | null;
 }
 
+interface ActiveTask {
+  id: string;
+  runId: string;
+  index: number;
+  startedAt: number;
+  /** turn_index of the first turn attached to this task (null until first turn). */
+  firstTurnIndex: number | null;
+  /** turn_index of the last turn attached; updated on every insertTurn. */
+  lastTurnIndex: number | null;
+}
+
+export type TaskBoundarySignal = 'todo_complete' | 'clear' | 'session_end' | 'manual';
+
+/** Callback fired after a task is closed in DB. Used to enqueue task-level eval
+ *  without creating a direct dependency from collector → runner. */
+export type OnTaskClosed = (args: {
+  taskId: string;
+  runId: string;
+  boundarySignal: TaskBoundarySignal;
+  taskCategory: string | null;
+}) => void;
+
 export class ApmeCollector {
   private readonly sessionToRun = new Map<string, string>(); // sessionId → runId
   private readonly sessionToTurn = new Map<string, ActiveTurn>(); // sessionId → current turn
   private readonly sessionToLastTurnId = new Map<string, string>(); // survives closeTurn()
+  private readonly sessionToTask = new Map<string, ActiveTask>(); // sessionId → current task
+  private readonly runTaskCount = new Map<string, number>();      // runId → next task_index
+
+  /** Optional listener fired after `closeTask` persists the row. The runner
+   *  wires this to enqueue a task-level judge call. */
+  public onTaskClosed: OnTaskClosed | null = null;
 
   constructor(
     private readonly store: ApmeStore,
@@ -112,9 +140,18 @@ export class ApmeCollector {
         gitBefore: readGitHead(projectPath),
       };
       this.sessionToTurn.set(sessionId, turn);
+      // Ensure an active task exists so this turn can attach to it. Tasks group
+      // consecutive turns between boundary signals (TodoWrite all-completed,
+      // /clear, session_end). First turn in a run opens task 0.
+      const task = this.openTaskIfNone(sessionId, runId);
+      if (task) {
+        if (task.firstTurnIndex === null) task.firstTurnIndex = turnIndex;
+        task.lastTurnIndex = turnIndex;
+      }
       try {
         this.store.insertTurn({
-          id: turnId, runId, turnIndex, prompt: prompt ?? undefined,
+          id: turnId, runId, taskId: task?.id ?? null, turnIndex,
+          prompt: prompt ?? undefined,
           startedAt: turn.startedAt, gitBefore: turn.gitBefore ?? undefined,
         });
       } catch (err) { debug('APME', `insertTurn failed: ${String(err)}`); }
@@ -132,6 +169,18 @@ export class ApmeCollector {
       activeTurn.toolCalls++;
       if (toolName === 'Edit') activeTurn.filesModified++;
       if (toolName === 'Write') activeTurn.filesCreated++;
+    }
+
+    // ── Task boundary: TodoWrite all-completed ──
+    // Claude Code's TodoWrite PostToolUse payload contains tool_input.todos.
+    // When every todo status is "completed", treat it as the agent declaring
+    // the task finished. Close the current task; the next UserPromptSubmit
+    // opens a fresh one.
+    if (event === 'PostToolUse' && toolName === 'TodoWrite') {
+      const todos = extractTodos(data);
+      if (todos && todos.length > 0 && todos.every((t) => t.status === 'completed')) {
+        this.closeTask(sessionId, 'todo_complete');
+      }
     }
 
     // Record step
@@ -173,21 +222,127 @@ export class ApmeCollector {
     return this.sessionToTurn.get(sessionId)?.id ?? null;
   }
 
+  /** Get the current active task ID for a session (if any). Exposed for tests. */
+  getActiveTaskId(sessionId: string): string | null {
+    return this.sessionToTask.get(sessionId)?.id ?? null;
+  }
+
+  /** Open a new task if none is active for this session. Returns the active
+   *  task (new or existing), or null if no run is open. Idempotent: repeat
+   *  calls while a task is already active are no-ops. */
+  private openTaskIfNone(sessionId: string, runId: string): ActiveTask | null {
+    const existing = this.sessionToTask.get(sessionId);
+    if (existing) return existing;
+    const nextIndex = this.runTaskCount.get(runId) ?? 0;
+    this.runTaskCount.set(runId, nextIndex + 1);
+    const task: ActiveTask = {
+      id: randomUUID(),
+      runId,
+      index: nextIndex,
+      startedAt: Date.now(),
+      firstTurnIndex: null,
+      lastTurnIndex: null,
+    };
+    this.sessionToTask.set(sessionId, task);
+    try {
+      this.store.insertTask({
+        id: task.id,
+        runId,
+        taskIndex: task.index,
+        boundarySignal: 'open',
+        startedAt: task.startedAt,
+      });
+    } catch (err) {
+      debug('APME', `insertTask failed: ${String(err)}`);
+    }
+    return task;
+  }
+
+  /** Close the current task for a session, persisting boundary metadata.
+   *  No-op if no task is active. Fires `onTaskClosed` so the runner can
+   *  enqueue a task-level judge call. Tasks that never saw a turn
+   *  (firstTurnIndex === null) are deleted rather than left as noise. */
+  private closeTask(sessionId: string, boundarySignal: TaskBoundarySignal): void {
+    const task = this.sessionToTask.get(sessionId);
+    if (!task) return;
+    this.sessionToTask.delete(sessionId);
+
+    // Empty task: no turns ever attached. Drop the row so the dashboard
+    // doesn't show phantom entries from back-to-back boundary signals.
+    if (task.firstTurnIndex === null) {
+      try {
+        // Direct delete — no DAO for it; tasks FK is ON DELETE CASCADE.
+        // We reach through the store via a raw statement to avoid adding
+        // a dedicated method for this edge case.
+        (this.store as unknown as { db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } } | null }).db
+          ?.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+      } catch { /* ignore */ }
+      debug('APME', `closeTask ${task.id.slice(0, 8)} — empty, dropped`);
+      return;
+    }
+
+    // Derive task category from the run (best-effort). Turn-level categories
+    // may diverge, but for now tasks inherit from the run.
+    const run = this.store.getRun(task.runId);
+    const taskCategory = run?.taskCategory ?? null;
+
+    try {
+      this.store.updateTask(task.id, {
+        endedAt: Date.now(),
+        lastTurnIndex: task.lastTurnIndex ?? task.firstTurnIndex,
+        boundarySignal,
+        taskCategory,
+      });
+    } catch (err) {
+      debug('APME', `updateTask failed: ${String(err)}`);
+    }
+
+    debug('APME', `closeTask ${task.id.slice(0, 8)} signal=${boundarySignal} turns=${task.firstTurnIndex}..${task.lastTurnIndex}`);
+
+    // Notify listeners (runner enqueueTask is wired via apme/index.ts).
+    if (this.onTaskClosed) {
+      try {
+        this.onTaskClosed({
+          taskId: task.id,
+          runId: task.runId,
+          boundarySignal,
+          taskCategory,
+        });
+      } catch (err) {
+        debug('APME', `onTaskClosed listener threw: ${String(err)}`);
+      }
+    }
+  }
+
   /** Get the current run ID for a session (if any). */
   getRunId(sessionId: string): string | null {
     return this.sessionToRun.get(sessionId) ?? null;
   }
 
   /** Store Claude's response text on the current turn.
-   *  Falls back to the last closed turn if closeTurn() already ran (race with session exit). */
+   *  Falls back to the last closed turn if closeTurn() already ran (race with session exit).
+   *  Tags turns.efficiency_json.response_kind so the runner can skip tool-only / empty
+   *  turns — judging silence produces noise scores. */
   setTurnResponse(sessionId: string, response: string): void {
     if (!this.store.enabled) return;
     const turn = this.sessionToTurn.get(sessionId);
     const turnId = turn?.id ?? this.sessionToLastTurnId.get(sessionId);
     debug('APME', `setTurnResponse session=${sessionId.slice(0,8)} turnId=${turnId?.slice(0,8) ?? 'null'} respLen=${response.length}`);
     if (!turnId) return;
+    const trimmedLen = response.trim().length;
+    // Active-turn toolCalls is authoritative; after closeTurn() the counter is
+    // already flushed to the DB row, so we fetch from there instead.
+    const toolCalls = turn?.toolCalls
+      ?? ((this.store.getTurn(turnId)?.tool_calls as number | undefined) ?? 0);
+    const kind: 'text' | 'tool_only' | 'empty' = trimmedLen >= 1
+      ? 'text'
+      : (toolCalls > 0 ? 'tool_only' : 'empty');
+    const efficiencyJson = mergeEfficiencyJson(this.store.getTurn(turnId), { response_kind: kind });
     try {
-      this.store.updateTurn(turnId, { response: response.slice(0, 10_000) });
+      this.store.updateTurn(turnId, {
+        response: response.slice(0, 10_000),
+        efficiencyJson,
+      });
     } catch (err) { debug('APME', `setTurnResponse failed: ${String(err)}`); }
   }
 
@@ -197,11 +352,19 @@ export class ApmeCollector {
     if (!this.store.enabled) return;
     const turnId = this.sessionToLastTurnId.get(sessionId);
     if (!turnId) return;
-    // Only set if the turn doesn't already have a response
     const existing = this.store.getTurn(turnId);
     if (existing?.response) return;
+    const trimmedLen = response.trim().length;
+    const toolCalls = (existing?.tool_calls as number | undefined) ?? 0;
+    const kind: 'text' | 'tool_only' | 'empty' = trimmedLen >= 1
+      ? 'text'
+      : (toolCalls > 0 ? 'tool_only' : 'empty');
+    const efficiencyJson = mergeEfficiencyJson(existing, { response_kind: kind });
     try {
-      this.store.updateTurn(turnId, { response: response.slice(0, 10_000) });
+      this.store.updateTurn(turnId, {
+        response: response.slice(0, 10_000),
+        efficiencyJson,
+      });
     } catch { /* ignore */ }
   }
 
@@ -242,6 +405,9 @@ export class ApmeCollector {
     if (!runId) return null;
     const run = this.store.getRun(runId);
     if (!run) return null;
+    // The active task (if any) belongs to the run being closed; mark it as
+    // boundary=clear before closeRun tears everything down.
+    this.closeTask(sessionId, 'clear');
     // Close current run (no exitCode — session is still alive)
     this.closeRun(sessionId, undefined, projectPath);
     // Open a new run with the same session parameters
@@ -269,10 +435,14 @@ export class ApmeCollector {
     if (!this.store.enabled) return null;
     const runId = this.sessionToRun.get(sessionId);
     if (!runId) return null;
-    // Close the last open turn before finalizing the run.
+    // Close the last open turn + task before finalizing the run.
     this.closeTurn(sessionId);
+    // splitRun already called closeTask('clear') before us, so this is usually
+    // a no-op in the split path. Direct closeRun (session exit) still needs it.
+    this.closeTask(sessionId, 'session_end');
     this.sessionToRun.delete(sessionId);
     this.sessionToLastTurnId.delete(sessionId);
+    this.runTaskCount.delete(runId);
 
     // Mark empty runs so the dashboard can filter them out.
     // Don't delete — FK constraints and concurrent access make deletion risky.
@@ -364,6 +534,31 @@ export class ApmeCollector {
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
 
+interface TodoItem { status: string; content?: string; activeForm?: string }
+
+/** Extract the todos array from a TodoWrite PostToolUse payload. Returns null
+ *  if the shape doesn't match (payload malformed, older CC versions). Accepts
+ *  `tool_input.todos` (hook standard) and `todos` (legacy flat shape). */
+function extractTodos(data: Record<string, unknown>): TodoItem[] | null {
+  const fromToolInput = (data.tool_input as Record<string, unknown> | undefined)?.todos;
+  const fromFlat = (data as Record<string, unknown>).todos;
+  const raw = fromToolInput ?? fromFlat;
+  if (!Array.isArray(raw)) return null;
+  const items: TodoItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const status = typeof e.status === 'string' ? e.status : '';
+    if (!status) continue;
+    items.push({
+      status,
+      content: typeof e.content === 'string' ? e.content : undefined,
+      activeForm: typeof e.activeForm === 'string' ? e.activeForm : undefined,
+    });
+  }
+  return items;
+}
+
 function readGitHead(cwd?: string): string | null {
   if (!cwd) return null;
   try {
@@ -386,4 +581,24 @@ function safeStringify(v: unknown): string {
   } catch {
     return '"<unserializable>"';
   }
+}
+
+/** Merge `patch` into an existing turns.efficiency_json string without losing
+ *  sibling keys. Returns a JSON string suitable for the column. Unparseable
+ *  existing values are replaced outright. */
+function mergeEfficiencyJson(
+  turn: Record<string, unknown> | null,
+  patch: Record<string, unknown>,
+): string {
+  let base: Record<string, unknown> = {};
+  const raw = turn?.efficiency_json;
+  if (typeof raw === 'string' && raw.length > 0) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        base = parsed as Record<string, unknown>;
+      }
+    } catch { /* replace */ }
+  }
+  return JSON.stringify({ ...base, ...patch });
 }

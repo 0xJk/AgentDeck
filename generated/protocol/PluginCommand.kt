@@ -28,6 +28,12 @@ private val klaxon = Klaxon()
  * bridge. Enables direct control of a specific session from any client (MenuBarExtra,
  * Dashboard, etc.)
  *
+ * Self-announcement from a rich UI client (Elgato Stream Deck plugin, a future Android
+ * companion app, etc.) so the daemon can surface the hardware under its rightful Downstream
+ * row instead of treating every WS connection as an anonymous dashboard viewer. Sent once
+ * per connect, immediately after the WebSocket opens. Daemon wipes the cached entry when
+ * the WS connection closes.
+ *
  * APME vibe check — user approves or rejects a completed run's output quality.
  *
  * Ask bridge/daemon for model recommendation given a task context.
@@ -46,6 +52,22 @@ data class PluginCommand (
     val sessionID: String? = null,
 
     val command: Command? = null,
+
+    /**
+     * Human-readable label for the surface (appears verbatim in diagnostics).
+     */
+    val clientLabel: String? = null,
+
+    /**
+     * Short stable id — "streamdeck-plugin", "android-companion", etc.
+     */
+    val clientType: String? = null,
+
+    /**
+     * Physical device roster this client is driving, if any.
+     */
+    val devices: List<Device>? = null,
+
     val note: String? = null,
 
     @Json(name = "runId")
@@ -115,6 +137,19 @@ data class Command (
     val type: String
 )
 
+data class Device (
+    val columns: Double? = null,
+
+    /**
+     * "streamdeck" | "streamdeckplus" | "streamdeckmini" | ... — free-form.
+     */
+    val family: String? = null,
+
+    val id: String,
+    val name: String,
+    val rows: Double? = null
+)
+
 enum class Direction(val value: String) {
     Down("down"),
     Up("up");
@@ -146,6 +181,7 @@ enum class Mode(val value: String) {
 enum class Type(val value: String) {
     ApmeRecommend("apme_recommend"),
     ApmeVibe("apme_vibe"),
+    ClientRegister("client_register"),
     Diag("diag"),
     Escape("escape"),
     FocusSession("focus_session"),
@@ -165,6 +201,7 @@ enum class Type(val value: String) {
         public fun fromValue(value: String): Type = when (value) {
             "apme_recommend"  -> ApmeRecommend
             "apme_vibe"       -> ApmeVibe
+            "client_register" -> ClientRegister
             "diag"            -> Diag
             "escape"          -> Escape
             "focus_session"   -> FocusSession

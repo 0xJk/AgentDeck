@@ -116,7 +116,8 @@
             "deterministic",
             "llm_judge",
             "vibe",
-            "turn_judge"
+            "turn_judge",
+            "task_judge"
           ],
           "type": "string"
         },
@@ -789,6 +790,9 @@
         "alive": {
           "type": "boolean"
         },
+        "effortLevel": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -885,6 +889,7 @@
           "enum": [
             "gateway_not_found",
             "gateway_reachable",
+            "gateway_token_missing",
             "pairing_required",
             "approval_pending",
             "connected",
@@ -922,6 +927,11 @@
         },
         "modelName": {
           "type": "string"
+        },
+        "moduleHealth": {
+          "additionalProperties": {},
+          "description": "Daemon-owned hardware/module health, intentionally loose for cross-version clients",
+          "type": "object"
         },
         "navigable": {
           "type": "boolean"

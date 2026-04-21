@@ -31,6 +31,7 @@ export interface EvalJob {
 export interface EvalJobResult {
   runId: string;
   turnId?: string;   // set for turn-level evals
+  taskId?: string;   // set for task-level evals
   layer1Ran: boolean;
   layer2Ran: boolean;
   overall?: number;
@@ -105,6 +106,122 @@ export class ApmeRunner {
     void this.runTurnEval(job);
   }
 
+  /** Judge a closed task (group of turns between boundary signals —
+   *  TodoWrite all-completed, /clear, session_end). Fires-and-forgets;
+   *  task-level summary and axis scores are persisted in tasks + evals. */
+  enqueueTask(job: { runId: string; taskId: string; category?: string; boundarySignal?: string }): void {
+    if (!this.store.enabled) return;
+    void this.runTaskEval(job);
+  }
+
+  private async runTaskEval({ runId, taskId, category, boundarySignal }: { runId: string; taskId: string; category?: string; boundarySignal?: string }): Promise<void> {
+    const cfg = this.configOverride ?? loadApmeConfig();
+    if (!cfg.enabled) return;
+
+    const task = this.store.getTask(taskId);
+    if (!task) return;
+    const turns = this.store.listTurnsForTask(taskId);
+    if (turns.length === 0) return;
+
+    // Skip tasks whose turns carry no meaningful text — all tool_only/empty.
+    const anyText = turns.some((t) => {
+      const kind = readResponseKind(t);
+      if (kind === 'text') return true;
+      const prompt = typeof t.prompt === 'string' ? t.prompt.trim() : '';
+      return prompt.length > 0;
+    });
+    if (!anyText) {
+      debug('APME', `runTaskEval skip task=${taskId.slice(0, 8)} — no text`);
+      return;
+    }
+
+    // Select rubric: task_rollup preferred, fall back to category, then general.
+    const rubric = this.store.getCurrentRubric('task_rollup')
+      ?? (category ? this.store.getCurrentRubric(category) : null)
+      ?? this.store.getCurrentRubric('general');
+    if (!rubric) return;
+
+    const TURN_CAP = 10;
+    const clipped = turns.slice(0, TURN_CAP);
+    const lines: string[] = [];
+    for (const t of clipped) {
+      const idx = t.turn_index as number;
+      const prompt = ((t.prompt as string | null) ?? '').slice(0, 1500);
+      const response = ((t.response as string | null) ?? '').slice(0, 2500);
+      lines.push(`[Turn ${idx}] User: ${prompt || '(empty)'}`);
+      if (response) lines.push(`Agent: ${response}`);
+    }
+    if (turns.length > TURN_CAP) {
+      lines.push(`… (${turns.length - TURN_CAP} more turns omitted)`);
+    }
+
+    const judgePrompt = [
+      rubric.prompt,
+      '',
+      '--- TASK CONTEXT ---',
+      `task_category: ${category ?? task.taskCategory ?? 'unknown'}`,
+      `turn_count: ${turns.length}`,
+      `boundary_signal: ${boundarySignal ?? task.boundarySignal}`,
+      '',
+      '--- TURNS ---',
+      ...lines,
+      '',
+      'Respond with strict JSON only.',
+    ].join('\n');
+
+    try {
+      const judgeText = this.judgeOverride
+        ? await this.judgeOverride(judgePrompt, cfg.judge)
+        : await callJudge(judgePrompt, cfg.judge);
+      const parsed = parseJudgeJson(judgeText);
+      if (!parsed) {
+        debug('APME', `runTaskEval parse failed task=${taskId.slice(0, 8)}`);
+        return;
+      }
+
+      const now = Date.now();
+      const judgeModel = effectiveJudgeModelTag(cfg.judge);
+      for (const [axis, score] of Object.entries(parsed.scores)) {
+        this.store.insertEvalForTask({
+          id: 0,
+          runId, taskId,
+          layer: 'task_judge',
+          metric: axis,
+          score,
+          raw: axis === 'overall'
+            ? JSON.stringify({
+                summary: parsed.summary,
+                reasoning: parsed.reasoning,
+                done: parsed.done,
+                missed: parsed.missed,
+              })
+            : null,
+          rubricVer: rubric.version,
+          judgeModel,
+          createdAt: now,
+        });
+      }
+
+      this.store.updateTask(taskId, {
+        summary: parsed.summary ?? null,
+        compositeScore: parsed.scores.overall ?? null,
+        notesJson: JSON.stringify({
+          reasoning: parsed.reasoning,
+          done: parsed.done,
+          missed: parsed.missed,
+        }),
+      });
+
+      debug('APME', `task eval ${taskId.slice(0, 8)}: overall=${parsed.scores.overall} summary=${parsed.summary?.slice(0, 40) ?? '-'}`);
+      for (const fn of this.listeners) {
+        try { fn({ runId, taskId, layer1Ran: false, layer2Ran: true, overall: parsed.scores.overall }); }
+        catch { /* ignore */ }
+      }
+    } catch (err) {
+      debug('APME', `task eval error taskId=${taskId.slice(0, 8)}: ${String(err)}`);
+    }
+  }
+
   private async runTurnEval({ runId, turnId, category }: { runId: string; turnId: string; category?: string }): Promise<void> {
     const cfg = this.configOverride ?? loadApmeConfig();
     if (!cfg.enabled) return;
@@ -114,6 +231,15 @@ export class ApmeRunner {
     const prompt = (turn.prompt as string | null) ?? '';
     const response = (turn.response as string | null) ?? '';
     if (!prompt && !response) return; // nothing to judge
+    // Skip turns the agent answered with tool calls only (or not at all) —
+    // the rubric prompt can't score "silence" meaningfully and doing so
+    // generates noise scores. `tool_only` / `empty` tags are set by the
+    // collector in turns.efficiency_json.
+    const kind = readResponseKind(turn);
+    if (kind === 'tool_only' || kind === 'empty') {
+      debug('APME', `runTurnEval skip turn=${turnId.slice(0,8)} kind=${kind}`);
+      return;
+    }
 
     // Select rubric by category (conversation/planning/research/review)
     const rubric = (category ? this.store.getCurrentRubric(category) : null)
@@ -437,6 +563,7 @@ interface ParsedJudge {
   reasoning: string;
   done?: string[];    // items the agent completed
   missed?: string[];  // items the agent missed
+  summary?: string;   // task-level one-line summary (task_rollup rubric)
 }
 
 const NON_CODE_CATEGORIES = new Set(['conversation', 'planning', 'research', 'review']);
@@ -483,6 +610,27 @@ export function buildJudgePrompt(
   return sections.join('\n');
 }
 
+/** Response classification stored by ApmeCollector under turns.efficiency_json.response_kind.
+ *  Drives which turns make it to the LLM judge — `tool_only` / `empty` are silence
+ *  to the judge and produce noise scores. Fallback is 'text' when the tag is missing
+ *  (older rows) but response content is non-trivial. */
+export type ResponseKind = 'text' | 'tool_only' | 'empty';
+
+export function readResponseKind(turn: Record<string, unknown>): ResponseKind {
+  const raw = turn.efficiency_json;
+  if (typeof raw === 'string' && raw.length > 0) {
+    try {
+      const parsed = JSON.parse(raw) as { response_kind?: unknown };
+      const k = parsed.response_kind;
+      if (k === 'text' || k === 'tool_only' || k === 'empty') return k;
+    } catch { /* fall through */ }
+  }
+  const response = typeof turn.response === 'string' ? turn.response.trim() : '';
+  const toolCalls = typeof turn.tool_calls === 'number' ? turn.tool_calls : 0;
+  if (response.length >= 1) return 'text';
+  return toolCalls > 0 ? 'tool_only' : 'empty';
+}
+
 function collectDiff(run: ApmeRunRow): string {
   if (!run.projectPath) return '';
   try {
@@ -509,6 +657,9 @@ export function effectiveJudgeModelTag(cfg: ApmeJudgeConfig): string {
     const pinned = loadMlxSettings().model;
     return `mlx:${pinned ?? cfg.model}`;
   }
+  // Must stay byte-identical with Swift's `ApmeJudgeFoundationModels.judgeModelLabel`
+  // so analytics queries aggregate FM evals across the Node and Swift stacks.
+  if (cfg.backend === 'foundationModels') return 'foundationModels:apple-intelligence';
   return `${cfg.backend}:${cfg.model}`;
 }
 
@@ -516,6 +667,20 @@ export async function callJudge(prompt: string, judgeCfg: ApmeJudgeConfig): Prom
   if (judgeCfg.backend === 'mlx') return callMlx(prompt, judgeCfg);
   if (judgeCfg.backend === 'openclaw') return callOpenClaw(prompt, judgeCfg);
   if (judgeCfg.backend === 'api') return callApi(prompt, judgeCfg);
+  if (judgeCfg.backend === 'foundationModels') {
+    try {
+      return await callFoundationModels(prompt, judgeCfg);
+    } catch (err) {
+      // Cost-sensitive default: do not silently route to a network backend.
+      // Only retry via MLX when the user explicitly opts in — otherwise
+      // propagate the error so the runner's try/catch skips this eval.
+      if (judgeCfg.fallbackToMlx) {
+        debug('APME', `foundationModels unavailable, fallback to MLX: ${String(err)}`);
+        return callMlx(prompt, judgeCfg);
+      }
+      throw err;
+    }
+  }
   throw new Error(`unknown judge backend: ${String(judgeCfg.backend)}`);
 }
 
@@ -580,6 +745,52 @@ async function callOpenClaw(prompt: string, cfg: ApmeJudgeConfig): Promise<strin
   return json.text;
 }
 
+/**
+ * Route a judge call to the Swift daemon's Foundation Models adapter.
+ *
+ * The actual on-device LLMSession lives in
+ * `apple/AgentDeck/Daemon/Apme/ApmeJudgeFoundationModels.swift`; this TS path
+ * just forwards the prompt. Available only when a Swift in-process daemon is
+ * running on the same machine (App Store macOS build). Node-only setups don't
+ * ship Foundation Models — callers should either opt into `fallbackToMlx` or
+ * accept the resulting eval skip.
+ *
+ * Shape contract:
+ *   Request  : POST /apme/judge/foundation-models { prompt: string }
+ *   Response : { text: string } | { error: "unavailable", reason: string }
+ */
+async function callFoundationModels(prompt: string, cfg: ApmeJudgeConfig): Promise<string> {
+  const url = cfg.endpoint ?? await resolveFoundationModelsUrl();
+  if (!url) throw new Error('foundationModels: no Swift daemon found — FM is only available in App Store macOS builds');
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!resp.ok) throw new Error(`foundationModels HTTP ${resp.status}`);
+  const json = await resp.json() as { text?: string; error?: string; reason?: string };
+  if (json.error) {
+    throw new Error(`foundationModels ${json.error}: ${json.reason ?? 'no reason'}`);
+  }
+  if (typeof json.text !== 'string' || json.text.length === 0) {
+    throw new Error('foundationModels returned empty text');
+  }
+  return json.text;
+}
+
+/** Best-effort resolver for the Swift daemon's FM endpoint. Returns null when
+ *  no Swift daemon (httpPort ≠ port) is reachable. */
+async function resolveFoundationModelsUrl(): Promise<string | null> {
+  // Lazy-require to avoid pulling session-registry into every test bundle
+  // that imports runner.ts for its pure helpers.
+  const { findDaemonPortAsync } = await import('../session-registry.js');
+  const info = await findDaemonPortAsync();
+  if (!info) return null;
+  const port = info.httpPort ?? info.port;
+  return `http://127.0.0.1:${port}/apme/judge/foundation-models`;
+}
+
 async function callApi(_prompt: string, _cfg: ApmeJudgeConfig): Promise<string> {
   // Anthropic API — opt-in only. Requires ANTHROPIC_API_KEY and the @anthropic-ai/sdk
   // package, neither of which we depend on by default. Surface a clear error so
@@ -603,7 +814,7 @@ export function parseJudgeJson(text: string): ParsedJudge | null {
   // planning: completeness/feasibility/clarity; etc.) A hardcoded whitelist
   // silently drops those, leaving only `overall` on turn_judge rows.
   const scores: Record<string, number> = {};
-  const RESERVED = new Set(['reasoning', 'done', 'missed', 'notes']);
+  const RESERVED = new Set(['reasoning', 'done', 'missed', 'notes', 'summary']);
   for (const [axis, v] of Object.entries(obj)) {
     if (RESERVED.has(axis)) continue;
     if (typeof v === 'number' && isFinite(v)) {
@@ -615,7 +826,12 @@ export function parseJudgeJson(text: string): ParsedJudge | null {
   const reasoning = typeof obj.reasoning === 'string' ? obj.reasoning : '';
   const done = Array.isArray(obj.done) ? (obj.done as unknown[]).filter((s): s is string => typeof s === 'string') : undefined;
   const missed = Array.isArray(obj.missed) ? (obj.missed as unknown[]).filter((s): s is string => typeof s === 'string') : undefined;
-  return { scores, reasoning, done, missed };
+  // `summary` is produced by the task_rollup rubric; one-line past-tense sentence.
+  // Clip defensively so a runaway model can't blow up the tasks.summary column.
+  const summary = typeof obj.summary === 'string' && obj.summary.trim().length > 0
+    ? obj.summary.trim().slice(0, 280)
+    : undefined;
+  return { scores, reasoning, done, missed, summary };
 }
 
 function clamp01(n: number): number {

@@ -3011,5 +3011,46 @@ describe('OutputParser', () => {
       p.feed('Low effort ← → to adjust\n');
       expect(p.getEffortLevel()).toBe('low');
     });
+
+    // Claude Code 2.1+ effort variants exposed via /model
+    it('detects "Max effort" (Opus 4.7 variant)', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('▌ Max effort ← → to adjust\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'max' });
+    });
+
+    it('detects "xhigh effort" (Opus 4.7 variant)', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('▌ xhigh effort ← → to adjust\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'xhigh' });
+    });
+
+    it('detects "default effort" (per-model default variant)', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('Set model to Opus 4.7 (1M context) (default) with default effort\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'default' });
+    });
+
+    it('detects "fast effort" (Opus 4.6 variant)', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('▌ Fast effort ← → to adjust\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'fast' });
+    });
+
+    it('detects effort in /model confirmation line with max', () => {
+      const p = createParser();
+      const events = collectEvents(p, 'effort_level');
+      p.feed('Set model to Opus 4.7 (1M context) (default) with max effort\n');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ level: 'max' });
+    });
   });
 });
