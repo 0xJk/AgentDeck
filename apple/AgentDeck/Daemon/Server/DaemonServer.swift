@@ -74,6 +74,13 @@ final class DaemonServer {
     /// deviceId in OpenClaw Web UI" when pairing is still pending.
     private var cachedGatewayDeviceId: String?
 
+    // Gateway session state — updated ONLY from OpenClaw adapter events.
+    // Never written by Claude Code hook events so the two don't cross-contaminate.
+    // The shared `stateMachine` tracks Claude Code / hook-driven sessions only.
+    private var gatewaySessionState: String = "idle"
+    private var gatewayCurrentTool: String? = nil
+    private var gatewayModelName: String? = nil
+
     // State caches
     private var cachedSessions: [DaemonSessionEntry] = []
 
@@ -1765,6 +1772,10 @@ final class DaemonServer {
         cachedGatewayAuthStatus = cachedGatewayAvailable ? "gateway_reachable" : "gateway_not_found"
         cachedGatewayAuthRequestId = nil
         cachedGatewayAuthMessage = nil
+        gatewaySessionState = "idle"
+        gatewayCurrentTool = nil
+        // Note: gatewayModelName is intentionally preserved across brief disconnects
+        // so the model row doesn't flash empty on reconnect.
         _ = stateMachine.transition(trigger: "session_end", source: .hook)
         broadcastSessionsList()
         broadcastStateUpdate()
@@ -1780,19 +1791,21 @@ final class DaemonServer {
             let chatState = chatPayload["state"] as? String
             switch chatState {
             case "final", "aborted", "error":
-                _ = stateMachine.transition(trigger: "idle_detected", source: .pty)
+                gatewaySessionState = "idle"
+                gatewayCurrentTool = nil
             default:
-                _ = stateMachine.transition(trigger: "spinner_start", source: .pty)
+                gatewaySessionState = "processing"
             }
             broadcastStateUpdate()
         case "gateway_approval":
-            _ = stateMachine.transition(trigger: "permission_prompt", source: .pty)
+            gatewaySessionState = "awaiting_permission"
             if let payload = event["payload"] as? [String: Any] {
-                stateMachine.question = payload["message"] as? String
+                gatewayCurrentTool = payload["tool"] as? String
             }
             broadcastStateUpdate()
         case "gateway_approval_resolved":
-            _ = stateMachine.transition(trigger: "spinner_start", source: .pty)
+            gatewaySessionState = "processing"
+            gatewayCurrentTool = nil
             broadcastStateUpdate()
         case "gateway_presence":
             break // Heartbeat
@@ -1819,12 +1832,12 @@ final class DaemonServer {
         case "model_catalog":
             // Gateway sends full model catalog — replace entirely (same as Node.js)
             if let models = event["models"] as? [[String: Any]] {
-                let previousModelName = stateMachine.modelName
-                if stateMachine.modelName == nil, let defaultModel = event["defaultModel"] as? String {
-                    stateMachine.modelName = defaultModel
+                let defaultModel = event["defaultModel"] as? String
+                if let defaultModel, !defaultModel.isEmpty {
+                    gatewayModelName = defaultModel
                 }
                 let catalogChanged = updateModelCatalog(from: models, source: "gateway", replaceExisting: true)
-                if !catalogChanged, stateMachine.modelName != previousModelName {
+                if catalogChanged || defaultModel != nil {
                     broadcastStateUpdate()
                     broadcastUsage()
                 }
@@ -2146,18 +2159,14 @@ final class DaemonServer {
                 // a virtual OpenClaw session. Reachability/auth failures stay
                 // in the topology/status rows so the terrarium does not render
                 // a crayfish that looks like an active integration.
-                let smState = stateMachine.state.rawValue
-                let normalizedState = smState != "disconnected" ? smState : "idle"
                 var gatewaySession: [String: Any] = [
                     "id": "openclaw-gateway", "port": 18789,
                     "projectName": "OpenClaw", "agentType": "openclaw",
-                    "alive": true, "state": normalizedState,
+                    "alive": true, "state": gatewaySessionState,
                     "startedAt": "1970-01-01T00:00:00.000Z",
                 ]
-                if let tool = stateMachine.currentTool { gatewaySession["currentTool"] = tool }
-                if let modelName = stateMachine.modelName { gatewaySession["modelName"] = modelName }
-                if !stateMachine.options.isEmpty { gatewaySession["options"] = stateMachine.options }
-                if stateMachine.navigable { gatewaySession["navigable"] = true }
+                if let tool = gatewayCurrentTool { gatewaySession["currentTool"] = tool }
+                if let modelName = gatewayModelName { gatewaySession["modelName"] = modelName }
                 sessions.append(gatewaySession)
             }
         }
