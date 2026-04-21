@@ -364,7 +364,7 @@ final class OctopusCreature: Creature {
             context: &context,
             name: name,
             cx: cx,
-            bodyTopY: cy - bodyRadius,
+            bodyTopY: cy - bodyRadius * 0.583,
             bodyMetric: terrariumNameTagMetric(canvasWidth: canvasWidth, scale: scale),
             backgroundColor: TerrariumColors.claudeNameBg
         )

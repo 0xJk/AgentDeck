@@ -190,9 +190,9 @@ enum TerrariumLayout {
 
     // Crayfish
     static let crayfishWidthFraction: Float = 0.11
-    static let crayfishDefaultX: Float = 0.78
-    static let crayfishSittingY: Float = 0.64
-    static let crayfishRoutingY: Float = 0.42
+    static let crayfishDefaultX: Float = 0.68
+    static let crayfishSittingY: Float = 0.60
+    static let crayfishRoutingY: Float = 0.48
 
     // Cloud
     static let cloudBodyRadius: Float = 0.050
