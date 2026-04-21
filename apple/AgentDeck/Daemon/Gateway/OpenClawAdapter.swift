@@ -87,6 +87,7 @@ actor OpenClawAdapter {
 
     private var currentSessionKey: String?
     private var currentRunId: String?
+    private var promptCapturedForRunId: String? // guard: emit prompt entry once per runId
     private var pendingApprovalId: String?
     private struct RPCResponse: @unchecked Sendable {
         let ok: Bool
@@ -145,6 +146,7 @@ actor OpenClawAdapter {
         let wasConnected = isConnected
         isConnected = false
         sessionsSubscribed = false
+        promptCapturedForRunId = nil
         if wasConnected {
             self._onConnectionChanged?(false)
         }
@@ -228,6 +230,40 @@ actor OpenClawAdapter {
             if let sessionKey = payload["sessionKey"] as? String, !sessionKey.isEmpty {
                 currentSessionKey = sessionKey
             }
+            let chatState = payload["state"] as? String
+
+            // Gateway echoes the user's prompt in the first delta's `prompt` field.
+            // Capture it here so timeline shows the actual text regardless of whether
+            // sessions.messages.subscribe is working.
+            if let prompt = payload["prompt"] as? String, !prompt.isEmpty,
+               promptCapturedForRunId != currentRunId {
+                promptCapturedForRunId = currentRunId
+                let entry = DaemonTimelineEntry(
+                    ts: Self.payloadTimestamp(payload),
+                    type: "model_call",
+                    raw: String(prompt.prefix(200)),
+                    detail: prompt,
+                    approvalId: nil, status: nil,
+                    agentType: "openclaw", repeatCount: nil, automated: nil,
+                    runId: currentRunId
+                )
+                emitTimelineEntry(entry)
+            }
+
+            // Capture full assembled response on final so timeline shows real content.
+            if chatState == "final", let response = payload["response"] as? String, !response.isEmpty {
+                let entry = DaemonTimelineEntry(
+                    ts: Self.payloadTimestamp(payload),
+                    type: "model_response",
+                    raw: String(response.prefix(200)),
+                    detail: response,
+                    approvalId: nil, status: nil,
+                    agentType: "openclaw", repeatCount: nil, automated: nil,
+                    runId: currentRunId
+                )
+                emitTimelineEntry(entry)
+            }
+
             // Chat events (delta, final, aborted, error).
             // runId is promoted to the top level so DaemonServer can route it
             // to the APME collector without unwrapping the nested payload.
