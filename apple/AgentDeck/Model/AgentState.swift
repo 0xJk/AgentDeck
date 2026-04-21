@@ -205,6 +205,24 @@ struct ModuleHealthState: Sendable {
     var d200h: D200hHealth?
     var pixoo: PixooHealth?
     var serial: SerialHealth?
+    var streamDeck: StreamDeckHealth?
+}
+
+struct StreamDeckHealth: Sendable {
+    /// Physical Stream Deck devices the Elgato plugin is driving, as
+    /// reported via the `client_register` announcement.
+    var devices: [StreamDeckDeviceInfo] = []
+}
+
+struct StreamDeckDeviceInfo: Sendable, Hashable {
+    var id: String
+    var name: String
+    /// "streamdeck" | "streamdeckplus" | "streamdeckmini" | "streamdeckxl"
+    /// | "streamdeckpedal" | "streamdeck-unknown". Kept as a String so
+    /// future Elgato families decode without a model update.
+    var family: String?
+    var columns: Int?
+    var rows: Int?
 }
 
 struct AdbHealth: Sendable {

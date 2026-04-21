@@ -248,7 +248,7 @@ struct MenuBarTopologyList: View {
                         RailRow(
                             status: .ok,
                             name: esp32Name(for: info.board),
-                            subtitle: info.firmwareVersion.map { "\($0) · \(short)" } ?? short
+                            subtitle: short
                         )
                     }
                 }
@@ -314,6 +314,9 @@ struct MenuBarTopologyList: View {
         case "ips_35": return "ESP32 · IPS 3.5\""
         case "round_amoled": return "ESP32 · AMOLED"
         case "86box": return "ESP32 · 86box"
+        // Ulanzi TC001 is an ESP32 under the hood but sold as a finished
+        // product — surface the brand instead of the raw board name.
+        case "ulanzi_tc001": return "Ulanzi TC001"
         case .some(let b) where !b.isEmpty: return "ESP32 · \(b)"
         default: return "ESP32"
         }

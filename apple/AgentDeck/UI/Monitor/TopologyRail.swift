@@ -261,18 +261,31 @@ struct TopologyRail: View {
     private var ollamaRow: some View {
         guard let ollama = stateHolder.state.ollamaStatus else { return AnyView(EmptyView()) }
         let status: LEDStatus = ollama.available ? .ok : .dim
-        // Prefer "running" models (those with VRAM allocated) — these are
-        // the ones sessions can actually use without a cold-load delay. Fall
-        // back to the full installed list so the row is never empty when
-        // Ollama is available but idle, matching the old `TankStatusPanel`
-        // behavior.
-        let running = ollama.models.filter { $0.sizeVram > 0 }
-        let source = running.isEmpty ? ollama.models : running
+        // Split installed models into chat vs embed. Embedding models
+        // (bge-*, nomic-embed, bert family, …) never sit resident between
+        // requests — Ollama pulls them per-call and unloads via keep_alive.
+        // Framing them with a loaded/unloaded badge is misleading, so we
+        // group them separately with the "always on-demand" semantics.
+        let chat = ollama.models.filter { ($0.kind ?? "chat") != "embed" }
+        let embed = ollama.models.filter { ($0.kind ?? "chat") == "embed" }
+
         let subtitle: String? = {
-            if !source.isEmpty { return source.map(\.name).joined(separator: ", ") }
-            if ollama.available { return "installed, no models loaded" }
-            return "stopped"
+            guard ollama.available else { return "stopped" }
+            if chat.isEmpty && embed.isEmpty { return "installed, no models" }
+
+            var lines: [String] = []
+            if !chat.isEmpty {
+                let names = chat.map { m in
+                    m.sizeVram > 0 ? "\(m.name) (loaded)" : m.name
+                }.joined(separator: ", ")
+                lines.append("Chat: \(names)")
+            }
+            if !embed.isEmpty {
+                lines.append("Embed: \(embed.map(\.name).joined(separator: ", "))")
+            }
+            return lines.joined(separator: "\n")
         }()
+
         return AnyView(
             ProviderRow(
                 name: "Ollama",
@@ -362,6 +375,7 @@ struct TopologyRail: View {
         if health.d200h != nil { return true }
         if let pixoo = health.pixoo, pixoo.configuredDeviceCount > 0 { return true }
         if let serial = health.serial, !serial.connectedBoards.isEmpty { return true }
+        if let sd = health.streamDeck, !sd.devices.isEmpty { return true }
         return false
     }
 
@@ -374,6 +388,7 @@ struct TopologyRail: View {
     private var downstreamRows: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let health = stateHolder.state.moduleHealth {
+                streamDeckSection(health: health)
                 usbHidSection(health: health)
                 pixelDisplaySection(health: health)
                 usbSerialSection(health: health)
@@ -383,6 +398,47 @@ struct TopologyRail: View {
                 emptyDownstreamPlaceholder
             }
         }
+    }
+
+    /// Stream Deck plugin-driven hardware. Only renders when the Elgato
+    /// plugin has sent a `client_register` announcement — i.e. the plugin
+    /// is installed, running via Elgato's Stream Deck app, and has at
+    /// least one physical device paired. App Store build never probes
+    /// for the plugin or suggests installing it; this section simply
+    /// mirrors the devices the plugin volunteered.
+    @ViewBuilder
+    private func streamDeckSection(health: ModuleHealthState) -> some View {
+        if let sd = health.streamDeck, !sd.devices.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                downstreamSubheader("Stream Deck")
+                ForEach(sd.devices, id: \.id) { dev in
+                    DeviceRailRow(
+                        name: streamDeckDisplayName(for: dev),
+                        status: .ok,
+                        detail: streamDeckDetail(for: dev)
+                    )
+                }
+            }
+        }
+    }
+
+    private func streamDeckDisplayName(for dev: StreamDeckDeviceInfo) -> String {
+        if !dev.name.isEmpty { return dev.name }
+        switch dev.family {
+        case "streamdeckplus":   return "Stream Deck+"
+        case "streamdeck":       return "Stream Deck"
+        case "streamdeckmini":   return "Stream Deck Mini"
+        case "streamdeckxl":     return "Stream Deck XL"
+        case "streamdeckpedal":  return "Stream Deck Pedal"
+        default:                 return "Stream Deck"
+        }
+    }
+
+    private func streamDeckDetail(for dev: StreamDeckDeviceInfo) -> String {
+        if let c = dev.columns, let r = dev.rows, c > 0, r > 0 {
+            return "\(c)×\(r) keys"
+        }
+        return dev.family ?? ""
     }
 
     @ViewBuilder
@@ -450,7 +506,7 @@ struct TopologyRail: View {
                     DeviceRailRow(
                         name: esp32DisplayName(for: info.board),
                         status: .ok,
-                        detail: info.firmwareVersion.map { "\($0) · \(short)" } ?? short
+                        detail: short
                     )
                 }
             }
@@ -671,6 +727,9 @@ struct TopologyRail: View {
         case "ips_35": return "ESP32 · IPS 3.5\""
         case "round_amoled": return "ESP32 · AMOLED"
         case "86box": return "ESP32 · 86box"
+        // Ulanzi TC001 is an ESP32 under the hood but sold as a finished
+        // product, so surface the brand instead of the raw board name.
+        case "ulanzi_tc001": return "Ulanzi TC001"
         case .some(let b) where !b.isEmpty: return "ESP32 · \(b)"
         default: return "ESP32"
         }

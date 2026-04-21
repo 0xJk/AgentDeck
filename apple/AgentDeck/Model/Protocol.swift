@@ -294,6 +294,14 @@ struct OllamaModel: Codable, Sendable {
     let name: String
     let size: Int
     let sizeVram: Int
+    /// "chat" for generation models, "embed" for embedding models. Drives
+    /// per-category grouping in the topology rail so embedding models
+    /// (which never "sit loaded" in the generation sense — Ollama pulls
+    /// them per-request and unloads via keep_alive) don't get surfaced
+    /// as "not loaded" in UIs that only understand VRAM residency.
+    /// Defaults to "chat" for backward compatibility with state_update
+    /// events produced by pre-2026-04-21 daemons.
+    var kind: String? = nil
 }
 
 struct OllamaStatus: Codable, Sendable {

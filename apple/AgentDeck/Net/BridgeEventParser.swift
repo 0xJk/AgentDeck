@@ -127,6 +127,22 @@ enum BridgeEventParser {
             )
         }
 
+        if let sd = raw["streamDeck"] as? [String: Any] {
+            var sdDevices: [StreamDeckDeviceInfo] = []
+            if let arr = sd["devices"] as? [[String: Any]] {
+                for d in arr {
+                    sdDevices.append(StreamDeckDeviceInfo(
+                        id: d["id"] as? String ?? "",
+                        name: d["name"] as? String ?? "",
+                        family: d["family"] as? String,
+                        columns: d["columns"] as? Int,
+                        rows: d["rows"] as? Int
+                    ))
+                }
+            }
+            health.streamDeck = StreamDeckHealth(devices: sdDevices)
+        }
+
         if let serial = raw["serial"] as? [String: Any] {
             var boards: [SerialPortInfo] = []
             var ports: [String] = []
