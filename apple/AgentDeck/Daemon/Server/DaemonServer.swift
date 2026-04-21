@@ -1745,6 +1745,8 @@ final class DaemonServer {
                         DaemonLogger.shared.info("OpenClaw Gateway disconnected")
                         await self?.logStream.stop()
                         _ = self?.stateMachine.transition(trigger: "session_end", source: .hook)
+                        self?.gatewaySessionState = "idle"
+                        self?.gatewayCurrentTool = nil
                         self?.handleStateChanged()
                     }
                 }
@@ -1804,7 +1806,11 @@ final class DaemonServer {
             }
             broadcastStateUpdate()
         case "gateway_approval_resolved":
-            gatewaySessionState = "processing"
+            let resolvedPayload = event["payload"] as? [String: Any]
+            let decision = resolvedPayload?["decision"] as? String
+            // "deny" means tool execution was blocked — agent returns to idle.
+            // "allow" (or any other value) means execution resumes → processing.
+            gatewaySessionState = (decision == "deny") ? "idle" : "processing"
             gatewayCurrentTool = nil
             broadcastStateUpdate()
         case "gateway_presence":
@@ -1820,6 +1826,22 @@ final class DaemonServer {
         case "gateway_timeline_entry":
             if let entry = event["entry"] as? [String: Any] {
                 appendGatewayTimelineEntry(entry)
+                // session.tool entries arrive via sessions.messages.subscribe.
+                // Use them to keep gatewayCurrentTool in sync so the creature
+                // shows which tool is executing even when no chat event is in flight.
+                if entry["type"] as? String == "tool_exec" {
+                    let toolName = entry["raw"] as? String
+                    let status = entry["status"] as? String
+                    let hasOutput = entry["detail"] != nil
+                    if status == "complete" || status == "error" || hasOutput {
+                        if gatewayCurrentTool == toolName { gatewayCurrentTool = nil }
+                    } else {
+                        // pending / no status yet — tool is starting
+                        gatewayCurrentTool = toolName
+                        if gatewaySessionState == "idle" { gatewaySessionState = "processing" }
+                    }
+                    broadcastStateUpdate()
+                }
             }
         case "gateway_health":
             let payload = event["payload"] as? [String: Any]
@@ -2659,25 +2681,60 @@ final class DaemonServer {
     private func probeOllama() async {
         let previous = cachedOllamaStatus as NSDictionary?
         var success = false
-        do {
-            guard let psUrl = URL(string: "http://127.0.0.1:11434/api/ps") else { return }
-            var request = URLRequest(url: psUrl)
-            request.timeoutInterval = 2
-            let (data, _) = try await LocalProbeSession.shared.data(for: request)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let models = json["models"] as? [[String: Any]] {
-                cachedOllamaStatus = [
-                    "available": true,
-                    "models": models.map { [
-                        "name": $0["name"] ?? "",
-                        "size": $0["size"] ?? 0,
-                        "sizeVram": $0["size_vram"] ?? $0["sizeVram"] ?? 0,
-                    ] }
-                ]
-                success = true
+
+        // `/api/tags` returns every installed model with details (family,
+        // parameter_size); `/api/ps` returns only models currently resident
+        // in VRAM. We need both: tags is the source of truth for "what's
+        // available", ps overlays runtime VRAM usage. Embedding models
+        // (bert family, bge-*/e5-*/gte-* names, etc.) never sit in VRAM
+        // between requests — surfacing them as "not loaded" is misleading,
+        // so we classify each row as "chat" vs "embed" so the UI can
+        // group them without the loaded/not-loaded framing.
+        async let tagsData = fetchOllamaData(path: "/api/tags")
+        async let psData = fetchOllamaData(path: "/api/ps")
+        let tags = (await tagsData).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let ps = (await psData).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+
+        if let tags, let tagModels = tags["models"] as? [[String: Any]] {
+            var vramByName: [String: Int] = [:]
+            if let ps, let psModels = ps["models"] as? [[String: Any]] {
+                for m in psModels {
+                    guard let name = m["name"] as? String else { continue }
+                    vramByName[name] = m["size_vram"] as? Int ?? m["sizeVram"] as? Int ?? 0
+                }
             }
-        } catch {
-            // Swallow; handled via success flag below.
+            cachedOllamaStatus = [
+                "available": true,
+                "models": tagModels.map { m -> [String: Any] in
+                    let name = m["name"] as? String ?? ""
+                    let family = (m["details"] as? [String: Any])?["family"] as? String
+                    return [
+                        "name": name,
+                        "size": m["size"] ?? 0,
+                        "sizeVram": vramByName[name] ?? 0,
+                        "kind": Self.classifyOllamaKind(name: name, family: family),
+                    ]
+                }
+            ]
+            success = true
+        } else if let ps, let psModels = ps["models"] as? [[String: Any]] {
+            // /api/tags failed but /api/ps succeeded — still report Ollama
+            // as available (we just won't know about unloaded installed
+            // models this cycle).
+            cachedOllamaStatus = [
+                "available": true,
+                "models": psModels.map { m -> [String: Any] in
+                    let name = m["name"] as? String ?? ""
+                    let family = (m["details"] as? [String: Any])?["family"] as? String
+                    return [
+                        "name": name,
+                        "size": m["size"] ?? 0,
+                        "sizeVram": m["size_vram"] ?? m["sizeVram"] ?? 0,
+                        "kind": Self.classifyOllamaKind(name: name, family: family),
+                    ]
+                }
+            ]
+            success = true
         }
 
         if success {
@@ -2698,6 +2755,40 @@ final class DaemonServer {
             broadcastStateUpdate()
             broadcastUsage()
         }
+    }
+
+    /// Fetch `http://127.0.0.1:11434<path>` as raw Data with a 2s timeout.
+    /// Parsing is deferred to the caller so the return type stays Sendable
+    /// across the `async let` parallelism boundary in `probeOllama`.
+    /// Returns nil on any network error.
+    private nonisolated func fetchOllamaData(path: String) async -> Data? {
+        guard let url = URL(string: "http://127.0.0.1:11434\(path)") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        guard let (data, _) = try? await LocalProbeSession.shared.data(for: request) else {
+            return nil
+        }
+        return data
+    }
+
+    /// Classify an Ollama model as "chat" (text generation) or "embed"
+    /// (embedding-only). Uses `details.family` as the primary signal and
+    /// falls back to well-known embed name patterns for older Ollama
+    /// builds that don't surface family. Embedding families Ollama
+    /// produces: `bert`, `nomic-bert`, `distilbert`, `roberta`.
+    private static func classifyOllamaKind(name: String, family: String?) -> String {
+        if let family = family?.lowercased(),
+           ["bert", "nomic-bert", "distilbert", "roberta"].contains(family) {
+            return "embed"
+        }
+        let lower = name.lowercased()
+        let embedMarkers = [
+            "bge-", "-embed", "embed-", "nomic-embed", "mxbai-embed",
+            "snowflake-arctic-embed", "all-minilm", "gte-",
+        ]
+        if embedMarkers.contains(where: { lower.contains($0) }) { return "embed" }
+        if lower.hasPrefix("e5-") || lower.hasPrefix("e5:") { return "embed" }
+        return "chat"
     }
 
     @MainActor
