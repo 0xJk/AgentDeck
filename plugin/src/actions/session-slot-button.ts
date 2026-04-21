@@ -132,11 +132,12 @@ function stopAnimation(): void {
   }
 }
 
-/** Check if any visible session needs animation (AWAITING state) */
+/** Check if any visible session needs animation (AWAITING pulse or PROCESSING flowing border) */
 function needsAnimation(): boolean {
   if (manager.view === 'detail') return false; // Detail view doesn't animate session buttons
   for (const session of manager.sessions) {
     if (session.state?.startsWith('awaiting')) return true;
+    if (session.state === 'processing') return true;
   }
   return false;
 }

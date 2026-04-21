@@ -87,18 +87,33 @@ export function renderSessionSlot(
 
   let glowBorder = '';
   let askDot = '';
-  if (isAsking) {
-    const pulseOpacity = 0.4 + 0.5 * Math.abs(Math.sin(animFrame * 0.15));
-    defs += `
-      <filter id="pg-${animFrame}" x="-10%" y="-10%" width="120%" height="120%">
-        <feGaussianBlur in="SourceGraphic" stdDeviation="2"/>
+  const filterId = `pg-${animFrame}`;
+  const blurDef = `
+      <filter id="${filterId}" x="-10%" y="-10%" width="120%" height="120%">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="2.4"/>
       </filter>
     `;
-    glowBorder = `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="2.5" opacity="${pulseOpacity.toFixed(2)}" filter="url(#pg-${animFrame})"/>`;
+  if (isAsking) {
+    const pulseOpacity = 0.55 + 0.45 * Math.abs(Math.sin(animFrame * 0.15));
+    defs += blurDef;
+    // Thick outer glow + crisp inner ring — distinct "breathing" solid border.
+    glowBorder =
+      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="4.5" opacity="${pulseOpacity.toFixed(2)}" filter="url(#${filterId})"/>` +
+      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="1.5" opacity="${(pulseOpacity * 0.9).toFixed(2)}"/>`;
     askDot = `
-      <circle cx="114" cy="24" r="5" fill="#F5B942" filter="url(#pg-${animFrame})"/>
+      <circle cx="114" cy="24" r="5" fill="#F5B942" filter="url(#${filterId})"/>
       <circle cx="114" cy="24" r="3" fill="#ffffff" />
     `;
+  } else if (isWorking) {
+    // Flowing-light dashed border. On SD/SD+ the 150ms animation tick advances
+    // animFrame → dashoffset drifts → chasing light. On D200H there is no
+    // frame loop so the same SVG renders as a thick dashed glow ring.
+    const perimeter = 128 * 4; // approx perimeter of inner rounded rect
+    const dashOffset = ((animFrame * 4) % perimeter).toFixed(0);
+    defs += blurDef;
+    glowBorder =
+      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="4.5" stroke-dasharray="22 14" stroke-dashoffset="-${dashOffset}" opacity="0.85" filter="url(#${filterId})"/>` +
+      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="1.5" stroke-dasharray="22 14" stroke-dashoffset="-${dashOffset}" opacity="0.95"/>`;
   }
 
   // Simplified Agent watermark at bottom-right
@@ -110,10 +125,11 @@ export function renderSessionSlot(
   // Left Edge Color Strip
   const leftStrip = `<rect x="8" y="8" width="4" height="128" rx="2" fill="${isWorking ? '#F5B942' : isAsking ? '#F87171' : p1}"/>`;
 
-  const sparkAngle = (animFrame * 3) % 360;
-  const spinner = isWorking ? `<g transform="translate(114, 34) rotate(${sparkAngle}) translate(-8,-8)"><path d="M8,0 L10,5 L16,8 L10,11 L8,16 L6,11 L0,8 L6,5 Z" fill="${colorText}" /></g>` : '';
+  // Border is now the primary working/awaiting signal — no tiny spinner glyph.
+  const spinner = '';
 
-  const badgeObj = !isAsking ? `
+  // ACT badge only on IDLE — WORKING has the flowing border, AWAITING has the pulse.
+  const badgeObj = isIdle ? `
     <rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" />
     <text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">ACT</text>
   ` : '';

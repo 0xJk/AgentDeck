@@ -1461,20 +1461,17 @@ private enum D200hRenderer {
             let projName = session.displayName.isEmpty ? session.agentType : String(session.displayName.prefix(14))
 
             let border: ButtonSlot.BorderStyle
+            let isStable = d200hStableStockHidEnabled()
+            // In stable-stock mode the animation loop is forcibly disabled
+            // (see setNeedsAnimation). Pin the pulse frame to a sin-peak so the
+            // frozen snapshot renders bright instead of landing on a dim phase.
+            let pulseFrame = isStable ? 5 : animFrame  // sin(5*0.3) ≈ 0.997
             if session.isAwaiting {
-                if d200hStableStockHidEnabled() {
-                    border = .solid(color: sColor)
-                } else {
-                    border = .awaitingPulse(color: sColor, frame: animFrame)
-                    needsAnim = true
-                }
+                border = .awaitingPulse(color: sColor, frame: pulseFrame)
+                needsAnim = needsAnim || !isStable
             } else if session.isProcessing {
-                if d200hStableStockHidEnabled() {
-                    border = .solid(color: sColor)
-                } else {
-                    border = .processingDash(color: sColor, frame: animFrame)
-                    needsAnim = true
-                }
+                border = .processingDash(color: sColor, frame: animFrame)
+                needsAnim = needsAnim || !isStable
             } else {
                 border = .none
             }
@@ -2267,10 +2264,19 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
     case .processingDash(let color, let frame):
         let perim = 2 * (s - pad * 2) + 2 * (s - pad * 2)
         let offset = CGFloat((frame * 25) % Int(perim))
+        // Outer soft glow pass — gives the "flowing light" impression even
+        // when animation is frozen (stable-stock mode).
+        ctx.setShadow(offset: .zero, blur: 8, color: color.copy(alpha: 0.55))
         ctx.setStrokeColor(color)
-        ctx.setAlpha(0.75)
-        ctx.setLineWidth(3)
+        ctx.setAlpha(0.85)
+        ctx.setLineWidth(5)
         ctx.setLineDash(phase: offset, lengths: [50, 70])
+        ctx.addPath(innerPath)
+        ctx.strokePath()
+        // Crisp inner highlight pass
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        ctx.setAlpha(0.95)
+        ctx.setLineWidth(2)
         ctx.addPath(innerPath)
         ctx.strokePath()
         ctx.setAlpha(1.0)
