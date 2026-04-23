@@ -95,11 +95,11 @@ enum IntegrationCatalog {
         displayName: "Codex (ChatGPT)",
         kind: .accountLinked,
         iconSystemName: "person.badge.key",
-        iconAssetName: "CreatureCodex",
-        // Codex / OpenAI brand reads as a soft cloud-blue in the
-        // Dashboard — keeping the same tone here so the row matches
-        // the creature dot next to running Codex sessions.
-        iconTint: Color(red: 0.38, green: 0.40, blue: 0.88),
+        // OpenAI brand mark reads clearer than the Codex creature in a
+        // Settings row — users recognise "Codex = ChatGPT = OpenAI" by
+        // the hex logo before they decode the creature silhouette.
+        iconAssetName: "BrandOpenAI",
+        iconTint: Color(red: 0.92, green: 0.92, blue: 0.94),
         oneLineHelp: codexOneLineHelp,
         connectInstructions: codexConnectInstructions
     )
