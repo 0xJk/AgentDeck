@@ -25,21 +25,30 @@ struct AppleWatchPreview: View {
                             .offset(x: 92, y: -32)
                     )
                 // Screen
-                RoundedRectangle(cornerRadius: 42, style: .continuous)
-                    .fill(Color.black)
-                    .frame(width: 160, height: 200)
-                    .overlay(
-                        VStack(spacing: 10) {
-                            PreviewCreature(agent: selection.agent, state: selection.state, size: 72)
-                            Text(stateLabel)
-                                .font(.system(size: 12, weight: .heavy, design: .rounded))
-                                .foregroundStyle(StateColors.color(for: selection.state.sessionStateStringForUI))
-                            Text("\(selection.sessionCount) session\(selection.sessionCount == 1 ? "" : "s")")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.7))
-                        }
-                        .padding()
-                    )
+                ZStack {
+                    RoundedRectangle(cornerRadius: 42, style: .continuous)
+                        .fill(LinearGradient(
+                            colors: [TerrariumColors.deepSea, TerrariumColors.midWater, TerrariumColors.shallowWater],
+                            startPoint: .top, endPoint: .bottom))
+                    
+                    GeometryReader { geo in
+                        PreviewCreature(agent: selection.agent, state: selection.state, size: min(geo.size.width, geo.size.height) * 0.45)
+                            .position(x: geo.size.width * 0.55, y: geo.size.height * 0.45)
+                    }
+
+                    VStack(spacing: 4) {
+                        Spacer()
+                        Text(stateLabel)
+                            .font(.system(size: 12, weight: .heavy, design: .rounded))
+                            .foregroundStyle(StateColors.color(for: selection.state.sessionStateStringForUI))
+                        Text("\(selection.sessionCount) session\(selection.sessionCount == 1 ? "" : "s")")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                    .padding(.bottom, 20)
+                }
+                .frame(width: 160, height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 42, style: .continuous))
             }
             Text("Apple Watch Series 11 46mm")
                 .font(.system(size: 11, design: .monospaced))
@@ -96,10 +105,12 @@ struct IPadLandscapePreview: View {
                         ZStack {
                             RoundedRectangle(cornerRadius: 10)
                                 .fill(LinearGradient(
-                                    colors: [Color(red: 0.08, green: 0.12, blue: 0.22),
-                                             Color(red: 0.03, green: 0.06, blue: 0.12)],
+                                    colors: [TerrariumColors.deepSea, TerrariumColors.midWater, TerrariumColors.shallowWater],
                                     startPoint: .top, endPoint: .bottom))
-                            PreviewCreature(agent: selection.agent, state: selection.state, size: 140)
+                            GeometryReader { geo in
+                                PreviewCreature(agent: selection.agent, state: selection.state, size: min(geo.size.width, geo.size.height) * 0.45)
+                                    .position(x: geo.size.width * 0.55, y: geo.size.height * 0.45)
+                            }
                         }
                     }
                 }
@@ -135,15 +146,19 @@ struct AndroidTabletPreview: View {
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.6))
                     }
-                    // Aquarium canvas (simplified 2x2 grid)
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
-                        ForEach(0..<4, id: \.self) { i in
-                            PreviewSessionTile(
-                                agent: i == 0 ? selection.agent : [PixooPreviewAgent.claudeCode, .codex, .opencode, .openclaw][i],
-                                state: i == 0 ? selection.state : .idle,
-                                size: 70
+                    // Aquarium canvas
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(LinearGradient(
+                                colors: [TerrariumColors.deepSea, TerrariumColors.midWater, TerrariumColors.shallowWater],
+                                startPoint: .top, endPoint: .bottom))
+                        GeometryReader { geo in
+                            PreviewCreature(
+                                agent: selection.agent,
+                                state: selection.state,
+                                size: min(geo.size.width, geo.size.height) * 0.45
                             )
-                            .opacity(i < selection.sessionCount ? 1 : 0.35)
+                            .position(x: geo.size.width * 0.55, y: geo.size.height * 0.45)
                         }
                     }
                     Spacer(minLength: 0)

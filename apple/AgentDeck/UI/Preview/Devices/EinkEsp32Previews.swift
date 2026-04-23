@@ -24,32 +24,43 @@ struct EinkMonoPreview: View {
                 bezelColor: Color(white: 0.85),
                 screenColor: Color(red: 0.95, green: 0.94, blue: 0.90)
             ) {
-                VStack(spacing: 10) {
-                    HStack {
-                        Text("AgentDeck").font(.system(size: 11, weight: .semibold, design: .serif))
-                        Spacer()
-                        Text("CREMAS")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.black.opacity(0.5))
+                ZStack {
+                    LinearGradient(
+                        colors: [Color(white: 0.85), Color(white: 0.90), Color(white: 0.95)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                    
+                    GeometryReader { geo in
+                        Image(creatureAsset)
+                            .resizable()
+                            .renderingMode(.template)
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fit)
+                            .foregroundStyle(.black.opacity(0.8))
+                            .frame(width: geo.size.width * 0.45)
+                            .opacity(selection.state == .disconnected ? 0.25 : 1)
+                            .position(x: geo.size.width * 0.55, y: geo.size.height * 0.45)
                     }
-                    .foregroundStyle(.black.opacity(0.85))
-                    Spacer()
-                    // Mono creature — tinted black, state written below
-                    Image(creatureAsset)
-                        .resizable()
-                        .renderingMode(.template)
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fit)
-                        .foregroundStyle(.black.opacity(0.8))
-                        .frame(width: 140, height: 140)
-                        .opacity(selection.state == .disconnected ? 0.25 : 1)
-                    Text(selection.agent.displayName)
-                        .font(.system(size: 13, weight: .bold, design: .serif))
-                        .foregroundStyle(.black)
-                    Text(stateLine)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.black.opacity(0.65))
-                    Spacer()
+
+                    VStack {
+                        HStack {
+                            Text("AgentDeck").font(.system(size: 11, weight: .semibold, design: .serif))
+                            Spacer()
+                            Text("CREMAS")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.black.opacity(0.5))
+                        }
+                        .foregroundStyle(.black.opacity(0.85))
+                        Spacer()
+                        VStack(spacing: 4) {
+                            Text(selection.agent.displayName)
+                                .font(.system(size: 13, weight: .bold, design: .serif))
+                                .foregroundStyle(.black)
+                            Text(stateLine)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.black.opacity(0.65))
+                        }
+                    }
                 }
             }
             .frame(width: 240, height: 320)
@@ -86,24 +97,38 @@ struct EinkColorPreview: View {
                 bezelColor: Color(white: 0.88),
                 screenColor: Color(red: 0.96, green: 0.95, blue: 0.88)
             ) {
-                VStack(spacing: 10) {
-                    HStack {
-                        Text("AgentDeck").font(.system(size: 11, weight: .semibold, design: .serif))
-                            .foregroundStyle(.black)
-                        Spacer()
-                        Text("PANTONE6")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.black.opacity(0.5))
+                ZStack {
+                    LinearGradient(
+                        colors: [Color(red: 0.80, green: 0.85, blue: 0.88),
+                                 Color(red: 0.90, green: 0.92, blue: 0.94),
+                                 Color(red: 0.96, green: 0.95, blue: 0.88)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+
+                    GeometryReader { geo in
+                        PreviewCreature(agent: selection.agent, state: selection.state, size: min(geo.size.width, geo.size.height) * 0.45)
+                            .position(x: geo.size.width * 0.55, y: geo.size.height * 0.45)
                     }
-                    Spacer()
-                    PreviewCreature(agent: selection.agent, state: selection.state, size: 150)
-                    Text(selection.agent.displayName)
-                        .font(.system(size: 13, weight: .bold, design: .serif))
-                        .foregroundStyle(StateColors.brand(agent: selection.agent.rawValue))
-                    Text(selection.state.displayName.uppercased())
-                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(StateColors.color(for: selection.state.sessionStateStringForUI))
-                    Spacer()
+
+                    VStack {
+                        HStack {
+                            Text("AgentDeck").font(.system(size: 11, weight: .semibold, design: .serif))
+                                .foregroundStyle(.black)
+                            Spacer()
+                            Text("PANTONE6")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.black.opacity(0.5))
+                        }
+                        Spacer()
+                        VStack(spacing: 4) {
+                            Text(selection.agent.displayName)
+                                .font(.system(size: 13, weight: .bold, design: .serif))
+                                .foregroundStyle(StateColors.brand(agent: selection.agent.rawValue))
+                            Text(selection.state.displayName.uppercased())
+                                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                                .foregroundStyle(StateColors.color(for: selection.state.sessionStateStringForUI))
+                        }
+                    }
                 }
             }
             .frame(width: 240, height: 320)

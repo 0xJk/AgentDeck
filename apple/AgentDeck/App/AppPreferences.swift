@@ -229,6 +229,23 @@ final class AppPreferences: ObservableObject, @unchecked Sendable {
     }
 
     #if os(macOS)
+    private static func defaultAntigravityDirectoryURL() -> URL? {
+        guard let pw = getpwuid(getuid()), let ptr = pw.pointee.pw_dir else { return nil }
+        let home = URL(fileURLWithPath: String(cString: ptr))
+        let candidates = [
+            "Library/Application Support/Antigravity/User/globalStorage",
+            "Library/Application Support/Antigravity",
+            "Library/Application Support",
+            "Library"
+        ]
+        let fm = FileManager.default
+        for sub in candidates {
+            let url = home.appendingPathComponent(sub, isDirectory: true)
+            if fm.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
     @discardableResult
     func chooseAntigravityDatabase() -> Bool {
         let panel = NSOpenPanel()
@@ -239,6 +256,10 @@ final class AppPreferences: ObservableObject, @unchecked Sendable {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.nameFieldStringValue = "state.vscdb"
+        panel.showsHiddenFiles = true
+        if let defaultDir = Self.defaultAntigravityDirectoryURL() {
+            panel.directoryURL = defaultDir
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         return storeAntigravityBookmark(for: url)
     }
