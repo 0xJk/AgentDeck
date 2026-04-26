@@ -64,19 +64,19 @@ struct TopologyRail: View {
     }
 
     /// Hub zone: continuous neon spine threading through a section-header-style
-    /// hub row. Replaces the old `▼` glyphs + boxed hub card. The 1pt spine
-    /// spans the zone height; the row's opaque background masks it where they
-    /// intersect, so visually the wire enters the row from above and exits
-    /// below.
+    /// hub row. Replaces the old `▼` glyphs + boxed hub card. The 1pt spine is
+    /// drawn as a `.background` of the padded hub row so it inherits the row's
+    /// height instead of expanding flex inside a VStack — the row's opaque
+    /// `TerrariumHUD.bg` then masks the spine middle, so the wire visually
+    /// enters from above and exits below.
     private var hubZone: some View {
-        ZStack {
-            Rectangle()
-                .fill(TerrariumHUD.tetraNeon.opacity(0.35))
-                .frame(width: 1)
-
-            hubRow
-        }
-        .padding(.vertical, 6)
+        hubRow
+            .padding(.vertical, 6)
+            .background(
+                Rectangle()
+                    .fill(TerrariumHUD.tetraNeon.opacity(0.35))
+                    .frame(width: 1)
+            )
     }
 
     private var hubRow: some View {
