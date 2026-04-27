@@ -107,7 +107,7 @@ struct DevicePreviewScreen: View {
         }
         .listStyle(.sidebar)
 #if os(macOS)
-        .onChange(of: daemonService.isUsingExternalDaemon) { _ in
+        .onChange(of: daemonService.isUsingExternalDaemon) { _, _ in
             if !pool.contains(selection.device), let first = pool.first {
                 selection.device = first
             }

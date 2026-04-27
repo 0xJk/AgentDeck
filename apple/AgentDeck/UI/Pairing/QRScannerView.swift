@@ -14,7 +14,7 @@
 // camera to scan QR codes for bridge pairing.").
 
 import SwiftUI
-import AVFoundation
+@preconcurrency import AVFoundation
 import UIKit
 
 struct QRScannerView: View {

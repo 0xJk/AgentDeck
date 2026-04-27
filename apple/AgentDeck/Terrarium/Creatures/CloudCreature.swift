@@ -203,11 +203,6 @@ final class CloudCreature: Creature {
             bottomColor = TerrariumColors.cloudDeep
         }
 
-        // Build bounding rect for gradient fill
-        let allMinX = lobeRects.map(\.minX).min() ?? cx
-        let allMinY = lobeRects.map(\.minY).min() ?? cy
-        let allMaxX = lobeRects.map(\.maxX).max() ?? cx
-        let allMaxY = lobeRects.map(\.maxY).max() ?? cy
         // 0. Outer edge glow — slightly expanded, behind body
         context.drawLayer { glowCtx in
             glowCtx.opacity = alpha * 0.12
