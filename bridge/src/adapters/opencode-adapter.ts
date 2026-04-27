@@ -74,9 +74,11 @@ export class OpenCodeAdapter extends PtyAdapter {
     // Start PTY (spawns opencode TUI with embedded server)
     await super.start(options);
 
-    // Wait for embedded server to be ready, then connect SSE
+    // Connect SSE overlay. Failures inside connectToEmbeddedServer surface
+    // their own stderr messages (timeout, health, subscribe). The outer
+    // catch only fires on unexpected throws — keep it loud regardless.
     this.connectToEmbeddedServer().catch((err) => {
-      log('SSE overlay connection failed (non-fatal):', err);
+      stderrLog(`[opencode] SSE overlay setup threw unexpectedly — TUI still works, state events missing: ${err}`);
     });
   }
 
@@ -125,7 +127,7 @@ export class OpenCodeAdapter extends PtyAdapter {
     }
 
     if (!ready) {
-      log('Embedded server did not start in time');
+      stderrLog(`[opencode] embedded server on :${this.serverPort} did not respond within 15s — TUI still works, state events missing`);
       return;
     }
 
@@ -136,7 +138,7 @@ export class OpenCodeAdapter extends PtyAdapter {
       const health = await this.client.health();
       log('SSE overlay connected to embedded server:', health.version);
     } catch (err) {
-      log('Health check failed:', err);
+      stderrLog(`[opencode] embedded server health check failed — TUI still works, state events missing: ${err}`);
       return;
     }
 
@@ -150,14 +152,15 @@ export class OpenCodeAdapter extends PtyAdapter {
         log('Tracking session:', existing.id, existing.title);
       }
     } catch (err) {
-      log('Session resolution failed:', err);
+      stderrLog(`[opencode] could not resolve active session — abort/interrupt may not target the right session: ${err}`);
     }
 
     // Wire SSE events
     this.wireSSEEvents();
 
-    // Start SSE subscription (runs indefinitely, auto-reconnects)
-    this.client.subscribe().catch((err) => log('SSE subscribe error:', err));
+    // Start SSE subscription (runs indefinitely, auto-reconnects on its own).
+    // First-attempt failure is loud; reconnects stay quiet to avoid log spam.
+    this.client.subscribe().catch((err) => stderrLog(`[opencode] SSE subscribe failed: ${err}`));
   }
 
   // ===== SSE Event Wiring =====

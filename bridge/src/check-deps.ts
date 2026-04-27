@@ -22,6 +22,12 @@ const AGENT_DEPS: Partial<Record<AgentType, DepCheck>> = {
     required: true,
     installHint: 'npm install -g @openai/codex',
   },
+  'opencode': {
+    name: 'opencode',
+    command: 'opencode --version',
+    required: true,
+    installHint: 'brew install sst/tap/opencode  (or: npm i -g opencode-ai)',
+  },
 };
 
 /** Shared optional dependencies */
