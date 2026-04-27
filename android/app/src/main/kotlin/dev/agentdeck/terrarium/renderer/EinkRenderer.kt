@@ -766,9 +766,9 @@ private fun drawEinkNameTag(
 }
 
 /**
- * E-ink cloud creature (Codex CLI) — single pill-shaped blob approximating Codex logo silhouette.
- * Uses drawOval primitives only (e-ink Canvas compat: no drawPath).
- * ">_" terminal prompt rendered in darker gray inside.
+ * E-ink cloud creature (Codex CLI) — 6-lobe clover/cloud silhouette.
+ * Uses filled circles only (e-ink Canvas compat: no SVG union path).
+ * ">_" terminal prompt rendered in high-contrast ink inside.
  *
  * Y position depends on state:
  *  - WORKING: hovers in the layout slot (upper swim area)
@@ -831,9 +831,11 @@ private fun drawEinkCloud(
         einkPick(GRAY_CLOUD_BODY, COLOR_CLOUD_BODY)
     }
 
-    // Body: 6-lobe clover matching tablet CloudCreature — same LOBE_OFFSETS/RADII.
-    // bodyRadius=0.055f gives lobes large enough to overlap (offset ≈ radius → solid clover).
-    val bodyRadius = w * 0.055f * scaleFactor
+    // Body: same six-lobe Codex cloud used on Stream Deck/D200H, but drawn with
+    // primitive circles for e-ink Canvas compatibility. Keep it a little larger
+    // than the tablet color renderer: e-ink loses fine detail and the prompt must
+    // stay readable from a desk distance.
+    val bodyRadius = w * 0.070f * scaleFactor
     val br = bodyRadius * breathScale
     paint.style = Paint.Style.FILL
     paint.color = bodyColor
@@ -841,7 +843,7 @@ private fun drawEinkCloud(
     // Tablet CloudCreature LOBE_OFFSETS (dx, dy as fraction of bodyRadius)
     val lobeDx = floatArrayOf(-0.14f, 0.16f, 0.32f, 0.14f, -0.16f, -0.32f)
     val lobeDy = floatArrayOf(-0.30f, -0.26f, -0.02f, 0.26f, 0.26f, -0.02f)
-    val lobeR  = floatArrayOf( 0.30f,  0.29f,  0.28f,  0.29f,  0.30f,  0.28f)
+    val lobeR  = floatArrayOf( 0.30f,  0.28f,  0.28f,  0.28f,  0.28f,  0.28f)
 
     for (i in 0 until 6) {
         canvas.drawCircle(cx + br * lobeDx[i], cy + br * lobeDy[i], br * lobeR[i], paint)
@@ -853,29 +855,24 @@ private fun drawEinkCloud(
     val bodyHeight = br * 0.60f  // top lobe at dy=-0.30 + radius 0.30
     val bodyExtentX = br * 0.60f // right lobe at dx=0.32 + radius 0.28
 
-    // Outline for e-ink edge definition
-    paint.style = Paint.Style.STROKE
-    paint.strokeWidth = 1.5f * scaleFactor
-    paint.color = einkPick(GRAY_CLOUD_PROMPT, COLOR_CLOUD_PROMPT)
-    for (i in 0 until 6) {
-        canvas.drawCircle(cx + br * lobeDx[i], cy + br * lobeDy[i], br * lobeR[i], paint)
-    }
-
-    // ">_" terminal prompt inside the clover body
+    // ">_" terminal prompt inside the cloud body. Draw this as vector strokes,
+    // not text, so e-ink devices do not rasterize it into tiny gray noise.
     if (state != OctopusVisualState.SLEEPING) {
-        paint.style = Paint.Style.FILL
+        paint.style = Paint.Style.STROKE
         paint.color = einkPick(GRAY_AIR, COLOR_AIR)
-        paint.textAlign = Paint.Align.CENTER
-        paint.textSize = br * 0.28f
-        paint.typeface = android.graphics.Typeface.MONOSPACE
-        val promptText = when {
-            state == OctopusVisualState.ASKING && animFrame % 4 >= 2 -> ">_"
-            state == OctopusVisualState.ASKING -> "> "
-            else -> ">_"
+        paint.strokeWidth = kotlin.math.max(2.5f * scaleFactor, br * 0.075f)
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeJoin = Paint.Join.ROUND
+
+        canvas.drawLine(cx - br * 0.18f, cy - br * 0.12f, cx + br * 0.05f, cy, paint)
+        canvas.drawLine(cx + br * 0.05f, cy, cx - br * 0.18f, cy + br * 0.12f, paint)
+        val showCursor = state != OctopusVisualState.ASKING || animFrame % 4 < 2
+        if (showCursor) {
+            canvas.drawLine(cx + br * 0.16f, cy + br * 0.12f, cx + br * 0.34f, cy + br * 0.12f, paint)
         }
-        canvas.drawText(promptText, cx, cy + paint.textSize * 0.3f, paint)
-        paint.textAlign = Paint.Align.LEFT
-        paint.typeface = android.graphics.Typeface.DEFAULT
+
+        paint.strokeCap = Paint.Cap.BUTT
+        paint.strokeJoin = Paint.Join.MITER
     }
 
     // Name tag above cloud (reuse the shared name tag renderer)

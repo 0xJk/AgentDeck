@@ -1,10 +1,16 @@
 package dev.agentdeck.ui.monitor
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -15,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -45,6 +52,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -127,6 +135,18 @@ fun MonitorScreen(
         dashState.agentState == AgentState.DISCONNECTED
 
     var showSettingsDialog by remember { mutableStateOf(false) }
+    // "Aquarium viewing" mode — when on, SessionListPanel + TopologyRail
+    // fade out so the user can watch the terrarium uninterrupted. Toggled
+    // by tapping empty water (mirrors ESP32 firmware aquarium screen).
+    var hudHidden by remember { mutableStateOf(false) }
+
+    // Pre-compute attention card visibility so we can gate the background
+    // tap detector — tapping outside the question card during an awaiting
+    // turn shouldn't accidentally collapse the HUD behind it.
+    val attentionVisible = !dev.agentdeck.util.EinkDetector.isEinkDevice() && run {
+        val awaiting = buildAwaitingList(dashState)
+        (awaiting.firstOrNull { it.id == dashState.sessionId } ?: awaiting.firstOrNull()) != null
+    }
 
     Box(
         modifier = Modifier
@@ -135,6 +155,21 @@ fun MonitorScreen(
     ) {
         // Layer 1: Terrarium background (always renders)
         ColorTerrariumBackground(terrariumState)
+
+        // Layer 1.5: Background tap detector — sits between terrarium and
+        // HUD so panel children (which don't consume taps) still fall
+        // through here. Gated:
+        //   • bridge disconnected → ConnectionOverlay owns the screen
+        //   • attention card up → user is mid-answer, tap-toggle off
+        if (!showDisconnected && !attentionVisible) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures { hudHidden = !hudHidden }
+                    },
+            )
+        }
 
         if (showDisconnected) {
             // Layer 2: Connection overlay when disconnected
@@ -156,8 +191,10 @@ fun MonitorScreen(
                 },
             )
         } else {
-            // Layer 2: HUD overlay panels
-            MonitorHUD(dashState = dashState)
+            // Layer 2: HUD overlay panels — left/right panels fade with
+            // hudHidden; AttentionTheater inside MonitorHUD always shows
+            // when applicable.
+            MonitorHUD(dashState = dashState, hudHidden = hudHidden)
 
             // Layer 3: Timeline over sand area
             TimelineStrip(
@@ -681,40 +718,71 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
 @Composable
 private fun MonitorHUD(
     dashState: DashboardState,
+    hudHidden: Boolean = false,
 ) {
     val systemBarsPadding = WindowInsets.systemBars.asPaddingValues()
     val scale = rememberMonitorLayoutScale()
-    Box(modifier = Modifier.fillMaxSize().padding(top = systemBarsPadding.calculateTopPadding())) {
-        // Top-left: Agent list (logo + sessions + mode)
-        SessionListPanel(
-            projectName = dashState.projectName,
-            agentType = dashState.agentType,
-            modelName = dashState.modelName,
-            effortLevel = dashState.effortLevel,
-            agentState = dashState.agentState,
-            sessionId = dashState.sessionId,
-            siblingSessions = dashState.siblingSessions,
-            workerSessionCount = dashState.workerSessionCount,
-            permissionMode = dashState.permissionMode,
-            scale = scale,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = scale.panelEdgeInset, top = scale.panelEdgeInset)
-                .widthIn(max = scale.sessionPanelMaxWidth),
-        )
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(top = systemBarsPadding.calculateTopPadding())) {
+        // Tablet-only: scale panel widths to a fraction of the available HUD
+        // width and cap at the preset max. Without the fraction, fixed
+        // 340+420dp panels overlap on portrait orientation (sw=800dp) and
+        // small 7" tablets (sw=600dp). The 0.26 / 0.32 ratios mirror the
+        // SwiftUI MonitorHUD (`min(geo.size.width * 0.22, 220)` etc.) so the
+        // Android tablet layout matches the macOS/iPad HUD proportionally
+        // while still benefiting from the wider tablet caps.
+        val parentWidth = maxWidth
+        val sessionPanelWidth = minOf(parentWidth * 0.26f, scale.sessionPanelMaxWidth)
+        val topologyPanelWidth = minOf(parentWidth * 0.32f, scale.topologyPanelMaxWidth)
+        // Top-left: Agent list (logo + sessions + mode). AnimatedVisibility
+        // both fades AND removes from composition when hidden so the
+        // collapsed panels stop intercepting any future tap dispatch.
+        AnimatedVisibility(
+            visible = !hudHidden,
+            enter = fadeIn(animationSpec = tween(durationMillis = 250)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 250)),
+            modifier = Modifier.align(Alignment.TopStart),
+        ) {
+            SessionListPanel(
+                projectName = dashState.projectName,
+                agentType = dashState.agentType,
+                modelName = dashState.modelName,
+                effortLevel = dashState.effortLevel,
+                agentState = dashState.agentState,
+                sessionId = dashState.sessionId,
+                siblingSessions = dashState.siblingSessions,
+                workerSessionCount = dashState.workerSessionCount,
+                permissionMode = dashState.permissionMode,
+                scale = scale,
+                modifier = Modifier
+                    .padding(start = scale.panelEdgeInset, top = scale.panelEdgeInset)
+                    .then(
+                        if (scale.isTablet) Modifier.width(sessionPanelWidth)
+                        else Modifier.widthIn(max = scale.sessionPanelMaxWidth)
+                    ),
+            )
+        }
 
         // Top-right: Relationship-centric topology rail replaces the former
         // TankStatusPanel. Shows upstream providers → AgentDeck hub →
         // downstream devices as a single vertical flow instead of disjoint
         // list boxes.
-        TopologyRail(
-            state = dashState,
-            scale = scale,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(end = scale.panelEdgeInset, top = scale.panelEdgeInset)
-                .widthIn(max = scale.topologyPanelMaxWidth),
-        )
+        AnimatedVisibility(
+            visible = !hudHidden,
+            enter = fadeIn(animationSpec = tween(durationMillis = 250)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 250)),
+            modifier = Modifier.align(Alignment.TopEnd),
+        ) {
+            TopologyRail(
+                state = dashState,
+                scale = scale,
+                modifier = Modifier
+                    .padding(end = scale.panelEdgeInset, top = scale.panelEdgeInset)
+                    .then(
+                        if (scale.isTablet) Modifier.width(topologyPanelWidth)
+                        else Modifier.widthIn(max = scale.topologyPanelMaxWidth)
+                    ),
+            )
+        }
 
         // Floating attention theater — renders whatever PromptOption[] the
         // bridge is currently surfacing. Suppressed on e-ink: the slow

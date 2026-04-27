@@ -89,7 +89,10 @@ fun TabletSettingsDialog(
                     color = Color.White,
                 )
 
-                // Connection section
+                // Connection section. Subtitle mirrors the iOS
+                // settingsCard(subtitle:) tone so first-run users on
+                // tablet read the same "this is how this device pairs
+                // with your Mac" framing they'd see on iPad.
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF334155)),
@@ -99,6 +102,11 @@ fun TabletSettingsDialog(
                             text = "Connection",
                             style = MaterialTheme.typography.titleMedium,
                             color = Color(0xFF94A3B8),
+                        )
+                        Text(
+                            text = "How this device pairs with your Mac. mDNS auto-discovery + manual URL.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8).copy(alpha = 0.75f),
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         ConnectionPanel(
