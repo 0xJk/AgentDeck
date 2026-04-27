@@ -42,6 +42,9 @@
 | Feature | App Store | CLI | 비고 |
 |---|:---:|:---:|---|
 | Claude Code 세션 모니터링 (hook 경유) | ✅ | ✅ | hook HTTP POST 수신 |
+| Codex 세션 모니터링 (lifecycle hooks + fallback) | ✅ | ✅ | NSOpenPanel 명시 동의 후 `~/.codex/config.toml` 에 fenced TOML 블록만 편집. Codex lifecycle hooks → `/hooks/codex_*`, optional notify → `/hooks/codex_turn_complete`, optional OTel → `/otel/v1/traces` |
+| 외부에서 이미 실행 중인 Claude/Codex 세션 passive discovery | ❌ | ✅ | `ps`/`lsof`/`/proc` + `~/.claude`/`~/.codex` transcript/rollout JSONL read 가 필요하므로 Node CLI daemon 전용. App Store 단독 앱은 hook/lifecycle 로 opt-in 된 세션만 표시하며 결함 안내 없이 완결 UI 유지 |
+| OpenCode 세션 모니터링 | ❌ | ✅ | OpenCode 의 random-port 서버에 lock-file 이 없어 다중 인스턴스 discovery 불가. CLI/Node bridge 경로만 |
 | Claude Code 세션 실행 (`Launch Session`) | ❌ | ✅ | App Store 는 Terminal 실행을 만들지 않고 hook 모니터링 안내만 표시 |
 | Codex / OpenCode 세션 실행 | ❌ | ✅ | `agentdeck` CLI 가 PATH 에 있어야 함 |
 | OpenClaw Gateway pairing (WS 모드) | ✅ | ✅ | `ws://127.0.0.1:18789` 클라이언트 |
@@ -57,8 +60,8 @@
 
 ## 요약
 
-- **App Store 만 써도** 가능: Claude Code hook 모니터링, Anthropic Admin API 사용량 조회, iPad 페어링, **D200H / Pixoo / ESP32** 하드웨어, 음성 입력, APME LLM 평가.
-- **App Store 밖 companion 경로**: **Android 기기 전부** (e-ink + 태블릿 + TC001), ESP32 firmware flash, Codex / OpenCode PTY 세션 실행, OpenClaw CLI 페어링, APME Layer 1 결정적 평가, Claude 구독 사용량 (5h/7d) gauge.
+- **App Store 만 써도** 가능: Claude Code hook 모니터링, **Codex lifecycle hooks + notify/OTel fallback 모니터링**, Anthropic Admin API 사용량 조회, iPad 페어링, **D200H / Pixoo / ESP32** 하드웨어, 음성 입력, APME LLM 평가.
+- **App Store 밖 companion 경로**: **Android 기기 전부** (e-ink + 태블릿 + TC001), ESP32 firmware flash, **OpenCode 모니터링**, Codex / OpenCode PTY 세션 실행, OpenClaw CLI 페어링, APME Layer 1 결정적 평가, Claude 구독 사용량 (5h/7d) gauge.
 
 App Store 앱은 companion executable 설치/기동을 요구하지 않는다. 이미 사용자가 터미널에서 별도 daemon을 운영하는 경우에만 같은 포트/WS 프로토콜로 선택적으로 연결되며, 그 신호(`DaemonService.isUsingExternalDaemon`)가 true 일 때만 ADB-tier 디바이스 카드와 RATE LIMITS 섹션이 노출된다(progressive enhancement). 미감지 상태에서는 해당 섹션을 숨겨 단독 앱이 결함 없이 완결성있게 보이도록 한다.
 

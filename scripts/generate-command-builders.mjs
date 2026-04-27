@@ -70,6 +70,7 @@ function extractInterface(name) {
   let tagValue = null;
   for (const rawEntry of entries) {
     const line = rawEntry
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
       .split("\n")
       .map((l) => l.replace(/\/\/.*$/, ""))
       .join(" ")
@@ -100,6 +101,7 @@ const commands = unionMembers.map(extractInterface);
 function swiftType(tsType) {
   if (/^['"].*['"]/.test(tsType.split("|")[0].trim())) return "String";
   const t = tsType.trim();
+  if (t.startsWith("Array<")) return "[[String: Any]]";
   if (t === "string") return "String";
   // All current `number` fields in PluginCommand are integer (index, delta
   // ticks). Using Int keeps call sites clean — Swift will not implicitly
@@ -113,6 +115,7 @@ function swiftType(tsType) {
 function kotlinType(tsType) {
   if (/^['"].*['"]/.test(tsType.split("|")[0].trim())) return "String";
   const t = tsType.trim();
+  if (t.startsWith("Array<")) return "List<Map<String, Any?>>";
   if (t === "string") return "String";
   if (t === "number") return "Int";
   if (t === "boolean") return "Boolean";
@@ -286,6 +289,7 @@ function emitKotlin() {
   lines.push("                }");
   lines.push("                \"{\" + parts + \"}\"");
   lines.push("            }");
+  lines.push("            is Iterable<*> -> v.joinToString(prefix = \"[\", postfix = \"]\") { encode(it) }");
   lines.push("            else -> jsonFmt.encodeToString(kotlinx.serialization.serializer<String>(), v.toString())");
   lines.push("        }");
   lines.push("    }");

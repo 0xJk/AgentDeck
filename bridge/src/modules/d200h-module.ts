@@ -60,6 +60,10 @@ const MULTI_SESSION_COMMANDS: Record<number, any> = {
   10: { type: 'interrupt' },
 };
 
+function isControllableSession(session: any): boolean {
+  return !!session?.port && session.controlMode !== 'observed';
+}
+
 type HIDDevice = {
   write(data: Buffer | number[]): number;
   read(length?: number): number[] | Buffer;
@@ -122,7 +126,7 @@ export class D200hModule implements DeviceModule {
         this.lastState = evt;
         this.updateDisplay({ ...this.lastState, allSessions: this.lastSessions }).catch(() => {});
       } else if (evt?.type === 'sessions_list') {
-        this.lastSessions = evt.sessions ?? [];
+        this.lastSessions = (evt.sessions ?? []).filter(isControllableSession);
         if (this.lastState) {
           this.updateDisplay({ ...this.lastState, allSessions: this.lastSessions }).catch(() => {});
         }

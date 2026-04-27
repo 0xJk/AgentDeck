@@ -166,11 +166,14 @@ sealed class AgentCommand {
         }
     }
 
-    object ClientRegister : AgentCommand() {
+    data class ClientRegister(val clientType: String, val clientLabel: String? = null, val devices: List<Map<String, Any?>>? = null) : AgentCommand() {
         override val typeTag: String = "client_register"
         override fun toJson(): String {
             val buf = StringBuilder()
             buf.append("{\"type\":\"client_register\"")
+            buf.append(",\"clientType\":").append(encode(clientType))
+            if (clientLabel != null) buf.append(",\"clientLabel\":").append(encode(clientLabel))
+            if (devices != null) buf.append(",\"devices\":").append(encode(devices))
             buf.append("}")
             return buf.toString()
         }
@@ -217,6 +220,7 @@ sealed class AgentCommand {
                 }
                 "{" + parts + "}"
             }
+            is Iterable<*> -> v.joinToString(prefix = "[", postfix = "]") { encode(it) }
             else -> jsonFmt.encodeToString(kotlinx.serialization.serializer<String>(), v.toString())
         }
     }

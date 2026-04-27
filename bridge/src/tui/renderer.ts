@@ -16,7 +16,7 @@ import {
 } from './ansi.js';
 import { blockGauge, resetTimeStr, formatTokens } from './gauge.js';
 import type { DashboardState, LayoutMode } from './dashboard.js';
-import type { ModelCatalogEntry, OllamaStatus, TimelineEntry, TimelineEntryType } from '@agentdeck/shared';
+import type { ModelCatalogEntry, OllamaStatus, SessionInfo, TimelineEntry, TimelineEntryType } from '@agentdeck/shared';
 import { stateRank, sortSessions, assignDisplayNames } from '@agentdeck/shared';
 
 // ===== Layout Breakpoints =====
@@ -190,6 +190,28 @@ function sessionHotkeyLabel(index: number | null): string {
   return String(index + 1);
 }
 
+type SessionRenderInfo = {
+  port?: number;
+  controlMode?: 'managed' | 'observed';
+  currentTask?: string;
+  contextPercent?: number;
+  totalTokens?: number;
+};
+
+function sessionHotkeyIndex(session: SessionRenderInfo, nextIndex: number): number | null {
+  if (!session.port || session.controlMode === 'observed') return null;
+  return nextIndex;
+}
+
+function observedDetailParts(session?: SessionRenderInfo): string[] {
+  if (!session) return [];
+  const parts: string[] = [];
+  if (session.controlMode === 'observed') parts.push('observed');
+  if (typeof session.contextPercent === 'number') parts.push(`${Math.round(session.contextPercent)}% ctx`);
+  if (session.currentTask) parts.push(session.currentTask);
+  return parts;
+}
+
 // ===== Panel Renderers =====
 
 function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: boolean): string[] {
@@ -207,15 +229,16 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
 
   // Session list
   const renderSession = (
-    proj: string, model: string | undefined, sessState: string, agentType: string | undefined, hotkeyIndex: number | null,
+    proj: string, model: string | undefined, sessState: string, agentType: string | undefined,
+    hotkeyIndex: number | null, session?: SessionRenderInfo,
   ) => {
     const col = stateColor(sessState);
     const hotkey = `${colors.dim}[${sessionHotkeyLabel(hotkeyIndex)}]${RESET}`;
     const name = truncText(proj, maxWidth - 16);
     const emoji = `${creatureBrandColor(agentType)}${creatureEmoji(agentType)}${RESET}`;
-    const secondary = model
-      ? `${model} - ${compactStateLabel(sessState)}`
-      : compactStateLabel(sessState);
+    const secondary = [model, ...observedDetailParts(session), compactStateLabel(sessState)]
+      .filter(Boolean)
+      .join(' - ');
     lines.push(` ${hotkey} ${emoji} ${col}${name}${RESET}`);
     lines.push(`${colors.dim}    ${truncText(secondary, maxWidth - 4)}${RESET}`);
   };
@@ -232,10 +255,17 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
     const displayed = assignDisplayNames(sorted.map(s => ({
       id: s.id, projectName: s.projectName || 'unknown', agentType: s.agentType, state: s.state,
       modelName: s.modelName,
+      port: s.port, controlMode: (s as SessionInfo & SessionRenderInfo).controlMode,
+      currentTask: (s as SessionInfo & SessionRenderInfo).currentTask,
+      contextPercent: (s as SessionInfo & SessionRenderInfo).contextPercent,
+      totalTokens: (s as SessionInfo & SessionRenderInfo).totalTokens,
     })));
-    for (const [index, d] of displayed.entries()) {
+    let focusableIndex = 0;
+    for (const d of displayed) {
+      const hotkeyIndex = sessionHotkeyIndex(d.session, focusableIndex);
+      if (hotkeyIndex !== null) focusableIndex += 1;
       renderSession(d.displayName, d.session.modelName as string | undefined,
-        d.session.state || 'idle', d.session.agentType as string | undefined, index);
+        d.session.state || 'idle', d.session.agentType as string | undefined, hotkeyIndex, d.session);
     }
   } else if (state.state) {
     // Self (primary session)
@@ -250,13 +280,21 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
     const allForNumbering = [selfEntry, ...sorted.map(s => ({
       id: s.id, projectName: s.projectName || 'unknown', agentType: s.agentType, state: s.state,
       modelName: s.modelName,
+      port: s.port, controlMode: (s as SessionInfo & SessionRenderInfo).controlMode,
+      currentTask: (s as SessionInfo & SessionRenderInfo).currentTask,
+      contextPercent: (s as SessionInfo & SessionRenderInfo).contextPercent,
+      totalTokens: (s as SessionInfo & SessionRenderInfo).totalTokens,
     }))];
     const displayed = assignDisplayNames(allForNumbering);
     // Skip the self entry (index 0), render siblings with hotkey indices
+    let focusableIndex = 0;
     for (let i = 1; i < displayed.length; i++) {
       const d = displayed[i]!;
+      const sessionInfo = d.session as unknown as SessionRenderInfo;
+      const hotkeyIndex = sessionHotkeyIndex(sessionInfo, focusableIndex);
+      if (hotkeyIndex !== null) focusableIndex += 1;
       renderSession(d.displayName, (d.session as any).modelName,
-        d.session.state || 'idle', d.session.agentType as string | undefined, i - 1);
+        d.session.state || 'idle', d.session.agentType as string | undefined, hotkeyIndex, sessionInfo);
     }
   }
 
@@ -676,14 +714,20 @@ function renderAgentCompactLines(state: DashboardState, width: number): string[]
   const isDaemonLikeCompact = state.agentType === 'daemon' ||
     (state.agentType && state.sessions.some(s => s.agentType === state.agentType));
   if (isDaemonLikeCompact) {
-    for (const [index, s] of sortSessions(state.sessions).entries()) {
+    let focusableIndex = 0;
+    for (const s of sortSessions(state.sessions)) {
+      const renderInfo = s as SessionInfo & SessionRenderInfo;
       const st = s.state || 'idle';
       const col = stateColor(st);
       const emoji = `${creatureBrandColor(s.agentType as string | undefined)}${creatureEmoji(s.agentType as string | undefined)}${RESET}`;
       const status = `${col}${stateIcon(st)} ${compactStateLabel(st)}${RESET}`;
-      const model = s.modelName ? `${colors.dim} · ${truncText(s.modelName, Math.max(8, width - 24))}${RESET}` : '';
+      const detail = renderInfo.currentTask || s.modelName;
+      const model = detail ? `${colors.dim} · ${truncText(detail, Math.max(8, width - 24))}${RESET}` : '';
+      const marker = renderInfo.controlMode === 'observed' ? `${colors.dim} · obs${RESET}` : '';
       const project = truncText(s.projectName || '?', Math.max(8, width - 20));
-      lines.push(` ${colors.dim}[${sessionHotkeyLabel(index)}]${RESET} ${emoji} ${project} ${status}${model}`);
+      const hotkeyIndex = sessionHotkeyIndex(renderInfo, focusableIndex);
+      if (hotkeyIndex !== null) focusableIndex += 1;
+      lines.push(` ${colors.dim}[${sessionHotkeyLabel(hotkeyIndex)}]${RESET} ${emoji} ${project} ${status}${marker}${model}`);
     }
   } else if (state.state) {
     // Self first
@@ -694,14 +738,20 @@ function renderAgentCompactLines(state: DashboardState, width: number): string[]
     const emoji = `${creatureBrandColor(state.agentType ?? undefined)}${creatureEmoji(state.agentType ?? undefined)}${RESET}`;
     lines.push(` ${emoji} ${proj} ${status}${model}`);
     // Siblings
-    for (const [index, s] of sortSessions(state.sessions).entries()) {
+    let focusableIndex = 0;
+    for (const s of sortSessions(state.sessions)) {
+      const renderInfo = s as SessionInfo & SessionRenderInfo;
       const st = s.state || 'idle';
       const sCol = stateColor(st);
       const sEmoji = `${creatureBrandColor(s.agentType as string | undefined)}${creatureEmoji(s.agentType as string | undefined)}${RESET}`;
       const sStatus = `${sCol}${stateIcon(st)} ${compactStateLabel(st)}${RESET}`;
-      const sModel = s.modelName ? `${colors.dim} · ${truncText(s.modelName, Math.max(8, width - 24))}${RESET}` : '';
+      const detail = renderInfo.currentTask || s.modelName;
+      const sModel = detail ? `${colors.dim} · ${truncText(detail, Math.max(8, width - 24))}${RESET}` : '';
+      const marker = renderInfo.controlMode === 'observed' ? `${colors.dim} · obs${RESET}` : '';
       const sProject = truncText(s.projectName || '?', Math.max(8, width - 20));
-      lines.push(` ${colors.dim}[${sessionHotkeyLabel(index)}]${RESET} ${sEmoji} ${sProject} ${sStatus}${sModel}`);
+      const hotkeyIndex = sessionHotkeyIndex(renderInfo, focusableIndex);
+      if (hotkeyIndex !== null) focusableIndex += 1;
+      lines.push(` ${colors.dim}[${sessionHotkeyLabel(hotkeyIndex)}]${RESET} ${sEmoji} ${sProject} ${sStatus}${marker}${sModel}`);
     }
   }
   // Virtual OpenClaw entry

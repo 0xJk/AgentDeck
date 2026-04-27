@@ -68,8 +68,8 @@ export const agentCommand = {
   sessionCommand(sessionId: string, command: { type: string; [key: string]: unknown; }): SessionCommand {
     return { type: "session_command", sessionId, command };
   },
-  clientRegister(): ClientRegisterCommand {
-    return { type: "client_register" };
+  clientRegister(clientType: string, clientLabel?: string, devices?: Array<{ id: string; name: string; family?: string; columns?: number; rows?: number; }>): ClientRegisterCommand {
+    return { type: "client_register", clientType, clientLabel, devices };
   },
   apmeVibe(runId: string, verdict: 'approve' | 'reject' | 'neutral', note?: string): ApmeVibeFeedbackCommand {
     return { type: "apme_vibe", runId, verdict, note };

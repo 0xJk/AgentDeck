@@ -16,6 +16,7 @@ import WebSocket from 'ws';
 import { BridgeCore } from './bridge-core.js';
 import { OpenClawAdapter } from './adapters/openclaw.js';
 import { BridgeLogStream } from './log-stream.js';
+import { PassiveSessionObserver } from './passive-observer.js';
 import { SessionTimelineRelay } from './session-timeline-relay.js';
 import { SessionFocusRelay } from './session-focus-relay.js';
 import { updatePushState } from './session-aggregator.js';
@@ -648,6 +649,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   // Register session
   core.registerSession('daemon' as any);
+  const passiveSessionObserver = new PassiveSessionObserver();
 
   // ===== Gateway adapter lifecycle =====
   // (gatewayAdapter + gatewayConnecting declared earlier, before HTTP server)
@@ -655,11 +657,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // Inject OpenClaw virtual session only after Gateway authentication succeeds.
   // Reachability alone is a topology signal, not proof that commands can route.
   core.setSessionsEnricher((sessions) => {
+    const enrichedSessions = [...sessions, ...passiveSessionObserver.collect(sessions)];
     const adapterAlive = gatewayAdapter?.isAlive() ?? false;
-    if (!adapterAlive && !core.cachedGatewayConnected) return sessions;
-    if (sessions.some(s => s.agentType === 'openclaw')) return sessions;
+    if (!adapterAlive && !core.cachedGatewayConnected) return enrichedSessions;
+    if (enrichedSessions.some(s => s.agentType === 'openclaw')) return enrichedSessions;
     const snap = core.stateMachine.getSnapshot();
-    return [...sessions, {
+    return [...enrichedSessions, {
       id: 'openclaw-gateway',
       port: 18789,
       projectName: adapterAlive ? (snap.projectName ?? 'OpenClaw') : 'OpenClaw',
@@ -667,6 +670,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       alive: true,
       state: adapterAlive ? snap.state : 'idle',
       modelName: adapterAlive ? (snap.modelName ?? undefined) : undefined,
+      controlMode: 'managed' as const,
     }];
   });
 

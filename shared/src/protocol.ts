@@ -273,6 +273,7 @@ export interface DisplayStateEvent {
 export interface SessionInfo {
   id: string;
   port: number;
+  pid?: number;
   projectName: string;
   agentType?: AgentType;
   alive: boolean;
@@ -280,6 +281,11 @@ export interface SessionInfo {
   modelName?: string;  // sibling's current model from /health query
   effortLevel?: string;  // sibling's current effort (max/xhigh/high/medium/low/default/fast)
   startedAt?: string;  // ISO 8601 session start time
+  controlMode?: 'managed' | 'observed';
+  cwd?: string;
+  currentTask?: string;
+  contextPercent?: number;
+  totalTokens?: number;
 }
 
 export interface SessionsListEvent {

@@ -22,7 +22,7 @@ public enum AgentCommand: Equatable {
     case switchAgent(agent: String)
     case focusSession(sessionId: String)
     case sessionCommand(sessionId: String, command: [String: Any])
-    case clientRegister
+    case clientRegister(clientType: String, clientLabel: String?, devices: [[String: Any]]?)
     case apmeVibe(runId: String, verdict: String, note: String?)
     case apmeRecommend(taskKind: String?, budgetUsd: Int?, latencyBudgetMs: Int?, preferLocal: Bool?)
 
@@ -81,8 +81,12 @@ public enum AgentCommand: Equatable {
             dict["sessionId"] = sessionId
             dict["command"] = command
             return dict
-        case .clientRegister:
-            return ["type": "client_register"]
+        case .clientRegister(let clientType, let clientLabel, let devices):
+            var dict: [String: Any] = ["type": "client_register"]
+            dict["clientType"] = clientType
+            if let clientLabel = clientLabel { dict["clientLabel"] = clientLabel }
+            if let devices = devices { dict["devices"] = devices }
+            return dict
         case .apmeVibe(let runId, let verdict, let note):
             var dict: [String: Any] = ["type": "apme_vibe"]
             dict["runId"] = runId

@@ -6,7 +6,11 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { BRIDGE_WS_PORT } from './types.js';
+
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json') as { version: string };
 
 function log(msg: string): void {
   process.stderr.write(msg + '\n');
@@ -83,7 +87,7 @@ const program = new Command();
 program
   .name('agentdeck')
   .description('AgentDeck — Physical Controller for AI Coding Agents')
-  .version('0.1.0');
+  .version(packageJson.version);
 
 // ===== Agent session commands =====
 

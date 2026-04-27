@@ -5,6 +5,7 @@ import { sortSessions } from '@agentdeck/shared';
 export interface EnrichedSession {
   id: string;
   port: number;
+  pid?: number;
   projectName: string;
   agentType?: AgentType;
   alive: boolean;
@@ -12,6 +13,11 @@ export interface EnrichedSession {
   modelName?: string;
   effortLevel?: string;
   startedAt?: string;
+  controlMode?: 'managed' | 'observed';
+  cwd?: string;
+  currentTask?: string;
+  contextPercent?: number;
+  totalTokens?: number;
 }
 
 /** Cache last-known sibling state to avoid propagating undefined on transient fetch failures */
@@ -58,10 +64,12 @@ export async function enrichSessionsWithState(
     const base: EnrichedSession = {
       id: s.id,
       port: s.port,
+      pid: s.pid,
       projectName: s.projectName,
       agentType: s.agentType as AgentType | undefined,
       alive: true,
       startedAt: s.startedAt,
+      controlMode: 'managed',
     };
     if (s.id === ownSessionId) return { ...base, state: ownState, modelName: ownModelName, effortLevel: ownEffortLevel };
     // 1. Use fresh push-channel state if available (< 30s old)

@@ -10,6 +10,7 @@ import type {
   ModelCatalogEntry,
 } from '@agentdeck/shared';
 import type { TimelineEntry } from '@agentdeck/shared';
+import { sortSessions } from '@agentdeck/shared';
 import { listActive, findDaemonPort } from '../session-registry.js';
 import { Screen } from './screen.js';
 import {
@@ -21,6 +22,8 @@ import {
 } from './terrarium.js';
 
 // ===== Types =====
+
+type SessionWithControlMode = SessionInfo & { controlMode?: 'managed' | 'observed' };
 
 export type LayoutMode = 'wide' | 'standard' | 'narrow';
 
@@ -218,9 +221,12 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
         // 1-9: switch session
         if (key >= '1' && key <= '9') {
           const idx = parseInt(key, 10) - 1;
-          if (idx < state.sessions.length) {
-            const sess = state.sessions[idx];
-            if (sess.port && sess.port !== targetPort) {
+          const focusableSessions = sortSessions(state.sessions).filter((s) =>
+            s.port && (s as SessionWithControlMode).controlMode !== 'observed'
+          );
+          if (idx < focusableSessions.length) {
+            const sess = focusableSessions[idx]!;
+            if (sess.port !== targetPort) {
               targetPort = sess.port;
               state.currentPort = targetPort;
               reconnect();
