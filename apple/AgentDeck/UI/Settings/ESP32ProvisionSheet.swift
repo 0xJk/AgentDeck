@@ -44,6 +44,11 @@ struct ESP32ProvisionSheet: View {
         case failure
     }
 
+    private enum WriteResult: Sendable {
+        case success
+        case failure(String)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
@@ -226,17 +231,17 @@ struct ESP32ProvisionSheet: View {
     private func detectPort() {
         step = .detecting
         errorMessage = nil
-        DispatchQueue.global(qos: .userInitiated).async {
-            let port = Self.findESP32Port()
-            DispatchQueue.main.async {
-                if let port {
-                    detectedPort = port
-                    step = .enterCredentials
-                } else {
-                    // Stay on detecting step so user can retry; no error
-                    // message needed — the copy already says "plug it in".
-                    detectedPort = nil
-                }
+        Task {
+            let port = await Task.detached(priority: .userInitiated) {
+                Self.findESP32Port()
+            }.value
+            if let port {
+                detectedPort = port
+                step = .enterCredentials
+            } else {
+                // Stay on detecting step so user can retry; no error
+                // message needed — the copy already says "plug it in".
+                detectedPort = nil
             }
         }
     }
@@ -250,25 +255,25 @@ struct ESP32ProvisionSheet: View {
             "password": password,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              var frame = String(data: data, encoding: .utf8)
+              let payloadLine = String(data: data, encoding: .utf8)
         else {
             errorMessage = "Couldn't serialize config."
             step = .failure
             return
         }
-        frame += "\n"
+        let frame = payloadLine + "\n"
         let portPath = detectedPort ?? ""
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Self.writeSerial(port: portPath, line: frame)
-            DispatchQueue.main.async {
-                switch result {
-                case .success:
-                    successMessage = nil
-                    step = .success
-                case .failure(let message):
-                    errorMessage = message
-                    step = .failure
-                }
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.writeSerial(port: portPath, line: frame)
+            }.value
+            switch result {
+            case .success:
+                successMessage = nil
+                step = .success
+            case .failure(let message):
+                errorMessage = message
+                step = .failure
             }
         }
     }
@@ -279,7 +284,7 @@ struct ESP32ProvisionSheet: View {
     /// CP210x → `cu.usbserial-*`, CH340 → `cu.wchusbserial*`, native USB →
     /// `cu.usbmodem*`. Mirrors ESP32Serial's portPatterns but as a pure
     /// function so the sheet can use it without poking at an actor.
-    private static func findESP32Port() -> String? {
+    private nonisolated static func findESP32Port() -> String? {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: "/dev") else { return nil }
         let regexes: [NSRegularExpression] = [
@@ -297,16 +302,11 @@ struct ESP32ProvisionSheet: View {
 
     // MARK: - Serial write
 
-    private enum WriteResult {
-        case success
-        case failure(String)
-    }
-
     /// Open the serial port non-blocking, set 115200 baud, write the frame,
     /// close. Kept intentionally small — no termios canonical mode config,
     /// no read-back. The ESP32 firmware re-configures itself and reboots on
     /// receiving `wifi.config`; verification happens via mDNS rediscovery.
-    private static func writeSerial(port: String, line: String) -> WriteResult {
+    private nonisolated static func writeSerial(port: String, line: String) -> WriteResult {
         let fd = Darwin.open(port, O_RDWR | O_NOCTTY | O_NONBLOCK)
         if fd < 0 {
             return .failure("Couldn't open \(port): errno \(errno). Is the daemon holding the port? Try closing AgentDeck fully and reopening.")

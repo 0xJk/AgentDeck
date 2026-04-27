@@ -129,18 +129,26 @@ struct SessionListPanel: View {
     private func buildEntries() -> [SessionEntry] {
         var entries: [SessionEntry] = []
 
-        // Daemon-like detection: skip primary if daemon, if it's the OpenClaw
-        // gateway proxy (always virtualized into siblings), or if sessions already
-        // contain an entry with the same agentType. Hardening "openclaw" guards
-        // against a race between state_update and sessions_list where the primary
-        // briefly carries agentType=openclaw + state=disconnected.
-        let isDaemonLike = stateHolder.state.agentType == "daemon" ||
-            stateHolder.state.agentType == "openclaw" ||
+        // Daemon/gateway state_updates are aggregate rows, not user sessions.
+        // Focus-relayed state_updates, however, promote one real session into
+        // the primary fields while the canonical sessions_list still contains
+        // the same session. Deduplicate by session id only; using agentType
+        // hid the focused Codex/Claude row whenever another session of the same
+        // type was present, while the terrarium still rendered the promoted
+        // creature.
+        let primarySessionId = stateHolder.state.sessionId
+        let primaryBackedBySibling = primarySessionId != nil &&
+            stateHolder.state.siblingSessions.contains(where: { $0.id == primarySessionId })
+        let duplicatePrimaryWithoutId = primarySessionId == nil &&
+            stateHolder.state.agentType != nil &&
             stateHolder.state.siblingSessions.contains(where: {
                 $0.agentType == stateHolder.state.agentType
             })
+        let shouldShowPrimary = stateHolder.state.agentType != "daemon" &&
+            stateHolder.state.agentType != "openclaw" &&
+            (primaryBackedBySibling || !duplicatePrimaryWithoutId)
 
-        if !isDaemonLike {
+        if shouldShowPrimary {
             entries.append(SessionEntry(
                 projectName: stateHolder.state.projectName ?? "Agent",
                 agentType: stateHolder.state.agentType,
@@ -152,9 +160,22 @@ struct SessionListPanel: View {
             ))
         }
 
-        // Siblings (skip self and daemon), stable sort: agentType → projectName
+        // Siblings (skip daemon, and the focused session iff primary already
+        // represents it). Suppressing the focused id unconditionally hid newly
+        // started sessions for 5–15 s in daemon/openclaw mode: the daemon
+        // stamps `state.sessionId` with `currentHookSessionId` on every
+        // `state_update`, but `shouldShowPrimary` is false there, so the
+        // session disappeared from both primary and sibling rows until another
+        // hook flipped `currentHookSessionId` away. Mirrors the
+        // `primaryIsOctopus &&` gate in TerrariumState.toTerrariumState.
         let siblings = stateHolder.state.siblingSessions
-            .filter { $0.id != stateHolder.state.sessionId && $0.agentType != "daemon" }
+            .filter { sibling in
+                guard sibling.agentType != "daemon" else { return false }
+                if shouldShowPrimary && sibling.id == stateHolder.state.sessionId {
+                    return false
+                }
+                return true
+            }
             .sorted {
                 let r0 = Self.agentTypeRank($0.agentType), r1 = Self.agentTypeRank($1.agentType)
                 if r0 != r1 { return r0 < r1 }
@@ -300,16 +321,19 @@ struct SessionListPanel: View {
     @ViewBuilder
     private func agentIconView(for agentType: String?) -> some View {
         switch agentType {
-        case "claude-code":
-            BrandIcon(pathData: BrandIcon.claudePath, color: TerrariumHUD.claudeBody)
-        case "codex-cli":
-            BrandIcon(pathData: BrandIcon.openaiPath, color: Color(red: 0.38, green: 0.40, blue: 0.88))
-        case "openclaw":
-            BrandIcon(paths: BrandIcon.openclawPaths, color: Color(red: 1.0, green: 0.3, blue: 0.3))
-        case "opencode":
-            BrandIcon(pathData: BrandIcon.opencodePath, color: Color(red: 0.945, green: 0.925, blue: 0.925), eoFill: true)
+        case "claude-code", "codex-cli", "openclaw", "opencode":
+            SessionCreatureIcon(
+                agentType: agentType,
+                tint: SessionBrand.color(for: agentType),
+                size: 13
+            )
+            .padding(1.5)
+            .frame(width: 16, height: 16)
         default:
-            Text("●").font(.system(size: 8)).foregroundStyle(TerrariumHUD.subtext)
+            Text("●")
+                .font(.system(size: 8))
+                .foregroundStyle(TerrariumHUD.subtext)
+                .frame(width: 16, height: 16)
         }
     }
 

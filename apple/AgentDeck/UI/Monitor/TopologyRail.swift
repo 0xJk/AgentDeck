@@ -446,10 +446,8 @@ struct TopologyRail: View {
                     ForEach(pixoo.devices, id: \.ip) { dev in
                         DeviceRailRow(
                             name: "Pixoo",
-                            status: dev.online ? .ok : (dev.backedOff ? .warn : .dim),
-                            detail: dev.online
-                                ? (pixoo.hasFrame ? "streaming · \(dev.ip)" : dev.ip)
-                                : "fail \(dev.failures)\(dev.backedOff ? " backed off" : "")"
+                            status: pixooStatus(for: dev, hasFrame: pixoo.hasFrame),
+                            detail: pixooDetail(for: dev, hasFrame: pixoo.hasFrame)
                         )
                     }
                 }
@@ -546,6 +544,22 @@ struct TopologyRail: View {
         case AdbDeviceClass.eInkKobo.rawValue: return "Kobo"
         default: return "E-ink"
         }
+    }
+
+    private func pixooStatus(for device: PixooDeviceHealth, hasFrame: Bool) -> LEDStatus {
+        if !device.online || device.backedOff { return .warn }
+        if device.failures > 0 || !hasFrame { return .warn }
+        return .ok
+    }
+
+    private func pixooDetail(for device: PixooDeviceHealth, hasFrame: Bool) -> String {
+        if !device.online || device.backedOff {
+            return "retry paused · fail \(device.failures)"
+        }
+        if device.failures > 0 {
+            return "retrying · fail \(device.failures) · \(device.ip)"
+        }
+        return hasFrame ? "streaming · \(device.ip)" : "warming up · \(device.ip)"
     }
 
     /// Subtle mid-weight header for the downstream sub-sections. Sits

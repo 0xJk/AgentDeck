@@ -26,21 +26,8 @@ final class DisplaySyncService: ObservableObject, @unchecked Sendable {
         guard enabled else { return }
 
         #if os(iOS)
-        DispatchQueue.main.async { [self] in
-            if !displayOn {
-                let current = UIScreen.main.brightness
-                // Don't save if already dimmed (avoid saving 0.0 as the "original")
-                if current > 0.01 {
-                    savedBrightness = current
-                }
-                UIScreen.main.brightness = 0.0
-                pendingDim = false
-                startDimTimer()
-            } else {
-                cancelDimTimer()
-                pendingDim = false
-                restoreBrightness()
-            }
+        Task { @MainActor [weak self] in
+            self?.applyDisplayState(displayOn: displayOn)
         }
         #endif
     }
@@ -49,6 +36,40 @@ final class DisplaySyncService: ObservableObject, @unchecked Sendable {
     /// Call when app returns to foreground
     func handleForegroundReturn(hostDisplayOn: Bool) {
         guard enabled else { return }
+        Task { @MainActor [weak self] in
+            self?.applyForegroundReturn(hostDisplayOn: hostDisplayOn)
+        }
+    }
+
+    /// Restore brightness on disconnect (safety net)
+    func restoreOnDisconnect() {
+        Task { @MainActor [weak self] in
+            self?.cancelDimTimer()
+            self?.pendingDim = false
+            self?.restoreBrightness()
+        }
+    }
+
+    @MainActor
+    private func applyDisplayState(displayOn: Bool) {
+        if !displayOn {
+            let current = UIScreen.main.brightness
+            // Don't save if already dimmed (avoid saving 0.0 as the "original")
+            if current > 0.01 {
+                savedBrightness = current
+            }
+            UIScreen.main.brightness = 0.0
+            pendingDim = false
+            startDimTimer()
+        } else {
+            cancelDimTimer()
+            pendingDim = false
+            restoreBrightness()
+        }
+    }
+
+    @MainActor
+    private func applyForegroundReturn(hostDisplayOn: Bool) {
         if pendingDim && !hostDisplayOn {
             let current = UIScreen.main.brightness
             if current > 0.01 {
@@ -60,13 +81,7 @@ final class DisplaySyncService: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Restore brightness on disconnect (safety net)
-    func restoreOnDisconnect() {
-        cancelDimTimer()
-        pendingDim = false
-        restoreBrightness()
-    }
-
+    @MainActor
     private func restoreBrightness() {
         if let saved = savedBrightness {
             UIScreen.main.brightness = saved
@@ -75,14 +90,18 @@ final class DisplaySyncService: ObservableObject, @unchecked Sendable {
     }
 
     /// Safety timer — auto-restore brightness after maxDimDuration
+    @MainActor
     private func startDimTimer() {
         cancelDimTimer()
         dimTimer = Timer.scheduledTimer(withTimeInterval: Self.maxDimDuration, repeats: false) { [weak self] _ in
             print("[DisplaySync] safety timeout — restoring brightness")
-            self?.restoreBrightness()
+            Task { @MainActor in
+                self?.restoreBrightness()
+            }
         }
     }
 
+    @MainActor
     private func cancelDimTimer() {
         dimTimer?.invalidate()
         dimTimer = nil

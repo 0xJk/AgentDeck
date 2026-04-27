@@ -8,9 +8,8 @@
 // IP entry with a "Ping" test button.
 //
 // Device list persistence lives in `~/.agentdeck/settings.json` under
-// `pixooDevices`. The PixooModule reads that array at daemon start; adds
-// here require a daemon restart (or a future hot-reload) to take effect.
-// We surface that in the success toast.
+// `pixooDevices`. The PixooModule hot-reloads this array while the daemon is
+// running, so adding or removing a display takes effect without a restart.
 
 import SwiftUI
 import AppKit
@@ -76,7 +75,7 @@ struct PixooSheet: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
             if devices.isEmpty {
-                Text("No devices yet. Add one below — AgentDeck will start rendering once you restart the daemon.")
+                Text("No devices yet. Add one below and AgentDeck will start rendering automatically.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
@@ -188,7 +187,7 @@ struct PixooSheet: View {
 
     private var footer: some View {
         HStack {
-            Text("Changes take effect after the daemon restarts.")
+            Text("Changes are picked up automatically by the local daemon.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             Spacer()

@@ -681,20 +681,32 @@ struct DeviceSummary: Equatable {
         let hasFrame = d["hasFrame"] as? Bool ?? false
         let dimmed = d["displayDimmed"] as? Bool ?? false
         let lastError = d["lastPushError"] as? String
+        let deviceRows = d["devices"] as? [[String: Any]] ?? []
         return ips.enumerated().map { idx, ip in
+            let row = deviceRows.first { $0["ip"] as? String == ip }
+            let failures = row?["failures"] as? Int ?? 0
+            let backedOff = row?["backedOff"] as? Bool ?? false
+            let online = row?["online"] as? Bool ?? true
             let status: DeviceStatus
-            if let lastError, !lastError.isEmpty {
-                status = .error(lastError)
+            let subtitle: String
+            if backedOff || !online {
+                status = .error("backed off")
+                subtitle = "\(ip) · retry paused"
+            } else if let lastError, !lastError.isEmpty {
+                status = .reconnecting
+                subtitle = failures > 0 ? "\(ip) · retrying (\(failures))" : "\(ip) · retrying"
             } else if hasFrame {
                 status = .connected
+                subtitle = dimmed ? "\(ip) · dimmed" : "streaming · \(ip)"
             } else {
-                status = .idle
+                status = .reconnecting
+                subtitle = "\(ip) · warming up"
             }
             return DeviceEntry(
                 id: "pixoo-\(ip)",
                 kind: .pixoo,
                 title: "Pixoo \(idx + 1)",
-                subtitle: dimmed ? "\(ip) · dimmed" : ip,
+                subtitle: subtitle,
                 status: status
             )
         }

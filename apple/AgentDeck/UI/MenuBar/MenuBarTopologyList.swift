@@ -194,11 +194,9 @@ struct MenuBarTopologyList: View {
                 if let pixoo = health.pixoo, pixoo.configuredDeviceCount > 0 {
                     ForEach(pixoo.devices, id: \.ip) { dev in
                         RailRow(
-                            status: dev.online ? .ok : (dev.backedOff ? .warn : .dim),
+                            status: pixooStatus(for: dev, hasFrame: pixoo.hasFrame),
                             name: "Pixoo",
-                            subtitle: dev.online
-                                ? (pixoo.hasFrame ? "streaming · \(dev.ip)" : dev.ip)
-                                : "fail \(dev.failures)\(dev.backedOff ? " · backed off" : "")"
+                            subtitle: pixooDetail(for: dev, hasFrame: pixoo.hasFrame)
                         )
                     }
                 }
@@ -270,6 +268,22 @@ struct MenuBarTopologyList: View {
         }
         if let err = adb.lastError, !err.isEmpty { return err }
         return "No devices"
+    }
+
+    private func pixooStatus(for device: PixooDeviceHealth, hasFrame: Bool) -> LEDStatus {
+        if !device.online || device.backedOff { return .warn }
+        if device.failures > 0 || !hasFrame { return .warn }
+        return .ok
+    }
+
+    private func pixooDetail(for device: PixooDeviceHealth, hasFrame: Bool) -> String {
+        if !device.online || device.backedOff {
+            return "retry paused · fail \(device.failures)"
+        }
+        if device.failures > 0 {
+            return "retrying · fail \(device.failures) · \(device.ip)"
+        }
+        return hasFrame ? "streaming · \(device.ip)" : "warming up · \(device.ip)"
     }
 
     private var hasAnyDownstream: Bool {

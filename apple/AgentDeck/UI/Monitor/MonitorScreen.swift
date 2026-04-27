@@ -13,17 +13,44 @@ struct MonitorScreen: View {
     @State private var terrariumState = TerrariumState()
     #if os(iOS)
     @State private var showSettingsSheet = false
+    /// "Aquarium viewing" mode — when on, SessionListPanel + TopologyRail
+    /// fade out so the user can watch the terrarium uninterrupted. Toggled
+    /// by tapping empty water (mirrors ESP32 firmware aquarium screen).
+    /// macOS keeps the HUD always visible: a click on background there is
+    /// expected to do nothing, not hide the panels the user came in for.
+    @State private var hudHidden = false
     #endif
     @State private var previousAgentState: AgentConnectionState = .disconnected
     @StateObject private var toastManager = ToastManager()
 
     private let sandFraction: CGFloat = 0.35
 
-    /// Content-based key for sibling state changes (triggers terrarium update)
-    private var siblingStatesKey: String {
-        stateHolder.state.siblingSessions
-            .map { "\($0.id):\($0.state ?? "")" }
+    /// Content-based key for fields that affect `DashboardState.toTerrariumState`
+    /// outside the top-level connection state. The terrarium keeps its own
+    /// derived state so it can animate asking-exit bursts; this key makes the
+    /// derived copy move in lockstep with the left session list when focus or
+    /// session metadata changes without a state/count change.
+    private var terrariumProjectionKey: String {
+        let primary = [
+            stateHolder.state.sessionId ?? "",
+            stateHolder.state.agentType ?? "",
+            stateHolder.state.projectName ?? "",
+            stateHolder.state.modelName ?? "",
+        ].joined(separator: "|")
+        let siblings = stateHolder.state.siblingSessions
+            .sorted { $0.id < $1.id }
+            .map {
+                [
+                    $0.id,
+                    $0.agentType ?? "",
+                    $0.state ?? "",
+                    $0.projectName ?? "",
+                    $0.modelName ?? "",
+                    "\($0.alive)",
+                ].joined(separator: "|")
+            }
             .joined(separator: ",")
+        return "\(primary)::\(siblings)"
     }
 
     var body: some View {
@@ -41,7 +68,7 @@ struct MonitorScreen: View {
             }
             .modifier(StateChangeModifier(
                 stateHolder: stateHolder,
-                siblingStatesKey: siblingStatesKey,
+                terrariumProjectionKey: terrariumProjectionKey,
                 previousAgentState: $previousAgentState,
                 toastManager: toastManager,
                 updateTerrariumState: updateTerrariumState
@@ -98,14 +125,37 @@ struct MonitorScreen: View {
     private var terrariumLayer: some View {
         TerrariumView(
             terrariumState: terrariumState,
-            onCreatureTapped: handleCreatureTap
+            onCreatureTapped: handleCreatureTap,
+            onBackgroundTapped: backgroundTapHandler
         )
         .ignoresSafeArea()
+    }
+
+    /// Tap handler for empty terrarium water. iOS-only — on macOS we
+    /// return nil so the click is a no-op (a power user clicking the
+    /// dashboard wallpaper shouldn't suddenly lose their HUD). When the
+    /// AttentionTheater card is up the user is mid-answer, so we also
+    /// disable the toggle to avoid an off-target tap collapsing the HUD
+    /// behind the question card.
+    private var backgroundTapHandler: (() -> Void)? {
+        #if os(iOS)
+        guard featuredAwaitingSession == nil else { return nil }
+        return {
+            withAnimation(.easeInOut(duration: 0.25)) { hudHidden.toggle() }
+        }
+        #else
+        return nil
+        #endif
     }
 
     @ViewBuilder
     private func hudLayer(geo: GeometryProxy) -> some View {
         MonitorHUD()
+            #if os(iOS)
+            .opacity(hudHidden ? 0 : 1)
+            .allowsHitTesting(!hudHidden)
+            .animation(.easeInOut(duration: 0.25), value: hudHidden)
+            #endif
 
         if preferences.showTimeline {
             VStack {
@@ -175,7 +225,7 @@ struct MonitorScreen: View {
                 VStack {
                     Spacer()
                     HStack {
-                        SetupNeededCard(items: items, onOpenSettings: openSettings)
+                        SetupNeededCard(items: items)
                             .padding(.leading, 14)
                             .padding(.bottom, preferences.showTimeline
                                      ? geo.size.height * sandFraction + 14
@@ -345,7 +395,7 @@ struct MonitorScreen: View {
 /// Extracts onChange handlers to reduce body complexity for the Swift type-checker.
 private struct StateChangeModifier: ViewModifier {
     @ObservedObject var stateHolder: AgentStateHolder
-    let siblingStatesKey: String
+    let terrariumProjectionKey: String
     @Binding var previousAgentState: AgentConnectionState
     let toastManager: ToastManager
     let updateTerrariumState: () -> Void
@@ -358,10 +408,7 @@ private struct StateChangeModifier: ViewModifier {
                 previousAgentState = newState
                 updateTerrariumState()
             }
-            .onChange(of: stateHolder.state.siblingSessions.count) {
-                updateTerrariumState()
-            }
-            .onChange(of: siblingStatesKey) {
+            .onChange(of: terrariumProjectionKey) {
                 updateTerrariumState()
             }
             .onChange(of: stateHolder.state.gatewayConnected) {

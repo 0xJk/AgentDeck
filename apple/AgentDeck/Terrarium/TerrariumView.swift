@@ -11,6 +11,13 @@ struct TerrariumView: View {
     /// the gesture recognizer that matches the platform.
     var onCreatureTapped: ((String) -> Void)?
 
+    /// Optional tap handler invoked when a tap lands on empty water — i.e.
+    /// `creatureAtPoint` returned nil. Mirrors the ESP32 firmware's
+    /// "tap aquarium background to hide HUD" pattern so the iOS dashboard
+    /// can fade SessionListPanel + TopologyRail for an unobstructed view.
+    /// Cross-platform safe; the call site decides whether to wire it up.
+    var onBackgroundTapped: (() -> Void)?
+
     @State private var renderer = TerrariumRenderer()
 
     var body: some View {
@@ -23,7 +30,7 @@ struct TerrariumView: View {
             }
         }
         .overlay {
-            if onCreatureTapped != nil {
+            if onCreatureTapped != nil || onBackgroundTapped != nil {
                 GeometryReader { geo in
                     Color.clear
                         .contentShape(Rectangle())
@@ -32,6 +39,8 @@ struct TerrariumView: View {
                             let ny = Float(location.y / geo.size.height)
                             if let sessionId = renderer.creatureAtPoint(nx: nx, ny: ny) {
                                 onCreatureTapped?(sessionId)
+                            } else {
+                                onBackgroundTapped?()
                             }
                         }
                 }

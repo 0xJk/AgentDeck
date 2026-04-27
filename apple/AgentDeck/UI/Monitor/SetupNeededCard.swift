@@ -22,10 +22,6 @@ import AppKit
 
 struct SetupNeededCard: View {
     let items: [SetupItem]
-    /// iOS fallback — on macOS we route through the `settings` Window
-    /// via `openWindow(id:)` so the callback is never invoked there.
-    /// iOS has no Settings scene and still needs a sheet-driven approach.
-    let onOpenSettings: () -> Void
 
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
@@ -33,10 +29,11 @@ struct SetupNeededCard: View {
 
     @State private var pulse = false
 
-    /// Open-Settings call-to-action. Drives the `settings` Window via
-    /// `openWindow(id:)` — the Settings scene was converted to a regular
-    /// Window so NavigationSplitView's sidebar-toggle lands in the
-    /// titlebar toolbar consistently with Device Preview.
+    /// Open-Settings call-to-action — macOS only. iOS hides the button
+    /// because every iOS-surfaced item already routes the user back to
+    /// AgentDeck on the Mac (item hint copy: "Open AgentDeck on your
+    /// Mac to configure"); opening the iOS Settings sheet here would
+    /// be a dead end since none of the integration editors ship on iOS.
     @ViewBuilder
     private var openSettingsButton: some View {
         #if os(macOS)
@@ -48,12 +45,7 @@ struct SetupNeededCard: View {
         }
         .buttonStyle(.plain)
         #else
-        Button {
-            onOpenSettings()
-        } label: {
-            settingsButtonLabel
-        }
-        .buttonStyle(.plain)
+        EmptyView()
         #endif
     }
 
@@ -168,6 +160,7 @@ extension AgentStateHolder {
         let anthropicSaved = anthropicAdminKeySavedValue()
         let descriptors: [IntegrationDescriptor] = [
             IntegrationCatalog.claudeCode,
+            IntegrationCatalog.codex,
             IntegrationCatalog.openClaw,
             IntegrationCatalog.antigravity,
         ]
@@ -199,6 +192,24 @@ extension AgentStateHolder {
                 tint: .yellow,
                 title: "Live session hooks off",
                 hint: "Enable hooks to track per-turn tokens and tool calls in real time."
+            ))
+        }
+
+        // Codex observation consent — only nudge users who actually run
+        // Codex (the daemon already saw an auth mode for it). Without that
+        // gate every fresh-install user would see the nudge regardless of
+        // whether they own the CLI, which is exactly the noise the
+        // App Review companion-install ban warns against.
+        let codexAuthVisible = (state.codexAuthMode.flatMap { $0.isEmpty ? nil : $0 }) != nil
+        if codexAuthVisible
+            && !preferences.codexConfigInstalled
+            && preferences.codexConfigConsent != .declined {
+            items.append(SetupItem(
+                id: "codex-config",
+                icon: "bolt.slash",
+                tint: .yellow,
+                title: "Codex live observation off",
+                hint: "Enable Codex notify + OTel to track turns and tool calls in real time."
             ))
         }
 
@@ -260,8 +271,7 @@ struct SetupNeededCard_Previews: PreviewProvider {
                 SetupItem(id: "hooks", icon: "bolt.slash", tint: .yellow,
                           title: "Live session hooks off",
                           hint: "Enable hooks to track per-turn tokens and tool calls in real time.")
-            ],
-            onOpenSettings: {}
+            ]
         )
         .padding(30)
         .background(TerrariumHUD.bg)
