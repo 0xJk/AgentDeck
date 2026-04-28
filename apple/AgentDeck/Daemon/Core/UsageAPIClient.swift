@@ -67,10 +67,13 @@ final class UsageAPIClient: Sendable {
     private static let cacheFile = AuthManager.agentDeckDir.appendingPathComponent("usage-cache.json")
     private static let fileCacheTTL: TimeInterval = 120  // seconds
     private static let tokenExpiryMargin: TimeInterval = 600  // 10 minutes
-    // .userInitiated to avoid Thread Performance Checker priority-inversion
-    // warnings: fetchUsage()/fetchUsageRelayed() may sync-wait via DispatchSemaphore
-    // on this queue from main-actor or userInitiated tasks.
-    private static let cacheIOQueue = DispatchQueue(label: "dev.agentdeck.usage.cache-io", qos: .userInitiated)
+    // .userInteractive: fetchUsage()/fetchUsageRelayed() are reachable from
+    // main-actor entry points (DaemonServer initial usage task, query_usage
+    // command handler) that sync-wait via DispatchSemaphore. Anything below
+    // User-interactive (incl. .userInitiated) leaves a one-step priority
+    // inversion that TPC flags. The work is a single Data(contentsOf:)
+    // bounded by a 700 ms timeout, so the elevated QoS is bounded.
+    private static let cacheIOQueue = DispatchQueue(label: "dev.agentdeck.usage.cache-io", qos: .userInteractive)
     private static let cacheReadTimeout: DispatchTimeInterval = .milliseconds(700)
 
     /// Real home directory, resolved once at process start via the reentrant

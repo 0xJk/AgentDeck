@@ -439,10 +439,13 @@ actor PixooModule: DeviceModule {
     // MARK: - Settings
 
     private static let settingsFile = AuthManager.agentDeckDir.appendingPathComponent("settings.json")
-    // .userInitiated to avoid Thread Performance Checker priority-inversion warnings
-    // when reloadDevicesFromSettings is called from main-actor / userInitiated contexts
-    // and sync-waits on this queue via DispatchSemaphore.
-    private static let settingsReadQueue = DispatchQueue(label: "dev.agentdeck.pixoo.settings-read", qos: .userInitiated)
+    // .userInteractive: PixooModule.start() runs reloadDevicesFromSettings on
+    // the main actor and sync-waits via DispatchSemaphore. Anything below
+    // User-interactive (incl. .userInitiated) leaves a one-step priority
+    // inversion that Thread Performance Checker still flags. The work is a
+    // single Data(contentsOf:) capped at 700 ms, so the elevated QoS is
+    // bounded and aligned with the main-actor critical path.
+    private static let settingsReadQueue = DispatchQueue(label: "dev.agentdeck.pixoo.settings-read", qos: .userInteractive)
     private static let settingsReadTimeout: DispatchTimeInterval = .milliseconds(700)
 
     private func reloadDevicesFromSettings(reason: String, force: Bool = false) async {

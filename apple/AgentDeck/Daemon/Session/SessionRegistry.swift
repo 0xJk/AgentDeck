@@ -88,10 +88,15 @@ final class SessionRegistry: Sendable {
     static let defaultPort = 9120
     static let basePort = 9120
     static let maxPort = 9139
-    // QoS .userInitiated, not .utility: callers (DaemonServer.startServices on main,
-    // startAllPolling task) sync-wait via DispatchSemaphore; .utility triggers the
-    // Thread Performance Checker priority-inversion warning every read.
-    private static let ioQueue = DispatchQueue(label: "dev.agentdeck.registry.io", qos: .userInitiated)
+    // QoS .userInteractive, not .utility/.userInitiated: callers include
+    // DaemonServer.startServices/startAllPolling running on the main actor
+    // (User-interactive QoS) — they sync-wait via DispatchSemaphore, so any
+    // queue strictly below User-interactive trips Thread Performance Checker
+    // priority-inversion warnings on every read. The work is a single
+    // bounded `Data(contentsOf:)` capped at 700 ms, so .userInteractive is
+    // bounded and lives on the main-actor critical path; it is not a
+    // sustained background workload.
+    private static let ioQueue = DispatchQueue(label: "dev.agentdeck.registry.io", qos: .userInteractive)
     private static let readTimeout: DispatchTimeInterval = .milliseconds(700)
 
     /// Per-port consecutive health-probe failure counter. Shared across the

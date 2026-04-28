@@ -34,10 +34,12 @@ private final class WifiConfigDataBox: @unchecked Sendable {
 
 enum WifiConfigManager {
     private static let configFile = AuthManager.agentDeckDir.appendingPathComponent("wifi-config.json")
-    // .userInitiated: load() is called from DaemonServer.startDeviceModules on the
-    // main actor and sync-waits via DispatchSemaphore; .utility caused Thread
-    // Performance Checker priority-inversion warnings every read.
-    private static let readQueue = DispatchQueue(label: "dev.agentdeck.wifi-config.read", qos: .userInitiated)
+    // .userInteractive: DaemonServer.startDeviceModules calls load() from the
+    // main actor and sync-waits via DispatchSemaphore. .userInitiated still
+    // leaves a one-step inversion (User-interactive → User-initiated) that TPC
+    // flags. The work is a single Data(contentsOf:) bounded by a 700 ms cap,
+    // so the elevated QoS is justified for the main-actor critical path.
+    private static let readQueue = DispatchQueue(label: "dev.agentdeck.wifi-config.read", qos: .userInteractive)
     private static let readTimeout: DispatchTimeInterval = .milliseconds(700)
 
     static func load() -> WifiConfig? {

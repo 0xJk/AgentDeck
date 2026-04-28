@@ -115,10 +115,13 @@ enum ApmeSettings {
         return AgentDeckPaths.settingsJson.path
     }
 
-    // .userInitiated to match callers (ApmeRunner init on main, probeMLX) that
-    // sync-wait via DispatchSemaphore — avoids Thread Performance Checker priority
-    // inversion warnings.
-    private static let settingsReadQueue = DispatchQueue(label: "dev.agentdeck.apme-settings.read", qos: .userInitiated)
+    // .userInteractive: ApmeRunner.init and DaemonServer.probeMLX call
+    // load()/loadMlxConfig() from the main actor and sync-wait via
+    // DispatchSemaphore. .userInitiated still leaves a one-step inversion
+    // (User-interactive → User-initiated) that TPC flags. Bounded by the
+    // 700 ms timeout + single Data(contentsOf:), so promoting to
+    // .userInteractive is safe.
+    private static let settingsReadQueue = DispatchQueue(label: "dev.agentdeck.apme-settings.read", qos: .userInteractive)
     private static let settingsReadTimeout: DispatchTimeInterval = .milliseconds(700)
 
     /// Load APME config from ~/.agentdeck/settings.json.
