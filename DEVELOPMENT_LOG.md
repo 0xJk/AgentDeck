@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-04-28 — Daemon bounded-read queue QoS + OpenClaw RPC 로깅
+
+### 문제
+
+macOS daemon 로그가 매 tick 마다 Thread Performance Checker priority-inversion 백트레이스로 도배됐다. `SessionRegistry / PixooModule / ApmeSettings / WifiConfig / UsageAPIClient / DaemonTimelineStore` 6 개 모듈이 모두 `.utility` QoS 의 dispatch queue 에서 `DispatchSemaphore.wait` 로 700 ms bounded read 를 흉내 냈는데, 호출자가 main actor (User-interactive) 나 `.userInitiated` Task 라 매번 "higher-QoS thread waiting on lower-QoS" 경고가 발생했다. 별도로 OpenClaw Gateway adapter 의 RPC 실패 로그가 `code ?? message ?? "unknown"` 의 `??` 체인을 써 `INVALID_REQUEST` 같은 코드가 있을 때 `message` 가 항상 묻혔다. 그 결과 `models.list` (별도 경로) 만 "missing scope: operator.read" 가 보이고, `sessions.subscribe / system-presence / sessions.list / logs.tail` 는 코드만 찍혀 진짜 원인이 안 드러났다.
+
+### 해결
+
+- 6 개 큐 QoS 를 `.userInitiated` 로 올렸다. 호출자 QoS 와 매칭돼 TPC 경고가 사라지고, 사용자 인터랙티브 액션을 막지 않을 정도로는 가볍다 (700 ms timeout 그대로).
+- `OpenClawAdapter` 의 RPC 실패 로그를 `code: message` 둘 다 찍게 바꿨다. `code` 가 있으면 `message` 도 같이 출력 → 다음 페어링 사이클부터 scope 미스매치가 즉시 보인다. 실제 scope grant 자체는 Gateway 서버 + 페어링 플로우 문제라 클라이언트로는 못 고친다.
+
+### 핵심 설계 결정
+
+- **`.utility` 큐에서 sync wait = TPC 경고 보장.** 새 모듈도 같은 패턴 (semaphore + 타임아웃 + bounded read) 을 쓸 거면 큐 QoS 를 `.userInitiated` 로 시작해라. `.utility` 는 호출자가 명백히 background 일 때만.
+- **Optional chain 으로 에러 컨텍스트를 합치지 마라.** `errorInfo?["code"] ?? errorInfo?["message"]` 같은 패턴은 한쪽만 흘려보내고 나머지를 영원히 가린다. 둘 다 보고 싶으면 `switch (code, message)` 로 분기.
+
+---
+
 ## 2026-04-28 — D200H OpenClaw / macOS Codex 세션 아이콘 보정
 
 ### 문제
