@@ -1589,8 +1589,11 @@ struct ADSessionInfo: Codable, Equatable {
     var contextPercent: Double?
     var controlMode: ADControlMode?
     var currentTask: String?
+    var currentTool: String?
     var cwd: String?
     var effortLevel: String?
+    var foldedSessionIds: [String]?
+    var groupSize: Double?
     var id: String
     var modelName: String?
     var pid: Double?
@@ -1606,8 +1609,11 @@ struct ADSessionInfo: Codable, Equatable {
         case contextPercent = "contextPercent"
         case controlMode = "controlMode"
         case currentTask = "currentTask"
+        case currentTool = "currentTool"
         case cwd = "cwd"
         case effortLevel = "effortLevel"
+        case foldedSessionIds = "foldedSessionIds"
+        case groupSize = "groupSize"
         case id = "id"
         case modelName = "modelName"
         case pid = "pid"
@@ -1643,8 +1649,11 @@ extension ADSessionInfo {
         contextPercent: Double?? = nil,
         controlMode: ADControlMode?? = nil,
         currentTask: String?? = nil,
+        currentTool: String?? = nil,
         cwd: String?? = nil,
         effortLevel: String?? = nil,
+        foldedSessionIds: [String]?? = nil,
+        groupSize: Double?? = nil,
         id: String? = nil,
         modelName: String?? = nil,
         pid: Double?? = nil,
@@ -1660,8 +1669,11 @@ extension ADSessionInfo {
             contextPercent: contextPercent ?? self.contextPercent,
             controlMode: controlMode ?? self.controlMode,
             currentTask: currentTask ?? self.currentTask,
+            currentTool: currentTool ?? self.currentTool,
             cwd: cwd ?? self.cwd,
             effortLevel: effortLevel ?? self.effortLevel,
+            foldedSessionIds: foldedSessionIds ?? self.foldedSessionIds,
+            groupSize: groupSize ?? self.groupSize,
             id: id ?? self.id,
             modelName: modelName ?? self.modelName,
             pid: pid ?? self.pid,

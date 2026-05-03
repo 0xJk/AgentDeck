@@ -5,7 +5,7 @@
 export {
   renderSessionSlot,
   renderEmptySlot,
-  renderNoDaemonSlot,
+  renderDisconnectedSlot,
   renderBackButton,
   renderNextPageButton,
   renderEscButton,
@@ -14,5 +14,14 @@ export {
   renderOptionButton,
   renderPresetButton,
   renderInfoSlot,
+  renderStatusCard,
+  renderQuietSlot,
   svgFrame,
+} from '@agentdeck/shared';
+export type {
+  DisconnectedSlotConfig,
+  DisconnectedSlotKind,
+  StatusCardConfig,
+  StatusCardTone,
+  StatusIconKind,
 } from '@agentdeck/shared';

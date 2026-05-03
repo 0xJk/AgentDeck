@@ -11,7 +11,7 @@ vi.mock('../label-summarizer.js', () => ({
   requestAbbreviation: vi.fn(),
 }));
 
-import { State, type PromptOption } from '@agentdeck/shared';
+import { State, type PromptOption, type SessionInfo } from '@agentdeck/shared';
 
 // ===== voice-renderer =====
 import {
@@ -70,6 +70,13 @@ import {
   labelNeedsHaiku,
 } from '../renderers/button-renderer.js';
 
+// ===== session-slot-renderer =====
+import {
+  renderDisconnectedSlot,
+  renderSessionSlot,
+  renderStatusCard,
+} from '../renderers/session-slot-renderer.js';
+
 // ===== timeline-renderer =====
 import { renderTimeline } from '../renderers/timeline-renderer.js';
 
@@ -90,6 +97,24 @@ import {
 
 function makeOption(overrides: Partial<PromptOption> = {}): PromptOption {
   return { index: 0, label: 'Allow', ...overrides };
+}
+
+function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    id: 'session-1',
+    port: 9121,
+    projectName: 'AgentDeck',
+    agentType: 'claude-code',
+    alive: true,
+    state: State.IDLE,
+    modelName: 'opus-4',
+    effortLevel: 'high',
+    ...overrides,
+  };
+}
+
+function stableFrameIds(svg: string): string {
+  return svg.replace(/frame-bg-\d+/g, 'frame-bg-test');
 }
 
 function makeGroupedEntry(overrides: Partial<{
@@ -447,6 +472,28 @@ describe('button-renderer snapshots', () => {
   it('labelNeedsHaiku detects long labels', () => {
     expect(labelNeedsHaiku('OK')).toBe(false);
     expect(labelNeedsHaiku('Yes, allow and don\'t ask again for: /very/long/path/to/file.ts')).toBe(true);
+  });
+});
+
+// ===================================================================
+// Session Slot Renderer
+// ===================================================================
+
+describe('session-slot-renderer snapshots', () => {
+  it('disconnected hero is icon-rich', () => {
+    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app' }))).toMatchSnapshot();
+  });
+
+  it('disconnected non-center slot is empty', () => {
+    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'empty' }))).toMatchSnapshot();
+  });
+
+  it('connected no-session card is icon-rich', () => {
+    expect(stableFrameIds(renderStatusCard({ icon: 'no-session', label: 'NO SESSION', subtitle: 'WAITING', tone: 'idle' }))).toMatchSnapshot();
+  });
+
+  it('active idle session uses orbiting focus border', () => {
+    expect(renderSessionSlot(makeSession(), true, 4)).toMatchSnapshot();
   });
 });
 

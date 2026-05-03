@@ -803,11 +803,23 @@
         "currentTask": {
           "type": "string"
         },
+        "currentTool": {
+          "type": "string"
+        },
         "cwd": {
           "type": "string"
         },
         "effortLevel": {
           "type": "string"
+        },
+        "foldedSessionIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "groupSize": {
+          "type": "number"
         },
         "id": {
           "type": "string"

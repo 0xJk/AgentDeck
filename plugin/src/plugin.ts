@@ -159,6 +159,12 @@ function primeDetailViewFromSession(session?: SessionInfo): void {
 function stateEventTargetsFocusedDetail(ev: StateUpdateEvent): boolean {
   const focused = getFocusedSession();
   if (!focused) return true;
+  // Codex fold: the representative's id is the only authoritative source for
+  // detail state. Events tagged with absorbed-thread ids may be late-arriving
+  // termination signals from threads that no longer drive the focused row;
+  // letting them through would overwrite the live representative's state.
+  // updateSessions already re-points _focusedSessionId at the new
+  // representative, so subsequent representative events match focused.id.
   if (ev.sessionId) return ev.sessionId === focused.id;
   return focused.agentType === 'openclaw' && ev.agentType === 'openclaw';
 }

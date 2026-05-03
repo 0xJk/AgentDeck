@@ -90,6 +90,85 @@ export function sortSessions<T extends { state?: string; projectName?: string; a
   });
 }
 
+// ===== Codex Display Folding =====
+
+export interface FoldableSession {
+  id: string;
+  projectName?: string;
+  agentType?: string;
+  state?: string;
+  startedAt?: string;
+  currentTool?: string;
+  groupSize?: number;
+  foldedSessionIds?: string[];
+}
+
+/**
+ * Collapse Codex companion-task rows for the same project into one display
+ * session. Raw rows remain authoritative inside the daemon; every user-facing
+ * surface should count this folded shape so completed one-turn Codex threads do
+ * not look like simultaneously running sessions.
+ */
+export function foldCodexSessionsForDisplay<T extends FoldableSession>(sessions: T[]): T[] {
+  const passthrough: T[] = [];
+  const codexByProject = new Map<string, T[]>();
+
+  for (const session of sessions) {
+    const project = session.projectName?.trim();
+    if (!isCodexSession(session) || !project) {
+      passthrough.push(session);
+      continue;
+    }
+    const key = project.toLocaleLowerCase();
+    const group = codexByProject.get(key);
+    if (group) group.push(session);
+    else codexByProject.set(key, [session]);
+  }
+
+  for (const group of codexByProject.values()) {
+    passthrough.push(foldCodexProjectGroup(group));
+  }
+
+  return passthrough;
+}
+
+function isCodexSession(session: FoldableSession): boolean {
+  return session.agentType === 'codex-cli' || session.id.startsWith('codex:');
+}
+
+function foldCodexProjectGroup<T extends FoldableSession>(group: T[]): T {
+  if (group.length <= 1) return group[0];
+
+  const ranked = [...group].sort((a, b) => {
+    const rankDiff = stateRank(a.state) - stateRank(b.state);
+    if (rankDiff !== 0) return rankDiff;
+
+    const aStarted = a.startedAt ? new Date(a.startedAt).getTime() : Number.NEGATIVE_INFINITY;
+    const bStarted = b.startedAt ? new Date(b.startedAt).getTime() : Number.NEGATIVE_INFINITY;
+    if (aStarted !== bStarted) return bStarted - aStarted;
+
+    return a.id.localeCompare(b.id);
+  });
+
+  const representative = ranked[0];
+  const foldedIds = group.flatMap(s => s.foldedSessionIds ?? [s.id]);
+  const groupSize = group.reduce((total, s) => total + (s.groupSize ?? 1), 0);
+  const currentTool = ranked.find(s => stateRank(s.state) === 0 && s.currentTool?.trim())?.currentTool;
+
+  const folded = {
+    ...representative,
+    state: ranked[0].state,
+    groupSize,
+    foldedSessionIds: foldedIds,
+  } as T;
+  if (currentTool) {
+    folded.currentTool = currentTool;
+  } else {
+    delete folded.currentTool;
+  }
+  return folded;
+}
+
 // ===== Display Name Assignment =====
 
 export interface SessionDisplayInfo {

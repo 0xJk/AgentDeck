@@ -281,6 +281,9 @@ export interface SessionInfo {
   modelName?: string;  // sibling's current model from /health query
   effortLevel?: string;  // sibling's current effort (max/xhigh/high/medium/low/default/fast)
   startedAt?: string;  // ISO 8601 session start time
+  currentTool?: string;
+  groupSize?: number;
+  foldedSessionIds?: string[];
   controlMode?: 'managed' | 'observed';
   cwd?: string;
   currentTask?: string;

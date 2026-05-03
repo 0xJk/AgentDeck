@@ -5,9 +5,9 @@
  * - List View: each button shows one session (OC first, then CC by startedAt)
  * - Detail View: button 1=BACK, button 2=session info, buttons 3-7=options, button 8=ESC/STOP
  */
-import type { SessionInfo } from '@agentdeck/shared';
-import { State, sortSessions, assignDisplayNames } from '@agentdeck/shared';
-import type { PromptOption, AgentType } from '@agentdeck/shared';
+import type { SessionInfo, StatusCardTone, StatusIconKind } from '@agentdeck/shared';
+import { State, sortSessions, assignDisplayNames, foldCodexSessionsForDisplay } from '@agentdeck/shared';
+import type { PromptOption } from '@agentdeck/shared';
 import { dlog } from './log.js';
 
 export type SlotView = 'list' | 'detail';
@@ -24,11 +24,15 @@ export interface PresetAction {
 }
 
 export interface SessionSlotConfig {
-  type: 'session' | 'back' | 'info' | 'option' | 'esc' | 'stop' | 'next-page' | 'preset' | 'empty';
+  type: 'session' | 'back' | 'info' | 'status' | 'option' | 'esc' | 'stop' | 'next-page' | 'preset' | 'empty';
   session?: SessionInfo;
   option?: PromptOption;
   optionIndex?: number;
   label?: string;
+  subtitle?: string;
+  detail?: string;
+  icon?: StatusIconKind;
+  tone?: StatusCardTone;
   preset?: PresetAction;
   /** For list view: is this the currently "active" (connected) session? */
   isActive?: boolean;
@@ -52,32 +56,23 @@ const SUMMARIZE_ICON_SVG = [
 ].join('');
 
 // MODEL icon: model name large + swap indicator. loading=true shows spinner animation.
-function buildModelIcon(modelName?: string, loading?: boolean): string {
+function buildModelIcon(_modelName?: string, loading?: boolean): string {
   if (loading) {
-    // Spinning arrow animation
     return [
-      `<text x="72" y="52" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" fill="#e9d5ff" opacity="0.6">Switching...</text>`,
-      `<circle cx="72" cy="72" r="16" fill="none" stroke="#e9d5ff" stroke-width="2.5" stroke-dasharray="80" stroke-dashoffset="20" opacity="0.7"/>`,
+      `<path d="M92 40a20 20 0 1 0 2 24" fill="none" stroke="#e9d5ff" stroke-width="4" stroke-linecap="round"/>`,
+      `<path d="M92 25v15H77" fill="none" stroke="#e9d5ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`,
+      `<path d="M72 38l22 13v26L72 90 50 77V51z" fill="#a78bfa" opacity="0.16" stroke="#e9d5ff" stroke-width="2"/>`,
     ].join('');
   }
-  const display = modelName ? truncateStr(modelName, 14) : 'Model';
-  const fontSize = display.length > 10 ? 14 : display.length > 7 ? 17 : 20;
   return [
-    // Swap icon (small, top)
-    `<path d="M56,24 L48,24 L53,19" fill="none" stroke="#e9d5ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>`,
-    `<path d="M88,24 L96,24 L91,29" fill="none" stroke="#e9d5ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>`,
-    `<line x1="48" y1="24" x2="96" y2="24" stroke="#e9d5ff" stroke-width="1" opacity="0.25"/>`,
-    // Model name (centered, prominent)
-    `<text x="72" y="${58 + (fontSize < 17 ? 2 : 0)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${fontSize}" font-weight="bold" fill="#e9d5ff">${escapeXml(display)}</text>`,
+    `<path d="M72 22l30 17v34L72 90 42 73V39z" fill="#a78bfa" opacity="0.16" stroke="#e9d5ff" stroke-width="2.5"/>`,
+    `<path d="M42 39l30 17 30-17M72 56v34" fill="none" stroke="#e9d5ff" stroke-width="2" opacity="0.7"/>`,
+    `<path d="M52 23h-8v8M100 23h-8v8M52 95h-8v-8M100 95h-8v-8" fill="none" stroke="#e9d5ff" stroke-width="2.4" stroke-linecap="round" opacity="0.55"/>`,
   ].join('');
 }
 
 function truncateStr(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '\u2026';
-}
-
-function escapeXml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 import { OPENCLAW_LOGO_PATHS } from './renderers/agent-logos.js';
@@ -204,7 +199,9 @@ export class SessionSlotManager {
   updateSessions(sessions: SessionInfo[], gatewayAvailable: boolean): void {
     this._gatewayAvailable = gatewayAvailable;
     // Build ordered list: sorted by agentType (openclaw→claude→codex→opencode) then name→startedAt
-    const alive = sessions.filter(s => (s.agentType as string) !== 'daemon' && s.alive);
+    const alive = foldCodexSessionsForDisplay(
+      sessions.filter(s => (s.agentType as string) !== 'daemon' && s.alive),
+    );
 
     // OpenClaw virtual sessions are injected by the daemon only after
     // Gateway authentication succeeds. Reachability alone stays a topology
@@ -213,6 +210,13 @@ export class SessionSlotManager {
 
     // Canonical stable sort: agentType rank → projectName → startedAt → id
     this._sessions = sortSessions(alive).slice(0, MAX_SESSIONS);
+
+    // Reconcile focus / active ids against the folded session set. When Codex
+    // folds an old thread into a newer representative, the previously focused
+    // id disappears from the top-level list — re-point at the successor row
+    // (so detail view stays on the project), or exit detail if the project is
+    // gone entirely.
+    this.reconcileFoldedIds();
 
     // Assign #N display names for duplicate (projectName, agentType) pairs — no mutation
     this._displayNames = new Map();
@@ -371,6 +375,34 @@ export class SessionSlotManager {
     return this._sessions.find(s => s.id === this._focusedSessionId);
   }
 
+  /** Re-point focused / active ids when the previously held id has been folded
+   *  into a representative row. If no successor exists and we were in detail
+   *  view, drop back to list so we don't render against `undefined`.
+   */
+  private reconcileFoldedIds(): void {
+    const findSuccessor = (id: string): string | null => {
+      if (this._sessions.find(s => s.id === id)) return id;
+      const successor = this._sessions.find(s => s.foldedSessionIds?.includes(id));
+      return successor ? successor.id : null;
+    };
+
+    if (this._focusedSessionId) {
+      const next = findSuccessor(this._focusedSessionId);
+      if (next === null) {
+        if (this._view === 'detail') this.exitDetailView();
+        else this._focusedSessionId = null;
+      } else if (next !== this._focusedSessionId) {
+        this._focusedSessionId = next;
+      }
+    }
+
+    if (this._activeSessionId) {
+      const next = findSuccessor(this._activeSessionId);
+      if (next === null) this._activeSessionId = null;
+      else if (next !== this._activeSessionId) this._activeSessionId = next;
+    }
+  }
+
   // ---- Internal helpers ----
 
   private totalPages(layout: DeckLayout = DEFAULT_LAYOUT): number {
@@ -396,6 +428,37 @@ export class SessionSlotManager {
   }
 
   private getListSlotConfig(slot: number, layout: DeckLayout): SessionSlotConfig {
+    if (this._sessions.length === 0) {
+      if (slot === 0) {
+        return {
+          type: 'status',
+          label: 'HUB READY',
+          subtitle: 'CONNECTED',
+          icon: 'hub',
+          tone: 'ready',
+        };
+      }
+      if (slot === 1) {
+        return {
+          type: 'status',
+          label: 'NO SESSION',
+          subtitle: 'WAITING',
+          icon: 'no-session',
+          tone: 'idle',
+        };
+      }
+      if (slot === 2) {
+        return {
+          type: 'status',
+          label: 'AgentDeck',
+          subtitle: 'IDLE',
+          icon: 'agentdeck',
+          tone: 'agent',
+        };
+      }
+      return { type: 'empty' };
+    }
+
     const needsPage = this.needsPagination(layout);
     const sessionsOnPage = listSessionsPerPage(layout, this._sessions.length);
 
@@ -417,6 +480,61 @@ export class SessionSlotManager {
     }
 
     return { type: 'empty' };
+  }
+
+  private modelStatusCard(session: SessionInfo | undefined): SessionSlotConfig | null {
+    const modelText = this._detailModelName ?? session?.modelName;
+    if (!modelText) return null;
+    return {
+      type: 'status',
+      label: 'MODEL',
+      subtitle: this._detailEffortLevel && this._detailEffortLevel !== 'default'
+        ? `${modelText} · ${this._detailEffortLevel}`
+        : modelText,
+      icon: 'model',
+      tone: 'info',
+    };
+  }
+
+  private modeStatusCard(): SessionSlotConfig | null {
+    if (!this._detailMode || this._detailMode === 'default') return null;
+    return {
+      type: 'status',
+      label: 'MODE',
+      subtitle: this._detailMode.toUpperCase(),
+      icon: 'mode',
+      tone: 'purple',
+    };
+  }
+
+  private idleStatusCard(session: SessionInfo | undefined, idx: number): SessionSlotConfig {
+    const cards = [
+      this.modelStatusCard(session),
+      this.modeStatusCard(),
+      {
+        type: 'status',
+        label: session?.agentType === 'openclaw' ? 'STANDBY' : 'READY',
+        subtitle: 'idle',
+        icon: 'ready',
+        tone: 'ready',
+      } satisfies SessionSlotConfig,
+    ].filter((card): card is SessionSlotConfig => card != null);
+    return cards[idx] ?? { type: 'empty' };
+  }
+
+  private awaitingStatusCard(session: SessionInfo | undefined, idx: number): SessionSlotConfig {
+    const question = this._detailQuestion ? truncateStr(this._detailQuestion, 18) : 'choose option';
+    const cards = [
+      {
+        type: 'status',
+        label: 'AWAITING',
+        subtitle: question,
+        icon: 'option',
+        tone: 'warning',
+      } satisfies SessionSlotConfig,
+      this.modelStatusCard(session),
+    ].filter((card): card is SessionSlotConfig => card != null);
+    return cards[idx] ?? { type: 'empty' };
   }
 
   private getDetailSlotConfig(slot: number, layout: DeckLayout): SessionSlotConfig {
@@ -452,39 +570,52 @@ export class SessionSlotManager {
     if (contentIdx < 0) return { type: 'empty' };
 
     const optionIndex = detailOptionStart + contentIdx;
-    if (isAwaiting && optionIndex < this._detailOptions.length) {
+    if (isAwaiting) {
+      if (optionIndex < this._detailOptions.length) {
+        return {
+          type: 'option',
+          option: this._detailOptions[optionIndex],
+          optionIndex,
+        };
+      }
+      return this.awaitingStatusCard(session, optionIndex - this._detailOptions.length);
+    }
+
+    // PROCESSING: first content slot shows current tool/status before any presets.
+    if (isProcessing && contentIdx === 0) {
       return {
-        type: 'option',
-        option: this._detailOptions[optionIndex],
-        optionIndex,
+        type: 'status',
+        label: this._detailTool ?? (isOpenClaw ? 'ROUTING' : 'WORKING'),
+        subtitle: this._detailToolInput ? truncateStr(this._detailToolInput, 22) : 'running',
+        icon: 'tool',
+        tone: 'warning',
       };
     }
 
-    // OpenClaw presets (IDLE or PROCESSING without options)
-    if (isOpenClaw && !isAwaiting && contentIdx < OC_PRESET_DEFS.length) {
-      const def = OC_PRESET_DEFS[contentIdx];
-      const iconSvg = def.dynamicIcon === 'model'
-        ? buildModelIcon(this._detailModelName, this._modelSwitching)
-        : (def.iconSvg ?? '');
-      const preset: PresetAction = {
-        label: def.label,
-        iconSvg,
-        color: def.color,
-        textColor: def.textColor,
-        prompt: def.prompt,
-        localAction: def.localAction,
-        loading: def.dynamicIcon === 'model' ? this._modelSwitching : undefined,
-      };
-      return { type: 'preset', preset };
+    if (isProcessing && !isOpenClaw && contentIdx === 1) {
+      return this.modelStatusCard(session) ?? { type: 'empty' };
     }
 
-    // PROCESSING: first content slot shows current tool
-    if (isProcessing && contentIdx === 0 && this._detailTool) {
-      return {
-        type: 'info',
-        label: this._detailTool,
-        session,
-      };
+    // OpenClaw presets (IDLE, or PROCESSING after the tool status tile)
+    if (isOpenClaw && !isAwaiting) {
+      const presetIdx = isProcessing ? contentIdx - 1 : contentIdx;
+      if (presetIdx >= 0 && presetIdx < OC_PRESET_DEFS.length) {
+        const def = OC_PRESET_DEFS[presetIdx];
+        const iconSvg = def.dynamicIcon === 'model'
+          ? buildModelIcon(this._detailModelName, this._modelSwitching)
+          : (def.iconSvg ?? '');
+        const preset: PresetAction = {
+          label: def.label,
+          iconSvg,
+          color: def.color,
+          textColor: def.textColor,
+          subtitle: def.dynamicIcon === 'model' ? truncateStr(this._detailModelName ?? session?.modelName ?? 'model', 14) : undefined,
+          prompt: def.prompt,
+          localAction: def.localAction,
+          loading: def.dynamicIcon === 'model' ? this._modelSwitching : undefined,
+        };
+        return { type: 'preset', preset };
+      }
     }
 
     // Claude Code IDLE: show quick action presets (GO ON, REVIEW, COMMIT, CLEAR)
@@ -498,6 +629,22 @@ export class SessionSlotManager {
         prompt: def.prompt,
       };
       return { type: 'preset', preset };
+    }
+
+    if (!isOpenClaw && this._detailState === State.IDLE) {
+      return this.idleStatusCard(session, contentIdx - CC_PRESET_DEFS.length);
+    }
+
+    if (isOpenClaw && this._detailState === State.IDLE) {
+      return this.idleStatusCard(session, contentIdx - OC_PRESET_DEFS.length);
+    }
+
+    if (isProcessing && isOpenClaw) {
+      return this.idleStatusCard(session, contentIdx - 1 - OC_PRESET_DEFS.length);
+    }
+
+    if (isProcessing && !isOpenClaw) {
+      return this.idleStatusCard(session, contentIdx - 2);
     }
 
     return { type: 'empty' };

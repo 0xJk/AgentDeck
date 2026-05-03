@@ -688,8 +688,14 @@ data class SessionInfo (
     val contextPercent: Double? = null,
     val controlMode: ControlMode? = null,
     val currentTask: String? = null,
+    val currentTool: String? = null,
     val cwd: String? = null,
     val effortLevel: String? = null,
+
+    @Json(name = "foldedSessionIds")
+    val foldedSessionIDS: List<String>? = null,
+
+    val groupSize: Double? = null,
     val id: String,
     val modelName: String? = null,
     val pid: Double? = null,

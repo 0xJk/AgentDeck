@@ -1,11 +1,8 @@
 /**
  * Session slot button SVG renderer for v4 dynamic layout.
  *
- * Renders: session list buttons, detail view info/options/nav buttons.
- * 144x144 canvas matching SD+ button spec.
- *
- * Agent identification: creature icon (agentLogoIcon) at top of button.
- * State colors: unified palette from shared/state-colors (no agent overrides).
+ * 144x144 canvas matching Stream Deck key images. Buttons carry their own
+ * iconography; Stream Deck titles are treated as optional metadata only.
  */
 import type { AgentType } from '../adapter.js';
 import type { SessionInfo } from '../protocol.js';
@@ -13,14 +10,81 @@ import type { PromptOption } from '../states.js';
 import { State } from '../states.js';
 import { stateColor } from '../state-colors.js';
 import { agentLogoIcon } from './agent-logos.js';
-import { wrapTextByWidth, measureTextWidth } from './text-utils.js';
+import { wrapTextByWidth } from './text-utils.js';
 
 const SIZE = 144;
-const MAX_TEXT_PX = 124; // 144 - 10px padding each side
+const BORDER_PERIMETER = 512;
+
+export type DisconnectedSlotKind = 'open-app' | 'empty';
+
+export interface DisconnectedSlotConfig {
+  kind: DisconnectedSlotKind;
+  label?: string;
+  subtitle?: string;
+  detail?: string;
+}
+
+export type StatusIconKind =
+  | 'hub'
+  | 'no-session'
+  | 'agentdeck'
+  | 'tool'
+  | 'model'
+  | 'mode'
+  | 'ready'
+  | 'activity'
+  | 'open-app'
+  | 'retry'
+  | 'offline'
+  | 'back'
+  | 'more'
+  | 'esc'
+  | 'stop'
+  | 'play'
+  | 'review'
+  | 'commit'
+  | 'clear'
+  | 'gateway'
+  | 'status'
+  | 'allow'
+  | 'deny'
+  | 'diff'
+  | 'option';
+
+export type StatusCardTone =
+  | 'ready'
+  | 'idle'
+  | 'info'
+  | 'warning'
+  | 'danger'
+  | 'muted'
+  | 'agent'
+  | 'action'
+  | 'purple';
+
+export interface StatusCardConfig {
+  icon: StatusIconKind;
+  label: string;
+  subtitle?: string;
+  detail?: string;
+  tone?: StatusCardTone;
+}
+
+function escXml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + '\u2026';
+}
 
 function stateLabel(state?: string, agentType?: AgentType): string {
   if (!state) return 'OFFLINE';
-  // OpenClaw-specific labels
   if (agentType === 'openclaw') {
     if (state === 'idle') return 'STANDBY';
     if (state === 'processing') return 'ROUTING';
@@ -36,26 +100,6 @@ function stateLabel(state?: string, agentType?: AgentType): string {
   }
 }
 
-function escXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + '\u2026';
-}
-
-/**
- * Format "Model · effort" suffix for session tile / detail view.
- * Skips neutral efforts ("medium" legacy, "default" is Claude Code 2.1+
- * per-model default) so they don't clutter the tile. Truncates the model
- * name preferentially so the effort label survives in tight pixel budgets.
- */
 export function formatModelEffort(modelName?: string, effortLevel?: string, maxLen = 14): string {
   if (!modelName) return '';
   const showEffort = effortLevel && effortLevel !== 'medium' && effortLevel !== 'default';
@@ -67,7 +111,127 @@ export function formatModelEffort(modelName?: string, effortLevel?: string, maxL
   return truncate(modelName, modelBudget) + effortSuffix;
 }
 
-// ---- Session List Button ----
+function toneColors(tone: StatusCardTone = 'info') {
+  switch (tone) {
+    case 'ready':
+      return { bg: '#06160d', panel: '#12331f', icon: '#86efac', accent: '#22c55e', text: '#dcfce7', sub: '#86efac' };
+    case 'idle':
+      return { bg: '#0b1320', panel: '#172033', icon: '#93c5fd', accent: '#60a5fa', text: '#dbeafe', sub: '#93c5fd' };
+    case 'warning':
+      return { bg: '#17110a', panel: '#2a1b0c', icon: '#fbbf24', accent: '#f59e0b', text: '#fde68a', sub: '#fbbf24' };
+    case 'danger':
+      return { bg: '#1c0c0c', panel: '#341312', icon: '#fca5a5', accent: '#ef4444', text: '#fee2e2', sub: '#fca5a5' };
+    case 'muted':
+      return { bg: '#0a0a0c', panel: '#17171a', icon: '#a1a1aa', accent: '#52525b', text: '#e4e4e7', sub: '#a1a1aa' };
+    case 'agent':
+      return { bg: '#141016', panel: '#241a2b', icon: '#f0abfc', accent: '#c084fc', text: '#fae8ff', sub: '#d8b4fe' };
+    case 'action':
+      return { bg: '#07170f', panel: '#12331f', icon: '#bbf7d0', accent: '#22c55e', text: '#dcfce7', sub: '#86efac' };
+    case 'purple':
+      return { bg: '#120d1d', panel: '#24163a', icon: '#d8b4fe', accent: '#a78bfa', text: '#f3e8ff', sub: '#d8b4fe' };
+    case 'info':
+    default:
+      return { bg: '#0b1626', panel: '#12223a', icon: '#bfdbfe', accent: '#60a5fa', text: '#dbeafe', sub: '#93c5fd' };
+  }
+}
+
+function orbitOffset(animFrame: number, speedPx: number, phasePx = 0): number {
+  return -((animFrame * speedPx + phasePx) % BORDER_PERIMETER);
+}
+
+function renderOrbitingRect(params: {
+  x: number; y: number; width: number; height: number; rx: number; color: string; animFrame: number;
+  speedPx?: number; phasePx?: number; dashPx?: number; gapPx?: number;
+  railOpacity?: number; glowOpacity?: number; coreOpacity?: number;
+  railWidth?: number; glowWidth?: number; coreWidth?: number; filterId?: string;
+}): string {
+  const {
+    x, y, width, height, rx, color, animFrame,
+    speedPx = 18, phasePx = 0, dashPx = 80, gapPx = BORDER_PERIMETER - dashPx,
+    railOpacity = 0.18, glowOpacity = 0.58, coreOpacity = 0.96,
+    railWidth = 1.2, glowWidth = 4.8, coreWidth = 2.2, filterId,
+  } = params;
+  const dashOffset = orbitOffset(animFrame, speedPx, phasePx);
+  const filterAttr = filterId ? ` filter="url(#${filterId})"` : '';
+  const common = `x="${x}" y="${y}" width="${width}" height="${height}" rx="${rx}" fill="none" stroke="${color}" stroke-linecap="round" stroke-linejoin="round"`;
+  return [
+    `<rect ${common} stroke-width="${railWidth}" opacity="${railOpacity.toFixed(2)}"/>`,
+    `<rect ${common} stroke-width="${glowWidth}" stroke-dasharray="${dashPx} ${gapPx}" stroke-dashoffset="${dashOffset}" opacity="${glowOpacity.toFixed(2)}"${filterAttr}/>`,
+    `<rect ${common} stroke-width="${coreWidth}" stroke-dasharray="${dashPx} ${gapPx}" stroke-dashoffset="${dashOffset}" opacity="${coreOpacity.toFixed(2)}"/>`,
+  ].join('');
+}
+
+function renderGlyphIcon(kind: StatusIconKind, color: string, accent: string, x = 72, y = 43, scale = 1): string {
+  const s = scale;
+  const sx = (n: number) => x + n * s;
+  const sy = (n: number) => y + n * s;
+  const common = `stroke="${color}" stroke-linecap="round" stroke-linejoin="round"`;
+  const accentStroke = `stroke="${accent}" stroke-linecap="round" stroke-linejoin="round"`;
+
+  switch (kind) {
+    case 'hub':
+      return [
+        `<circle cx="${x}" cy="${y}" r="${9 * s}" fill="${accent}" opacity="0.18" stroke="${color}" stroke-width="${2.4 * s}"/>`,
+        `<circle cx="${sx(-24)}" cy="${sy(17)}" r="${5 * s}" fill="${color}" opacity="0.9"/>`,
+        `<circle cx="${sx(24)}" cy="${sy(17)}" r="${5 * s}" fill="${color}" opacity="0.9"/>`,
+        `<circle cx="${x}" cy="${sy(-25)}" r="${5 * s}" fill="${color}" opacity="0.9"/>`,
+        `<path d="M${sx(-7)} ${sy(7)} L${sx(-20)} ${sy(14)} M${sx(7)} ${sy(7)} L${sx(20)} ${sy(14)} M${x} ${sy(-9)} L${x} ${sy(-20)}" ${accentStroke} stroke-width="${2.6 * s}" opacity="0.72" fill="none"/>`,
+      ].join('');
+    case 'no-session':
+      return [
+        `<path d="M${sx(-25)} ${sy(-3)} H${sx(25)} V${sy(21)} Q${sx(25)} ${sy(27)} ${sx(19)} ${sy(27)} H${sx(-19)} Q${sx(-25)} ${sy(27)} ${sx(-25)} ${sy(21)} Z" fill="${accent}" opacity="0.14" stroke="${color}" stroke-width="${2.4 * s}"/>`,
+        `<path d="M${sx(-14)} ${sy(-14)} H${sx(14)} M${sx(-7)} ${sy(-24)} H${sx(7)}" ${common} stroke-width="${2.6 * s}" opacity="0.82"/>`,
+        `<circle cx="${sx(-10)}" cy="${sy(13)}" r="${2.8 * s}" fill="${color}" opacity="0.55"/><circle cx="${x}" cy="${sy(13)}" r="${2.8 * s}" fill="${color}" opacity="0.38"/><circle cx="${sx(10)}" cy="${sy(13)}" r="${2.8 * s}" fill="${color}" opacity="0.24"/>`,
+      ].join('');
+    case 'agentdeck':
+      return [
+        `<rect x="${sx(-24)}" y="${sy(-19)}" width="${48 * s}" height="${36 * s}" rx="${8 * s}" fill="${accent}" opacity="0.14" stroke="${color}" stroke-width="${2.4 * s}"/>`,
+        `<path d="M${sx(-13)} ${sy(-5)} H${sx(13)} M${sx(-13)} ${sy(7)} H${sx(4)}" ${common} stroke-width="${2.8 * s}" opacity="0.82"/>`,
+        `<circle cx="${sx(-11)}" cy="${sy(27)}" r="${4 * s}" fill="${color}" opacity="0.92"/><circle cx="${x}" cy="${sy(27)}" r="${4 * s}" fill="${color}" opacity="0.68"/><circle cx="${sx(11)}" cy="${sy(27)}" r="${4 * s}" fill="${color}" opacity="0.44"/>`,
+      ].join('');
+    case 'tool':
+      return `<circle cx="${sx(-18)}" cy="${sy(-13)}" r="${7 * s}" fill="none" stroke="${color}" stroke-width="${2.6 * s}"/><path d="M${sx(-12)} ${sy(-7)} L${sx(4)} ${sy(9)}" ${common} stroke-width="${3.8 * s}" fill="none"/><rect x="${sx(4)}" y="${sy(5)}" width="${22 * s}" height="${12 * s}" rx="${5 * s}" transform="rotate(45 ${sx(15)} ${sy(11)})" fill="${accent}" opacity="0.82"/>`;
+    case 'model':
+      return `<path d="M${x} ${sy(-27)} L${sx(24)} ${sy(-13)} V${sy(15)} L${x} ${sy(29)} L${sx(-24)} ${sy(15)} V${sy(-13)} Z" fill="${accent}" opacity="0.12" stroke="${color}" stroke-width="${2.4 * s}"/><path d="M${sx(-24)} ${sy(-13)} L${x} ${sy(1)} L${sx(24)} ${sy(-13)} M${x} ${sy(1)} V${sy(29)}" ${common} stroke-width="${2 * s}" opacity="0.7" fill="none"/>`;
+    case 'mode':
+      return `<path d="M${sx(-24)} ${sy(-18)} H${sx(24)} M${sx(-24)} ${y} H${sx(24)} M${sx(-24)} ${sy(18)} H${sx(24)}" ${common} stroke-width="${2.8 * s}" opacity="0.72"/><circle cx="${sx(-8)}" cy="${sy(-18)}" r="${5 * s}" fill="${accent}" stroke="${color}" stroke-width="${2 * s}"/><circle cx="${sx(13)}" cy="${y}" r="${5 * s}" fill="${accent}" stroke="${color}" stroke-width="${2 * s}"/><circle cx="${sx(-15)}" cy="${sy(18)}" r="${5 * s}" fill="${accent}" stroke="${color}" stroke-width="${2 * s}"/>`;
+    case 'ready':
+    case 'allow':
+      return `<circle cx="${x}" cy="${y}" r="${27 * s}" fill="${accent}" opacity="0.15" stroke="${color}" stroke-width="${2.6 * s}"/><path d="M${sx(-13)} ${sy(0)} L${sx(-3)} ${sy(11)} L${sx(16)} ${sy(-12)}" ${common} stroke-width="${5 * s}" fill="none"/>`;
+    case 'activity':
+      return `<path d="M${sx(-29)} ${y} H${sx(-18)} L${sx(-10)} ${sy(-16)} L${sx(3)} ${sy(18)} L${sx(12)} ${sy(-4)} H${sx(29)}" ${common} stroke-width="${4 * s}" fill="none"/><circle cx="${sx(29)}" cy="${y}" r="${4 * s}" fill="${accent}"/>`;
+    case 'open-app':
+    case 'play':
+      return `<rect x="${sx(-25)}" y="${sy(-22)}" width="${50 * s}" height="${44 * s}" rx="${9 * s}" fill="${accent}" opacity="0.16" stroke="${color}" stroke-width="${2.2 * s}"/><polygon points="${sx(-7)},${sy(-13)} ${sx(-7)},${sy(13)} ${sx(15)},${y}" fill="${color}"/>`;
+    case 'retry':
+      return `<path d="M${sx(20)} ${sy(-12)} A${26 * s} ${26 * s} 0 1 0 ${sx(23)} ${sy(13)}" fill="none" ${common} stroke-width="${4.5 * s}"/><path d="M${sx(20)} ${sy(-28)} V${sy(-10)} H${sx(2)}" fill="none" ${common} stroke-width="${4.5 * s}"/>`;
+    case 'offline':
+      return `<circle cx="${x}" cy="${y}" r="${25 * s}" fill="${accent}" opacity="0.14" stroke="${color}" stroke-width="${2.4 * s}"/><circle cx="${x}" cy="${y}" r="${4.5 * s}" fill="${color}"/><path d="M${x} ${sy(5)} V${sy(17)} M${sx(-16)} ${sy(18)} H${sx(16)}" ${accentStroke} stroke-width="${2.6 * s}" opacity="0.68"/>`;
+    case 'back':
+      return `<path d="M${sx(21)} ${y} H${sx(-18)} M${sx(-18)} ${y} L${sx(-2)} ${sy(-16)} M${sx(-18)} ${y} L${sx(-2)} ${sy(16)}" ${common} stroke-width="${5 * s}" fill="none"/>`;
+    case 'more':
+      return `<path d="M${sx(-18)} ${sy(-15)} L${sx(0)} ${y} L${sx(-18)} ${sy(15)} M${sx(3)} ${sy(-15)} L${sx(21)} ${y} L${sx(3)} ${sy(15)}" ${common} stroke-width="${4.5 * s}" fill="none"/>`;
+    case 'esc':
+    case 'deny':
+      return `<circle cx="${x}" cy="${y}" r="${27 * s}" fill="${accent}" opacity="0.14" stroke="${color}" stroke-width="${2.2 * s}"/><path d="M${sx(-12)} ${sy(-12)} L${sx(12)} ${sy(12)} M${sx(12)} ${sy(-12)} L${sx(-12)} ${sy(12)}" ${common} stroke-width="${4.8 * s}" fill="none"/>`;
+    case 'stop':
+      return `<rect x="${sx(-22)}" y="${sy(-22)}" width="${44 * s}" height="${44 * s}" rx="${8 * s}" fill="${accent}" opacity="0.16" stroke="${color}" stroke-width="${2.2 * s}"/><rect x="${sx(-11)}" y="${sy(-11)}" width="${22 * s}" height="${22 * s}" rx="${3 * s}" fill="${color}"/>`;
+    case 'review':
+    case 'diff':
+      return `<rect x="${sx(-18)}" y="${sy(-25)}" width="${36 * s}" height="${50 * s}" rx="${5 * s}" fill="${accent}" opacity="0.13" stroke="${color}" stroke-width="${2.4 * s}"/><path d="M${sx(-9)} ${sy(-10)} H${sx(10)} M${sx(-9)} ${sy(1)} H${sx(6)} M${sx(-9)} ${sy(12)} H${sx(2)}" ${common} stroke-width="${2.2 * s}" opacity="0.76"/>`;
+    case 'commit':
+      return `<circle cx="${x}" cy="${sy(-15)}" r="${7 * s}" fill="${color}"/><circle cx="${sx(-21)}" cy="${sy(18)}" r="${7 * s}" fill="${color}"/><circle cx="${sx(21)}" cy="${sy(18)}" r="${7 * s}" fill="${color}"/><path d="M${x} ${sy(-8)} V${sy(7)} M${x} ${sy(7)} H${sx(-21)} V${sy(11)} M${x} ${sy(7)} H${sx(21)} V${sy(11)}" ${accentStroke} stroke-width="${3 * s}" fill="none"/>`;
+    case 'clear':
+      return `<path d="M${sx(-16)} ${sy(-16)} L${sx(16)} ${sy(16)} M${sx(16)} ${sy(-16)} L${sx(-16)} ${sy(16)}" ${common} stroke-width="${4.5 * s}" fill="none"/>`;
+    case 'gateway':
+      return `<rect x="${sx(-28)}" y="${sy(-21)}" width="${56 * s}" height="${42 * s}" rx="${6 * s}" fill="${accent}" opacity="0.12" stroke="${color}" stroke-width="${2.2 * s}"/><path d="M${sx(-28)} ${sy(-8)} H${sx(28)} M${sx(-12)} ${sy(7)} H${sx(12)} M${x} ${sy(-5)} V${sy(19)}" ${common} stroke-width="${2.2 * s}" opacity="0.72"/>`;
+    case 'status':
+      return `<circle cx="${x}" cy="${y}" r="${27 * s}" fill="${accent}" opacity="0.14" stroke="${color}" stroke-width="${2.4 * s}"/><path d="M${x} ${sy(-15)} V${sy(4)}" ${common} stroke-width="${4.4 * s}"/><circle cx="${x}" cy="${sy(17)}" r="${4.5 * s}" fill="${color}"/>`;
+    case 'option':
+    default:
+      return `<rect x="${sx(-25)}" y="${sy(-20)}" width="${50 * s}" height="${40 * s}" rx="${8 * s}" fill="${accent}" opacity="0.13" stroke="${color}" stroke-width="${2.2 * s}"/><circle cx="${sx(-12)}" cy="${y}" r="${4 * s}" fill="${color}"/><circle cx="${x}" cy="${y}" r="${4 * s}" fill="${color}"/><circle cx="${sx(12)}" cy="${y}" r="${4 * s}" fill="${color}"/>`;
+  }
+}
 
 export function renderSessionSlot(
   session: SessionInfo,
@@ -79,293 +243,198 @@ export function renderSessionSlot(
   const isWorking = session.state === 'processing';
   const isAsking = session.state?.startsWith('awaiting') ?? false;
   const isIdle = !isWorking && !isAsking;
-  // Stream Deck / SD+ run a 150ms tick — animated. D200H's TypeScript image
-  // pipeline (bridge/src/d200h/image-renderer.ts) has no such loop: passing
-  // animFrame=0 every time freezes dashed strokes and leaves the sin-based
-  // pulse at a dim phase. Callers without a loop should pass animated:false
-  // so we emit a motion-free visual (solid borders + badges) that still
-  // clearly distinguishes working vs awaiting vs idle.
   const animated = options?.animated ?? true;
-
   const agent = (session.agentType as AgentType) || 'claude-code';
   const nameForDisplay = displayName ?? session.projectName;
-  // Bottom line budget: tile width ~124px at 14px font ≈ 16 chars. Leave a
-  // little headroom so "Opus 4.7 · max" fits without running into the
-  // watermark on the right.
   const modelText = formatModelEffort(session.modelName, session.effortLevel, 15);
-
-  // Custom palette mimicking the premium demo
   const p1 = agent === 'claude-code' ? '#D97757' : agent === 'codex-cli' ? '#8BA4FF' : agent === 'openclaw' ? '#FF6B6B' : '#F1ECEC';
-  const p2 = agent === 'claude-code' ? '#BE6D52' : agent === 'codex-cli' ? '#5981FF' : agent === 'openclaw' ? '#CC3333' : '#AFAFAF';
-
   const sColor = stateColor(session.state);
   const signalColor = isWorking ? '#F5B942' : sColor;
   const fontFam = 'Inter, -apple-system, system-ui, Helvetica Neue, sans-serif';
-
   const stateLbl = isWorking ? 'RUNNING' : isAsking ? 'PERMIT?' : 'IDLE';
   const colorText = isWorking ? '#FDE68A' : isAsking ? '#FECACA' : p1;
-
   const gradId = `sd-bg-${agent}-${session.state || 'idle'}`;
-  
-  let defs = `
-    <linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#1C1C1E"/>
-      <stop offset="100%" stop-color="#0C0C0E"/>
-    </linearGradient>
-  `;
-
-  let glowBorder = '';
+  const filterId = `pg-${animFrame}`;
+  let defs = `<linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#1C1C1E"/><stop offset="100%" stop-color="#0C0C0E"/></linearGradient>`;
+  const blurDef = `<filter id="${filterId}" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur in="SourceGraphic" stdDeviation="2.4"/></filter>`;
+  let stateBorder = '';
   let activeRing = '';
   let askDot = '';
   let runBadge = '';
-  const filterId = `pg-${animFrame}`;
-  const blurDef = `
-      <filter id="${filterId}" x="-10%" y="-10%" width="120%" height="120%">
-        <feGaussianBlur in="SourceGraphic" stdDeviation="2.4"/>
-      </filter>
-    `;
-  if (isAsking) {
-    // Animated callers pulse the opacity (0.55…1.0 over a sin wave). Static
-    // callers (D200H) pin to a near-peak value so the frozen snapshot reads
-    // as bright and attention-grabbing instead of dim.
-    const pulseOpacity = animated
-      ? 0.55 + 0.45 * Math.abs(Math.sin(animFrame * 0.15))
-      : 0.95;
+
+  if (isAsking || isWorking) {
     defs += blurDef;
-    // Thick outer glow + crisp inner ring — distinct "breathing" solid border.
-    glowBorder =
-      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="4.5" opacity="${pulseOpacity.toFixed(2)}" filter="url(#${filterId})"/>` +
-      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${sColor}" stroke-width="1.5" opacity="${(pulseOpacity * 0.9).toFixed(2)}"/>`;
-    askDot = `
-      <circle cx="114" cy="24" r="5" fill="#F5B942" filter="url(#${filterId})"/>
-      <circle cx="114" cy="24" r="3" fill="#ffffff" />
-    `;
-  } else if (isWorking) {
-    const pulseOpacity = animated
-      ? 0.72 + 0.20 * Math.abs(Math.sin(animFrame * 0.12))
-      : 0.9;
-    defs += blurDef;
-    glowBorder =
-      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${signalColor}" stroke-width="4.5" opacity="${pulseOpacity.toFixed(2)}" filter="url(#${filterId})"/>` +
-      `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${signalColor}" stroke-width="1.5" opacity="${Math.min(0.98, pulseOpacity + 0.06).toFixed(2)}"/>`;
-    runBadge = `
-      <rect x="99" y="14" width="30" height="16" rx="8" fill="${signalColor}" opacity="${(animated ? 0.78 + 0.16 * Math.abs(Math.sin(animFrame * 0.12)) : 0.9).toFixed(2)}" />
-      <text x="114" y="25" font-size="9" font-weight="800" text-anchor="middle" fill="#0C0C0E" font-family="${fontFam}">RUN</text>
-    `;
+    const pulseOpacity = isAsking
+      ? (animated ? 0.55 + 0.45 * Math.abs(Math.sin(animFrame * 0.15)) : 0.95)
+      : (animated ? 0.72 + 0.20 * Math.abs(Math.sin(animFrame * 0.12)) : 0.9);
+    const borderColor = isWorking ? signalColor : sColor;
+    stateBorder = animated
+      ? renderOrbitingRect({
+          x: 8, y: 8, width: 128, height: 128, rx: 12, color: borderColor, animFrame,
+          speedPx: isWorking ? 22 : 20, dashPx: isWorking ? 92 : 86,
+          glowOpacity: pulseOpacity * 0.72, coreOpacity: Math.min(1, pulseOpacity + 0.06), filterId,
+        })
+      : `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${borderColor}" stroke-width="4.5" opacity="${pulseOpacity.toFixed(2)}" filter="url(#${filterId})"/><rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${borderColor}" stroke-width="1.5" opacity="${(pulseOpacity * 0.9).toFixed(2)}"/>`;
+    if (isAsking) {
+      askDot = `<circle cx="114" cy="24" r="5" fill="#F5B942" filter="url(#${filterId})"/><circle cx="114" cy="24" r="3" fill="#ffffff" />`;
+    } else {
+      runBadge = `<rect x="99" y="14" width="30" height="16" rx="8" fill="${signalColor}" opacity="0.9" /><text x="114" y="25" font-size="9" font-weight="800" text-anchor="middle" fill="#0C0C0E" font-family="${fontFam}">RUN</text>`;
+    }
   }
 
   if (isActive) {
-    activeRing = `<rect x="10.5" y="10.5" width="123" height="123" rx="10.5" fill="none" stroke="#60A5FA" stroke-width="1.5" opacity="${isIdle ? '0.72' : '0.36'}"/>`;
+    if (animated && isIdle) defs += blurDef;
+    activeRing = animated
+      ? renderOrbitingRect({
+          x: 10.5, y: 10.5, width: 123, height: 123, rx: 10.5, color: '#60A5FA', animFrame,
+          speedPx: 16, phasePx: 170, dashPx: isIdle ? 72 : 52,
+          railOpacity: isIdle ? 0.20 : 0.10, glowOpacity: isIdle ? 0.42 : 0.24,
+          coreOpacity: isIdle ? 0.95 : 0.58, railWidth: 1, glowWidth: isIdle ? 3.6 : 2.6,
+          coreWidth: isIdle ? 1.8 : 1.3, filterId: isIdle ? filterId : undefined,
+        })
+      : `<rect x="10.5" y="10.5" width="123" height="123" rx="10.5" fill="none" stroke="#60A5FA" stroke-width="1.5" opacity="${isIdle ? '0.72' : '0.36'}"/>`;
   }
 
-  // Agent creature watermark at bottom-right.
-  const watermark = `<g transform="translate(92, 80)" opacity="${isIdle ? '0.54' : '0.42'}">
-    ${agentLogoIcon(agent, 48, 1, 0, 0)}
-  </g>`;
-  
-  // Left state strip is inset so it never collides with the active/working ring.
-  const leftStrip = `<rect x="14" y="18" width="4" height="108" rx="2" fill="${isWorking ? '#F5B942' : isAsking ? '#F87171' : p1}"/>`;
-
-  // Border is now the primary working/awaiting signal — no tiny spinner glyph.
-  const spinner = '';
-
-  // ACT badge only on IDLE — WORKING has the flowing border, AWAITING has the pulse.
-  const badgeObj = isIdle ? `
-    <rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" />
-    <text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">ACT</text>
-  ` : '';
-
+  const watermark = `<g transform="translate(92, 80)" opacity="${isIdle ? '0.54' : '0.42'}">${agentLogoIcon(agent, 48, 1, 0, 0)}</g>`;
+  const badgeObj = isIdle ? `<rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" /><text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">ACT</text>` : '';
   const toolStr = isWorking ? 'Running task' : modelText;
 
   const elements = [
     `<defs>${defs}</defs>`,
     `<rect width="${SIZE}" height="${SIZE}" rx="16" fill="url(#${gradId})"/>`,
     `<rect x="8" y="8" width="128" height="128" rx="12" fill="#2C2C2E" opacity="0.8"/>`,
-    glowBorder,
-    activeRing,
-    leftStrip,
-    watermark,
-    spinner,
-    askDot,
-    runBadge,
-    badgeObj,
+    stateBorder, activeRing, watermark, askDot, runBadge, badgeObj,
     `<text x="20" y="32" font-size="17" font-weight="800" text-anchor="start" fill="${colorText}" font-family="${fontFam}">${escXml(stateLbl)}</text>`,
     `<text x="20" y="52" font-size="13" font-weight="600" text-anchor="start" fill="#E2E8F0" font-family="${fontFam}">${escXml(truncate(nameForDisplay, 13))}</text>`,
-    `<text x="20" y="120" font-size="${isWorking ? '13' : '14'}" font-weight="500" text-anchor="start" fill="${colorText}" opacity="0.8" font-family="${fontFam}">${escXml(toolStr)}</text>`
+    `<text x="20" y="120" font-size="${isWorking ? '13' : '14'}" font-weight="500" text-anchor="start" fill="${colorText}" opacity="0.8" font-family="${fontFam}">${escXml(toolStr)}</text>`,
   ].join('');
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">${elements}</svg>`;
 }
 
-// ---- Empty Slot ----
-
 export function renderEmptySlot(): string {
-  const label = `<text x="72" y="76" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#333333">Empty</text>`;
-  return svgFrame('#111111', label);
+  return renderQuietSlot();
 }
 
-export function renderNoDaemonSlot(slot: number): string {
-  if (slot === 0) {
-    // START button — launches macOS app
-    const elements = [
-      `<text x="72" y="56" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#94a3b8">AgentDeck</text>`,
-      `<text x="72" y="96" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="bold" fill="#22c55e">\u25B6 START</text>`,
-    ].join('');
-    return svgFrame('#0f1a0f', elements);
-  }
-  return svgFrame('#111111', '');
+export function renderQuietSlot(): string {
+  return svgFrame('#0a0a0a', '');
 }
 
-// ---- Navigation Buttons ----
+export function renderStatusCard(config: StatusCardConfig): string {
+  const colors = toneColors(config.tone);
+  const fontFam = 'Inter, -apple-system, system-ui, Helvetica Neue, sans-serif';
+  const label = truncate(config.label, 14);
+  const subtitle = truncate(config.subtitle ?? '', 18);
+  const detail = truncate(config.detail ?? '', 17);
+  const elements = [
+    `<rect x="25" y="18" width="94" height="58" rx="14" fill="${colors.panel}" opacity="0.68" stroke="${colors.accent}" stroke-width="1.2" stroke-opacity="0.28"/>`,
+    renderGlyphIcon(config.icon, colors.icon, colors.accent, 72, 43, 0.94),
+    `<text x="72" y="${subtitle ? 94 : 103}" text-anchor="middle" font-family="${fontFam}" font-size="${label.length > 11 ? '14' : '16'}" font-weight="800" fill="${colors.text}">${escXml(label)}</text>`,
+    subtitle ? `<text x="72" y="112" text-anchor="middle" font-family="${fontFam}" font-size="11" font-weight="650" fill="${colors.sub}" opacity="0.86">${escXml(subtitle)}</text>` : '',
+    detail ? `<text x="72" y="127" text-anchor="middle" font-family="${fontFam}" font-size="9" font-weight="600" fill="${colors.sub}" opacity="0.52">${escXml(detail)}</text>` : '',
+  ].join('');
+  return svgFrame(colors.bg, elements);
+}
+
+export function renderDisconnectedSlot(config: DisconnectedSlotConfig): string {
+  if (config.kind === 'empty') return renderQuietSlot();
+  return renderStatusCard({ icon: 'open-app', label: config.label ?? 'OFFLINE', subtitle: config.subtitle ?? 'Open AgentDeck', detail: config.detail, tone: 'action' });
+}
 
 export function renderBackButton(): string {
-  const arrow = `<text x="72" y="76" text-anchor="middle" font-family="Arial,sans-serif" font-size="32" fill="#94a3b8">\u2190</text>`;
-  const label = `<text x="72" y="108" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="600" fill="#94a3b8">BACK</text>`;
-  return svgFrame('#1a1a1a', arrow + label);
+  return renderStatusCard({ icon: 'back', label: 'BACK', subtitle: 'sessions', tone: 'muted' });
 }
 
 export function renderNextPageButton(pageLabel: string): string {
-  const arrow = `<text x="72" y="64" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" fill="#60a5fa">\u25B6</text>`;
-  const label = `<text x="72" y="92" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="600" fill="#60a5fa">NEXT</text>`;
-  const page = `<text x="72" y="114" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#64748b">${escXml(pageLabel)}</text>`;
-  return svgFrame('#1a1a2e', arrow + label + page);
+  return renderStatusCard({ icon: 'more', label: 'MORE', subtitle: pageLabel, tone: 'info' });
 }
 
 export function renderEscButton(active = true): string {
-  const c = active ? '#f97316' : '#a0855a';
-  const bg = active ? '#2d1810' : '#1a1308';
-  const op = active ? '' : ' opacity="0.45"';
-  const elements = [
-    `<text x="72" y="62" text-anchor="middle" font-family="Arial,sans-serif" font-size="32" fill="${c}"${op}>\u2716</text>`,
-    `<text x="72" y="100" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="bold" fill="${c}"${op}>ESC</text>`,
-  ].join('');
-  return svgFrame(bg, elements);
+  return renderStatusCard({ icon: 'esc', label: 'ESC', subtitle: active ? 'cancel' : 'idle', tone: active ? 'warning' : 'muted' });
 }
 
 export function renderStopButton(active = true): string {
-  const c = active ? '#ef4444' : '#666666';
-  const bg = active ? '#2d1010' : '#1a0a0a';
-  const op = active ? '' : ' opacity="0.4"';
-  const elements = [
-    `<text x="72" y="62" text-anchor="middle" font-family="Arial,sans-serif" font-size="32" fill="${c}"${op}>\u25A0</text>`,
-    `<text x="72" y="100" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="bold" fill="${c}"${op}>STOP</text>`,
-  ].join('');
-  return svgFrame(bg, elements);
+  return renderStatusCard({ icon: 'stop', label: 'STOP', subtitle: active ? 'interrupt' : 'idle', tone: active ? 'danger' : 'muted' });
 }
 
-// ---- Detail View: Session Info ----
-
-export function renderDetailInfo(session: SessionInfo | undefined, state: State, tool?: string, modelName?: string, mode?: string, displayName?: string, effortLevel?: string): string {
+export function renderDetailInfo(
+  session: SessionInfo | undefined,
+  state: State,
+  tool?: string,
+  modelName?: string,
+  mode?: string,
+  displayName?: string,
+  effortLevel?: string,
+): string {
   if (!session) return renderEmptySlot();
-
   const agent = (session.agentType as AgentType) || 'claude-code';
   const nameForDisplay = displayName ?? session.projectName;
-  
   const fontFam = 'Inter, -apple-system, system-ui, Helvetica Neue, sans-serif';
-  const sColor = stateColor(session.state);
-  const stateLbl = stateLabel(session.state, agent);
-  
+  const effectiveState = state || session.state;
+  const sColor = stateColor(effectiveState);
+  const stateLbl = stateLabel(effectiveState, agent);
   const gradId = `sd-bg-detail-${agent}`;
-  const defs = `
-    <linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#151720"/>
-      <stop offset="100%" stop-color="#0A0B10"/>
-    </linearGradient>
-  `;
-
-  const watermark = `<g transform="translate(92, 80)" opacity="0.42">
-    ${agentLogoIcon(agent, 48, 1, 0, 0)}
-  </g>`;
-
-  const leftStrip = `<rect x="14" y="18" width="4" height="108" rx="2" fill="${sColor}"/>`;
-
-  const badgeObj = `
-    <rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" />
-    <text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">INFO</text>
-  `;
-
-  const toolDisplay = tool ? `\u25B6 ${truncate(tool, 18)}` : stateLbl;
-
+  const watermark = `<g transform="translate(92, 80)" opacity="0.42">${agentLogoIcon(agent, 48, 1, 0, 0)}</g>`;
+  const badgeObj = `<rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" /><text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">INFO</text>`;
+  const toolDisplay = tool ? `▶ ${truncate(tool, 18)}` : stateLbl;
   const elements = [
-    `<defs>${defs}</defs>`,
+    `<defs><linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#151720"/><stop offset="100%" stop-color="#0A0B10"/></linearGradient></defs>`,
     `<rect width="${SIZE}" height="${SIZE}" rx="16" fill="url(#${gradId})"/>`,
     `<rect x="8" y="8" width="128" height="128" rx="12" fill="#1C1F2E" opacity="0.8"/>`,
-    leftStrip,
-    watermark,
-    badgeObj,
-    // Title
+    watermark, badgeObj,
     `<text x="20" y="34" font-size="18" font-weight="800" text-anchor="start" fill="#ffffff" font-family="${fontFam}">${escXml(truncate(nameForDisplay, 10))}</text>`,
-    // Model/Mode — effort renders inline with model (e.g. "Opus 4.7 · max")
-    // so the permission-mode chip below keeps its y=74 slot.
     (modelName && agent !== 'openclaw') ? `<text x="20" y="56" font-size="12" font-weight="600" text-anchor="start" fill="#94a3b8" font-family="${fontFam}">${escXml(formatModelEffort(modelName, effortLevel, 17))}</text>` : '',
     (mode && mode !== 'default' && agent !== 'openclaw') ? `<text x="20" y="74" font-size="11" font-weight="700" text-anchor="start" fill="#a78bfa" font-family="${fontFam}">${escXml(mode.toUpperCase())}</text>` : '',
-    // Tool/State
     `<text x="20" y="120" font-size="12" font-weight="700" text-anchor="start" fill="${tool ? '#fbbf24' : sColor}" font-family="${fontFam}">${escXml(toolDisplay)}</text>`,
   ].join('');
-
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">${elements}</svg>`;
 }
 
-// ---- Detail View: Option Button ----
+function optionVisual(label: string): { icon: StatusIconKind; tone: StatusCardTone } {
+  const lower = label.toLowerCase();
+  if (lower.includes('diff') || lower.includes('review') || lower.includes('view')) return { icon: 'diff', tone: 'info' };
+  if (lower.startsWith('yes') || lower.startsWith('allow') || lower.startsWith('apply') || lower.includes("don't ask") || lower.includes('always')) return { icon: 'allow', tone: 'ready' };
+  if (lower.startsWith('no') || lower.startsWith('deny') || lower.startsWith('reject') || lower.includes('cancel')) return { icon: 'deny', tone: 'danger' };
+  return { icon: 'option', tone: 'purple' };
+}
 
 export function renderOptionButton(option: PromptOption, index: number): string {
   const label = option.label || `Option ${index + 1}`;
-  const lines = wrapTextByWidth(label, MAX_TEXT_PX, 16);
-  const lineHeight = 20;
-  const startY = lines.length === 1 ? 76 : 76 - ((lines.length - 1) * lineHeight) / 2;
-
-  // Slot number (top-right)
-  const slotNum = `<text x="${SIZE - 10}" y="18" text-anchor="end" font-family="Arial,sans-serif" font-size="13" fill="#ffffff" opacity="0.25">${index + 1}</text>`;
-
-  const textEls = lines.slice(0, 3).map((line, i) =>
-    `<text x="72" y="${startY + i * lineHeight}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#ffffff">${escXml(line)}</text>`
-  ).join('');
-
-  // Use different bg colors for visual distinction
-  const colors = ['#1e3a5f', '#1e3a4a', '#2a1e4a', '#1e4a3a', '#3a1e2a'];
-  const bgColor = colors[index % colors.length];
-
-  return svgFrame(bgColor, slotNum + textEls);
+  const { icon, tone } = optionVisual(label);
+  const colors = toneColors(tone);
+  const fontFam = 'Inter, -apple-system, system-ui, Helvetica Neue, sans-serif';
+  const lines = wrapTextByWidth(label, 112, 13).slice(0, 2);
+  const startY = lines.length === 1 ? 103 : 96;
+  const slotNum = `<circle cx="119" cy="23" r="12" fill="${colors.panel}" stroke="${colors.accent}" stroke-width="1" opacity="0.9"/><text x="119" y="28" text-anchor="middle" font-family="${fontFam}" font-size="12" font-weight="800" fill="${colors.text}" opacity="0.8">${index + 1}</text>`;
+  const textEls = lines.map((line, i) => `<text x="72" y="${startY + i * 17}" text-anchor="middle" font-family="${fontFam}" font-size="${line.length > 13 ? '12' : '13'}" font-weight="800" fill="${colors.text}">${escXml(line)}</text>`).join('');
+  return svgFrame(
+    colors.bg,
+    `<rect x="25" y="18" width="94" height="58" rx="14" fill="${colors.panel}" opacity="0.58" stroke="${colors.accent}" stroke-width="1.2" stroke-opacity="0.26"/>`
+      + renderGlyphIcon(icon, colors.icon, colors.accent, 72, 43, 0.84)
+      + slotNum
+      + textEls,
+  );
 }
 
-// ---- Detail View: Preset Action Button ----
-
 export function renderPresetButton(label: string, iconSvg: string, color: string, textColor: string, subtitle?: string, loading?: boolean): string {
+  const fontFam = 'Inter, -apple-system, system-ui, Helvetica Neue, sans-serif';
   if (loading) {
-    return svgFrame(color, iconSvg);
+    return svgFrame(color, iconSvg + `<text x="72" y="103" text-anchor="middle" font-family="${fontFam}" font-size="13" font-weight="800" fill="${textColor}">SWITCHING</text>`);
   }
-  const labelEl = `<text x="72" y="100" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="${textColor}">${escXml(label)}</text>`;
-  const subEl = subtitle
-    ? `<text x="72" y="118" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="${textColor}" opacity="0.7">${escXml(truncate(subtitle, 14))}</text>`
-    : '';
+  const labelEl = `<text x="72" y="100" text-anchor="middle" font-family="${fontFam}" font-size="16" font-weight="800" fill="${textColor}">${escXml(label)}</text>`;
+  const subEl = subtitle ? `<text x="72" y="118" text-anchor="middle" font-family="${fontFam}" font-size="11" font-weight="650" fill="${textColor}" opacity="0.7">${escXml(truncate(subtitle, 14))}</text>` : '';
   return svgFrame(color, iconSvg + labelEl + subEl);
 }
 
-// ---- Detail View: Info slot (tool, model/mode) ----
-
-export function renderInfoSlot(label: string, subtitle?: string): string {
-  const mainEl = `<text x="72" y="${subtitle ? 68 : 76}" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#94a3b8">${escXml(truncate(label, 18))}</text>`;
-  const subEl = subtitle
-    ? `<text x="72" y="92" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#64748b">${escXml(truncate(subtitle, 22))}</text>`
-    : '';
-  return svgFrame('#1a1a1a', mainEl + subEl);
+export function renderInfoSlot(label: string, subtitle?: string, icon: StatusIconKind = 'activity', tone: StatusCardTone = 'info', detail?: string): string {
+  return renderStatusCard({ icon, label, subtitle, detail, tone });
 }
 
-// ---- SVG Frame ----
-
 export function svgFrame(bgColor: string, innerElements: string): string {
-  // Use a random ID to prevent SVG constraint clashes
   const gradId = 'frame-bg-' + Math.floor(Math.random() * 1000000);
-  const defs = `
-    <linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="${bgColor}"/>
-      <stop offset="100%" stop-color="#0A0A0E"/>
-    </linearGradient>
-  `;
-
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
-    `<defs>${defs}</defs>`,
+    `<defs><linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="${bgColor}"/><stop offset="100%" stop-color="#0A0A0E"/></linearGradient></defs>`,
     `<rect width="${SIZE}" height="${SIZE}" rx="16" fill="url(#${gradId})"/>`,
     `<rect x="8" y="8" width="128" height="128" rx="12" fill="#2C2C2E" opacity="0.6"/>`,
     innerElements,

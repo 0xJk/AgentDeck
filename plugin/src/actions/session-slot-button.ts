@@ -13,12 +13,13 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
-import type { SessionInfo, PromptOption, AgentType } from '@agentdeck/shared';
+import type { SessionInfo, PromptOption } from '@agentdeck/shared';
 import { SessionSlotManager, type DeckLayout, type SessionSlotConfig } from '../session-slot-manager.js';
+import { computeCenterSlot } from '../center-slot.js';
 import {
   renderSessionSlot,
   renderEmptySlot,
-  renderNoDaemonSlot,
+  renderDisconnectedSlot,
   renderBackButton,
   renderNextPageButton,
   renderEscButton,
@@ -27,6 +28,8 @@ import {
   renderOptionButton,
   renderInfoSlot,
   renderPresetButton,
+  renderStatusCard,
+  type DisconnectedSlotConfig,
 } from '../renderers/session-slot-renderer.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import { dlog } from '../log.js';
@@ -42,7 +45,7 @@ const slotMap = new Map<string, { slot: number; layout: DeckLayout }>();
 /** All registered action instance IDs */
 const actionIds: string[] = [];
 
-/** Animation frame counter (for AWAITING pulse) */
+/** Animation frame counter for orbiting session borders. */
 let animFrame = 0;
 let animTimer: ReturnType<typeof setInterval> | null = null;
 const ANIM_INTERVAL_MS = 150;
@@ -133,12 +136,20 @@ function stopAnimation(): void {
   }
 }
 
-/** Check if any visible session needs animation (AWAITING pulse or PROCESSING flowing border) */
+/** Check if any visible session needs animation (active, awaiting, or processing border). */
 function needsAnimation(): boolean {
   if (manager.view === 'detail') return false; // Detail view doesn't animate session buttons
-  for (const session of manager.sessions) {
-    if (session.state?.startsWith('awaiting')) return true;
-    if (session.state === 'processing') return true;
+  if (slotMap.size === 0) {
+    return manager.sessions.some((session) =>
+      session.state?.startsWith('awaiting') || session.state === 'processing',
+    );
+  }
+  for (const { slot, layout } of slotMap.values()) {
+    const config = manager.getSlotConfig(slot, layout);
+    if (config.type !== 'session' || !config.session) continue;
+    if (config.isActive) return true;
+    if (config.session.state?.startsWith('awaiting')) return true;
+    if (config.session.state === 'processing') return true;
   }
   return false;
 }
@@ -167,21 +178,28 @@ function layoutForEvent(ev: WillAppearEvent | KeyDownEvent): DeckLayout {
   };
 }
 
+function getDisconnectedSlotConfig(slot: number, layout: DeckLayout): DisconnectedSlotConfig {
+  if (slot === computeCenterSlot(layout)) {
+    return { kind: 'open-app', label: 'OFFLINE', subtitle: 'Open AgentDeck' };
+  }
+  return { kind: 'empty' };
+}
+
 function refreshAll(): void {
-  // Daemon not connected → show "No Daemon" on all slots
+  // Daemon not connected -> single OFFLINE hero on the center key, the rest empty.
   if (!daemonConnected) {
     for (const id of actionIds) {
       const entry = slotMap.get(id);
       if (entry == null) continue;
       const act = streamDeck.actions.getActionById(id);
       if (!act) continue;
-      void act.setImage(svgToDataUrl(renderNoDaemonSlot(entry.slot))).catch(() => {});
+      void act.setImage(svgToDataUrl(renderDisconnectedSlot(getDisconnectedSlotConfig(entry.slot, entry.layout)))).catch(() => {});
     }
     stopAnimation();
     return;
   }
 
-  // Start/stop animation based on whether any session is AWAITING
+  // Start/stop animation based on visible session border state.
   if (needsAnimation() && !animTimer) {
     startAnimation();
   } else if (!needsAnimation() && animTimer) {
@@ -216,11 +234,20 @@ function renderSlotSvg(config: SessionSlotConfig, _slot: number): string {
           undefined, // tool shown separately
           manager.detailModelName ?? config.session.modelName,
           undefined,
-          undefined,
+          config.label,
           manager.detailEffortLevel ?? config.session.effortLevel,
         );
       }
-      return renderInfoSlot(config.label ?? '---');
+      return renderInfoSlot(config.label ?? '---', config.subtitle, config.icon, config.tone, config.detail);
+
+    case 'status':
+      return renderStatusCard({
+        icon: config.icon ?? 'activity',
+        label: config.label ?? '---',
+        subtitle: config.subtitle,
+        detail: config.detail,
+        tone: config.tone,
+      });
 
     case 'option':
       return renderOptionButton(config.option!, config.optionIndex ?? 0);
@@ -267,7 +294,7 @@ export class SessionSlotButtonAction extends SingletonAction {
 
     // Render appropriate state
     if (!daemonConnected) {
-      await ev.action.setImage(svgToDataUrl(renderNoDaemonSlot(slot)));
+      await ev.action.setImage(svgToDataUrl(renderDisconnectedSlot(getDisconnectedSlotConfig(slot, layout))));
     } else {
       const config = manager.getSlotConfig(slot, layout);
       await ev.action.setImage(svgToDataUrl(renderSlotSvg(config, slot)));
@@ -279,10 +306,11 @@ export class SessionSlotButtonAction extends SingletonAction {
     if (entry == null) return;
     const { slot, layout } = entry;
 
-    // No daemon — slot 0 = START (launch macOS app)
-    if (!daemonConnected && slot === 0) {
-      dlog('SesSlot', 'keyDown: launching AgentDeck app or GitHub');
-      void openAgentDeckAppOrGitHub().catch(() => {});
+    if (!daemonConnected) {
+      if (slot === computeCenterSlot(layout)) {
+        dlog('SesSlot', 'keyDown: launching AgentDeck app or GitHub');
+        void openAgentDeckAppOrGitHub().catch(() => {});
+      }
       return;
     }
 
