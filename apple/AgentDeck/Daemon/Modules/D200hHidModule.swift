@@ -136,9 +136,6 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     /// press flash, label-style sync) skips before it can paint over the
     /// final OFFLINE frame. Reset in `start()` to support wake recovery.
     private var tearingDown = false
-    /// Scoped to `sendOfflineFrame()` so its `writePacket` calls bypass the
-    /// `tearingDown` gate. Every other write path goes through the gate.
-    private var sendingOfflineFrame = false
 
     private var pollTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
@@ -1029,13 +1026,18 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
 
 
     private func writePacket(_ data: Data) {
-        // Universal write gate: once `stop()` flips tearingDown, only
-        // sendOfflineFrame() may write. This catches the gaps that the
-        // entry-point gates leave open — applyDisplayState brightness packets,
-        // syncLabelStyleIfNeeded() called outside updateDisplay, and any late
-        // device-attach handler that sneaks past during the 50ms settle.
-        if tearingDown && !sendingOfflineFrame { return }
+        // Universal write gate: once `stop()` flips tearingDown, every public
+        // write path is dead — no boolean bypass exists, so no concurrent
+        // thread (HID runloop callback, broadcast handler, in-flight render)
+        // can sneak through while sendOfflineFrame is iterating. The OFFLINE
+        // frame is the only writer past this point, and it goes through
+        // `writePacketUnchecked` which is private to this file and only
+        // called from sendOfflineFrame().
+        if tearingDown { return }
+        writePacketUnchecked(data)
+    }
 
+    private func writePacketUnchecked(_ data: Data) {
         guard let device = consumerDevice else { return }
 
         // IOKit HID setReport for output
@@ -1064,9 +1066,6 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     private func sendOfflineFrame() {
         guard connected, managerOpened, !displaySuppressed else { return }
 
-        sendingOfflineFrame = true
-        defer { sendingOfflineFrame = false }
-
         var slots = [ButtonSlot](repeating: .dim, count: 14)
         slots[7] = ButtonSlot(
             title: "OFFLINE",
@@ -1093,7 +1092,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
             return
         }
         let packets = buildZipPackets(zip)
-        for packet in packets { writePacket(packet) }
+        for packet in packets { writePacketUnchecked(packet) }
         debugLog("OFFLINE frame sent: \(zip.count)b \(packets.count)pkt")
     }
 
