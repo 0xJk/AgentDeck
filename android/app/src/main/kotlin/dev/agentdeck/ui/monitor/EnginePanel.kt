@@ -37,6 +37,11 @@ import dev.agentdeck.state.DashboardState
 import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.util.formatBytes
 import dev.agentdeck.util.formatResetTime
+import java.time.Instant
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeParseException
 
 /**
  * Right HUD panel — "TANK STATUS" aquarium-themed engine dashboard.
@@ -51,7 +56,11 @@ fun TankStatusPanel(
     val staleSuffix = if (usage.usageStale == true) " !" else ""
     val ollamaStatus = state.ollamaStatus
     val modelCatalog = state.modelCatalog ?: emptyList()
-    val openClawLines = openClawDisplayLines(modelCatalog)
+    val openClawLines = if (state.gatewayConnected == true && state.agentType == "openclaw") {
+        openClawDisplayLines(modelCatalog)
+    } else {
+        emptyList()
+    }
     Column(
         modifier = modifier
             .background(TerrariumColors.HUDBg, RoundedCornerShape(8.dp))
@@ -396,11 +405,51 @@ private fun familyDisplayPrefix(name: String): String {
     }
 }
 
-private fun subscriptionDisplayLines(subscriptions: List<SubscriptionInfo>): List<String> =
-    subscriptions.map { sub ->
-        val until = sub.until?.take(10)
-        if (until != null) "${sub.name} · $until" else sub.name
+private fun subscriptionDisplayLines(subscriptions: List<SubscriptionInfo>): List<String> {
+    val now = Instant.now()
+    return subscriptions.map { formatSubscriptionLine(it, now) }
+}
+
+/**
+ * Render one subscription row. Drops the `until` suffix when the parsed
+ * timestamp is missing, malformed, or already in the past — otherwise the
+ * dashboard surfaces a stale "ChatGPT Plus · 2025-03-04" once the underlying
+ * Codex JWT falls behind the user's actual subscription state. Caller passes
+ * `now` so unit tests can pin time without touching the system clock.
+ */
+internal fun formatSubscriptionLine(sub: SubscriptionInfo, now: Instant): String {
+    val raw = sub.until
+    val parsed = raw?.let { parseUntilInstant(it) }
+    return if (raw != null && parsed != null && parsed.isAfter(now)) {
+        "${sub.name} · ${raw.take(10)}"
+    } else {
+        sub.name
     }
+}
+
+/**
+ * Parse `SubscriptionInfo.until` to an `Instant`. Accepts ISO 8601 with
+ * offset (`2026-05-15T00:00:00Z`), with fractional seconds, and bare date
+ * (`2026-05-15`, treated as UTC midnight). Returns `null` for blank or
+ * unparseable input.
+ */
+internal fun parseUntilInstant(input: String): Instant? {
+    val trimmed = input.trim()
+    if (trimmed.isEmpty()) return null
+    return try {
+        OffsetDateTime.parse(trimmed).toInstant()
+    } catch (_: DateTimeParseException) {
+        try {
+            Instant.parse(trimmed)
+        } catch (_: DateTimeParseException) {
+            try {
+                LocalDate.parse(trimmed).atStartOfDay().toInstant(ZoneOffset.UTC)
+            } catch (_: DateTimeParseException) {
+                null
+            }
+        }
+    }
+}
 
 private fun antigravityDisplayLines(status: AntigravityStatusInfo?): List<String> {
     val planName = status?.planName?.takeIf { it.isNotBlank() } ?: return emptyList()

@@ -66,6 +66,7 @@ fun AttentionTheaterHUD(
     featured: AttentionFeatured,
     queuedCount: Int,
     onRespond: (Int) -> Unit,
+    onFocus: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val infinite = rememberInfiniteTransition(label = "attention")
@@ -109,6 +110,7 @@ fun AttentionTheaterHUD(
         Row(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.Top,
+            modifier = if (onFocus != null) Modifier.clickable(onClick = onFocus) else Modifier,
         ) {
             Box(
                 modifier = Modifier

@@ -14,10 +14,11 @@
 import { spawn } from 'child_process';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { createRequire } from 'module';
 import { debug } from '../logger.js';
 import type { ApmeStore } from './store.js';
-import type { ApmeConfig, ApmeJudgeConfig } from './settings.js';
-import { loadApmeConfig, shouldJudge } from './settings.js';
+import type { ApmeConfig, ApmeJudgeConfig, ApmeJudgeBackend } from './settings.js';
+import { loadApmeConfig, shouldJudge, DEFAULT_APME_CONFIG } from './settings.js';
 import { loadMlxSettings, mlxChatUrl } from '@agentdeck/shared';
 import type { ApmeRunRow, ParsedJudge } from './types.js';
 import { execSync } from 'child_process';
@@ -76,7 +77,18 @@ export class ApmeRunner {
   private judgeOverride: ((prompt: string, judgeCfg: ApmeJudgeConfig) => Promise<string>) | null = null;
   private detOverride: ((runRow: ApmeRunRow, cfg: ApmeConfig) => Promise<DetStepResult[]>) | null = null;
 
+  /** Cached startup judge readiness probe. Populated by `refreshBackendProbe`,
+   *  surfaced on /health. Null until the first probe completes. */
+  public lastBackendProbe: JudgeBackendStatus | null = null;
+
   constructor(private readonly store: ApmeStore) {}
+
+  /** Probe the configured judge backend and cache the result. Safe to call
+   *  fire-and-forget at daemon startup — failures don't throw. */
+  async refreshBackendProbe(cfg: ApmeJudgeConfig): Promise<JudgeBackendStatus> {
+    this.lastBackendProbe = await probeJudgeBackend(cfg);
+    return this.lastBackendProbe;
+  }
 
   _setConfig(cfg: ApmeConfig): void { this.configOverride = cfg; }
   _setJudgeFn(fn: ((prompt: string, judgeCfg: ApmeJudgeConfig) => Promise<string>) | null): void {
@@ -170,17 +182,20 @@ export class ApmeRunner {
     ].join('\n');
 
     try {
-      const judgeText = this.judgeOverride
-        ? await this.judgeOverride(judgePrompt, cfg.judge)
-        : await callJudge(judgePrompt, cfg.judge);
-      const parsed = parseJudgeJson(judgeText);
+      // callJudgeWithMeta carries the effective backend label across the
+      // FM→MLX fallback path. Without it, eval rows produced by the MLX
+      // fallback would be misattributed to foundationModels in the DB.
+      const judgeResult = this.judgeOverride
+        ? { text: await this.judgeOverride(judgePrompt, cfg.judge), effectiveLabel: effectiveJudgeModelTag(cfg.judge) }
+        : await callJudgeWithMeta(judgePrompt, cfg.judge);
+      const parsed = parseJudgeJson(judgeResult.text);
       if (!parsed) {
         debug('APME', `runTaskEval parse failed task=${taskId.slice(0, 8)}`);
         return;
       }
 
       const now = Date.now();
-      const judgeModel = effectiveJudgeModelTag(cfg.judge);
+      const judgeModel = judgeResult.effectiveLabel;
       for (const [axis, score] of Object.entries(parsed.scores)) {
         this.store.insertEvalForTask({
           id: 0,
@@ -262,14 +277,15 @@ export class ApmeRunner {
     ].join('\n');
 
     try {
-      const judgeText = this.judgeOverride
-        ? await this.judgeOverride(judgePrompt, cfg.judge)
-        : await callJudge(judgePrompt, cfg.judge);
-      const parsed = parseJudgeJson(judgeText);
+      // Same fallback-aware labelling rule as runTaskEval — see comment there.
+      const judgeResult = this.judgeOverride
+        ? { text: await this.judgeOverride(judgePrompt, cfg.judge), effectiveLabel: effectiveJudgeModelTag(cfg.judge) }
+        : await callJudgeWithMeta(judgePrompt, cfg.judge);
+      const parsed = parseJudgeJson(judgeResult.text);
       if (!parsed) return;
 
       const now = Date.now();
-      const judgeModel = effectiveJudgeModelTag(cfg.judge);
+      const judgeModel = judgeResult.effectiveLabel;
       for (const [axis, score] of Object.entries(parsed.scores)) {
         this.store.insertEvalForTurn({
           runId, turnId,
@@ -369,13 +385,14 @@ export class ApmeRunner {
       if (rubric) {
         try {
           const prompt = buildJudgePrompt(run, rubric.prompt, layer1Passed, this.store);
-          const judgeText = this.judgeOverride
-            ? await this.judgeOverride(prompt, cfg.judge)
-            : await callJudge(prompt, cfg.judge);
-          const parsed = parseJudgeJson(judgeText);
+          // Same fallback-aware labelling rule as runTaskEval — see comment there.
+          const judgeResult = this.judgeOverride
+            ? { text: await this.judgeOverride(prompt, cfg.judge), effectiveLabel: effectiveJudgeModelTag(cfg.judge) }
+            : await callJudgeWithMeta(prompt, cfg.judge);
+          const parsed = parseJudgeJson(judgeResult.text);
           if (parsed) {
             const now = Date.now();
-            const judgeModel = effectiveJudgeModelTag(cfg.judge);
+            const judgeModel = judgeResult.effectiveLabel;
             for (const [axis, score] of Object.entries(parsed.scores)) {
               this.store.insertEval({
                 runId: run.id,
@@ -657,25 +674,269 @@ export function effectiveJudgeModelTag(cfg: ApmeJudgeConfig): string {
   return `${cfg.backend}:${cfg.model}`;
 }
 
-export async function callJudge(prompt: string, judgeCfg: ApmeJudgeConfig): Promise<string> {
-  if (judgeCfg.backend === 'mlx') return callMlx(prompt, judgeCfg);
-  if (judgeCfg.backend === 'openclaw') return callOpenClaw(prompt, judgeCfg);
-  if (judgeCfg.backend === 'api') return callApi(prompt, judgeCfg);
+/** Strip backend-specific fields when forcing a cfg through a different
+ *  adapter. Without this, a FM cfg (`endpoint:"http://.../apme/judge/foundation-models"`,
+ *  `model:"apple-intelligence"`) handed to `callMlx` would POST to the FM URL
+ *  and request a model the MLX server has never heard of — silent failure.
+ *  Mirrors the `resetBackendCoupledFields` path inside `loadApmeConfig`. */
+export function sanitizeForMlx(judgeCfg: ApmeJudgeConfig): ApmeJudgeConfig {
+  if (judgeCfg.backend === 'mlx' && !judgeCfg.endpoint && (!judgeCfg.model || judgeCfg.model === DEFAULT_APME_CONFIG.judge.model)) {
+    return judgeCfg;
+  }
+  return {
+    ...judgeCfg,
+    backend: 'mlx',
+    endpoint: undefined,
+    model: DEFAULT_APME_CONFIG.judge.model,
+  };
+}
+
+/** Result of a judge call that knows which backend ACTUALLY produced the
+ *  text — important when the FM→MLX fallback path runs, because the caller
+ *  needs the effective label (not the original cfg.backend) for the
+ *  `evals.judge_model` column. Otherwise eval rows are misattributed to FM
+ *  even though MLX produced them. */
+export interface JudgeResult {
+  text: string;
+  /** Backend that actually generated `text` (after any fallback). */
+  effectiveBackend: ApmeJudgeBackend;
+  /** `judge_model` column value derived from the effective backend + cfg.
+   *  Use this verbatim when writing to the DB. */
+  effectiveLabel: string;
+}
+
+/** Like `callJudge`, but returns the effective backend + label so callers
+ *  can record `judge_model` correctly across fallback paths. */
+export async function callJudgeWithMeta(prompt: string, judgeCfg: ApmeJudgeConfig): Promise<JudgeResult> {
   if (judgeCfg.backend === 'foundationModels') {
     try {
-      return await callFoundationModels(prompt, judgeCfg);
+      const text = await callFoundationModels(prompt, judgeCfg);
+      return { text, effectiveBackend: 'foundationModels', effectiveLabel: effectiveJudgeModelTag(judgeCfg) };
     } catch (err) {
       // Cost-sensitive default: do not silently route to a network backend.
       // Only retry via MLX when the user explicitly opts in — otherwise
       // propagate the error so the runner's try/catch skips this eval.
       if (judgeCfg.fallbackToMlx) {
         debug('APME', `foundationModels unavailable, fallback to MLX: ${String(err)}`);
-        return callMlx(prompt, judgeCfg);
+        // sanitizeForMlx wipes the FM-specific endpoint/model so callMlx
+        // never POSTs to the FM endpoint or asks MLX for `apple-intelligence`.
+        // We then derive the label from the SANITIZED cfg — recording the
+        // effective backend, not the cfg the user originally requested.
+        const mlxCfg = sanitizeForMlx(judgeCfg);
+        const text = await callMlx(prompt, mlxCfg);
+        return { text, effectiveBackend: 'mlx', effectiveLabel: effectiveJudgeModelTag(mlxCfg) };
       }
       throw err;
     }
   }
-  throw new Error(`unknown judge backend: ${String(judgeCfg.backend)}`);
+  let text: string;
+  if (judgeCfg.backend === 'mlx') text = await callMlx(prompt, judgeCfg);
+  else if (judgeCfg.backend === 'openclaw') text = await callOpenClaw(prompt, judgeCfg);
+  else if (judgeCfg.backend === 'api') text = await callApi(prompt, judgeCfg);
+  else throw new Error(`unknown judge backend: ${String(judgeCfg.backend)}`);
+  return { text, effectiveBackend: judgeCfg.backend, effectiveLabel: effectiveJudgeModelTag(judgeCfg) };
+}
+
+/** Backwards-compatible thin wrapper. Internal callers that need the actual
+ *  effective backend (for DB labelling) should call `callJudgeWithMeta`. */
+export async function callJudge(prompt: string, judgeCfg: ApmeJudgeConfig): Promise<string> {
+  return (await callJudgeWithMeta(prompt, judgeCfg)).text;
+}
+
+// ─── Backend readiness probe ──────────────────────────────────────────────────
+//
+// Lightweight reachability check used at daemon startup so silent judge
+// outages (the dominant cause of the 11-day stall in 2026-04 user data) show
+// up in /health and startup logs instead of presenting as "evals just don't
+// happen". Every backend has its own probe shape; failures are downgraded to
+// `unavailable` with a reason rather than throwing — the deterministic layer
+// must keep running regardless.
+export interface JudgeBackendStatus {
+  backend: ApmeJudgeBackend;
+  status: 'ready' | 'unavailable' | 'unknown';
+  latencyMs?: number;
+  model?: string;
+  endpoint?: string;
+  reason?: string;
+  checkedAt: number;
+}
+
+export async function probeJudgeBackend(cfg: ApmeJudgeConfig): Promise<JudgeBackendStatus> {
+  const start = Date.now();
+  const checkedAt = start;
+  // Each branch must establish that the backend can ACTUALLY produce a judge
+  // response — not just that some HTTP port answers. Reachability without a
+  // usable model / SDK / on-device LLM yields false-positive "ready" that
+  // hides the real failure mode (silent eval skip later). Follow the rule:
+  // either invoke (cheap ping) or downgrade to `unavailable` with a reason.
+  try {
+    if (cfg.backend === 'mlx') {
+      const mlx = loadMlxSettings();
+      const url = cfg.endpoint ?? mlx.endpoint;
+      const base = url.replace(/\/v1\/chat\/completions$/, '').replace(/\/chat\/completions$/, '');
+      let model: string | undefined;
+      let modelsReachable = false;
+      for (const path of ['/v1/models', '/models']) {
+        const resp = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+        if (resp?.ok) {
+          modelsReachable = true;
+          const json = await resp.json().catch(() => ({})) as { data?: Array<{ id?: string }> };
+          model = json.data?.find(m => m.id && !m.id.toLowerCase().includes('nanollava'))?.id;
+          break;
+        }
+      }
+      if (!modelsReachable) {
+        return {
+          backend: 'mlx', status: 'unavailable',
+          reason: `MLX server unreachable at ${base}. Start with \`mlx_lm.server\` or set apme.judge.endpoint.`,
+          endpoint: base, checkedAt,
+        };
+      }
+      // Pinned/configured model overrides catalog discovery — the real call uses
+      // the same fallback chain as callMlx().
+      const pickedModel = mlx.model ?? cfg.model ?? model;
+      if (!pickedModel) {
+        return {
+          backend: 'mlx', status: 'unavailable',
+          reason: `MLX server reachable at ${base} but advertises no chat-capable model (only nanollava-class found). Load a chat model with \`mlx_lm.server --model …\`.`,
+          endpoint: base, checkedAt,
+        };
+      }
+      // Cheapest possible inference probe: max_tokens=1, temperature=0. If MLX
+      // accepts this without a model error, callMlx() will succeed too.
+      const ping = await fetch(`${base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: pickedModel,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1, temperature: 0,
+        }),
+        signal: AbortSignal.timeout(8000),
+      }).catch((e) => ({ ok: false, status: 0, statusText: String(e).slice(0, 80) } as Response));
+      if (!ping.ok) {
+        const detail = ping.status ? `HTTP ${ping.status}` : (ping as { statusText?: string }).statusText ?? 'no response';
+        return {
+          backend: 'mlx', status: 'unavailable',
+          reason: `MLX inference failed for model "${pickedModel}" (${detail}). Check that the model is actually loaded.`,
+          endpoint: base, model: pickedModel, checkedAt,
+        };
+      }
+      return { backend: 'mlx', status: 'ready', latencyMs: Date.now() - start, model: pickedModel, endpoint: base, checkedAt };
+    }
+    if (cfg.backend === 'openclaw') {
+      // OpenClaw Gateway: /health proves the gateway socket is up but does NOT
+      // prove /chat will route. The bridge's own gateway adapter performs an
+      // Ed25519 handshake against the same gateway; we don't replicate it
+      // here, but we DO require both /health AND a model catalog response so
+      // a stub gateway with /health = 200 doesn't pass.
+      const url = cfg.endpoint ?? 'http://127.0.0.1:18789';
+      const base = url.replace(/\/chat$/, '');
+      const health = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+      if (!health?.ok) {
+        return {
+          backend: 'openclaw', status: 'unavailable',
+          reason: `OpenClaw Gateway /health unreachable at ${base}.`,
+          endpoint: base, checkedAt,
+        };
+      }
+      const models = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+      if (!models?.ok) {
+        return {
+          backend: 'openclaw', status: 'unavailable',
+          reason: `OpenClaw Gateway /health responds but /models does not — gateway not fully initialised. Wait for handshake or check apme.judge.endpoint.`,
+          endpoint: base, checkedAt,
+        };
+      }
+      const json = await models.json().catch(() => ({})) as { data?: Array<{ id?: string }>; models?: Array<{ id?: string }> };
+      const list = json.data ?? json.models ?? [];
+      const requested = cfg.model;
+      if (requested && !list.some(m => m.id === requested)) {
+        return {
+          backend: 'openclaw', status: 'unavailable',
+          reason: `OpenClaw Gateway is up but model "${requested}" is not advertised. Available: ${list.slice(0, 5).map(m => m.id).join(', ')}`,
+          endpoint: base, checkedAt,
+        };
+      }
+      return {
+        backend: 'openclaw', status: 'ready',
+        latencyMs: Date.now() - start,
+        model: requested ?? list[0]?.id, endpoint: base, checkedAt,
+      };
+    }
+    if (cfg.backend === 'foundationModels') {
+      // Mirror callFoundationModels: explicit endpoint wins over auto-resolve.
+      const url = cfg.endpoint ?? await resolveFoundationModelsUrl();
+      if (!url) {
+        return {
+          backend: 'foundationModels', status: 'unavailable',
+          reason: 'Swift daemon not found. Foundation Models is App Store macOS only.',
+          checkedAt,
+        };
+      }
+      // Foundation Models adapter on the Swift side returns either { text }
+      // (ready) or { error: "unavailable", reason } (Apple Intelligence not
+      // downloaded, model still warming, etc). A trivial ping forces that
+      // signal up to us so we don't claim ready when the on-device LLM is
+      // actually unusable.
+      const ping = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'ping' }),
+        signal: AbortSignal.timeout(8000),
+      }).catch((e) => ({ ok: false, status: 0, statusText: String(e).slice(0, 80) } as Response));
+      if (!ping.ok) {
+        const detail = ping.status ? `HTTP ${ping.status}` : (ping as { statusText?: string }).statusText ?? 'no response';
+        return {
+          backend: 'foundationModels', status: 'unavailable',
+          reason: `Swift daemon FM endpoint did not accept probe (${detail}).`,
+          endpoint: url, checkedAt,
+        };
+      }
+      const json = await (ping as Response).json().catch(() => ({})) as { text?: string; error?: string; reason?: string };
+      if (json.error) {
+        return {
+          backend: 'foundationModels', status: 'unavailable',
+          reason: `Foundation Models ${json.error}: ${json.reason ?? 'no reason given'}. Apple Intelligence may not be downloaded yet.`,
+          endpoint: url, checkedAt,
+        };
+      }
+      return { backend: 'foundationModels', status: 'ready', latencyMs: Date.now() - start, endpoint: url, checkedAt };
+    }
+    if (cfg.backend === 'api') {
+      // The 'api' backend is currently a STUB — callApi() always throws,
+      // regardless of ANTHROPIC_API_KEY or @anthropic-ai/sdk presence. A probe
+      // that returned 'ready' here would be a lie: the next judge call still
+      // throws. Per cost-sensitive-defaults policy (memory:
+      // feedback_cost_sensitive_defaults.md), local MLX is the supported path;
+      // wiring real API judging is deliberately deferred. Surface that gap
+      // honestly so users redirect to MLX/OpenClaw instead of debugging a
+      // never-firing eval.
+      const hasKey = !!process.env.ANTHROPIC_API_KEY;
+      let sdkPresent = false;
+      try {
+        const r = createRequire(import.meta.url);
+        r.resolve('@anthropic-ai/sdk');
+        sdkPresent = true;
+      } catch { /* not installed */ }
+      const env = hasKey
+        ? (sdkPresent ? 'key+SDK present' : 'key set, SDK missing')
+        : 'no ANTHROPIC_API_KEY';
+      return {
+        backend: 'api', status: 'unavailable',
+        reason: `Anthropic API judge backend is not implemented — callApi() is a stub that always throws. Switch apme.judge.backend to "mlx" or "openclaw". Environment: ${env}.`,
+        checkedAt,
+      };
+    }
+    return { backend: cfg.backend, status: 'unknown', checkedAt };
+  } catch (err) {
+    return {
+      backend: cfg.backend, status: 'unavailable',
+      reason: String(err).slice(0, 200),
+      latencyMs: Date.now() - start,
+      checkedAt,
+    };
+  }
 }
 
 async function callMlx(prompt: string, cfg: ApmeJudgeConfig): Promise<string> {
@@ -786,12 +1047,16 @@ async function resolveFoundationModelsUrl(): Promise<string | null> {
 }
 
 async function callApi(_prompt: string, _cfg: ApmeJudgeConfig): Promise<string> {
-  // Anthropic API — opt-in only. Requires ANTHROPIC_API_KEY and the @anthropic-ai/sdk
-  // package, neither of which we depend on by default. Surface a clear error so
-  // users understand they enabled API mode but didn't wire credentials.
+  // Anthropic API judging is NOT implemented on the Node bridge. The macOS
+  // Swift daemon (apple/AgentDeck/Daemon/Apme/ApmeJudgeApi.swift) is the only
+  // place this backend works today. `loadApmeConfig` silently downgrades
+  // settings.json `backend:"api"` to `"mlx"`, so reaching this stub means
+  // either (a) a programmatic caller bypassed loadApmeConfig, or (b) something
+  // raced between settings load and dispatch. Either way, throw with the
+  // SAME diagnostic the probe surfaces so logs remain consistent.
   throw new Error(
-    'APME judge backend "api" requires explicit setup: install @anthropic-ai/sdk and set ANTHROPIC_API_KEY. ' +
-    'Phase 2 ships with MLX (local, free) by default.',
+    'APME judge backend "api" is a stub on the Node bridge — callApi() always throws. ' +
+    'Use the macOS app for Anthropic API judging, or set apme.judge.backend to "mlx" / "openclaw" / "foundationModels".',
   );
 }
 

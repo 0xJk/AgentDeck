@@ -189,6 +189,15 @@ final class DaemonService: ObservableObject {
         }
     }
 
+    /// Bounce only the OpenClaw Gateway adapter — leaves the daemon, session
+    /// bridges, device modules, and WS server untouched. Use after OpenClaw
+    /// Settings changes (token save/clear, pairing identity reset) so Claude
+    /// Code / Codex sessions don't briefly disconnect from the daemon.
+    func reconnectGatewayAdapter() async {
+        guard let server else { return }
+        await MainActor.run { server.reconnectGatewayAdapter() }
+    }
+
     /// Tear down the current daemon (local or external) and start fresh. Used
     /// after the user changes the daemon port in Settings. Clears any
     /// session-scoped fallback so the new user choice is honored exactly.

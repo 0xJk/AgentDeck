@@ -35,11 +35,15 @@ fun EinkEventLog(
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
-    val recent = entries.takeLast(20)
+    val recent = remember(entries) {
+        entries
+            .filterNot { it.type == "chat_end" && it.agentType == "claude-code" }
+            .takeLast(20)
+    }
     val grouped = remember(recent) { groupConsecutive(recent).takeLast(14) }
 
     // Auto-scroll to bottom when new entries arrive
-    LaunchedEffect(entries.size) {
+    LaunchedEffect(recent.size) {
         scrollState.animateScrollTo(scrollState.maxValue)
     }
 
@@ -71,11 +75,11 @@ fun EinkEventLog(
             grouped.forEach { group ->
                 val entry = group.entry
                 val time = formatTimeHHMM(entry.timestamp)
-                val agentTag = agentTag(entry.agentType)
+                val sourceTag = sourceTag(entry)
                 val icon = typeIcon(entry.type, entry.status)
                 val eventColor = typeColor(entry.type, entry.status)
                 val countSuffix = if (group.count > 1) " (×${group.count})" else ""
-                val line = "$time $agentTag$icon ${entry.summary}$countSuffix"
+                val line = "$time $sourceTag$icon ${entry.summary}$countSuffix"
                 val hasDetail = !entry.detail.isNullOrEmpty() && entry.detail != entry.summary
                 Text(
                     text = line,
@@ -133,6 +137,7 @@ private fun typeIcon(type: String, status: String? = null): String = when (type)
     "scheduled" -> "⏰"
     "user_action" -> "☞"
     "state_change" -> "△"
+    "eval_result" -> "★"
     else -> "·"
 }
 
@@ -150,15 +155,20 @@ private fun typeColor(type: String, status: String?): Color? {
         "model_call", "model_response" -> Color(0xFF335588) // blue — model
         "error" -> Color(0xFFCC2222)                     // red — error
         "memory_recall" -> Color(0xFF775599)             // purple — memory
+        "eval_result" -> Color(0xFFBB7700)                // amber — evaluation
         else -> null
     }
 }
 
-private fun agentTag(agentType: String?): String = when (agentType) {
-    "claude-code" -> "Claude "
-    "openclaw" -> "OpenClaw "
-    "codex-cli" -> "Codex "
-    "opencode" -> "OpenCode "
-    null -> ""
-    else -> "Agent "
+private fun sourceTag(entry: TimelineEntry): String {
+    val project = entry.projectName?.takeIf { it.isNotBlank() }
+    if (project != null) return "[$project] "
+    return when (entry.agentType) {
+        "claude-code" -> "Claude "
+        "openclaw" -> "OpenClaw "
+        "codex-cli" -> "Codex "
+        "opencode" -> "OpenCode "
+        null -> ""
+        else -> "Agent "
+    }
 }

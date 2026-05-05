@@ -13,13 +13,13 @@ struct MonitorScreen: View {
     @State private var terrariumState = TerrariumState()
     #if os(iOS)
     @State private var showSettingsSheet = false
+    #endif
     /// "Aquarium viewing" mode — when on, SessionListPanel + TopologyRail
     /// fade out so the user can watch the terrarium uninterrupted. Toggled
-    /// by tapping empty water (mirrors ESP32 firmware aquarium screen).
-    /// macOS keeps the HUD always visible: a click on background there is
-    /// expected to do nothing, not hide the panels the user came in for.
+    /// by tapping empty water. Shared by macOS and iOS so the core
+    /// Dashboard interaction stays consistent even though macOS has extra
+    /// windows and host-side controls.
     @State private var hudHidden = false
-    #endif
     @State private var previousAgentState: AgentConnectionState = .disconnected
     @StateObject private var toastManager = ToastManager()
 
@@ -131,31 +131,22 @@ struct MonitorScreen: View {
         .ignoresSafeArea()
     }
 
-    /// Tap handler for empty terrarium water. iOS-only — on macOS we
-    /// return nil so the click is a no-op (a power user clicking the
-    /// dashboard wallpaper shouldn't suddenly lose their HUD). When the
-    /// AttentionTheater card is up the user is mid-answer, so we also
-    /// disable the toggle to avoid an off-target tap collapsing the HUD
-    /// behind the question card.
+    /// Tap handler for empty terrarium water. When the AttentionTheater
+    /// card is up the user is mid-answer, so we disable the toggle to
+    /// avoid an off-target tap collapsing the HUD behind the question card.
     private var backgroundTapHandler: (() -> Void)? {
-        #if os(iOS)
         guard featuredAwaitingSession == nil else { return nil }
         return {
             withAnimation(.easeInOut(duration: 0.25)) { hudHidden.toggle() }
         }
-        #else
-        return nil
-        #endif
     }
 
     @ViewBuilder
     private func hudLayer(geo: GeometryProxy) -> some View {
         MonitorHUD()
-            #if os(iOS)
             .opacity(hudHidden ? 0 : 1)
             .allowsHitTesting(!hudHidden)
             .animation(.easeInOut(duration: 0.25), value: hudHidden)
-            #endif
 
         if preferences.showTimeline {
             VStack {

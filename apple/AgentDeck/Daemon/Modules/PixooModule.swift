@@ -304,16 +304,22 @@ actor PixooModule: DeviceModule {
     // MARK: - Circuit Breaker
 
     private func isBackedOff(_ ip: String) -> Bool {
+        guard let state = deviceLogStates[ip] else { return false }
+        return state.consecutiveFailures >= backoffThreshold
+    }
+
+    private func isProbeDue(_ ip: String) -> Bool {
         guard let state = deviceLogStates[ip],
-              let until = state.backoffUntil else { return false }
-        return state.consecutiveFailures >= backoffThreshold && Date() < until
+              state.consecutiveFailures >= backoffThreshold else { return false }
+        guard let until = state.backoffUntil else { return true }
+        return Date() >= until
     }
 
     private func probeBackedOffDevices() async {
         for device in devices {
-            guard isBackedOff(device.ip) else { continue }
+            guard isProbeDue(device.ip) else { continue }
             let payload: [String: Any] = ["Command": "Channel/GetAllConf"]
-            if await postCommand(device.ip, payload: payload) != nil {
+            if await postCommand(device.ip, payload: payload, logFailures: false) != nil {
                 DaemonLogger.shared.info("[Pixoo] \(device.ip) recovered — resuming push")
                 var state = deviceLogStates[device.ip] ?? DeviceLogState()
                 state.consecutiveFailures = 0
@@ -322,6 +328,9 @@ actor PixooModule: DeviceModule {
                 deviceLogStates[device.ip] = state
                 devicePicIds.removeValue(forKey: device.ip)
                 await prepareDevice(device)
+            } else {
+                lastPushError = "probe failed for \(device.ip)"
+                recordPushFailure(ip: device.ip, reason: "probe failed")
             }
         }
         refreshShadow()
@@ -642,7 +651,7 @@ actor PixooModule: DeviceModule {
             state.backoffUntil = Date().addingTimeInterval(delay)
 
             if state.consecutiveFailures == backoffThreshold {
-                DaemonLogger.shared.error("[Pixoo] \(ip) offline — \(backoffThreshold) consecutive failures. Backing off (probe every \(Int(probeIntervalSec))s). Power-cycle the device if it doesn't recover.")
+                DaemonLogger.shared.error("[Pixoo] \(ip) offline — \(backoffThreshold) consecutive failures. Pausing frame pushes and probing with exponential backoff. Power-cycle the device if it doesn't recover.")
             }
         }
 

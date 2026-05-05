@@ -1,6 +1,7 @@
 package dev.agentdeck.ui.eink
 
 import android.content.pm.ActivityInfo
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +38,7 @@ import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.DiscoveredBridge
+import dev.agentdeck.state.DashboardState
 import dev.agentdeck.ui.common.ConnectionPanel
 import kotlinx.coroutines.launch
 
@@ -44,6 +46,7 @@ import kotlinx.coroutines.launch
 fun EinkSettingsOverlay(
     connection: BridgeConnection,
     displayPrefs: DisplayPreferences,
+    dashState: DashboardState,
     discoveredBridges: List<DiscoveredBridge> = emptyList(),
     onDismiss: () -> Unit,
 ) {
@@ -54,6 +57,13 @@ fun EinkSettingsOverlay(
         initial = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     )
     val keepAwake by displayPrefs.keepAwakeFlow.collectAsState(initial = true)
+    val displaySyncEnabled by displayPrefs.displaySyncEnabledFlow.collectAsState(initial = true)
+    val idleTimeoutMinutes by displayPrefs.idleTimeoutMinutesFlow.collectAsState(initial = 5)
+    val showSessionList by displayPrefs.showSessionListFlow.collectAsState(initial = true)
+    val showTankStatus by displayPrefs.showTankStatusFlow.collectAsState(initial = true)
+    val showDeviceDiagnostic by displayPrefs.showDeviceDiagnosticFlow.collectAsState(initial = true)
+    val showTimeline by displayPrefs.showTimelineFlow.collectAsState(initial = true)
+    val showSettingsButton by displayPrefs.showSettingsButtonFlow.collectAsState(initial = true)
     val scope = rememberCoroutineScope()
 
     Dialog(
@@ -73,7 +83,7 @@ fun EinkSettingsOverlay(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
                     .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
                     text = "Settings",
@@ -84,24 +94,17 @@ fun EinkSettingsOverlay(
 
                 HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-                // Connection section
-                Text(
-                    text = "Connection",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
+                SectionTitle(
+                    title = "Connection",
+                    subtitle = "How this device pairs with your Mac. mDNS auto-discovery and manual URL.",
                 )
                 ConnectionPanel(
                     connectionStatus = connectionStatus,
                     currentUrl = currentUrl,
                     lastError = lastError,
                     discoveredBridges = discoveredBridges,
-                    onConnectToBridge = { bridge ->
-                        connection.connect(bridge.wsUrl())
-                    },
-                    onConnectLocalhost = {
-                        connection.connect(BridgeConstants.LOCALHOST_WS_URL)
-                    },
+                    onConnectToBridge = { bridge -> connection.connect(bridge.wsUrl()) },
+                    onConnectLocalhost = { connection.connect(BridgeConstants.LOCALHOST_WS_URL) },
                     onConnectManualUrl = { url -> connection.connect(url) },
                     onDisconnect = {
                         connection.disconnect()
@@ -111,50 +114,109 @@ fun EinkSettingsOverlay(
 
                 HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-                // Display settings
-                Text(
-                    text = "Display",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
+                SectionTitle(
+                    title = "Mac integrations",
+                    subtitle = "Status only. Set these up in AgentDeck on your Mac.",
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = "Keep Awake",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Switch(
-                        checked = keepAwake,
-                        onCheckedChange = { scope.launch { displayPrefs.setKeepAwake(it) } },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = Color.Black,
-                            uncheckedThumbColor = Color.DarkGray,
-                            uncheckedTrackColor = Color.LightGray,
-                        ),
-                    )
-                }
-                Text(
-                    text = "Keeps CPU active and refreshes display on state changes",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                IntegrationStatusRow(
+                    label = "Claude",
+                    status = when (dashState.oauthConnected) {
+                        true -> "Connected"
+                        false -> "Not connected"
+                        null -> "Unknown"
+                    },
+                    ok = dashState.oauthConnected == true,
+                )
+                IntegrationStatusRow(
+                    label = "Codex",
+                    status = when (dashState.usage.codexWebAuthConnected) {
+                        true -> dashState.usage.codexPlanType ?: "Connected"
+                        false -> "Not connected"
+                        null -> dashState.usage.codexAuthMode ?: "Unknown"
+                    },
+                    ok = dashState.usage.codexWebAuthConnected == true,
+                )
+                IntegrationStatusRow(
+                    label = "OpenClaw",
+                    status = when {
+                        dashState.gatewayHasError == true -> "Error"
+                        dashState.gatewayConnected == true -> "Connected"
+                        dashState.gatewayAvailable == true -> "Available"
+                        else -> "Not available"
+                    },
+                    ok = dashState.gatewayConnected == true,
+                )
+                IntegrationStatusRow(
+                    label = "Ollama",
+                    status = when {
+                        dashState.ollamaStatus?.available == true -> "Available"
+                        dashState.ollamaStatus != null -> "Stopped"
+                        else -> "Unknown"
+                    },
+                    ok = dashState.ollamaStatus?.available == true,
                 )
 
                 HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-                // Orientation selection
-                Text(
-                    text = "Orientation",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
+                SectionTitle(
+                    title = "Display panels",
+                    subtitle = "Choose which sections of the dashboard appear.",
                 )
+                EinkSwitchRow("Session list", showSessionList) {
+                    scope.launch { displayPrefs.setShowSessionList(it) }
+                }
+                EinkSwitchRow("Tank status", showTankStatus) {
+                    scope.launch { displayPrefs.setShowTankStatus(it) }
+                }
+                EinkSwitchRow("Device diagnostic", showDeviceDiagnostic) {
+                    scope.launch { displayPrefs.setShowDeviceDiagnostic(it) }
+                }
+                EinkSwitchRow("Timeline strip", showTimeline) {
+                    scope.launch { displayPrefs.setShowTimeline(it) }
+                }
+                EinkSwitchRow("Settings button", showSettingsButton) {
+                    scope.launch { displayPrefs.setShowSettingsButton(it) }
+                }
 
+                HorizontalDivider(thickness = 1.dp, color = Color.Black)
+
+                SectionTitle(title = "Display")
+                EinkSwitchRow(
+                    label = "Keep Dashboard Active",
+                    checked = keepAwake,
+                    detail = "Prevents screen sleep and keeps the bridge connection alive.",
+                    onCheckedChange = { scope.launch { displayPrefs.setKeepAwake(it) } },
+                )
+                EinkSwitchRow(
+                    label = "Sync with Host Display",
+                    checked = displaySyncEnabled,
+                    detail = "Dim when the host sleeps; restore on wake.",
+                    onCheckedChange = { scope.launch { displayPrefs.setDisplaySyncEnabled(it) } },
+                )
+                if (displaySyncEnabled) {
+                    Text(
+                        text = "Idle timeout: $idleTimeoutMinutes min",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(1, 5, 15, 30).forEach { minutes ->
+                            SegmentOption(
+                                label = "${minutes}m",
+                                selected = idleTimeoutMinutes == minutes,
+                                onClick = { scope.launch { displayPrefs.setIdleTimeoutMinutes(minutes) } },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(thickness = 1.dp, color = Color.Black)
+
+                SectionTitle(title = "Orientation")
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -187,7 +249,12 @@ fun EinkSettingsOverlay(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // Close button
+                Text(
+                    text = "AgentDeck Android - Monitoring dashboard for AI coding agents",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
                 Button(
                     onClick = onDismiss,
                     modifier = Modifier.fillMaxWidth(),
@@ -205,6 +272,89 @@ fun EinkSettingsOverlay(
 }
 
 @Composable
+private fun SectionTitle(
+    title: String,
+    subtitle: String? = null,
+) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.bodyLarge,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
+    if (subtitle != null) {
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun EinkSwitchRow(
+    label: String,
+    checked: Boolean,
+    detail: String? = null,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = Color.Black,
+                    uncheckedThumbColor = Color.DarkGray,
+                    uncheckedTrackColor = Color.LightGray,
+                ),
+            )
+        }
+        if (detail != null) {
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun IntegrationStatusRow(
+    label: String,
+    status: String,
+    ok: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = status,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (ok) Color.Black else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun SegmentOption(
     label: String,
     selected: Boolean,
@@ -215,7 +365,7 @@ private fun SegmentOption(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(4.dp),
         color = if (selected) Color.Black else MaterialTheme.colorScheme.background,
-        border = androidx.compose.foundation.BorderStroke(
+        border = BorderStroke(
             1.dp,
             if (selected) Color.Black else Color.DarkGray,
         ),

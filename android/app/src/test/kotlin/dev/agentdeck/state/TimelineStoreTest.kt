@@ -89,6 +89,22 @@ class TimelineStoreTest {
         assertEquals("Updated summary", store.entries.value[0].summary)
     }
 
+    @Test
+    fun `upsertEntry preserves timeline attribution`() {
+        store.addEntry(entry(1000, "chat_end", "Summary"))
+        store.upsertEntry(
+            TimelineEntry(
+                timestamp = 1000,
+                type = "chat_end",
+                summary = "Updated summary",
+                projectName = "AgentDeck",
+                sessionId = "session-1",
+            )
+        )
+        assertEquals("AgentDeck", store.entries.value[0].projectName)
+        assertEquals("session-1", store.entries.value[0].sessionId)
+    }
+
     // --- updateLastOfType ---
 
     @Test

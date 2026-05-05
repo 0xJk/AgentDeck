@@ -104,13 +104,22 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     val isOpenClaw = agentType == "openclaw"
     val hasTool = currentTool != null
 
-    // In daemon mode, the daemon's own agentState is DISCONNECTED (no PTY).
-    // Derive effective state from the most active sibling session so that
-    // tetra/environment/bubbles reflect actual activity.
+    // In daemon-like mode (daemon primary OR openclaw aggregate that lists
+    // its own session), the primary's `agentState` reflects only its own
+    // session — the aggregate scene mood (octopus / tetra / environment /
+    // bubbles) should also pick up sibling activity. Promote the most
+    // active sibling state when it outranks the primary's own state, so
+    // that e.g. "openclaw idle + claude processing" still feels active.
     val isDaemonLike = agentType == "daemon" ||
         (agentType != null && siblingSessions.any { it.agentType == agentType })
-    val effectiveAgentState = if (isDaemonLike && agentState == AgentState.DISCONNECTED) {
-        mostActiveSessionState(siblingSessions) ?: AgentState.IDLE
+    val effectiveAgentState = if (isDaemonLike) {
+        val mostActive = mostActiveSessionState(siblingSessions)
+        when {
+            mostActive == null -> agentState
+            agentState == AgentState.DISCONNECTED -> mostActive
+            mostActive.ordinal > agentState.ordinal -> mostActive
+            else -> agentState
+        }
     } else {
         agentState
     }
@@ -133,22 +142,26 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     // SITTING crayfish even when the shared token was missing, which
     // misled users into thinking OpenClaw was wired up.
     val ocSibling = siblingSessions.firstOrNull { it.agentType == "openclaw" }
+    val hasGatewayError = gatewayAvailable == true && gatewayHasError == true
     val crayfish = when {
         // Gateway not authenticated and no error to surface — hide.
-        gatewayConnected != true && gatewayHasError != true -> CrayfishVisualState.DORMANT
-        // Primary is OpenClaw — use primary state.
-        isOpenClaw -> when (effectiveAgentState) {
-            AgentState.PROCESSING -> CrayfishVisualState.ROUTING
-            AgentState.IDLE -> CrayfishVisualState.SITTING
-            AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
-            else -> CrayfishVisualState.WAITING
-        }
-        // Sibling OpenClaw exists — use its state.
+        gatewayConnected != true && !hasGatewayError -> CrayfishVisualState.DORMANT
+        // OpenClaw's own sibling state is authoritative — read it before
+        // falling back to the aggregate `effectiveAgentState`. Without
+        // this, an OpenClaw aggregate primary inherits Claude's PROCESSING
+        // through `effectiveAgentState` and the crayfish wrongly routes.
         ocSibling != null -> when (ocSibling.state) {
             "processing" -> CrayfishVisualState.ROUTING
             "idle" -> CrayfishVisualState.SITTING
             "awaiting_permission", "awaiting_option", "awaiting_diff" -> CrayfishVisualState.WAITING
             else -> if (ocSibling.alive) CrayfishVisualState.SITTING else CrayfishVisualState.DORMANT
+        }
+        // Primary is OpenClaw but no sibling row yet (sessions_list pending).
+        isOpenClaw -> when (effectiveAgentState) {
+            AgentState.PROCESSING -> CrayfishVisualState.ROUTING
+            AgentState.IDLE -> CrayfishVisualState.SITTING
+            AgentState.DISCONNECTED -> CrayfishVisualState.DORMANT
+            else -> CrayfishVisualState.WAITING
         }
         // Gateway authenticated but no OpenClaw session yet.
         gatewayConnected == true -> CrayfishVisualState.SITTING
@@ -157,7 +170,7 @@ fun DashboardState.toTerrariumState(): TerrariumState {
     }
 
     // Override to SICK if gateway has errors (but not when DORMANT — gateway unreachable)
-    val effectiveCrayfish = if (gatewayHasError == true && crayfish != CrayfishVisualState.DORMANT) {
+    val effectiveCrayfish = if (hasGatewayError && crayfish != CrayfishVisualState.DORMANT) {
         CrayfishVisualState.SICK
     } else {
         crayfish
@@ -310,11 +323,11 @@ fun DashboardState.toTerrariumState(): TerrariumState {
         projectName = projectName,
         modelName = modelName,
         agentType = agentType,
-        hasError = gatewayHasError == true,
+        hasError = hasGatewayError,
         agents = agents,
         cloudCreatures = cloudCreatures,
         openCodeCreatures = openCodeCreatures,
-        workerCrayfishCount = workerSessionCount ?: 0,
+        workerCrayfishCount = if (gatewayConnected == true) workerSessionCount ?: 0 else 0,
     )
 }
 

@@ -57,6 +57,16 @@ enum DashboardDataRules {
         }
     }
 
+    static func stateRank(_ state: String?) -> Int {
+        switch state {
+        case "processing": return 0
+        case "awaiting_permission", "awaiting_option", "awaiting_diff": return 1
+        case "idle": return 2
+        case "disconnected": return 3
+        default: return 4
+        }
+    }
+
     static func sortSessions(_ sessions: [SessionInfo]) -> [SessionInfo] {
         sessions.sorted { lhs, rhs in
             let typeRank = agentTypeRank(lhs.agentType) - agentTypeRank(rhs.agentType)
@@ -110,6 +120,31 @@ enum DashboardDataRules {
             let rhsId = (rhs["id"] as? String) ?? ""
             return lhsId.localizedCaseInsensitiveCompare(rhsId) == .orderedAscending
         }
+    }
+
+    static func foldCodexSessionPayloadsForDisplay(_ sessions: [[String: Any]]) -> [[String: Any]] {
+        var passthrough: [[String: Any]] = []
+        var codexByProject: [String: [[String: Any]]] = [:]
+        var codexProjectOrder: [String] = []
+
+        for session in sessions {
+            guard isCodexPayload(session),
+                  let project = nonEmptyString(session["projectName"]) else {
+                passthrough.append(session)
+                continue
+            }
+
+            let key = project.lowercased()
+            if codexByProject[key] == nil { codexProjectOrder.append(key) }
+            codexByProject[key, default: []].append(session)
+        }
+
+        for key in codexProjectOrder {
+            guard let group = codexByProject[key], !group.isEmpty else { continue }
+            passthrough.append(foldCodexProjectGroup(group))
+        }
+
+        return passthrough
     }
 
     static func sortedModelCatalog(_ entries: [ModelCatalogEntry]) -> [ModelCatalogEntry] {
@@ -215,6 +250,62 @@ enum DashboardDataRules {
             return .greatestFiniteMagnitude
         }
         return date.timeIntervalSince1970
+    }
+
+    private static func isCodexPayload(_ session: [String: Any]) -> Bool {
+        let id = session["id"] as? String
+        let agentType = session["agentType"] as? String
+        return agentType == "codex-cli" || id?.hasPrefix("codex:") == true
+    }
+
+    private static func nonEmptyString(_ value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : string
+    }
+
+    private static func foldCodexProjectGroup(_ group: [[String: Any]]) -> [String: Any] {
+        guard group.count > 1 else { return group[0] }
+
+        let ranked = group.sorted { lhs, rhs in
+            let rankDiff = stateRank(lhs["state"] as? String) - stateRank(rhs["state"] as? String)
+            if rankDiff != 0 { return rankDiff < 0 }
+
+            let lhsStarted = startedAtTime(lhs["startedAt"] as? String)
+            let rhsStarted = startedAtTime(rhs["startedAt"] as? String)
+            if lhsStarted != rhsStarted {
+                if lhsStarted == .greatestFiniteMagnitude { return false }
+                if rhsStarted == .greatestFiniteMagnitude { return true }
+                return lhsStarted > rhsStarted
+            }
+
+            let lhsId = (lhs["id"] as? String) ?? ""
+            let rhsId = (rhs["id"] as? String) ?? ""
+            return lhsId.localizedCaseInsensitiveCompare(rhsId) == .orderedAscending
+        }
+
+        var folded = ranked[0]
+        let memberIds = group.flatMap { session -> [String] in
+            if let ids = session["foldedSessionIds"] as? [String] { return ids }
+            if let id = session["id"] as? String { return [id] }
+            return []
+        }
+        let groupSize = group.reduce(0) { total, session in
+            total + ((session["groupSize"] as? Int) ?? 1)
+        }
+
+        folded["state"] = ranked.first?["state"] as? String
+        if let tool = ranked.compactMap({ session -> String? in
+            guard stateRank(session["state"] as? String) == 0 else { return nil }
+            return nonEmptyString(session["currentTool"])
+        }).first {
+            folded["currentTool"] = tool
+        } else {
+            folded.removeValue(forKey: "currentTool")
+        }
+        folded["groupSize"] = groupSize
+        folded["foldedSessionIds"] = memberIds
+        return folded
     }
 
     private static func modelRoleRank(_ role: String) -> Int {
@@ -368,6 +459,9 @@ struct SessionInfo: Codable, Sendable, Identifiable {
     var modelName: String?
     var effortLevel: String?
     var startedAt: String?
+    var currentTool: String?
+    var groupSize: Int?
+    var foldedSessionIds: [String]?
 }
 
 // MARK: - Bridge Events (Bridge → Client)

@@ -24,6 +24,12 @@ export class BridgeTimelineStore {
       const existing = this.entries[result.index];
       existing.repeatCount = (existing.repeatCount || 1) + 1;
       existing.ts = entry.ts;
+      existing.agentType = entry.agentType ?? existing.agentType;
+      existing.projectName = entry.projectName ?? existing.projectName;
+      existing.sessionId = entry.sessionId ?? existing.sessionId;
+      existing.runId = entry.runId ?? existing.runId;
+      existing.startedAt = entry.startedAt ?? existing.startedAt;
+      existing.endedAt = entry.endedAt ?? existing.endedAt;
       if (result.removeChatStartIndex != null) {
         this.entries.splice(result.removeChatStartIndex, 1);
       }
@@ -61,7 +67,17 @@ export class BridgeTimelineStore {
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const e = this.entries[i];
       if (e.type === entry.type && Math.abs(e.ts - entry.ts) < tolerance) {
-        this.entries[i] = { ...e, raw: entry.raw, ...(entry.detail ? { detail: entry.detail } : {}) };
+        this.entries[i] = {
+          ...e,
+          raw: entry.raw,
+          ...(entry.detail ? { detail: entry.detail } : {}),
+          ...(entry.agentType ? { agentType: entry.agentType } : {}),
+          ...(entry.projectName ? { projectName: entry.projectName } : {}),
+          ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
+          ...(entry.runId ? { runId: entry.runId } : {}),
+          ...(entry.startedAt ? { startedAt: entry.startedAt } : {}),
+          ...(entry.endedAt ? { endedAt: entry.endedAt } : {}),
+        };
         for (const cb of this.listeners) cb(this.entries[i], true);
         return;
       }

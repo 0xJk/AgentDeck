@@ -10,8 +10,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.neverEqualPolicy
 import androidx.compose.runtime.remember
@@ -31,9 +31,17 @@ import dev.agentdeck.terrarium.resolveCreatureNameTagLayout
 import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlin.math.floor
 
 /** E-ink animation frame interval (ms). 400ms for smoother movement (~2.5fps). */
 private const val EINK_ANIM_FRAME_MS = 400L
+
+/**
+ * Color e-ink can display browser video by switching into a fast refresh path.
+ * Match that behavior with a modest 10fps loop; motion speed is scaled back to
+ * the 400ms logical frame clock so creatures do not move faster than B&W e-ink.
+ */
+private const val COLOR_EINK_ANIM_FRAME_MS = 100L
 
 /** Total animation cycle frames — fish patrol uses the full range, creatures use % 4. */
 private const val EINK_ANIM_CYCLE = 32
@@ -124,12 +132,23 @@ private val einkCrayfishRightAntennaPath: android.graphics.Path by lazy {
     }
 }
 
+internal fun einkAnimationFrameIntervalMs(colorEink: Boolean): Long =
+    if (colorEink) COLOR_EINK_ANIM_FRAME_MS else EINK_ANIM_FRAME_MS
+
+internal fun einkAnimationFrameAdvance(elapsedMs: Long): Float =
+    (elapsedMs.coerceAtLeast(0).toFloat() / EINK_ANIM_FRAME_MS).coerceAtMost(1.5f)
+
+private fun frameMod4(frame: Float): Int = floor(frame).toInt().floorMod(4)
+
+private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus
+
 /**
  * E-ink terrarium renderer — draws creatures into an offscreen bitmap,
  * applies 16-level grayscale quantization, then renders the result.
  *
  * Style: "Marine biologist's journal" — pixel blocks + SVG outlines, native 16-level grayscale.
- * Supports slow 4-frame animation (600ms interval) for active states.
+ * Supports low-framerate animation for B&W e-ink and fast partial refresh on
+ * color e-ink panels that can run browser video acceptably.
  */
 @Composable
 fun EinkTerrariumView(
@@ -145,7 +164,7 @@ fun EinkTerrariumView(
     val hostView = LocalView.current
     // Reusable render target — NOT displayed directly, only used as renderEinkFrame target
     var reusableBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var animFrame by remember { mutableIntStateOf(0) }
+    var animFrame by remember { mutableFloatStateOf(0f) }
     val currentState by rememberUpdatedState(state)
     // Persistent boids fish school — survives recomposition, state lives across frames
     val fishSchool = remember { EinkFishSchool() }
@@ -156,30 +175,34 @@ fun EinkTerrariumView(
         state.openCodeCreatures.any { it.visualState != OctopusVisualState.SLEEPING }
 
     // Animation loop — platform-specific:
-    // B&W e-ink: 2.5fps full animation (400ms).
-    // Color Kaleido: slow 0.4fps (2500ms) — only fish/seaweed move.
-    //   RKCFA diffs frames; small changes (<1% pixels) use fast partial refresh
-    //   instead of full CFA re-processing, minimizing flicker.
+    // B&W e-ink: 2.5fps GC16 partial animation (400ms).
+    // Color Kaleido/Gallery: 10fps fast partial animation, but the logical
+    // motion clock stays at 400ms so browser-video-capable panels get smoother
+    // interpolation without making fish and creatures sprint.
     LaunchedEffect(isAnimating) {
         if (!isAnimating) {
             // Static state: render once
             val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
                 .also { reusableBitmap = it }
-            renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, 0, bmp, fishSchool = fishSchool)
+            renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, 0f, bmp, fishSchool = fishSchool)
             hostView.postInvalidate()
             onFrameRendered?.invoke(false)
             return@LaunchedEffect
         }
-        val frameInterval = if (einkColorEnabled) 5000L else EINK_ANIM_FRAME_MS
+        val frameInterval = einkAnimationFrameIntervalMs(einkColorEnabled)
+        var lastFrameAt = android.os.SystemClock.uptimeMillis()
         while (isActive) {
             try {
                 val bmp = reusableBitmap ?: Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
                     .also { reusableBitmap = it }
-                animFrame = (animFrame + 1) % EINK_ANIM_CYCLE
+                val now = android.os.SystemClock.uptimeMillis()
+                val frameAdvance = einkAnimationFrameAdvance(now - lastFrameAt)
+                lastFrameAt = now
+                animFrame = (animFrame + frameAdvance) % EINK_ANIM_CYCLE.toFloat()
                 val s = currentState
                 val streaming = s.tetra == TetraVisualState.STREAMING
                 val agentSlots = dev.agentdeck.terrarium.layoutOctopuses(s.agents.size.coerceAtLeast(1))
-                fishSchool.update(streaming, agentSlots, s.crayfish == CrayfishVisualState.ROUTING)
+                fishSchool.update(streaming, agentSlots, s.crayfish == CrayfishVisualState.ROUTING, frameAdvance)
                 renderedBitmap = renderEinkFrame(currentState, EINK_WIDTH, EINK_HEIGHT, animFrame, bmp,
                     skipDither = einkColorEnabled, fishSchool = fishSchool)
                 hostView.postInvalidate()
@@ -210,7 +233,7 @@ fun EinkTerrariumView(
         if (renderedBitmap == null) {
             val bmp = Bitmap.createBitmap(EINK_WIDTH, EINK_HEIGHT, Bitmap.Config.ARGB_8888)
                 .also { reusableBitmap = it }
-            renderedBitmap = renderEinkFrame(state, EINK_WIDTH, EINK_HEIGHT, 0, bmp, fishSchool = fishSchool)
+            renderedBitmap = renderEinkFrame(state, EINK_WIDTH, EINK_HEIGHT, 0f, bmp, fishSchool = fishSchool)
             hostView.postInvalidate()
             onFrameRendered?.invoke(false)
         }
@@ -231,7 +254,7 @@ fun EinkTerrariumView(
  * 16-level grays and paint.isAntiAlias=false. Use for animation frames where speed matters.
  */
 private fun renderEinkFrame(
-    state: TerrariumState, width: Int, height: Int, animFrame: Int = 0,
+    state: TerrariumState, width: Int, height: Int, animFrame: Float = 0f,
     target: Bitmap? = null, skipDither: Boolean = false,
     fishSchool: EinkFishSchool? = null,
 ): Bitmap {
@@ -244,7 +267,9 @@ private fun renderEinkFrame(
     val canvas = android.graphics.Canvas(bitmap)
     val paint = Paint().apply { isAntiAlias = false }
 
-    Log.d("EinkFrame", "agents=${state.agents.size} clouds=${state.cloudCreatures.size} oc=${state.openCodeCreatures.size} cf=${state.crayfish} frame=$animFrame")
+    if (Log.isLoggable("EinkFrame", Log.VERBOSE)) {
+        Log.v("EinkFrame", "agents=${state.agents.size} clouds=${state.cloudCreatures.size} oc=${state.openCodeCreatures.size} cf=${state.crayfish} frame=$animFrame")
+    }
 
     // Water background — entire frame is the aquarium (no inner border)
     canvas.drawColor(einkPick(GRAY_WATER_BG, COLOR_WATER_BG))
@@ -271,7 +296,8 @@ private fun renderEinkFrame(
     }
 
     // Water surface — flat air region above water line, wave only on the boundary
-    val creatureFrame = animFrame % 4
+    val discreteFrame = floor(animFrame).toInt()
+    val creatureFrame = discreteFrame.floorMod(4)
     val surfaceY = height * 0.08f
     val surfaceAmp = height * 0.012f
     val surfaceFreq = (2.0 * kotlin.math.PI / (width * 0.5)).toFloat()
@@ -349,14 +375,14 @@ private fun renderEinkFrame(
             drawEinkOctopus(canvas, paint, width, height,
                 state.agents[i].visualState, state.agents[i].agentType,
                 centerXFraction = slot.centerXFraction, centerYFraction = slot.centerYFraction,
-                scaleFactor = slot.scaleFactor, animFrame = creatureFrame,
+                scaleFactor = slot.scaleFactor, animFrame = animFrame,
                 swimFrame = animFrame, displayName = state.agents[i].displayName)
         }
     } else {
         // Use agent's own visualState (not state.octopus which reflects daemon's state)
         val agent = state.agents[0]
         drawEinkOctopus(canvas, paint, width, height, agent.visualState, agent.agentType,
-            animFrame = creatureFrame, swimFrame = animFrame,
+            animFrame = animFrame, swimFrame = animFrame,
             displayName = agent.displayName)
     }
     // Pop burst particles (1-frame effect when leaving ASKING state)
@@ -376,7 +402,7 @@ private fun renderEinkFrame(
         }
     }
 
-    drawEinkCrayfish(canvas, paint, width, height, state.crayfish, creatureFrame)
+    drawEinkCrayfish(canvas, paint, width, height, state.crayfish, animFrame)
 
     // Cloud creatures (Codex CLI agents — float in upper area)
     if (state.cloudCreatures.isNotEmpty()) {
@@ -388,7 +414,7 @@ private fun renderEinkFrame(
                 centerXFraction = slot.centerXFraction,
                 centerYFraction = slot.centerYFraction,
                 scaleFactor = slot.scaleFactor,
-                animFrame = creatureFrame,
+                animFrame = animFrame,
                 swimFrame = animFrame,
                 displayName = state.cloudCreatures[i].displayName)
         }
@@ -404,7 +430,7 @@ private fun renderEinkFrame(
                 centerXFraction = slot.centerXFraction,
                 centerYFraction = slot.centerYFraction,
                 scaleFactor = slot.scaleFactor,
-                animFrame = creatureFrame,
+                animFrame = animFrame,
                 swimFrame = animFrame,
                 displayName = state.openCodeCreatures[i].displayName)
         }
@@ -623,15 +649,16 @@ private fun drawGrassStroke(canvas: android.graphics.Canvas, paint: Paint, baseX
 // --- Creatures ---
 
 /** E-ink octopus — 14×5 pixel block rendering matching the color OctopusCreature grid. */
+@Suppress("UNUSED_PARAMETER")
 private fun drawEinkOctopus(
     canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int,
     state: OctopusVisualState,
-    agentType: String? = null,
+    _agentType: String? = null,
     centerXFraction: Float = 0.38f,
     centerYFraction: Float = 0.42f,
     scaleFactor: Float = 1f,
-    animFrame: Int = 0,
-    swimFrame: Int = 0,
+    animFrame: Float = 0f,
+    swimFrame: Float = 0f,
     displayName: String? = null,
 ) {
     // WORKING: slow horizontal wander (sin-based, stateless)
@@ -781,8 +808,8 @@ private fun drawEinkCloud(
     centerXFraction: Float = 0.55f,
     centerYFraction: Float = 0.20f,
     scaleFactor: Float = 1f,
-    animFrame: Int = 0,
-    swimFrame: Int = 0,
+    animFrame: Float = 0f,
+    swimFrame: Float = 0f,
     displayName: String? = null,
 ) {
     // Horizontal wander when WORKING (same pattern as octopus)
@@ -866,7 +893,7 @@ private fun drawEinkCloud(
 
         canvas.drawLine(cx - br * 0.18f, cy - br * 0.12f, cx + br * 0.05f, cy, paint)
         canvas.drawLine(cx + br * 0.05f, cy, cx - br * 0.18f, cy + br * 0.12f, paint)
-        val showCursor = state != OctopusVisualState.ASKING || animFrame % 4 < 2
+        val showCursor = state != OctopusVisualState.ASKING || frameMod4(animFrame) < 2
         if (showCursor) {
             canvas.drawLine(cx + br * 0.16f, cy + br * 0.12f, cx + br * 0.34f, cy + br * 0.12f, paint)
         }
@@ -915,8 +942,8 @@ private fun drawEinkOpenCode(
     centerXFraction: Float = 0.48f,
     centerYFraction: Float = 0.40f,
     scaleFactor: Float = 1f,
-    animFrame: Int = 0,
-    swimFrame: Int = 0,
+    animFrame: Float = 0f,
+    swimFrame: Float = 0f,
     displayName: String? = null,
 ) {
     val wanderX = if (state == OctopusVisualState.WORKING) {
@@ -1037,7 +1064,7 @@ private fun drawEinkOpenCode(
 private fun drawEinkCrayfish(
     canvas: android.graphics.Canvas, paint: Paint, w: Int, h: Int,
     state: CrayfishVisualState,
-    animFrame: Int = 0,
+    animFrame: Float = 0f,
 ) {
     val cx = w * 0.75f
     // Y-position by state — sitting on rock when idle, floating up when active
@@ -1075,30 +1102,31 @@ private fun drawEinkCrayfish(
     val offsetY = cy - EINK_SVG_VIEWBOX / 2f * scale
 
     // Claw animation — amplified for e-ink visibility, all 4 frames non-zero
+    val frame4 = frameMod4(animFrame)
     val clawAngle = when (state) {
-        CrayfishVisualState.ROUTING -> when (animFrame % 4) {
+        CrayfishVisualState.ROUTING -> when (frame4) {
             0 -> 10f; 1 -> 30f; 2 -> -8f; 3 -> -20f; else -> 0f
         }
-        CrayfishVisualState.OBSERVING -> when (animFrame % 4) {
+        CrayfishVisualState.OBSERVING -> when (frame4) {
             0 -> 5f; 1 -> 15f; 2 -> -3f; 3 -> -10f; else -> 0f
         }
-        CrayfishVisualState.SITTING -> when (animFrame % 4) {
+        CrayfishVisualState.SITTING -> when (frame4) {
             0 -> 1f; 1 -> 3f; 2 -> 0f; 3 -> -2f; else -> 0f
         }
         CrayfishVisualState.WAITING -> 18f  // claws open wide
-        CrayfishVisualState.SICK -> -10f + (animFrame % 4) * 1f  // claws droop, tiny movement
+        CrayfishVisualState.SICK -> -10f + frame4 * 1f  // claws droop, tiny movement
         else -> 0f
     }
 
     // Antenna wiggle — amplified, all 4 frames moving
     val antennaWiggle = when (state) {
-        CrayfishVisualState.ROUTING -> when (animFrame % 4) {
+        CrayfishVisualState.ROUTING -> when (frame4) {
             0 -> 2f; 1 -> 5f; 2 -> -2f; 3 -> -5f; else -> 0f
         }
-        CrayfishVisualState.SITTING -> when (animFrame % 4) {
+        CrayfishVisualState.SITTING -> when (frame4) {
             0 -> 0f; 1 -> 1f; 2 -> 0f; 3 -> -1f; else -> 0f
         }
-        CrayfishVisualState.SICK -> when (animFrame % 4) {
+        CrayfishVisualState.SICK -> when (frame4) {
             0 -> 0f; 1 -> 0.5f; 2 -> 0f; 3 -> -0.5f; else -> 0f
         }
         else -> 0f
@@ -1208,7 +1236,9 @@ class EinkFish(
 /**
  * Persistent boids-based fish school. 12 fish in 2 schools (6+6).
  * Lissajous school centers, separation/alignment/cohesion, wall repulsion.
- * Call [update] each animation frame before drawing.
+ * Call [update] each animation frame before drawing. [stepScale] is elapsed
+ * time relative to the 400ms B&W e-ink cadence, so faster color e-ink redraws
+ * interpolate instead of increasing simulation speed.
  */
 class EinkFishSchool {
     val fish: List<EinkFish>
@@ -1263,8 +1293,10 @@ class EinkFishSchool {
         streaming: Boolean,
         agentSlots: List<dev.agentdeck.terrarium.CreatureSlot>,
         crayfishRouting: Boolean,
+        stepScale: Float = 1f,
     ) {
-        time += 0.08f // match previous time scale
+        val dt = stepScale.coerceIn(0f, 1.5f)
+        time += 0.08f * dt // match previous time scale
         val maxSpeed = if (streaming) MAX_SPEED_STREAMING else MAX_SPEED_CIRCLING
 
         // Lissajous school centers
@@ -1350,9 +1382,10 @@ class EinkFishSchool {
             if (f.y > MAX_Y - WALL_MARGIN) ay -= WALL_FORCE
 
             // Apply acceleration
-            f.vx += ax; f.vy += ay
+            f.vx += ax * dt; f.vy += ay * dt
             // Vertical damping (fish prefer horizontal movement)
-            f.vy *= VY_DAMPING
+            val damping = (1f - (1f - VY_DAMPING) * dt).coerceIn(0f, 1f)
+            f.vy *= damping
 
             // Speed limit
             val speed = kotlin.math.sqrt(f.vx * f.vx + f.vy * f.vy)
@@ -1362,8 +1395,8 @@ class EinkFishSchool {
             }
 
             // Integrate position
-            f.x = (f.x + f.vx).coerceIn(MIN_X, MAX_X)
-            f.y = (f.y + f.vy).coerceIn(MIN_Y, MAX_Y)
+            f.x = (f.x + f.vx * dt).coerceIn(MIN_X, MAX_X)
+            f.y = (f.y + f.vy * dt).coerceIn(MIN_Y, MAX_Y)
         }
     }
 }
@@ -1373,7 +1406,7 @@ private fun drawEinkDataParticles(
     state: TetraVisualState,
     agentCount: Int,
     crayfishState: CrayfishVisualState = CrayfishVisualState.DORMANT,
-    animFrame: Int = 0,
+    animFrame: Float = 0f,
     layer: Int = -1, // -1 = all, 0 = back (behind creatures), 1 = front
     fishSchool: EinkFishSchool? = null,
 ) {
@@ -1395,7 +1428,7 @@ private fun drawEinkDataParticles(
             val fy = f.y * h
             val heading = if (f.vx >= 0f) 0f else 180f
             val localIdx = i % EINK_FISH_PER_SCHOOL
-            val tailPhase = (animFrame + localIdx * 2) % 4
+            val tailPhase = (floor(animFrame).toInt() + localIdx * 2).floorMod(4)
 
             drawEinkFish(canvas, paint, fx, fy, fishSize * depthScale, heading, tailPhase)
         }
@@ -1446,7 +1479,7 @@ private fun drawEinkDataParticles(
         }
     } else if (state == TetraVisualState.HOVERING) {
         // HOVERING: fish gather near option area (matching tablet behavior)
-        val time = animFrame.toFloat() * 0.08f
+        val time = animFrame * 0.08f
         val nearX = w * 0.45f + w * 0.012f * kotlin.math.cos(time * 0.3).toFloat()
         val nearY = h * 0.35f
 
@@ -1474,7 +1507,7 @@ private fun drawEinkDataParticles(
             val fx = bx.coerceIn(w * 0.05f, w * 0.95f)
             val fy = by.coerceIn(h * 0.10f, h * 0.72f)
             val heading = if (vx >= 0f) 0f else 180f
-            val tailPhase = (animFrame + localIdx * 2) % 4
+            val tailPhase = (floor(animFrame).toInt() + localIdx * 2).floorMod(4)
 
             drawEinkFish(canvas, paint, fx, fy, fishSize * depthScale, heading, tailPhase)
         }
@@ -1572,15 +1605,12 @@ object EinkRefreshHelper {
     private const val RK_EPD_A2 = "12"
     private const val RK_EPD_DU = "14"
 
-    /** Full GC16 refresh — 16-level grayscale, full flash (B&W) or system-managed (color). */
+    /** Full/normal refresh — clears ghosting and exits fast animation mode. */
     fun requestFullRefresh(view: View) {
-        // Color Kaleido: let RKCFA handle — no manual EPD commands
-        if (einkColorEnabled) {
-            view.invalidate()
-            return
-        }
-        // B&W e-ink: full GC16 with flash for crisp ghosting-free update
-        if (tryRockchipRefresh(view, RK_EPD_FULL_GC16, sendFullFrame = true)) return
+        // B&W e-ink gets an explicit full-frame GC16 flash. Color e-ink uses
+        // the same mode switch without forcing a full monochrome frame, which
+        // restores quality after animation/A2 frames.
+        if (tryRockchipRefresh(view, RK_EPD_FULL_GC16, sendFullFrame = !einkColorEnabled)) return
 
         try {
             // Onyx: com.onyx.android.sdk.device.Device.requestScreenUpdate()
@@ -1619,13 +1649,13 @@ object EinkRefreshHelper {
 
     /** Animation refresh — platform-specific:
      *  B&W e-ink: GC16 partial (16-gray, no flash).
-     *  Color Kaleido: no EPD commands — let RKCFA hardware compositor decide.
-     *    Manual EPD mode commands conflict with RKCFA's auto-detection.
-     *    System default produces smoothest results on Kaleido.
+     *  Color e-ink: fast animation/A2 mode. This mirrors the vendor path used
+     *    by browser video playback: lower fidelity, but far more continuous
+     *    motion than document-quality full color refresh.
      */
     fun requestAnimationRefresh(view: View) {
         if (einkColorEnabled) {
-            view.invalidate()
+            requestA2Refresh(view)
             return
         }
         if (tryRockchipRefresh(view, RK_EPD_FULL_GC16, sendFullFrame = false)) return
@@ -1732,7 +1762,7 @@ internal val einkColorEnabled: Boolean by lazy {
 }
 
 /** Pick gray or color constant based on display capability. */
-private inline fun einkPick(gray: Int, color: Int): Int = if (einkColorEnabled) color else gray
+private fun einkPick(gray: Int, color: Int): Int = if (einkColorEnabled) color else gray
 
 // Warm earth-tone palette for Kaleido 3 — "printed illustration" aesthetic
 // Light water background for creature visibility, warm earth tones for paper feel.

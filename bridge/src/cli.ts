@@ -1092,29 +1092,128 @@ apme
 
 apme
   .command('export')
-  .description('Export runs + evals as JSONL')
-  .option('-n, --limit <n>', 'Number of runs', '100')
+  .description('Export runs (default) or tasks as JSONL/CSV — dataset for offline analysis or meta-eval')
+  .option('-n, --limit <n>', 'Maximum rows', '100')
   .option('-o, --output <file>', 'Output file (default: stdout)')
+  .option('-b, --by <unit>', 'Row unit: run | task', 'run')
+  .option('-f, --format <fmt>', 'Format: jsonl | csv', 'jsonl')
+  .option('--closed-only', 'Tasks only: skip in-progress tasks (no ended_at)', false)
   .action(async (opts) => {
     const { initApme } = await import('./apme/index.js');
     const { writeFileSync: wfs } = await import('fs');
     const apme = await initApme();
     if (!apme) { log('APME not available'); process.exit(1); }
 
-    const runs = apme.store.listRuns({ limit: parseInt(opts.limit, 10) || 100 });
-    const lines: string[] = [];
-    for (const r of runs) {
-      const evals = apme.store.listEvalsForRun(r.id);
-      const vibe = apme.store.latestVibeForRun(r.id);
-      lines.push(JSON.stringify({ ...r, evals, vibe }));
-    }
-    if (opts.output) {
-      wfs(opts.output, lines.join('\n') + '\n', 'utf-8');
-      log(`Exported ${runs.length} run(s) to ${opts.output}`);
+    const limit = parseInt(opts.limit, 10) || 100;
+    const by: 'task' | 'run' = opts.by === 'task' ? 'task' : 'run';
+    const format: 'csv' | 'jsonl' = opts.format === 'csv' ? 'csv' : 'jsonl';
+
+    let rows: Array<Record<string, unknown>>;
+    if (by === 'task') {
+      // Task-unit dataset: one row per task (group of turns between
+      // boundary signals). This is the dataset format that supports
+      // meaningful agent evaluation per the user requirement —
+      // "의미 있는 단위의 세션을 데이터셋으로 저장".
+      const tasks = apme.store.listAllTasks({ limit, closedOnly: !!opts.closedOnly });
+      rows = tasks.map((t) => {
+        const turns = apme.store.listTurnsForTask(t.id);
+        const evals = apme.store.listEvalsForTask(t.id);
+        const run = apme.store.getRun(t.runId);
+        const vibe = apme.store.latestVibeForRun(t.runId);
+
+        const axes: Record<string, number> = {};
+        for (const e of evals) {
+          if (e.layer === 'task_judge') axes[e.metric] = e.score;
+        }
+        const overallEval = evals.find((e) => e.layer === 'task_judge' && e.metric === 'overall');
+        let reasoning: string | null = null;
+        let done: string[] | null = null;
+        let missed: string[] | null = null;
+        if (overallEval?.raw) {
+          try {
+            const parsed = JSON.parse(overallEval.raw) as { reasoning?: string; done?: string[]; missed?: string[] };
+            reasoning = parsed.reasoning ?? null;
+            done = parsed.done ?? null;
+            missed = parsed.missed ?? null;
+          } catch { /* ignore parse failure */ }
+        }
+
+        const toolCalls = turns.reduce((n, tu) => n + ((tu.tool_calls as number | undefined) ?? 0), 0);
+        const filesModified = turns.reduce((n, tu) => n + ((tu.files_modified as number | undefined) ?? 0), 0);
+        const filesCreated = turns.reduce((n, tu) => n + ((tu.files_created as number | undefined) ?? 0), 0);
+        const firstPrompt = (turns[0]?.prompt as string | undefined) ?? null;
+        const lastResponse = (turns[turns.length - 1]?.response as string | undefined) ?? null;
+
+        return {
+          taskId: t.id,
+          runId: t.runId,
+          taskIndex: t.taskIndex,
+          agentType: run?.agentType ?? null,
+          modelId: run?.modelId ?? null,
+          projectName: run?.projectName ?? null,
+          taskCategory: t.taskCategory ?? run?.taskCategory ?? null,
+          boundarySignal: t.boundarySignal,
+          startedAt: t.startedAt,
+          endedAt: t.endedAt,
+          durationSec: t.endedAt ? Math.round((t.endedAt - t.startedAt) / 1000) : null,
+          turnCount: turns.length,
+          firstTurnIndex: t.firstTurnIndex,
+          lastTurnIndex: t.lastTurnIndex,
+          toolCalls,
+          filesModified,
+          filesCreated,
+          firstPrompt: firstPrompt ? firstPrompt.slice(0, 500) : null,
+          lastResponse: lastResponse ? lastResponse.slice(0, 500) : null,
+          summary: t.summary ?? null,
+          composite: t.compositeScore ?? null,
+          outcome: t.outcome ?? null,
+          axes,
+          overall: axes.overall ?? null,
+          reasoning,
+          done,
+          missed,
+          vibeVerdict: vibe?.verdict ?? null,
+          vibeNote: vibe?.note ?? null,
+        };
+      });
     } else {
-      for (const line of lines) process.stdout.write(line + '\n');
+      const runRows = apme.store.listRuns({ limit });
+      rows = runRows.map((r) => {
+        const evals = apme.store.listEvalsForRun(r.id);
+        const vibe = apme.store.latestVibeForRun(r.id);
+        return { ...r, evals, vibe };
+      });
+    }
+
+    const output = format === 'csv' ? rowsToCsv(rows) : rowsToJsonl(rows);
+    if (opts.output) {
+      wfs(opts.output, output, 'utf-8');
+      log(`Exported ${rows.length} ${by}(s) to ${opts.output} (${format})`);
+    } else {
+      process.stdout.write(output);
     }
   });
+
+function rowsToJsonl(rows: Array<Record<string, unknown>>): string {
+  return rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : '');
+}
+
+function rowsToCsv(rows: Array<Record<string, unknown>>): string {
+  if (rows.length === 0) return '';
+  const headerSet = new Set<string>();
+  for (const r of rows) for (const k of Object.keys(r)) headerSet.add(k);
+  const headers = Array.from(headerSet);
+  const escape = (v: unknown): string => {
+    if (v === null || v === undefined) return '';
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[,"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines: string[] = [
+    headers.join(','),
+    ...rows.map((r) => headers.map((h) => escape(r[h])).join(',')),
+  ];
+  return lines.join('\n') + '\n';
+}
 
 apme
   .command('rubric')

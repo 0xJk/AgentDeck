@@ -58,14 +58,15 @@ import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.state.AgentStateHolder
-import dev.agentdeck.state.SessionMetrics
 import dev.agentdeck.state.TimelineStore
 import dev.agentdeck.ui.eink.EinkAgentPanel
+import dev.agentdeck.ui.eink.EinkAttentionPanel
 import dev.agentdeck.ui.eink.EinkContextArea
 import dev.agentdeck.ui.eink.EinkEventLog
 import dev.agentdeck.ui.eink.EinkAquariumFrame
 import dev.agentdeck.ui.eink.EinkSettingsOverlay
 import dev.agentdeck.ui.eink.EinkStatusCompact
+import dev.agentdeck.ui.eink.buildEinkAttentionFeatured
 import dev.agentdeck.ui.component.BrandIcon
 import dev.agentdeck.ui.eink.abbreviateModelName
 import dev.agentdeck.ui.eink.compactStateMarker
@@ -97,7 +98,6 @@ fun EinkMonitorScreen(
     val state by stateHolder.state.collectAsState()
     val connectionStatus by connection.status.collectAsState()
     val timelineEntries by TimelineStore.instance.entries.collectAsState()
-    val metrics by SessionMetrics.instance.metrics.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -180,6 +180,13 @@ fun EinkMonitorScreen(
     val lastError by connection.lastError.collectAsState()
     val isReconnecting by connection.isReconnecting.collectAsState()
     val reconnectAttempt by connection.reconnectAttempt.collectAsState()
+    val showSessionList by displayPrefs.showSessionListFlow.collectAsState(initial = true)
+    val showTankStatus by displayPrefs.showTankStatusFlow.collectAsState(initial = true)
+    val showDeviceDiagnostic by displayPrefs.showDeviceDiagnosticFlow.collectAsState(initial = true)
+    val showTimeline by displayPrefs.showTimelineFlow.collectAsState(initial = true)
+    val showSettingsButton by displayPrefs.showSettingsButtonFlow.collectAsState(initial = true)
+    val showStatusPanel = showTankStatus || showDeviceDiagnostic
+    val featuredAttention = remember(state) { buildEinkAttentionFeatured(state) }
 
     // Show not-connected screen only when truly disconnected (not reconnecting)
     val showNotConnected = connectionStatus != ConnectionStatus.CONNECTED &&
@@ -203,6 +210,7 @@ fun EinkMonitorScreen(
                     connection.connect(BridgeConstants.LOCALHOST_WS_URL)
                 },
                 onSettingsClick = { showSettings = true },
+                showSettingsButton = showSettingsButton,
             )
         } else if (isReconnecting && state.agentState == AgentState.DISCONNECTED) {
             EinkReconnectingScreen(
@@ -215,6 +223,7 @@ fun EinkMonitorScreen(
                 },
                 onStopReconnecting = { connection.disconnect() },
                 onSettingsClick = { showSettings = true },
+                showSettingsButton = showSettingsButton,
             )
         } else if (isLandscape) {
             // Aquarium-centered layout: agent panel | aquarium + content + timeline
@@ -231,26 +240,31 @@ fun EinkMonitorScreen(
             val sessionsKey = state.siblingSessions.joinToString(",") { "${it.id}:${it.state}" }
 
             Row(modifier = Modifier.fillMaxSize()) {
-                // Left (22%): Agent panel — refresh on state, session list, or worker count changes
-                EinkRefreshZone(
-                    mode = RefreshMode.A2,
-                    debounceMs = 200,
-                    triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
-                    modifier = Modifier.weight(0.22f).fillMaxHeight(),
-                ) {
-                    EinkAgentPanel(
-                        state = state,
-                        onSettingsClick = { showSettings = true },
-                        displayPrefs = displayPrefs,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+                if (showSessionList) {
+                    // Left (22%): Agent panel — refresh on state, session list, or worker count changes
+                    EinkRefreshZone(
+                        mode = RefreshMode.A2,
+                        debounceMs = 200,
+                        triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
+                        modifier = Modifier.weight(0.22f).fillMaxHeight(),
+                    ) {
+                        EinkAgentPanel(
+                            state = state,
+                            onSettingsClick = { showSettings = true },
+                            onFocusSession = { connection.sendFocusSession(it) },
+                            showSettingsButton = showSettingsButton,
+                            displayPrefs = displayPrefs,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+
+                    VerticalDivider(thickness = 2.dp, color = Color.Black)
                 }
 
-                VerticalDivider(thickness = 2.dp, color = Color.Black)
-
-                // Right (78%): Aquarium + Content + Timeline
-                // Fixed aquarium weight prevents layout jump on state change
-                Column(modifier = Modifier.weight(0.78f).fillMaxHeight()) {
+                // Main content: aquarium + context/status + timeline.
+                // Fixed weights prevent layout jump on state change; optional
+                // panels collapse according to the shared dashboard settings.
+                Column(modifier = Modifier.weight(if (showSessionList) 0.78f else 1f).fillMaxHeight()) {
                     // Aquarium frame — animated EPD refresh via callback
                     EinkAnimatedRefreshZone(
                         stateKey = Pair(state.agentState, sessionsKey),
@@ -271,52 +285,103 @@ fun EinkMonitorScreen(
                         state.options.isNotEmpty() ||
                         timelineEntries.any { it.type == "tool_request" }
                     )
-                    if (hasContext) {
+                    val showContextArea = featuredAttention != null || hasContext
+                    if (showContextArea || showStatusPanel) {
+                        val fastContextRefresh = featuredAttention != null || isActive
                         EinkRefreshZone(
-                            mode = RefreshMode.A2,
-                            debounceMs = 200,
+                            mode = if (fastContextRefresh) RefreshMode.A2 else RefreshMode.DU,
+                            debounceMs = if (fastContextRefresh) 200 else 2000,
                             triggerKey = Triple(state.agentState, state.currentTool,
-                                listOf(state.usage, state.oauthConnected, state.ollamaStatus)),
-                            modifier = Modifier.weight(0.12f).fillMaxWidth(),
+                                listOf(
+                                    state.usage,
+                                    state.oauthConnected,
+                                    state.ollamaStatus,
+                                    state.moduleHealth,
+                                    featuredAttention,
+                                )),
+                            modifier = Modifier
+                                .weight(
+                                    when {
+                                        featuredAttention != null -> 0.22f
+                                        hasContext -> 0.12f
+                                        else -> 0.13f
+                                    }
+                                )
+                                .fillMaxWidth(),
                         ) {
-                            Row(modifier = Modifier.fillMaxSize()) {
-                                // Context area (50%)
-                                EinkContextArea(
+                            when {
+                                featuredAttention != null && showStatusPanel -> Row(modifier = Modifier.fillMaxSize()) {
+                                    EinkAttentionPanel(
+                                        featured = featuredAttention,
+                                        onFocusSession = { connection.sendFocusSession(it) },
+                                        onSelectOption = { connection.sendSelectOption(it) },
+                                        modifier = Modifier.weight(0.62f).fillMaxHeight(),
+                                    )
+                                    VerticalDivider(thickness = 1.dp, color = Color.Black)
+                                    EinkStatusCompact(
+                                        state = state,
+                                        showTankStatus = showTankStatus,
+                                        showDeviceDiagnostic = showDeviceDiagnostic,
+                                        modifier = Modifier.weight(0.38f).fillMaxHeight(),
+                                    )
+                                }
+                                featuredAttention != null -> EinkAttentionPanel(
+                                    featured = featuredAttention,
+                                    onFocusSession = { connection.sendFocusSession(it) },
+                                    onSelectOption = { connection.sendSelectOption(it) },
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                                hasContext && showStatusPanel -> Row(modifier = Modifier.fillMaxSize()) {
+                                    // Context area (50%)
+                                    EinkContextArea(
+                                        state = state,
+                                        timelineEntries = timelineEntries,
+                                        onSelectOption = { index ->
+                                            state.sessionId?.let { connection.sendFocusSession(it) }
+                                            connection.sendSelectOption(index)
+                                        },
+                                        modifier = Modifier.weight(0.50f).fillMaxHeight(),
+                                    )
+                                    VerticalDivider(thickness = 1.dp, color = Color.Black)
+                                    // Compact status (50%)
+                                    EinkStatusCompact(
+                                        state = state,
+                                        showTankStatus = showTankStatus,
+                                        showDeviceDiagnostic = showDeviceDiagnostic,
+                                        modifier = Modifier.weight(0.50f).fillMaxHeight(),
+                                    )
+                                }
+                                hasContext -> EinkContextArea(
                                     state = state,
                                     timelineEntries = timelineEntries,
-                                    onSelectOption = { index -> connection.sendSelectOption(index) },
-                                    modifier = Modifier.weight(0.50f).fillMaxHeight(),
+                                    onSelectOption = { index ->
+                                        state.sessionId?.let { connection.sendFocusSession(it) }
+                                        connection.sendSelectOption(index)
+                                    },
+                                    modifier = Modifier.fillMaxSize(),
                                 )
-                                VerticalDivider(thickness = 1.dp, color = Color.Black)
-                                // Compact status (50%)
-                                EinkStatusCompact(
+                                else -> EinkStatusCompact(
                                     state = state,
-                                    modifier = Modifier.weight(0.50f).fillMaxHeight(),
+                                    showTankStatus = showTankStatus,
+                                    showDeviceDiagnostic = showDeviceDiagnostic,
+                                    modifier = Modifier.fillMaxSize(),
                                 )
                             }
                         }
-                    } else {
-                        // No context or IDLE: status full-width (13%)
-                        EinkRefreshZone(
-                            mode = if (isActive) RefreshMode.A2 else RefreshMode.DU,
-                            debounceMs = if (isActive) 200 else 2000,
-                            triggerKey = listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.modelCatalog?.size),
-                            modifier = Modifier.weight(0.13f).fillMaxWidth(),
-                        ) {
-                            EinkStatusCompact(state = state)
-                        }
                     }
 
-                    HorizontalDivider(thickness = 1.dp, color = Color.Black)
+                    if (showTimeline) {
+                        HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-                    // Timeline
-                    EinkRefreshZone(
-                        mode = RefreshMode.A2,
-                        debounceMs = 300,
-                        triggerKey = timelineEntries.size,
-                        modifier = Modifier.weight(0.37f).fillMaxWidth(),
-                    ) {
-                        EinkEventLog(entries = timelineEntries)
+                        // Timeline
+                        EinkRefreshZone(
+                            mode = RefreshMode.A2,
+                            debounceMs = 300,
+                            triggerKey = timelineEntries.size,
+                            modifier = Modifier.weight(0.37f).fillMaxWidth(),
+                        ) {
+                            EinkEventLog(entries = timelineEntries)
+                        }
                     }
                 }
             }
@@ -324,9 +389,14 @@ fun EinkMonitorScreen(
             EinkPortraitLayout(
                 state = state,
                 timelineEntries = timelineEntries,
-                metrics = metrics,
                 connection = connection,
                 displayPrefs = displayPrefs,
+                showSessionList = showSessionList,
+                showStatusPanel = showStatusPanel,
+                showTankStatus = showTankStatus,
+                showDeviceDiagnostic = showDeviceDiagnostic,
+                showTimeline = showTimeline,
+                showSettingsButton = showSettingsButton,
                 onSettingsClick = { showSettings = true },
             )
         }
@@ -335,13 +405,13 @@ fun EinkMonitorScreen(
             EinkSettingsOverlay(
                 connection = connection,
                 displayPrefs = displayPrefs,
+                dashState = state,
                 discoveredBridges = discoveredBridges,
                 onDismiss = { showSettings = false },
             )
         }
     }
 }
-
 @Composable
 private fun EinkNotConnectedScreen(
     connectionStatus: ConnectionStatus,
@@ -350,6 +420,7 @@ private fun EinkNotConnectedScreen(
     onConnectToBridge: (DiscoveredBridge) -> Unit,
     onConnectLocalhost: () -> Unit,
     onSettingsClick: () -> Unit,
+    showSettingsButton: Boolean,
 ) {
     // Grayscale filter for e-ink
     val grayscaleFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
@@ -478,12 +549,14 @@ private fun EinkNotConnectedScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Text(
-            text = "\u2699 Settings",
-            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.clickable(onClick = onSettingsClick),
-        )
+        if (showSettingsButton) {
+            Text(
+                text = "\u2699 Settings",
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.clickable(onClick = onSettingsClick),
+            )
+        }
     }
 }
 
@@ -496,6 +569,7 @@ private fun EinkReconnectingScreen(
     onConnectToBridge: (DiscoveredBridge) -> Unit,
     onStopReconnecting: () -> Unit,
     onSettingsClick: () -> Unit,
+    showSettingsButton: Boolean,
 ) {
     // Grayscale filter for e-ink
     val grayscaleFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
@@ -630,12 +704,14 @@ private fun EinkReconnectingScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        Text(
-            text = "\u2699 Settings",
-            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.clickable(onClick = onSettingsClick),
-        )
+        if (showSettingsButton) {
+            Text(
+                text = "\u2699 Settings",
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.clickable(onClick = onSettingsClick),
+            )
+        }
     }
 }
 
@@ -643,12 +719,18 @@ private fun EinkReconnectingScreen(
 private fun EinkPortraitLayout(
     state: dev.agentdeck.state.DashboardState,
     timelineEntries: List<dev.agentdeck.state.TimelineEntry>,
-    metrics: dev.agentdeck.state.MetricsSnapshot,
     connection: BridgeConnection,
     displayPrefs: DisplayPreferences,
+    showSessionList: Boolean,
+    showStatusPanel: Boolean,
+    showTankStatus: Boolean,
+    showDeviceDiagnostic: Boolean,
+    showTimeline: Boolean,
+    showSettingsButton: Boolean,
     onSettingsClick: () -> Unit,
 ) {
     val terrariumState = remember(state) { state.toTerrariumState() }
+    val featuredAttention = remember(state) { buildEinkAttentionFeatured(state) }
     val isActive = state.agentState == AgentState.PROCESSING ||
         state.agentState == AgentState.AWAITING_PERMISSION ||
         state.agentState == AgentState.AWAITING_OPTION ||
@@ -657,7 +739,14 @@ private fun EinkPortraitLayout(
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header: logo + primary agent + state + settings gear
-        EinkPortraitHeader(state = state, displayPrefs = displayPrefs, onSettingsClick = onSettingsClick)
+        EinkPortraitHeader(
+            state = state,
+            displayPrefs = displayPrefs,
+            showSessionList = showSessionList,
+            showSettingsButton = showSettingsButton,
+            onSettingsClick = onSettingsClick,
+            onFocusSession = { connection.sendFocusSession(it) },
+        )
 
         HorizontalDivider(thickness = 2.dp, color = Color.Black)
 
@@ -672,58 +761,90 @@ private fun EinkPortraitLayout(
             )
         }
 
-        HorizontalDivider(thickness = 1.dp, color = Color.Black)
+        if (showStatusPanel) {
+            HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-        // Status (10%) — compact: arc gauges + models fit in ~80dp
-        if (isActive) {
-            EinkRefreshZone(
-                mode = RefreshMode.A2,
-                debounceMs = 200,
-                triggerKey = Triple(state.agentState, state.currentTool,
-                    listOf(state.usage, state.oauthConnected, state.ollamaStatus)),
-                modifier = Modifier.weight(0.10f).fillMaxWidth(),
-            ) {
-                EinkStatusCompact(state = state)
-            }
-        } else {
-            EinkRefreshZone(
-                mode = RefreshMode.DU,
-                debounceMs = 2000,
-                triggerKey = listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.modelCatalog?.size),
-                modifier = Modifier.weight(0.10f).fillMaxWidth(),
-            ) {
-                EinkStatusCompact(state = state)
+            // Status (10%) — compact: limits + models + downstream devices.
+            if (isActive) {
+                EinkRefreshZone(
+                    mode = RefreshMode.A2,
+                    debounceMs = 200,
+                    triggerKey = Triple(state.agentState, state.currentTool,
+                        listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.moduleHealth)),
+                    modifier = Modifier.weight(0.10f).fillMaxWidth(),
+                ) {
+                    EinkStatusCompact(
+                        state = state,
+                        showTankStatus = showTankStatus,
+                        showDeviceDiagnostic = showDeviceDiagnostic,
+                    )
+                }
+            } else {
+                EinkRefreshZone(
+                    mode = RefreshMode.DU,
+                    debounceMs = 2000,
+                    triggerKey = listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.modelCatalog?.size, state.moduleHealth),
+                    modifier = Modifier.weight(0.10f).fillMaxWidth(),
+                ) {
+                    EinkStatusCompact(
+                        state = state,
+                        showTankStatus = showTankStatus,
+                        showDeviceDiagnostic = showDeviceDiagnostic,
+                    )
+                }
             }
         }
 
-        HorizontalDivider(thickness = 1.dp, color = Color.Black)
-
         // Context area (15%) — only when active
-        if (isActive) {
+        if (featuredAttention != null || isActive) {
+            HorizontalDivider(thickness = 1.dp, color = Color.Black)
+
             EinkRefreshZone(
                 mode = RefreshMode.A2,
                 debounceMs = 200,
-                triggerKey = Pair(state.agentState, state.currentTool),
-                modifier = Modifier.weight(0.15f).fillMaxWidth(),
+                triggerKey = listOf(
+                    state.agentState,
+                    state.currentTool,
+                    state.question,
+                    state.options,
+                    state.cursorIndex,
+                    featuredAttention,
+                ),
+                modifier = Modifier
+                    .weight(if (featuredAttention != null) 0.22f else 0.15f)
+                    .fillMaxWidth(),
             ) {
-                EinkContextArea(
-                    state = state,
-                    timelineEntries = timelineEntries,
-                    onSelectOption = { index -> connection.sendSelectOption(index) },
-                )
+                if (featuredAttention != null) {
+                    EinkAttentionPanel(
+                        featured = featuredAttention,
+                        onFocusSession = { connection.sendFocusSession(it) },
+                        onSelectOption = { connection.sendSelectOption(it) },
+                    )
+                } else {
+                    EinkContextArea(
+                        state = state,
+                        timelineEntries = timelineEntries,
+                        onSelectOption = { index ->
+                            state.sessionId?.let { connection.sendFocusSession(it) }
+                            connection.sendSelectOption(index)
+                        },
+                    )
+                }
             }
 
             HorizontalDivider(thickness = 1.dp, color = Color.Black)
         }
 
         // Timeline (remaining: 0.40 idle / 0.25 active)
-        EinkRefreshZone(
-            mode = RefreshMode.A2,
-            debounceMs = 300,
-            triggerKey = timelineEntries.size,
-            modifier = Modifier.weight(if (isActive) 0.25f else 0.40f).fillMaxWidth(),
-        ) {
-            EinkEventLog(entries = timelineEntries)
+        if (showTimeline) {
+            EinkRefreshZone(
+                mode = RefreshMode.A2,
+                debounceMs = 300,
+                triggerKey = timelineEntries.size,
+                modifier = Modifier.weight(if (isActive) 0.25f else 0.40f).fillMaxWidth(),
+            ) {
+                EinkEventLog(entries = timelineEntries)
+            }
         }
 
     }
@@ -739,7 +860,10 @@ private fun EinkPortraitLayout(
 private fun EinkPortraitHeader(
     state: dev.agentdeck.state.DashboardState,
     displayPrefs: DisplayPreferences,
+    showSessionList: Boolean,
+    showSettingsButton: Boolean,
     onSettingsClick: () -> Unit,
+    onFocusSession: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val currentOrientation by displayPrefs.orientationFlow.collectAsState(
@@ -752,16 +876,21 @@ private fun EinkPortraitHeader(
         val modelName: String?,
         val effortLevel: String?,
         val agentState: AgentState,
+        val sessionId: String?,
     )
 
     val entries = mutableListOf<AgentEntry>()
-    if (state.agentType != "daemon") {
+    val isDaemonLike = state.agentType == "daemon" ||
+        state.agentType == "openclaw" ||
+        state.siblingSessions.any { it.agentType == state.agentType }
+    if (!isDaemonLike) {
         entries += AgentEntry(
             projectName = state.projectName ?: "Agent",
             agentType = state.agentType,
             modelName = state.modelName,
             effortLevel = state.effortLevel,
             agentState = state.agentState,
+            sessionId = state.sessionId,
         )
     }
     state.siblingSessions.forEach { session ->
@@ -774,6 +903,7 @@ private fun EinkPortraitHeader(
             modelName = null,
             effortLevel = null,
             agentState = mapSessionState(session),
+            sessionId = session.id,
         )
     }
 
@@ -802,7 +932,7 @@ private fun EinkPortraitHeader(
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(modifier = Modifier.weight(1f))
-            state.workerSessionCount?.takeIf { it > 0 }?.let {
+            state.workerSessionCount?.takeIf { state.gatewayConnected == true && it > 0 }?.let {
                 Text(
                     text = "W:$it",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
@@ -824,15 +954,17 @@ private fun EinkPortraitHeader(
                                 ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                             displayPrefs.setOrientation(newOrientation)
                         }
-                },
+                    },
             )
-            Spacer(modifier = Modifier.padding(horizontal = 4.dp))
-            Text(
-                text = "\u2699 Settings",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable(onClick = onSettingsClick),
-            )
+            if (showSettingsButton) {
+                Spacer(modifier = Modifier.padding(horizontal = 4.dp))
+                Text(
+                    text = "\u2699 Settings",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clickable(onClick = onSettingsClick),
+                )
+            }
         }
 
         // Agent list — adaptive font: ≤4 normal, 5-8 smaller, 9+ compact
@@ -844,56 +976,64 @@ private fun EinkPortraitHeader(
         }
         val gap = if (entries.size <= 4) 10.dp else 6.dp
 
-        FlowRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 80.dp),
-            horizontalArrangement = Arrangement.spacedBy(gap),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-        ) {
-            entries.forEach { entry ->
-                val key = NameKey(entry.projectName, entry.agentType)
-                val needsSuffix = (nameCounts[key] ?: 1) > 1
-                val suffix = if (needsSuffix) {
-                    val idx = (nameCounters[key] ?: 0) + 1
-                    nameCounters[key] = idx
-                    "#$idx"
-                } else ""
+        if (showSessionList) {
+            FlowRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 80.dp),
+                horizontalArrangement = Arrangement.spacedBy(gap),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                entries.forEach { entry ->
+                    val key = NameKey(entry.projectName, entry.agentType)
+                    val needsSuffix = (nameCounts[key] ?: 1) > 1
+                    val suffix = if (needsSuffix) {
+                        val idx = (nameCounters[key] ?: 0) + 1
+                        nameCounters[key] = idx
+                        "#$idx"
+                    } else ""
 
-                val stateMarker = compactStateMarker(entry.agentState)
-                // Truncate project name for many agents
-                val name = if (entries.size > 8) {
-                    entry.projectName.take(6)
-                } else {
-                    entry.projectName
-                }
-                val abbrevModel = entry.modelName?.let { abbreviateModelName(it) }
-                val modelPart = when {
-                    abbrevModel != null && entry.effortLevel != null
-                        && entry.effortLevel != "medium" && entry.effortLevel != "default" ->
-                        "$abbrevModel\u00B7${entry.effortLevel}"
-                    abbrevModel != null -> abbrevModel
-                    else -> null
-                }
-                val label = buildString {
-                    append("$name$suffix ")
-                    if (modelPart != null) append("$modelPart ")
-                    append(stateMarker)
-                }
+                    val stateMarker = compactStateMarker(entry.agentState)
+                    // Truncate project name for many agents
+                    val name = if (entries.size > 8) {
+                        entry.projectName.take(6)
+                    } else {
+                        entry.projectName
+                    }
+                    val abbrevModel = entry.modelName?.let { abbreviateModelName(it) }
+                    val modelPart = when {
+                        abbrevModel != null && entry.effortLevel != null
+                            && entry.effortLevel != "medium" && entry.effortLevel != "default" ->
+                            "$abbrevModel\u00B7${entry.effortLevel}"
+                        abbrevModel != null -> abbrevModel
+                        else -> null
+                    }
+                    val label = buildString {
+                        append("$name$suffix ")
+                        if (modelPart != null) append("$modelPart ")
+                        append(stateMarker)
+                    }
+                    val sessionId = entry.sessionId
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    BrandIcon(agentType = entry.agentType, isEink = true, size = fontSize.value.dp)
-                    Text(
-                        text = label,
-                        fontSize = fontSize,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = if (sessionId != null) {
+                            Modifier.clickable { onFocusSession(sessionId) }
+                        } else {
+                            Modifier
+                        },
+                    ) {
+                        BrandIcon(agentType = entry.agentType, isEink = true, size = fontSize.value.dp)
+                        Text(
+                            text = label,
+                            fontSize = fontSize,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
         }

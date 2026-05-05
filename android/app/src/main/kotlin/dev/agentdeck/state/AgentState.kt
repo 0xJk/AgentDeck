@@ -5,6 +5,7 @@ import dev.agentdeck.net.AgentState
 import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.BridgeEvent
 import dev.agentdeck.net.ModelCatalogEntry
+import dev.agentdeck.net.ModuleHealthState
 import dev.agentdeck.net.OcSessionStatus
 import dev.agentdeck.net.OllamaStatus
 import dev.agentdeck.net.PermissionMode
@@ -59,6 +60,7 @@ data class DashboardState(
     val gatewayAvailable: Boolean? = null,
     val gatewayConnected: Boolean? = null,
     val gatewayHasError: Boolean? = null,
+    val moduleHealth: ModuleHealthState? = null,
     val voiceAssistantState: String? = null,
     val voiceAssistantText: String? = null,
     val voiceAssistantResponseText: String? = null,
@@ -99,9 +101,26 @@ class AgentStateHolder private constructor() {
                         keepAggregateIdentity -> current.agentType
                         else -> event.data.agentType ?: current.agentType
                     }
+                    val resolvedGatewayAvailable = event.data.gatewayAvailable ?: current.gatewayAvailable
+                    val resolvedGatewayConnected = event.data.gatewayConnected ?: current.gatewayConnected
+                    val resolvedGatewayHasError = if (resolvedGatewayAvailable == false && resolvedGatewayConnected != true) {
+                        false
+                    } else {
+                        event.data.gatewayHasError ?: current.gatewayHasError
+                    }
+                    val clearOpenClawDetails = resolvedGatewayConnected != true
                     Log.d(TAG, "AgentType resolve: event=${event.data.agentType}, current=${current.agentType}, resolved=$resolvedAgentType")
+                    // When the dashboard is pinned to an aggregate primary
+                    // (daemon / openclaw) and a sibling (claude / codex / …)
+                    // emits a state_update, that sibling's state is *not* the
+                    // aggregate's state — it lives in `siblingSessions`. Apply
+                    // the incoming state only when we are NOT keeping the
+                    // aggregate identity, otherwise the OpenClaw crayfish
+                    // animates as if Claude's PROCESSING were its own.
+                    val resolvedAgentState =
+                        if (keepAggregateIdentity) current.agentState else event.data.state
                     current.copy(
-                        agentState = event.data.state,
+                        agentState = resolvedAgentState,
                         permissionMode = event.data.permissionMode,
                         agentType = resolvedAgentType,
                         currentTool = event.data.currentTool,
@@ -116,20 +135,28 @@ class AgentStateHolder private constructor() {
                         question = event.data.question,
                         suggestedPrompt = event.data.suggestedPrompt,
                         remoteUrl = event.data.remoteUrl ?: current.remoteUrl,
-                        agentCapabilities = event.data.agentCapabilities ?: current.agentCapabilities,
-                        modelCatalog = event.data.modelCatalog ?: current.modelCatalog,
-                        sessionStatus = event.data.sessionStatus ?: current.sessionStatus,
+                        agentCapabilities = event.data.agentCapabilities
+                            ?: current.agentCapabilities.takeUnless { clearOpenClawDetails && it?.type == "openclaw" },
+                        modelCatalog = event.data.modelCatalog
+                            ?: current.modelCatalog.takeUnless { clearOpenClawDetails && current.agentType == "openclaw" },
+                        sessionStatus = event.data.sessionStatus
+                            ?: current.sessionStatus.takeUnless { clearOpenClawDetails },
                         pairingUrl = event.data.pairingUrl ?: current.pairingUrl,
                         navigable = event.data.navigable,
                         cursorIndex = event.data.cursorIndex,
-                        workerSessionCount = event.data.workerSessionCount ?: current.workerSessionCount,
+                        workerSessionCount = when {
+                            resolvedGatewayConnected != true -> null
+                            event.data.workerSessionCount != null -> event.data.workerSessionCount
+                            else -> current.workerSessionCount
+                        },
                         ollamaStatus = event.data.ollamaStatus ?: current.ollamaStatus,
                         mlxModels = event.data.mlxModels ?: current.mlxModels,
                         subscriptions = event.data.subscriptions ?: current.subscriptions,
                         antigravityStatus = event.data.antigravityStatus ?: current.antigravityStatus,
-                        gatewayAvailable = event.data.gatewayAvailable ?: current.gatewayAvailable,
-                        gatewayConnected = event.data.gatewayConnected ?: current.gatewayConnected,
-                        gatewayHasError = event.data.gatewayHasError ?: current.gatewayHasError,
+                        gatewayAvailable = resolvedGatewayAvailable,
+                        gatewayConnected = resolvedGatewayConnected,
+                        gatewayHasError = resolvedGatewayHasError,
+                        moduleHealth = event.data.moduleHealth ?: current.moduleHealth,
                         voiceAssistantState = event.data.voiceAssistantState ?: current.voiceAssistantState,
                         voiceAssistantText = event.data.voiceAssistantText,
                         voiceAssistantResponseText = event.data.voiceAssistantResponseText,
@@ -163,15 +190,20 @@ class AgentStateHolder private constructor() {
                         extraUsageUtilization = null,
                     )
                 } else event.data
-                _state.update { it.copy(
-                    usage = incoming,
-                    oauthConnected = incoming.oauthConnected ?: it.oauthConnected,
-                    ollamaStatus = incoming.ollamaStatus ?: it.ollamaStatus,
-                    modelCatalog = incoming.modelCatalog ?: it.modelCatalog,
-                    mlxModels = incoming.mlxModels ?: it.mlxModels,
-                    subscriptions = incoming.subscriptions ?: it.subscriptions,
-                    antigravityStatus = incoming.antigravityStatus ?: it.antigravityStatus,
-                ) }
+                _state.update { current ->
+                    current.copy(
+                        usage = incoming,
+                        oauthConnected = incoming.oauthConnected ?: current.oauthConnected,
+                        ollamaStatus = incoming.ollamaStatus ?: current.ollamaStatus,
+                        modelCatalog = incoming.modelCatalog
+                            ?: current.modelCatalog.takeUnless {
+                                current.gatewayConnected != true && current.agentType == "openclaw"
+                            },
+                        mlxModels = incoming.mlxModels ?: current.mlxModels,
+                        subscriptions = incoming.subscriptions ?: current.subscriptions,
+                        antigravityStatus = incoming.antigravityStatus ?: current.antigravityStatus,
+                    )
+                }
                 lastKnownState = _state.value
                 SessionMetrics.instance.onMessageReceived()
             }
@@ -224,6 +256,10 @@ class AgentStateHolder private constructor() {
                         bridgeConnected = false,
                         agentState = AgentState.DISCONNECTED,
                         hostDisplayOn = true,
+                        gatewayConnected = false,
+                        gatewayHasError = false,
+                        workerSessionCount = null,
+                        siblingSessions = emptyList(),
                     )
                 }
                 SessionMetrics.instance.onDisconnected()

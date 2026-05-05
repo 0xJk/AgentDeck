@@ -39,8 +39,8 @@ enum CodexConfigInstaller {
     /// hasn't written its info file yet. `installIfNeeded` is called on
     /// every daemon startup so this re-resolves whenever the daemon
     /// rebinds.
-    private static func buildOtelEndpoint() -> String {
-        let port = currentDaemonHttpPort() ?? AppPreferences.shared.daemonPort
+    private static func buildOtelEndpoint(daemonHttpPort: Int? = nil) -> String {
+        let port = daemonHttpPort ?? currentDaemonHttpPort() ?? AppPreferences.shared.daemonPort
         return "http://127.0.0.1:\(port)/otel/v1/traces"
     }
 
@@ -62,7 +62,7 @@ enum CodexConfigInstaller {
     // MARK: - Public entry points
 
     @MainActor
-    static func installIfNeeded() {
+    static func installIfNeeded(daemonHttpPort: Int? = nil) {
         switch AppPreferences.shared.codexConfigConsent {
         case .unknown:
             DaemonLogger.shared.info("Codex config awaiting user consent from Settings")
@@ -117,7 +117,12 @@ enum CodexConfigInstaller {
             DaemonLogger.shared.info("Codex config: user-authored `[otel]` present — installing lifecycle hooks without OTel exporter")
         }
 
-        let body = managedBlockBody(includeNotify: includeNotify, includeOtel: includeOtel)
+        let otelEndpoint = includeOtel ? buildOtelEndpoint(daemonHttpPort: daemonHttpPort) : nil
+        let body = managedBlockBody(
+            includeNotify: includeNotify,
+            includeOtel: includeOtel,
+            otelEndpoint: otelEndpoint
+        )
         let updated = MiniToml.applyManagedBlock(in: original, body: body)
         if updated == original {
             AppPreferences.shared.codexConfigInstalled = true

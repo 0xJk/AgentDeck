@@ -489,10 +489,53 @@ final class PixooRenderer {
     }
 
     private func syncCreatures(dashboardState: DashboardState) {
+        // Codex sessions get folded by projectName before slot assignment.
+        // Each Claude Code rescue/stop-gate spawns a fresh codex thread, so
+        // without folding the same workspace lights up 4-5 cloud sprites at
+        // once. Octopus / opencode are NOT folded — multi-instance is a
+        // deliberate user pattern there.
         var aliveCoding: [(id: String, agentType: String, state: CreatureState)] = []
+        var codexFolded: [String: (id: String, agentType: String, state: CreatureState, startedAt: String?)] = [:]
+        var codexFoldedOrder: [String] = []
+
+        func codexKey(projectName: String?, id: String) -> String {
+            if let p = projectName, !p.isEmpty { return p }
+            return "__id__\(id)"
+        }
+        func statePriority(_ s: CreatureState) -> Int {
+            // Mirror TerrariumState fold ordering: processing > awaiting > idle.
+            switch s {
+            case .processing: return 3
+            case .awaiting: return 2
+            case .idle: return 1
+            }
+        }
+
         for session in dashboardState.siblingSessions where session.alive {
             guard let agentType = session.agentType, isCreatureAgent(agentType) else { continue }
-            aliveCoding.append((id: session.id, agentType: agentType, state: mapSessionState(session.state)))
+            let mapped = mapSessionState(session.state)
+            if agentType == "codex-cli" {
+                let key = codexKey(projectName: session.projectName, id: session.id)
+                if let existing = codexFolded[key] {
+                    let pickStart = (session.startedAt ?? "") > (existing.startedAt ?? "")
+                    let mergedState = statePriority(mapped) > statePriority(existing.state) ? mapped : existing.state
+                    codexFolded[key] = (
+                        id: pickStart ? session.id : existing.id,
+                        agentType: agentType,
+                        state: mergedState,
+                        startedAt: pickStart ? session.startedAt : existing.startedAt
+                    )
+                } else {
+                    codexFoldedOrder.append(key)
+                    codexFolded[key] = (id: session.id, agentType: agentType, state: mapped, startedAt: session.startedAt)
+                }
+                continue
+            }
+            aliveCoding.append((id: session.id, agentType: agentType, state: mapped))
+        }
+        for key in codexFoldedOrder {
+            guard let entry = codexFolded[key] else { continue }
+            aliveCoding.append((id: entry.id, agentType: entry.agentType, state: entry.state))
         }
 
         let primaryAgentType = dashboardState.agentType ?? "claude-code"

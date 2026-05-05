@@ -131,11 +131,15 @@ actor HTTPServer {
     /// a single-chunk read truncated the body so JSON parse failed for
     /// every batch. 4 MB cap is a defensive ceiling against runaway
     /// requests (no legitimate dashboard payload is larger).
-    private static func receiveFullRequest(
+    static func receiveFullRequest(
         on conn: NWConnection,
         accumulated: Data = Data(),
         completion: @escaping @Sendable (Data?) -> Void
     ) {
+        if completeRequestIfReady(accumulated, isComplete: false, completion: completion) {
+            return
+        }
+
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { chunk, _, isComplete, error in
             if error != nil {
                 completion(nil)
@@ -144,57 +148,71 @@ actor HTTPServer {
             var data = accumulated
             if let chunk { data.append(chunk) }
 
-            if data.isEmpty {
-                if isComplete {
-                    completion(nil)
-                } else {
-                    receiveFullRequest(on: conn, accumulated: data, completion: completion)
-                }
+            if completeRequestIfReady(data, isComplete: isComplete, completion: completion) {
                 return
             }
 
-            // Cap at 4 MB to bound the listener's per-connection memory.
-            if data.count >= 4 * 1024 * 1024 {
-                completion(data)
-                return
-            }
+            receiveFullRequest(on: conn, accumulated: data, completion: completion)
+        }
+    }
 
-            // Find end of headers; if not seen yet, keep reading.
-            guard let headerRange = data.range(of: Data("\r\n\r\n".utf8)) else {
-                if isComplete {
-                    completion(data)
-                } else {
-                    receiveFullRequest(on: conn, accumulated: data, completion: completion)
-                }
-                return
-            }
-
-            // Parse Content-Length from the headers slice.
-            let headerText = String(data: data.subdata(in: 0..<headerRange.lowerBound), encoding: .utf8) ?? ""
-            var expectedBody = 0
-            for line in headerText.components(separatedBy: "\r\n") {
-                if line.lowercased().hasPrefix("content-length:") {
-                    let parts = line.split(separator: ":", maxSplits: 1)
-                    if parts.count == 2,
-                       let n = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
-                        expectedBody = n
-                    }
-                    break
-                }
-            }
-
-            let bodyBytesSoFar = data.count - headerRange.upperBound
-            if bodyBytesSoFar >= expectedBody {
-                completion(data)
-            } else if isComplete {
-                DaemonLogger.shared.debug(
-                    "HTTP",
-                    "Incomplete request body: expected=\(expectedBody) received=\(bodyBytesSoFar)"
-                )
+    private static func completeRequestIfReady(
+        _ data: Data,
+        isComplete: Bool,
+        completion: @escaping @Sendable (Data?) -> Void
+    ) -> Bool {
+        if data.isEmpty {
+            if isComplete {
                 completion(nil)
+                return true
             } else {
-                receiveFullRequest(on: conn, accumulated: data, completion: completion)
+                return false
             }
+        }
+
+        // Cap at 4 MB to bound the listener's per-connection memory.
+        if data.count >= 4 * 1024 * 1024 {
+            completion(data)
+            return true
+        }
+
+        // Find end of headers; if not seen yet, keep reading.
+        guard let headerRange = data.range(of: Data("\r\n\r\n".utf8)) else {
+            if isComplete {
+                completion(data)
+                return true
+            } else {
+                return false
+            }
+        }
+
+        // Parse Content-Length from the headers slice.
+        let headerText = String(data: data.subdata(in: 0..<headerRange.lowerBound), encoding: .utf8) ?? ""
+        var expectedBody = 0
+        for line in headerText.components(separatedBy: "\r\n") {
+            if line.lowercased().hasPrefix("content-length:") {
+                let parts = line.split(separator: ":", maxSplits: 1)
+                if parts.count == 2,
+                   let n = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
+                    expectedBody = n
+                }
+                break
+            }
+        }
+
+        let bodyBytesSoFar = data.count - headerRange.upperBound
+        if bodyBytesSoFar >= expectedBody {
+            completion(data)
+            return true
+        } else if isComplete {
+            DaemonLogger.shared.debug(
+                "HTTP",
+                "Incomplete request body: expected=\(expectedBody) received=\(bodyBytesSoFar)"
+            )
+            completion(nil)
+            return true
+        } else {
+            return false
         }
     }
 

@@ -1,6 +1,6 @@
 # Android UI/UX Vision
 
-두 디바이스에서 동일한 에이전트 정보를 시각화. 정보 구성은 일관, 표현 방식만 다름. 빌드/기기 레퍼런스는 [android.md](android.md) 참조.
+두 디바이스에서 iOS Dashboard 와 같은 에이전트 정보를 같은 조작 모델로 시각화한다. Android tablet 은 iOS Dashboard 의 UX parity 를 목표로 하고, e-ink 는 별도 “기능 UX”가 아니라 느린 화면 갱신/저대비/작은 화면을 위한 렌더링·레이아웃 제약만 둔다. 빌드/기기 레퍼런스는 [android.md](android.md) 참조.
 
 ## 표시 정보 (공통)
 
@@ -11,7 +11,17 @@
 - **Ollama Status**: ollama 프로세스 상태 (running/stopped) + 실행 중 모델 목록
 - **Creature Animation**: 도트/픽셀 아트 형태의 에이전트 캐릭터 애니메이션
 
-## E-ink (Crema) 레이아웃 — 좌측 에이전트 + 우측 아쿠아리움 중심
+## E-ink (Crema/Pantone/Kobo) — 같은 Dashboard, refresh-constrained presentation
+
+E-ink 는 tablet/iOS 와 다른 제품 경험을 만들지 않는다. 보존해야 할 차이는 다음뿐이다.
+
+- EPD refresh zones / debounce / full-refresh timing: ghosting, flicker, battery를 제어하기 위한 장치 로직
+- grayscale/color e-ink rendering path: path 연산 실패, 16-level gray snap, color e-ink A2 partial refresh 등 실제 렌더링 제약
+- 작은 화면/강제 landscape/immersive mode: Crema/Pantone 등 물리 디스플레이 한계
+
+따라서 세션 focus, option 응답, connection/settings 의미, topology 관계는 iOS/tablet Dashboard 와 동일해야 한다. e-ink 전용 화면은 이 공통 Dashboard 의미를 저빈도 갱신 화면에 맞게 압축한 표현이다.
+
+### 현재 refresh-constrained 레이아웃 — 좌측 에이전트 + 우측 아쿠아리움 중심
 
 Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 
@@ -31,23 +41,27 @@ Row(fillMaxSize): 좌측 에이전트 패널 | 우측 아쿠아리움+정보
 - 좌측(22%): AgentDeck 로고 + 에이전트 목록 (primary + siblings + gateway-detected)
 - 우측(78%): 아쿠아리움 수조(상단 40-50%) + context/status(중간, PROCESSING시만) + 타임라인(하단 35-38%)
 - IDLE시 context 숨김 → 수조 50% + 상태바 13% + 타임라인 37%. PROCESSING시 context 없으면(OpenClaw 등) IDLE과 동일 레이아웃
-- **Status 2-column**: LIMITS(30%, Unicode 블록 게이지 `█░`) | MODELS(70%, OAuth catalog + Ollama). 세로 구분선, `Arrangement.Center` 수직 가운데 정렬
+- **Status 2-column**: LIMITS(30%, Unicode 블록 게이지 `█░`) | MODELS/DEVICES(70%, OAuth catalog + Ollama + downstream device summary). `Display panels` 의 `Tank status` 와 `Device diagnostic` 토글은 이 압축 패널 안에서도 분리되어 반영된다.
+- **Settings parity**: tablet/iOS 와 같은 Connection / Mac integrations(read-only) / Display panels / Display & sleep / About 의미를 유지하되, e-ink 는 흑백 Surface/segment/switch 로 렌더링한다. 세션 focus 와 option 응답은 tablet 과 동일하게 bridge 명령을 보낸다.
+- **Attention parity**: 어떤 세션이든 `awaiting_*` 상태가 되면 e-ink context band 에 `ATTENTION` 패널을 띄운다. focused session 이면 실제 question/options/cursor 를 표시하고, 다른 session 이면 iOS/tablet 과 동일하게 focus 후 `select_option` 을 보내며 parser 가 옵션을 못 준 경우 `Yes/No/Always` fallback 을 제공한다.
+- **Orientation**: portrait/landscape 둘 다 지원한다. rotate control 은 `Settings button` 표시 여부와 독립적으로 남겨 화면 전환을 잃지 않게 하고, Pantone/RK3566 처럼 `requestedOrientation` 을 무시하는 기기는 `USER_ROTATION` fallback 을 함께 적용한다. `Auto` 는 `ACCELEROMETER_ROTATION` 을 다시 켜 system rotation 을 복원한다.
 - 수조: Compose `clip(RoundedCornerShape)` 둥근 모서리 (내부 테두리 없음), 수면 파도, 해초, 자갈, 거품 — 수족관 느낌
 - **Multi-agent visibility**: Bridge `/health`에서 sibling state 조회, Gateway TCP probe로 OpenClaw 감지. Daemon primary는 agent list에서 제외 (coding agent 아님). OpenClaw primary는 목록에 🦞로 표시하되 terrarium octopus에서는 제외 (crayfish가 담당)
 - **Crayfish 독립 상태**: sibling OpenClaw session의 state에서 ROUTING/SITTING 결정 (primary agentType 의존 제거)
-- **Refresh zones**: 좌측 A2(200ms), 수조 `EinkAnimatedRefreshZone`(callback 기반), context+status A2(200ms), timeline A2(300ms), IDLE status DU(2000ms). `LAYER_TYPE_SOFTWARE` on wrapper FrameLayout for EPD grayscale. 수조 애니메이션: `EinkTerrariumView.onFrameRendered` 콜백 → animation frame=GC16 partial(플래시 없음), state transition=FULL GC16(고스팅 클리어)
+- **Refresh zones**: 좌측 A2(200ms), 수조 `EinkAnimatedRefreshZone`(callback 기반), context+status A2(200ms), timeline A2(300ms), IDLE status DU(2000ms). `LAYER_TYPE_SOFTWARE` on wrapper FrameLayout for B&W EPD grayscale, GPU layer for color e-ink. 수조 애니메이션: `EinkTerrariumView.onFrameRendered` 콜백 → B&W animation frame=GC16 partial(플래시 없음), color animation frame=A2/animation mode, state transition=FULL/normal refresh(고스팅 클리어)
 - **EPD vendor API**: Rockchip RK3566 (Crema S) — `android.os.EinkManager` system service, `setMode("2"=GC16/"12"=A2/"14"=DU)` + `sendOneFullFrame()`. Onyx — `BaseDevice.setViewDefaultUpdateMode()`. KOReader `RK35xxEPDController` 참고
 - **E-ink grayscale**: 네이티브 16-level 그레이, `DitherEngine.snapToNearestGray()` (에러 디퓨전 없음). 수조 내부 테두리 없음 — Compose `clip(RoundedCornerShape)` 만 사용. 크리처 부위별 그레이: body(0x44), limb/claw(0x33), starburst(0x99), sleeping=dimmed. 환경: sand(0xCC), fish body(0x55)+stripe(0xBB), rock outline(0x22), seaweed 2px. 멀티세션 Y stagger: `standingOffset = (centerXFraction - 0.38) * 0.10`
-- **Color e-ink (Kaleido 3)**: MOAAN Pantone 6 등 컬러 e-ink 지원. `EinkDetector.isColorEink()` + `einkPick(gray, color)`. **테라리움은 정적 렌더** (애니메이션 비활성화) — Kaleido CFA가 매 프레임 색상 재계산하여 깜빡임 유발. 상태 변경 시만 컬러 프레임 1회 렌더. UI 텍스트(게이지/타임라인/라벨)는 컬러 적용 (갱신 빈도 낮음). 컬러 팔레트: octopus terracotta `#C07058`, crayfish red `#CC3333`, tetra blue `#3366AA`+cyan `#55CCEE`, seaweed green `#336633`, sand `#D4B896`, water `#C8DDE8`. `snapToNearestGray` 컬러 모드에서 스킵 (RGB 보존). `manufacturer="rockchip"` (not "moaan"), `model="Pantone6"`
+- **Color e-ink (Kaleido 3)**: MOAAN Pantone 6 등 컬러 e-ink 지원. `EinkDetector.isColorEink()` + `einkPick(gray, color)`. 테라리움은 브라우저 동영상 재생 경로에 가깝게 **10fps fast partial refresh(A2/animation mode)** 를 사용한다. 논리 애니메이션 시간은 B&W e-ink 기준 400ms cadence로 스케일링해 프레임 수만 늘리고 크리처/물고기 속도는 유지한다. 상태 변경 시에는 full/normal refresh로 고스팅을 정리하고, 프레임 렌더에서는 `snapToNearestGray` 를 스킵해 RGB를 보존한다. UI 텍스트(게이지/타임라인/라벨)는 컬러 적용 (갱신 빈도 낮음). 컬러 팔레트: octopus terracotta `#C07058`, crayfish red `#CC3333`, tetra blue `#3366AA`+cyan `#55CCEE`, seaweed green `#336633`, sand `#D4B896`, water `#C8DDE8`. `manufacturer="rockchip"` (not "moaan"), `model="Pantone6"`
 
 ## Tablet (Lenovo) Monitor 레이아웃 — 수족관 + HUD 오버레이
 
-- 전체 화면: 컬러 수족관 배경 (60fps 애니메이션)
-- 반투명 HUD 패널로 동일 정보 오버레이
-- 상단: 프로젝트명, 상태, 모델
-- 좌측: Activity(현재 작업) + Multi-Agent(세션 목록)
-- 우측: Engine — rate limits + **reset times**, **OAuth**, **ollama**, tokens/cost
+- 전체 화면: 컬러 수족관 배경 (60fps 애니메이션), 빈 물 영역 탭으로 HUD 숨김/복원
+- 반투명 HUD 패널로 iOS Dashboard 와 동일한 정보 오버레이
+- 좌측: AgentDeck 로고 + primary/sibling session list. Row tap 은 `focus_session` 을 보낸다.
+- 우측: topology rail — upstream providers → AgentDeck hub → downstream devices (`moduleHealth`: Stream Deck, D200H, Pixoo, ESP32, Android/e-ink)
+- 상단 중앙: awaiting session Attention theater. 응답 전에 해당 session 을 focus 하고 `select_option` 을 보낸다.
 - 하단: Timeline strip (이벤트 로그)
+- Settings: iOS 와 같은 Connection / Mac integrations(read-only) / Display panels / About / Display & sleep 구조. Display panels 는 session list, topology rail, timeline, settings button 표시를 제어한다.
 
 ## Creature Design — 도트 아트 통일
 

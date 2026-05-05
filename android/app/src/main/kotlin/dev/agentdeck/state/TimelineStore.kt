@@ -12,6 +12,11 @@ data class TimelineEntry(
     val summary: String,
     val detail: String? = null,
     val agentType: String? = null,
+    val projectName: String? = null,
+    val sessionId: String? = null,
+    val runId: String? = null,
+    val startedAt: Long? = null,
+    val endedAt: Long? = null,
     val status: String? = null,
 )
 
@@ -98,7 +103,17 @@ class TimelineStore private constructor() {
         val list = _entries.value.toMutableList()
         val idx = list.indexOfLast { it.type == entry.type && kotlin.math.abs(it.timestamp - entry.timestamp) < 1000L }
         if (idx >= 0) {
-            list[idx] = list[idx].copy(summary = entry.summary, detail = entry.detail ?: list[idx].detail)
+            list[idx] = list[idx].copy(
+                summary = entry.summary,
+                detail = entry.detail ?: list[idx].detail,
+                agentType = entry.agentType ?: list[idx].agentType,
+                projectName = entry.projectName ?: list[idx].projectName,
+                sessionId = entry.sessionId ?: list[idx].sessionId,
+                runId = entry.runId ?: list[idx].runId,
+                startedAt = entry.startedAt ?: list[idx].startedAt,
+                endedAt = entry.endedAt ?: list[idx].endedAt,
+                status = entry.status ?: list[idx].status,
+            )
             _entries.value = list
         } else {
             addEntry(entry)

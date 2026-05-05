@@ -130,16 +130,14 @@ fun EinkAnimatedRefreshZone(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
-                // B&W e-ink: software layer for EPD grayscale path
-                // Color Kaleido: GPU layer — RKCFA handles CFA from GPU framebuffer
+                // B&W e-ink: software layer for EPD grayscale path.
+                // Color e-ink keeps a GPU layer so RKCFA can sample the color framebuffer.
                 if (!einkColorEnabled) {
                     setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                 }
                 val composeView = ComposeView(context).apply {
                     setContent {
                         currentContent { isAnimationFrame ->
-                            // Color Kaleido: skip EPD commands entirely, let RKCFA auto-manage
-                            if (einkColorEnabled) return@currentContent
                             val view = viewRef ?: return@currentContent
                             if (isAnimationFrame) {
                                 EinkRefreshHelper.requestAnimationRefresh(view)

@@ -75,6 +75,22 @@ describe('BridgeTimelineStore', () => {
     expect(received[0].upsert).toBe(true);
   });
 
+  it('upsert keeps timeline attribution fields', () => {
+    store.addEntry(makeEntry({ ts: 100, type: 'chat_end', raw: 'Original' }));
+    store.upsertEntry(makeEntry({
+      ts: 100,
+      type: 'chat_end',
+      raw: 'Updated',
+      projectName: 'AgentDeck',
+      sessionId: 'session-1',
+    }));
+
+    const history = store.getHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].projectName).toBe('AgentDeck');
+    expect(history[0].sessionId).toBe('session-1');
+  });
+
   it('upsert adds new entry when no match exists', () => {
     store.addEntry(makeEntry({ ts: 100, type: 'tool_request' }));
     store.upsertEntry(makeEntry({ ts: 200, type: 'chat_end', raw: 'New entry' }));

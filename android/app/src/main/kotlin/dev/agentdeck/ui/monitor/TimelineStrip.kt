@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -52,8 +53,12 @@ fun TimelineStrip(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
-    val recentEntries = entries.takeLast(50)
-    val grouped = remember(recentEntries) { groupConsecutive(recentEntries) }
+    val displayEntries = remember(entries) {
+        entries
+            .filterNot { it.type == "chat_end" && it.agentType == "claude-code" }
+            .takeLast(50)
+    }
+    val grouped = remember(displayEntries) { groupConsecutive(displayEntries) }
 
     // Focus tracking: -1 = auto-follow latest
     var focusedIndex by remember { mutableIntStateOf(-1) }
@@ -162,6 +167,7 @@ private fun CompactLogRow(
     val iconColor = typeColor(entry.type)
     val countSuffix = if (group.count > 1) " ×${group.count}" else ""
     val isChatEnd = entry.type == "chat_end"
+    val sessionLabel = rowPrefixLabel(entry)
     val tight = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
 
     Row(
@@ -201,6 +207,19 @@ private fun CompactLogRow(
             fontFamily = FontFamily.Monospace,
             style = tight,
         )
+        if (sessionLabel.isNotEmpty()) {
+            Text(
+                text = sessionLabel,
+                color = TerrariumColors.HUDSubtext.copy(alpha = if (isChatEnd) 0.55f else 0.75f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 96.dp),
+                style = tight,
+            )
+        }
         Text(
             text = entry.summary + countSuffix,
             color = if (isChatEnd) TerrariumColors.HUDText.copy(alpha = 0.6f) else TerrariumColors.HUDText,
@@ -245,7 +264,7 @@ private fun DetailPane(
             val timeStr = timeFormat.format(Date(entry.timestamp))
             val icon = typeIcon(entry.type, entry.status)
             val iconColor = typeColor(entry.type)
-            val agentTag = agentTag(entry.agentType)
+            val sourceLabel = sourceLabel(entry)
             val countSuffix = if (focusedGroup.count > 1) " (×${focusedGroup.count})" else ""
 
             // Header: type badge + timestamp
@@ -277,10 +296,10 @@ private fun DetailPane(
                 )
             }
 
-            // Agent tag if present
-            if (agentTag.isNotEmpty()) {
+            // Source tag if present
+            if (sourceLabel.isNotEmpty()) {
                 Text(
-                    text = agentTag + countSuffix,
+                    text = sourceLabel + countSuffix,
                     color = TerrariumColors.HUDSubtext.copy(alpha = 0.7f),
                     fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace,
@@ -364,6 +383,23 @@ private fun agentTag(agentType: String?): String = when (agentType) {
     "openclaw" -> "OpenClaw"
     null -> ""
     else -> "Agent"
+}
+
+private fun rowPrefixLabel(entry: TimelineEntry): String {
+    val project = entry.projectName?.takeIf { it.isNotBlank() }
+    if (project != null) return "[$project]"
+    val tag = agentTag(entry.agentType)
+    return if (tag.isNotEmpty()) "[$tag]" else ""
+}
+
+private fun sourceLabel(entry: TimelineEntry): String {
+    val project = entry.projectName?.takeIf { it.isNotBlank() }
+    val tag = agentTag(entry.agentType)
+    return when {
+        project != null && tag.isNotEmpty() -> "$project · $tag"
+        project != null -> project
+        else -> tag
+    }
 }
 
 private fun formatType(type: String): String = when (type) {

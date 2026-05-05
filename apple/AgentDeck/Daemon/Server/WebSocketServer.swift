@@ -13,9 +13,9 @@ actor WebSocketServer {
     private var connections = Set<WebSocketConnection>()
     private var broadcastHooks: [@Sendable (Data) -> Void] = []
 
-    var onCommand: (@Sendable ([String: Any]) -> Void)?
+    var onCommand: (@Sendable ([String: Any], WebSocketConnection) -> Void)?
     var onClientConnect: (@Sendable (WebSocketConnection) -> Void)?
-    var onClientDisconnect: (@Sendable () -> Void)?
+    var onClientDisconnect: (@Sendable (WebSocketConnection) -> Void)?
     var onListenerFailed: (@Sendable (Error) -> Void)?
 
     var clientCount: Int { connections.count }
@@ -40,13 +40,13 @@ actor WebSocketServer {
     // Bonjour service
     private var bonjourService: NWListener.Service?
 
-    func setCommandHandler(_ handler: @escaping @Sendable ([String: Any]) -> Void) {
+    func setCommandHandler(_ handler: @escaping @Sendable ([String: Any], WebSocketConnection) -> Void) {
         onCommand = handler
     }
     func setConnectHandler(_ handler: @escaping @Sendable (WebSocketConnection) -> Void) {
         onClientConnect = handler
     }
-    func setDisconnectHandler(_ handler: @escaping @Sendable () -> Void) {
+    func setDisconnectHandler(_ handler: @escaping @Sendable (WebSocketConnection) -> Void) {
         onClientDisconnect = handler
     }
     func setListenerFailedHandler(_ handler: @escaping @Sendable (Error) -> Void) {
@@ -163,18 +163,28 @@ actor WebSocketServer {
     private func handleNewConnection(_ nwConn: NWConnection) {
         nwConn.start(queue: .main)
 
-        // Read first bytes to detect HTTP vs WebSocket upgrade
+        // Read the first bytes, then finish the HTTP request framing before
+        // protocol detection. Codex OTel POSTs can be hundreds of KB; handing
+        // only the first 65 KB to HTTPServer truncates JSON bodies. WebSocket
+        // upgrades are still HTTP requests with no body, so this also handles
+        // split upgrade headers correctly.
         nwConn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
             guard let data, error == nil else {
                 nwConn.cancel()
                 return
             }
-            Task {
-                guard let self else { return }
-                if Self.isWebSocketUpgrade(data) {
-                    await self.handleWebSocketUpgrade(nwConn, requestData: data)
-                } else {
-                    await self.handleHTTPRequest(nwConn, data: data)
+            HTTPServer.receiveFullRequest(on: nwConn, accumulated: data) { [weak self] requestData in
+                guard let requestData else {
+                    nwConn.cancel()
+                    return
+                }
+                Task {
+                    guard let self else { return }
+                    if Self.isWebSocketUpgrade(requestData) {
+                        await self.handleWebSocketUpgrade(nwConn, requestData: requestData)
+                    } else {
+                        await self.handleHTTPRequest(nwConn, data: requestData)
+                    }
                 }
             }
         }
@@ -280,13 +290,13 @@ actor WebSocketServer {
     private func handleMessage(_ data: Data, from conn: WebSocketConnection) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         DaemonLogger.shared.debug("WS", "recv cmd: \(json["type"] as? String ?? "unknown")")
-        onCommand?(json)
+        onCommand?(json, conn)
     }
 
     private func handleDisconnect(_ conn: WebSocketConnection) {
         connections.remove(conn)
         DaemonLogger.shared.debug("WS", "Client disconnected (\(connections.count) remaining)")
-        onClientDisconnect?()
+        onClientDisconnect?(conn)
     }
 
     // MARK: - Broadcast
@@ -330,6 +340,31 @@ final class WebSocketConnection: Hashable, Sendable {
     nonisolated(unsafe) var onMessage: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onClose: (@Sendable () -> Void)?
 
+    /// Lock-protected "this connection is gone" flag. Set synchronously
+    /// inside the receive callback (before scheduling any onMessage /
+    /// onClose Tasks) the moment we detect close. Read by the daemon's
+    /// `handleClientRegister` to refuse a registration whose
+    /// originating WS has already FINned — without this, Swift
+    /// concurrency does not guarantee that `onMessage` Tasks (queued
+    /// before the close) run before `onClose` Tasks on MainActor, so a
+    /// `client_register` bundled with FIN can land on `cachedStreamDeck`
+    /// after `handleClientDisconnect` already swept past, leaving the
+    /// row stuck until the 120 s TTL.
+    private let disconnectedLock = NSLock()
+    nonisolated(unsafe) private var _disconnected = false
+
+    var isDisconnected: Bool {
+        disconnectedLock.lock()
+        defer { disconnectedLock.unlock() }
+        return _disconnected
+    }
+
+    func markDisconnected() {
+        disconnectedLock.lock()
+        defer { disconnectedLock.unlock() }
+        _disconnected = true
+    }
+
     init(connection: NWConnection) {
         self.connection = connection
     }
@@ -339,36 +374,60 @@ final class WebSocketConnection: Hashable, Sendable {
     }
 
     private func receiveLoop() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] content, _, _, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] content, _, isComplete, error in
             guard let self else { return }
             if let error {
                 DaemonLogger.shared.debug("WS", "Receive error: \(error)")
+                // Mark before scheduling onClose Task so any already-
+                // queued onMessage Task (e.g. a client_register frame
+                // that arrived with the same packet) sees the closed
+                // state when it eventually runs on MainActor — even if
+                // Swift schedules the disconnect Task after it.
+                self.markDisconnected()
                 self.onClose?()
                 return
             }
-            guard let content else {
-                self.receiveLoop()
-                return
+
+            if let content {
+                let frames = self.frameParser.feed(content)
+                for (opcode, payload) in frames {
+                    switch opcode {
+                    case 0x1, 0x2: // text, binary
+                        self.onMessage?(payload)
+                    case 0x8: // close
+                        let closeFrame = Self.buildFrame(opcode: 0x8, payload: payload.prefix(2))
+                        self.connection.send(content: closeFrame, completion: .contentProcessed({ _ in
+                            self.connection.cancel()
+                        }))
+                        self.markDisconnected()
+                        self.onClose?()
+                        return
+                    case 0x9: // ping → pong
+                        let pongFrame = Self.buildFrame(opcode: 0xA, payload: payload)
+                        self.connection.send(content: pongFrame, completion: .contentProcessed({ _ in }))
+                    default:
+                        break // pong, continuation, etc.
+                    }
+                }
             }
 
-            let frames = self.frameParser.feed(content)
-            for (opcode, payload) in frames {
-                switch opcode {
-                case 0x1, 0x2: // text, binary
-                    self.onMessage?(payload)
-                case 0x8: // close
-                    let closeFrame = Self.buildFrame(opcode: 0x8, payload: payload.prefix(2))
-                    self.connection.send(content: closeFrame, completion: .contentProcessed({ _ in
-                        self.connection.cancel()
-                    }))
-                    self.onClose?()
-                    return
-                case 0x9: // ping → pong
-                    let pongFrame = Self.buildFrame(opcode: 0xA, payload: payload)
-                    self.connection.send(content: pongFrame, completion: .contentProcessed({ _ in }))
-                default:
-                    break // pong, continuation, etc.
-                }
+            // Peer FINned the TCP stream (kill -9, ws.terminate(),
+            // process crash, machine sleep) without sending a 0x8 WS
+            // close frame. Without this branch the loop would recurse
+            // forever on (nil, _, true, nil) and onClose would never
+            // fire — leaving cachedStreamDeck stuck until the 120 s
+            // TTL. Checked AFTER frame processing so a final FIN
+            // bundled with data (Network.framework can present both in
+            // one callback) doesn't drop the trailing payload, and
+            // markDisconnected runs BEFORE firing onClose so a
+            // `client_register` Task queued earlier in this same
+            // callback observes the closed state when it lands on
+            // MainActor.
+            if isComplete {
+                DaemonLogger.shared.debug("WS", "Receive: peer FIN (no close frame)")
+                self.markDisconnected()
+                self.onClose?()
+                return
             }
 
             self.receiveLoop()

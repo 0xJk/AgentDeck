@@ -101,6 +101,7 @@ class BridgeConnection private constructor() {
 
     fun sendRespond(value: String) = send(PluginCommands.respond(value))
     fun sendSelectOption(index: Int) = send(PluginCommands.selectOption(index))
+    fun sendFocusSession(sessionId: String) = send(PluginCommands.focusSession(sessionId))
     fun sendPrompt(text: String) = send(PluginCommands.sendPrompt(text))
     fun sendInterrupt() = send(PluginCommands.interrupt())
     fun sendEscape() = send(PluginCommands.escape())

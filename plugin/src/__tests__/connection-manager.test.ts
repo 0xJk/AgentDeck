@@ -161,6 +161,24 @@ describe('ConnectionManager', () => {
     expect(cm.getBridgePort()).toBe(9120);
   });
 
+  it('getConnectionSnapshot exposes connection and discovery state', () => {
+    const snap = cm.getConnectionSnapshot();
+
+    expect(snap.connected).toBe(false);
+    expect(snap.bridgePort).toBe(9120);
+    expect(snap.daemonStatus).toBe('unknown');
+  });
+
+  it('retryNow probes daemon discovery and reconnects immediately when disconnected', () => {
+    const bridge = getBridge(cm);
+    const bridgeConnect = vi.spyOn(bridge, 'connect');
+
+    const snap = cm.retryNow();
+
+    expect(bridgeConnect).toHaveBeenCalled();
+    expect(snap.lastRetryAt).toBeTypeOf('number');
+  });
+
   // ===== Agent Switching =====
 
   describe('switchToOpenClaw()', () => {

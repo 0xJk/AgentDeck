@@ -17,6 +17,11 @@ export interface TimelineEntry {
   approvalId?: string;
   status?: 'pending' | 'approved' | 'denied';
   agentType?: string;
+  projectName?: string;
+  sessionId?: string;
+  runId?: string;
+  startedAt?: number;
+  endedAt?: number;
   repeatCount?: number;
   automated?: boolean;
 }

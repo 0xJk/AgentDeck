@@ -341,29 +341,50 @@ Return strict JSON: {"correctness":N,"safety":N,"completeness":N,"overall":N,"re
   },
   task_rollup: {
     purpose: 'task_rollup',
-    prompt: `You are evaluating a multi-turn AI agent task that the agent itself has just signaled as complete
-(for example: every TodoWrite item was marked \`completed\`, or the user issued \`/clear\` to reset context).
+    prompt: `You are evaluating a multi-turn AI agent task that has just ended.
+The boundary signal that closed the task tells you HOW it ended:
+  - todo_complete : the agent itself marked every TodoWrite item as completed (self-declared done)
+  - clear         : the user typed /clear to reset context (often: user gave up or moved on)
+  - session_end   : the agent process exited (could be done, could be interrupted)
+  - manual        : a human marked the boundary explicitly
 
-You will be given the full sequence of turns (user prompt → agent response) that make up this task.
-Produce a concise rollup: a single-sentence summary plus axis scores.
+You receive: the task's category (coding/planning/research/…), the number of turns,
+the boundary signal, and the full Turn 0..N transcript (user prompt → agent response).
 
-Score each axis as a float in [0,1] where 0=failed and 1=excellent.
+Your job is a one-sentence rollup PLUS axis scores in [0,1].
 
-Axes:
-- completion: Did the agent actually finish what the task was about? A high score means the task was
-  delivered end-to-end; low if large pieces were skipped or declared done without evidence.
-- coherence: Did the turns build on each other toward a single goal? Penalize incoherent jumps,
-  redundant re-planning, or lost context between turns.
-- efficiency: Were the turns appropriately scoped? Penalize unnecessary back-and-forth, repeated
-  tool calls with the same inputs, or churn. Reward focused, decisive progress.
-- overall: Holistic judgment. Weight completion most heavily — an efficient, coherent task that
-  never actually finishes is worse than a slightly messier task that delivered.
+Identify FIRST: what was the user actually trying to accomplish? Read Turn 0's prompt and any
+later prompts that pivot or refine. The task's success is measured against THAT goal — not
+against how busy the turns look.
 
-Summary guidance: one sentence, ≤ 140 characters, past tense, describing what the task accomplished.
-Start with a verb (e.g. "Added", "Fixed", "Investigated", "Refactored"). No hedging.
+Axes (each in [0,1], 0=failed, 1=excellent):
+- completion: Did the agent actually deliver against the user's identified goal? High = goal
+  reached with evidence in the final turns. Low = goal half-done, abandoned, or only declared
+  done (e.g. "I've completed all the items" with nothing visible). For boundary=clear, completion
+  is usually low — the user reset before satisfaction.
+- coherence: Did the turns build on each other toward the goal? Penalize incoherent jumps,
+  redundant re-planning, lost context, or the agent forgetting earlier decisions.
+- efficiency: Were the turns appropriately scoped? Penalize repeated tool calls with the same
+  inputs, long discovery loops the agent could have shortcut, or churn. Reward focused progress.
+- overall: Holistic judgment. Weight completion most heavily — an efficient coherent task
+  that never finishes is worse than a slightly messier task that delivered.
 
-Return strict JSON exactly:
-{"summary":"<one sentence>","completion":N,"coherence":N,"efficiency":N,"overall":N,"reasoning":"...","done":["item1"],"missed":["item1"]}.`,
+Summary guidance: one sentence, ≤ 280 characters, past tense, describing what the task ACCOMPLISHED
+(not what the agent attempted). Start with a verb: "Added", "Fixed", "Investigated", "Refactored",
+"Failed to". Be specific about the artefact when possible. No hedging, no "the agent…" preamble.
+
+reasoning: 1-3 sentences explaining the key evidence behind the overall score. Cite turn numbers.
+done: list the concrete deliverables visible in the turns (≤5 short items).
+missed: list what the user asked for but the agent did NOT deliver (≤5 items, empty array if none).
+
+Return strict JSON exactly, no prose before or after:
+{"summary":"<one sentence>","completion":N,"coherence":N,"efficiency":N,"overall":N,"reasoning":"...","done":["…"],"missed":["…"]}
+
+Examples of well-calibrated overall scores:
+  0.9 — User asked to add a feature; final turns show the feature implemented + test passing.
+  0.6 — User asked for a feature; agent built most of it but left a TODO they self-declared "done".
+  0.3 — User asked a question; agent rambled across 5 turns without ever answering.
+  0.1 — User asked to fix a bug; agent introduced two more bugs and called /clear.`,
     weights: JSON.stringify({ completion: 0.5, coherence: 0.25, efficiency: 0.25 }),
     notes: 'task-unit rollup (TodoWrite all-completed / /clear / session_end)',
   },
@@ -386,20 +407,29 @@ export class ApmeStore {
   private db: BetterSqliteDb | null = null;
   public enabled = false;
   public readonly dbPath: string;
+  /** Populated when init() returns false. Surfaced in daemon startup logs so
+   *  silent APME outages (the failure mode that left ~/.agentdeck/apme.sqlite
+   *  stale for 11 days in 2026-04 user data) become diagnosable. */
+  public lastInitError: string | null = null;
 
   constructor(dbPath?: string) {
     const dataDir = process.env.AGENTDECK_DATA_DIR || join(homedir(), '.agentdeck');
     this.dbPath = dbPath ?? join(dataDir, 'apme.sqlite');
   }
 
-  /** Attempt to open the DB. Returns false if better-sqlite3 is unavailable. */
+  /** Attempt to open the DB. Returns false on failure; check `lastInitError`
+   *  for the reason. The two common failure modes are:
+   *    1. better-sqlite3 native binding missing (CI / setups without build tools)
+   *    2. DB file unreadable / DDL fails (disk full, permissions, WAL lock from a
+   *       crashed prior process). */
   async init(): Promise<boolean> {
     try {
       let Ctor: (new (path: string) => BetterSqliteDb) | null = null;
       try {
         Ctor = require('better-sqlite3') as new (path: string) => BetterSqliteDb;
-      } catch {
-        debug('APME', 'better-sqlite3 not installed — APME store disabled');
+      } catch (err) {
+        this.lastInitError = `better-sqlite3 native binding unavailable (${String(err).slice(0, 200)}). Run \`pnpm install\` in bridge/.`;
+        debug('APME', this.lastInitError);
         return false;
       }
       const dir = dirname(this.dbPath);
@@ -411,10 +441,12 @@ export class ApmeStore {
       this.migrateSchema();
       this.seedDefaultRubric();
       this.enabled = true;
+      this.lastInitError = null;
       debug('APME', `store ready at ${this.dbPath}`);
       return true;
     } catch (err) {
-      debug('APME', `store init failed: ${String(err)}`);
+      this.lastInitError = `store init failed at ${this.dbPath}: ${String(err).slice(0, 300)}`;
+      debug('APME', this.lastInitError);
       return false;
     }
   }
@@ -679,6 +711,18 @@ export class ApmeStore {
     const rows = this.db.prepare(
       'SELECT * FROM tasks WHERE run_id = ? ORDER BY task_index ASC',
     ).all(runId) as Array<Record<string, unknown>>;
+    return rows.map(rowToTask);
+  }
+
+  /** All tasks across runs, newest first. Used by `agentdeck apme export --by task`
+   *  to dump a flat dataset of meaningful task units (one row per closed task). */
+  listAllTasks(opts: { limit?: number; closedOnly?: boolean } = {}): ApmeTaskRow[] {
+    if (!this.db) return [];
+    const limit = opts.limit ?? 100;
+    const sql = opts.closedOnly
+      ? `SELECT * FROM tasks WHERE ended_at IS NOT NULL ORDER BY started_at DESC LIMIT ?`
+      : `SELECT * FROM tasks ORDER BY started_at DESC LIMIT ?`;
+    const rows = this.db.prepare(sql).all(limit) as Array<Record<string, unknown>>;
     return rows.map(rowToTask);
   }
 

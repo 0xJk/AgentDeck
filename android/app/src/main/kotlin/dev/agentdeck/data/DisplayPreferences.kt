@@ -23,6 +23,11 @@ class DisplayPreferences(
         private val LAST_BRIDGE_URL_KEY = stringPreferencesKey("last_bridge_url")
         private val DISPLAY_SYNC_ENABLED_KEY = booleanPreferencesKey("display_sync_enabled")
         private val IDLE_TIMEOUT_MINUTES_KEY = intPreferencesKey("idle_timeout_minutes")
+        private val SHOW_SESSION_LIST_KEY = booleanPreferencesKey("show_session_list")
+        private val SHOW_TANK_STATUS_KEY = booleanPreferencesKey("show_tank_status")
+        private val SHOW_DEVICE_DIAGNOSTIC_KEY = booleanPreferencesKey("show_device_diagnostic")
+        private val SHOW_TIMELINE_KEY = booleanPreferencesKey("show_timeline")
+        private val SHOW_SETTINGS_BUTTON_KEY = booleanPreferencesKey("show_settings_button")
     }
 
     val orientationFlow: Flow<Int> = context.dataStore.data.map { prefs ->
@@ -78,6 +83,56 @@ class DisplayPreferences(
     suspend fun setIdleTimeoutMinutes(minutes: Int) {
         context.dataStore.edit { prefs ->
             prefs[IDLE_TIMEOUT_MINUTES_KEY] = minutes
+        }
+    }
+
+    val showSessionListFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[SHOW_SESSION_LIST_KEY] ?: true
+    }
+
+    suspend fun setShowSessionList(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SHOW_SESSION_LIST_KEY] = enabled
+        }
+    }
+
+    val showTankStatusFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[SHOW_TANK_STATUS_KEY] ?: true
+    }
+
+    suspend fun setShowTankStatus(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SHOW_TANK_STATUS_KEY] = enabled
+        }
+    }
+
+    val showDeviceDiagnosticFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[SHOW_DEVICE_DIAGNOSTIC_KEY] ?: true
+    }
+
+    suspend fun setShowDeviceDiagnostic(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SHOW_DEVICE_DIAGNOSTIC_KEY] = enabled
+        }
+    }
+
+    val showTimelineFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[SHOW_TIMELINE_KEY] ?: true
+    }
+
+    suspend fun setShowTimeline(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SHOW_TIMELINE_KEY] = enabled
+        }
+    }
+
+    val showSettingsButtonFlow: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[SHOW_SETTINGS_BUTTON_KEY] ?: true
+    }
+
+    suspend fun setShowSettingsButton(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SHOW_SETTINGS_BUTTON_KEY] = enabled
         }
     }
 }

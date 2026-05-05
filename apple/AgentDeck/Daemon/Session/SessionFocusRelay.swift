@@ -22,6 +22,7 @@ actor SessionFocusRelay {
     private var wsTask: URLSessionWebSocketTask?
     private(set) var focusedSessionId: String?
     private var focusedPort: Int?
+    private var focusedLocalOnly = false
     private var broadcast: ((@Sendable (SendableDict) -> Void))?
     private var onUsageRelayed: ((@Sendable (SendableDict) -> Void))?
 
@@ -40,7 +41,7 @@ actor SessionFocusRelay {
     /// Focus a session by ID. Disconnects from previous session.
     func focus(sessionId: String) {
         // Already focused
-        if focusedSessionId == sessionId, wsTask?.state == .running {
+        if focusedSessionId == sessionId, !focusedLocalOnly, wsTask?.state == .running {
             DaemonLogger.shared.debug("FocusRelay", "Already focused on \(sessionId)")
             return
         }
@@ -55,8 +56,26 @@ actor SessionFocusRelay {
 
         focusedSessionId = sessionId
         focusedPort = session.port
+        focusedLocalOnly = false
         DaemonLogger.shared.info("FocusRelay: Focusing \(session.projectName):\(session.port)")
         connect()
+    }
+
+    /// Select a daemon-local observed session. Hook/OTel-only sessions have no
+    /// child bridge WebSocket to connect to, but UI surfaces still need a
+    /// stable focused id so session cycling and detail panes don't try to
+    /// relay through a nonexistent registry entry.
+    func focusLocal(sessionId: String) {
+        if focusedSessionId == sessionId, focusedLocalOnly {
+            DaemonLogger.shared.debug("FocusRelay", "Already selected local session \(sessionId)")
+            return
+        }
+
+        unfocus()
+        focusedSessionId = sessionId
+        focusedPort = nil
+        focusedLocalOnly = true
+        DaemonLogger.shared.debug("FocusRelay", "Selected local observed session \(sessionId)")
     }
 
     /// Unfocus current session.
@@ -68,16 +87,23 @@ actor SessionFocusRelay {
         }
         focusedSessionId = nil
         focusedPort = nil
+        focusedLocalOnly = false
     }
 
     /// Route a command to the focused session. Returns true if handled.
     func routeCommand(_ cmd: [String: Any]) -> Bool {
         guard let type = cmd["type"] as? String,
               routedCommands.contains(type),
-              focusedSessionId != nil,
-              let task = wsTask, task.state == .running else {
+              focusedSessionId != nil else {
             return false
         }
+
+        if focusedLocalOnly {
+            DaemonLogger.shared.debug("FocusRelay", "Ignoring \(type) for local observed session \(focusedSessionId ?? "?")")
+            return true
+        }
+
+        guard let task = wsTask, task.state == .running else { return false }
 
         DaemonLogger.shared.debug("FocusRelay", "Routing \(type) → session \(focusedSessionId ?? "?")")
         if let data = try? JSONSerialization.data(withJSONObject: cmd),
@@ -163,6 +189,10 @@ actor SessionFocusRelay {
     func setOnUsageRelayed(_ handler: @escaping @Sendable (SendableDict) -> Void) {}
 
     func focus(sessionId: String) {
+        focusedSessionId = sessionId
+    }
+
+    func focusLocal(sessionId: String) {
         focusedSessionId = sessionId
     }
 

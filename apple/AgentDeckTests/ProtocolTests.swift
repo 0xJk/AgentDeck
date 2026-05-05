@@ -329,6 +329,65 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(sorted.map(\.id), ["4", "3", "2", "1"])
     }
 
+    func testFoldCodexSessionPayloadsForDisplayCollapsesSameProject() {
+        let folded = DashboardDataRules.foldCodexSessionPayloadsForDisplay([
+            [
+                "id": "codex:old",
+                "port": 9120,
+                "projectName": "AgentDeck",
+                "agentType": "codex-cli",
+                "alive": true,
+                "state": "idle",
+                "startedAt": "2026-04-11T10:00:00Z",
+            ],
+            [
+                "id": "codex:new",
+                "port": 9120,
+                "projectName": "AgentDeck",
+                "agentType": "codex-cli",
+                "alive": true,
+                "state": "processing",
+                "currentTool": "exec",
+                "startedAt": "2026-04-11T10:02:00Z",
+            ],
+            [
+                "id": "codex:missing-start",
+                "port": 9120,
+                "projectName": "AgentDeck",
+                "agentType": "codex-cli",
+                "alive": true,
+                "state": "processing",
+                "currentTool": "stale",
+            ],
+            [
+                "id": "claude:1",
+                "port": 9121,
+                "projectName": "AgentDeck",
+                "agentType": "claude-code",
+                "alive": true,
+                "state": "idle",
+            ],
+        ])
+
+        XCTAssertEqual(folded.count, 2)
+        let codex = folded.first { ($0["agentType"] as? String) == "codex-cli" }
+        XCTAssertEqual(codex?["id"] as? String, "codex:new")
+        XCTAssertEqual(codex?["state"] as? String, "processing")
+        XCTAssertEqual(codex?["currentTool"] as? String, "exec")
+        XCTAssertEqual(codex?["groupSize"] as? Int, 3)
+        XCTAssertEqual(codex?["foldedSessionIds"] as? [String], ["codex:old", "codex:new", "codex:missing-start"])
+    }
+
+    func testFoldCodexSessionPayloadsKeepsEmptyProjectSeparate() {
+        let folded = DashboardDataRules.foldCodexSessionPayloadsForDisplay([
+            ["id": "codex:a", "port": 9120, "projectName": "", "agentType": "codex-cli", "alive": true],
+            ["id": "codex:b", "port": 9120, "projectName": "   ", "agentType": "codex-cli", "alive": true],
+        ])
+
+        XCTAssertEqual(folded.compactMap { $0["id"] as? String }, ["codex:a", "codex:b"])
+        XCTAssertNil(folded.first?["groupSize"])
+    }
+
     func testOpenClawDisplayLinesKeepDefaultFirstAndCompactFamilies() {
         let lines = DashboardDataRules.openClawDisplayLines([
             ModelCatalogEntry(key: "gpt-5.4", name: "GPT 5.4", role: "default", available: true),

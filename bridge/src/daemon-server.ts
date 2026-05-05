@@ -39,7 +39,7 @@ import { handlePixooWake } from './pixoo/pixoo-client.js';
 import { triggerMdnsRecovery } from './mdns.js';
 import { rgbToBmp, pixooLiveHtml } from './hook-server.js';
 import { enableDebugLog, debug } from './logger.js';
-import { initApme, type ApmeModule } from './apme/index.js';
+import { initApme, loadApmeConfig, type ApmeModule } from './apme/index.js';
 import { handleApmeRequest } from './apme/http.js';
 import {
   initModules,
@@ -75,6 +75,75 @@ function loadDaemonSettings(): Record<string, unknown> {
 
 function log(msg: string): void {
   process.stderr.write(msg + '\n');
+}
+
+function compactTimelineText(value: unknown, max = 120): string {
+  const cleaned = typeof value === 'string'
+    ? value.replace(/\s+/g, ' ').trim()
+    : '';
+  if (!cleaned) return '';
+  return cleaned.length > max ? `${cleaned.slice(0, Math.max(0, max - 3))}...` : cleaned;
+}
+
+function formatEvalAxisScores(evals: Array<{ metric: string; score: number }>): string {
+  return evals
+    .filter((e) => e.metric !== 'overall')
+    .map((e) => `${e.metric}=${Math.round(e.score * 100)}%`)
+    .join(' ');
+}
+
+interface EvalNotes {
+  summary?: string;
+  done: string[];
+  missed: string[];
+  reasoning?: string;
+}
+
+function parseEvalNotes(raw: unknown): EvalNotes {
+  if (typeof raw !== 'string' || !raw.trim()) return { done: [], missed: [] };
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const readList = (key: 'done' | 'missed') =>
+      Array.isArray(parsed[key])
+        ? (parsed[key] as unknown[]).map((v) => compactTimelineText(v, 90)).filter(Boolean).slice(0, 2)
+        : [];
+    return {
+      summary: compactTimelineText(parsed.summary, 140) || undefined,
+      done: readList('done'),
+      missed: readList('missed'),
+      reasoning: compactTimelineText(parsed.reasoning, 180) || undefined,
+    };
+  } catch {
+    return { done: [], missed: [] };
+  }
+}
+
+function formatEvalDetail(parts: {
+  summary?: string;
+  axes?: string;
+  done?: string[];
+  missed?: string[];
+  reasoning?: string;
+  projectName?: string | null;
+  prompt?: string | null;
+}): string {
+  const lines = [
+    parts.summary ? `Summary: ${parts.summary}` : '',
+    parts.axes ? `Axes: ${parts.axes}` : '',
+    ...(parts.done ?? []).map((v) => `Done: ${v}`),
+    ...(parts.missed ?? []).map((v) => `Missed: ${v}`),
+    parts.reasoning ? `Reasoning: ${parts.reasoning}` : '',
+    parts.projectName || parts.prompt
+      ? [compactTimelineText(parts.projectName, 40), compactTimelineText(parts.prompt, 120)].filter(Boolean).join(' · ')
+      : '',
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+function formatEvalRaw(scope: 'task' | 'turn' | 'run', pct: number, category: string | null | undefined, label?: string, outcome?: string | null): string {
+  const head = `★ ${scope} ${pct}% [${category ?? '?'}]${outcome ? ` ${outcome}` : ''}`;
+  const compactLabel = compactTimelineText(label, scope === 'run' ? 90 : 120);
+  return compactLabel ? `${head} ${compactLabel}` : head;
 }
 
 // ===== Usage relay (3-tier) =====
@@ -313,6 +382,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         uptime: process.uptime(), port,
         pairingToken: core.authToken,
         modules: moduleHealthProvider(),
+        apme: apme
+          ? {
+              enabled: true,
+              dbPath: apme.store.dbPath,
+              judgeBackend: apme.runner.lastBackendProbe ?? { status: 'unknown', backend: loadApmeConfig().judge.backend },
+            }
+          : { enabled: false, error: apme === null ? 'see startup logs (initApme returned null)' : 'unknown' },
       }));
       return;
     }
@@ -644,7 +720,23 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   apme = await initApme();
   if (apme) {
     core.setApme(apme);
-    log('[agentdeck] APME enabled — /apme/* routes active');
+    log(`[agentdeck] APME enabled — store=${apme.store.dbPath} routes=/apme/*`);
+    // Fire-and-forget judge backend probe. Result is cached on
+    // apme.runner.lastBackendProbe and surfaced on /health so users discover
+    // misconfiguration (no MLX server running, missing API key, etc.) without
+    // having to wait for the first eval to fail.
+    void apme.runner.refreshBackendProbe(loadApmeConfig().judge).then(status => {
+      if (status.status === 'ready') {
+        log(`[agentdeck] APME judge ready: ${status.backend}${status.model ? ` (${status.model})` : ''}${status.latencyMs !== undefined ? ` ${status.latencyMs}ms` : ''}`);
+      } else {
+        log(`[agentdeck] APME judge ${status.backend} ${status.status} — ${status.reason ?? 'no reason'}. Deterministic layer (lint/build/test) keeps running.`);
+      }
+    });
+  } else {
+    // initApme() already logged the specific reason via logError. This second
+    // line tells the user where to look + what's lost so the gap doesn't pass
+    // for "everything's fine, just no /apme/ routes".
+    log('[agentdeck] APME unavailable — no run/turn/task evals will be recorded for sessions on this daemon.');
   }
 
   // Register session
@@ -753,6 +845,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             core.cachedGatewayConnected = false;
             bridgeLogStream.stop();
             log('[agentdeck] OpenClaw Gateway disconnected');
+            core.stateMachine.emit('state_changed', core.stateMachine.getSnapshot());
             core.broadcastSessionsList().catch(() => {});
           }
           break;
@@ -782,6 +875,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     core.cachedGatewayConnected = false;
     core.cachedModelCatalog = null;
     if (wasAlive) core.stateMachine.handleHookEvent('SessionEnd', {});
+    else core.stateMachine.emit('state_changed', core.stateMachine.getSnapshot());
     // Do NOT broadcast connection:disconnected — that would make WS clients
     // think they lost their bridge connection. State change to 'daemon' agentType
     // and updated sessions_list convey the gateway loss.
@@ -1019,11 +1113,69 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     const { aggregateOverall } = await import('./apme/http.js');
 
     // Broadcast eval results to all WS clients + timeline when runner completes
-    apme.runner.onResult(({ runId, turnId }) => {
+    apme.runner.onResult(({ runId, turnId, taskId }) => {
+      // Task-level eval: a group of turns between boundary signals
+      // (TodoWrite all-completed / /clear / session_end). Distinct timeline
+      // entry so users see "★ task 85%" rather than another run-level pulse.
+      // The task's summary axis is the most user-readable signal and goes
+      // into `detail` ahead of the per-axis breakdown.
+      if (taskId) {
+        const run = apme!.store.getRun(runId);
+        const task = apme!.store.getTask(taskId);
+        if (!run || !task) return;
+        const taskEvals = apme!.store.listEvalsForTask(taskId);
+        const overallEval = taskEvals.find(e => e.metric === 'overall');
+        if (!overallEval) return;
+        const pct = Math.round(overallEval.score * 100);
+        const notes = parseEvalNotes(overallEval.raw);
+        const summary = compactTimelineText(task.summary ?? notes.summary, 140);
+        const label = summary || compactTimelineText(run.taskPrompt, 120);
+
+        const taskEvalEvent: import('@agentdeck/shared').ApmeEvalEvent = {
+          type: 'apme_eval',
+          run: {
+            runId: run.id, sessionId: run.sessionId, agentType: run.agentType, startedAt: run.startedAt,
+            modelId: run.modelId ?? undefined, projectName: run.projectName ?? undefined,
+            taskPrompt: run.taskPrompt ?? undefined, taskCategory: run.taskCategory ?? undefined,
+            outcome: 'committed',
+            compositeScore: overallEval.score,
+            overallScore: overallEval.score,
+            evals: taskEvals.map(e => ({
+              layer: e.layer, metric: e.metric, score: e.score,
+              judgeModel: e.judgeModel ?? undefined, createdAt: e.createdAt,
+            })),
+          },
+        };
+        core.broadcast(taskEvalEvent);
+
+        const axisStr = formatEvalAxisScores(taskEvals);
+        const taskDetail = formatEvalDetail({
+          summary: summary || undefined,
+          axes: axisStr || undefined,
+          done: notes.done,
+          missed: notes.missed,
+          reasoning: notes.reasoning,
+          projectName: run.projectName,
+          prompt: run.taskPrompt,
+        }) || `Task eval · ${compactTimelineText(run.taskPrompt, 80)}`;
+
+        core.bridgeTimeline.addEntry({
+          ts: Date.now(), type: 'eval_result',
+          raw: formatEvalRaw('task', pct, run.taskCategory ?? task.taskCategory, label),
+          detail: taskDetail,
+          agentType: run.agentType,
+          projectName: run.projectName ?? undefined,
+          sessionId: run.sessionId,
+          startedAt: task.startedAt,
+          endedAt: task.endedAt ?? undefined,
+        });
+        return;
+      }
       // Turn-level eval: broadcast and add timeline entry with turn score
       if (turnId) {
         const run = apme!.store.getRun(runId);
         if (!run) return;
+        const turn = apme!.store.getTurn(turnId);
         const turnEvals = apme!.store.listEvalsForTurn(turnId);
         const overall = turnEvals.find(e => e.metric === 'overall');
         if (!overall) return;
@@ -1053,26 +1205,31 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           },
         };
         core.broadcast(turnEvalEvent);
-        // Change 8: include axis scores + judge reasoning in turn eval detail
-        const turnAxes = turnEvals.filter(e => e.metric !== 'overall');
-        const turnAxisStr = turnAxes.map(e => `${e.metric}=${Math.round(e.score * 100)}%`).join(' ');
-        let turnDetail = turnAxisStr
-          ? `${turnAxisStr}\n${run.taskPrompt?.slice(0, 80) ?? ''}`
-          : `Turn eval · ${run.taskPrompt?.slice(0, 80) ?? ''}`;
-        if (overall.raw) {
-          try {
-            const parsed = JSON.parse(overall.raw as string);
-            const done = (parsed.done as string[] | undefined)?.slice(0, 2).join(', ') || '';
-            const missed = (parsed.missed as string[] | undefined)?.slice(0, 2).join(', ') || '';
-            if (done) turnDetail += `\n✓ ${done}`;
-            if (missed) turnDetail += `\n✗ ${missed}`;
-          } catch { /* ignore */ }
-        }
+        const notes = parseEvalNotes(overall.raw);
+        const turnPrompt = compactTimelineText(turn?.prompt ?? run.taskPrompt, 140);
+        const label = notes.summary
+          || notes.done[0]
+          || compactTimelineText(turn?.response, 120)
+          || turnPrompt;
+        const turnAxisStr = formatEvalAxisScores(turnEvals);
+        const turnDetail = formatEvalDetail({
+          summary: notes.summary,
+          axes: turnAxisStr || undefined,
+          done: notes.done,
+          missed: notes.missed,
+          reasoning: notes.reasoning,
+          projectName: run.projectName,
+          prompt: turnPrompt || run.taskPrompt,
+        }) || `Turn eval · ${compactTimelineText(run.taskPrompt, 80)}`;
         core.bridgeTimeline.addEntry({
           ts: Date.now(), type: 'eval_result',
-          raw: `★ turn ${pct}% [${run.taskCategory ?? '?'}]`,
+          raw: formatEvalRaw('turn', pct, run.taskCategory, label),
           detail: turnDetail,
           agentType: run.agentType,
+          projectName: run.projectName ?? undefined,
+          sessionId: run.sessionId,
+          startedAt: (turn?.started_at as number | undefined) ?? (turn?.startedAt as number | undefined),
+          endedAt: (turn?.ended_at as number | undefined) ?? (turn?.endedAt as number | undefined),
         });
         return;
       }
@@ -1107,25 +1264,43 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           raw: `⚡ ${detResults}`,
           detail: `Deterministic eval · ${run.projectName ?? ''}`,
           agentType: run.agentType,
+          projectName: run.projectName ?? undefined,
+          sessionId: run.sessionId,
+          startedAt: run.startedAt,
+          endedAt: run.endedAt ?? undefined,
         });
       }
 
       // Change 7: enriched run-level eval_result with axis scores + deterministic summary
       const pct = Math.round((overallScore ?? run.compositeScore ?? 0) * 100);
       const judgeEvals = evals.filter(e => e.layer === 'llm_judge' && e.metric !== 'overall');
-      const axisStr = judgeEvals.map(e => `${e.metric}=${Math.round(e.score * 100)}%`).join(' ');
+      const overallEval = evals.find(e => e.layer === 'llm_judge' && e.metric === 'overall');
+      const notes = parseEvalNotes(overallEval?.raw);
+      const axisStr = formatEvalAxisScores(judgeEvals);
       const detStr = detEvals.length > 0
         ? detEvals.map(e => `${e.metric}=${e.score ? '✓' : '✗'}`).join(' ') + ' · '
         : '';
-      const enrichedDetail = axisStr
-        ? `${detStr}${axisStr}\n${run.projectName ?? ''} · ${run.taskPrompt?.slice(0, 100) ?? ''}`
-        : `${run.projectName ?? ''} · ${run.taskPrompt?.slice(0, 100) ?? ''}`;
+      const detailAxes = [detStr.trim().replace(/\s+·$/, ''), axisStr].filter(Boolean).join(' ');
+      const label = notes.summary || notes.done[0] || compactTimelineText(run.taskPrompt, 120);
+      const enrichedDetail = formatEvalDetail({
+        summary: notes.summary,
+        axes: detailAxes || undefined,
+        done: notes.done,
+        missed: notes.missed,
+        reasoning: notes.reasoning,
+        projectName: run.projectName,
+        prompt: run.taskPrompt,
+      });
       core.bridgeTimeline.addEntry({
         ts: Date.now(),
         type: 'eval_result',
-        raw: `★ [${run.taskCategory ?? '?'}] ${pct}% · ${run.outcome ?? 'pending'}`,
-        detail: enrichedDetail,
+        raw: formatEvalRaw('run', pct, run.taskCategory, label, run.outcome ?? 'pending'),
+        detail: enrichedDetail || `${run.projectName ?? ''} · ${compactTimelineText(run.taskPrompt, 100)}`,
         agentType: run.agentType,
+        projectName: run.projectName ?? undefined,
+        sessionId: run.sessionId,
+        startedAt: run.startedAt,
+        endedAt: run.endedAt ?? undefined,
       });
     });
 

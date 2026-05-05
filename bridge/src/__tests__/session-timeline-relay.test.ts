@@ -71,6 +71,8 @@ describe('SessionTimelineRelay', () => {
     expect(history).toHaveLength(1);
     expect(history[0].raw).toBe('Edit /foo.ts');
     expect(history[0].agentType).toBe('claude-code');
+    expect(history[0].projectName).toBe('test');
+    expect(history[0].sessionId).toBe('session-1');
   });
 
   it('relays timeline_history entries', async () => {
@@ -98,7 +100,9 @@ describe('SessionTimelineRelay', () => {
     const history = store.getHistory();
     expect(history).toHaveLength(3);
     expect(history[0].type).toBe('chat_start');
+    expect(history[0].projectName).toBe('test');
     expect(history[2].type).toBe('chat_end');
+    expect(history[2].sessionId).toBe('session-2');
   });
 
   it('removes subscription when session disappears', async () => {
@@ -160,5 +164,6 @@ describe('SessionTimelineRelay', () => {
     const history = store.getHistory();
     expect(history).toHaveLength(1);
     expect(history[0].raw).toBe('LLM enriched summary · 3s');
+    expect(history[0].projectName).toBe('test');
   });
 });

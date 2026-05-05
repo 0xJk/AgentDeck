@@ -39,6 +39,13 @@ struct TimelineEntry: Codable, Sendable, Identifiable {
     /// Session id the entry belongs to. Populated from state_update events
     /// that carry the hook-attributing sessionId.
     var sessionId: String?
+    /// Agent run id, when the upstream adapter exposes one. OpenClaw Gateway
+    /// uses this to group tool/model rows belonging to the same generation.
+    var runId: String?
+    /// Lifecycle bounds for task/turn entries. `ts` remains the display/event
+    /// timestamp; these fields let the detail pane show elapsed work clearly.
+    var startedAt: Double?
+    var endedAt: Double?
 
     var id: Double { ts }
 

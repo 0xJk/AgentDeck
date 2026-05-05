@@ -26,6 +26,9 @@
 // aquarium without clashing.
 
 import SwiftUI
+#if !os(macOS)
+import UIKit
+#endif
 
 struct TopologyRail: View {
     @EnvironmentObject private var stateHolder: AgentStateHolder
@@ -122,7 +125,16 @@ struct TopologyRail: View {
             mlxRow
             ollamaRow
             antigravityRow
-            if !stateHolder.state.subscriptions.isEmpty {
+            // `showSubscriptionsSection` lives in the macOS-only Settings
+            // "Tank Status Sections" group; on iOS there is no toggle UI, so
+            // surface the footer whenever data is present (matches behaviour
+            // before the toggle was wired up).
+            #if os(macOS)
+            let subscriptionsAllowed = preferences.showSubscriptionsSection
+            #else
+            let subscriptionsAllowed = true
+            #endif
+            if subscriptionsAllowed && !stateHolder.state.subscriptions.isEmpty {
                 subscriptionsFooter
             }
         }
@@ -306,7 +318,9 @@ struct TopologyRail: View {
                     Text(sub.name)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(TerrariumHUD.text)
-                    if let until = sub.until {
+                    if let until = sub.until,
+                       let untilDate = Self.parseUntilDate(until),
+                       untilDate > Date() {
                         Spacer(minLength: 4)
                         Text(formatShortDate(until))
                             .font(.system(size: 10, design: .monospaced))
@@ -353,8 +367,16 @@ struct TopologyRail: View {
     /// with both a Pixoo and an AMOLED ESP32 couldn't tell at first
     /// glance which was which. Headers only appear when a section has
     /// content, so sparse setups stay tight.
+    ///
+    /// On iOS/iPadOS the dashboard is a pure client — physical devices
+    /// like D200H/Pixoo/Stream Deck/ESP32 are managed by the daemon
+    /// machine (typically a Mac), not by the iPhone/iPad running this
+    /// view. Mirroring the daemon's full downstream rail there reads as
+    /// "these devices are mine" which is wrong, so the iOS branch shows
+    /// a single self-row instead.
     private var downstreamRows: some View {
         VStack(alignment: .leading, spacing: 8) {
+            #if os(macOS)
             if let health = stateHolder.state.moduleHealth {
                 streamDeckSection(health: health)
                 usbHidSection(health: health)
@@ -365,8 +387,28 @@ struct TopologyRail: View {
             if !hasAnyDownstreamRow {
                 emptyDownstreamPlaceholder
             }
+            #else
+            DeviceRailRow(
+                name: "This \(selfDeviceLabel)",
+                status: .ok,
+                detail: "dashboard client"
+            )
+            #endif
         }
     }
+
+    #if !os(macOS)
+    /// User-facing label for the current iOS/iPadOS device. Matches the
+    /// Android side's "This Tablet" / "This Phone" pattern in
+    /// `android/.../ui/monitor/TopologyRail.kt`.
+    private var selfDeviceLabel: String {
+        switch UIDevice.current.userInterfaceIdiom {
+        case .pad: return "iPad"
+        case .phone: return "iPhone"
+        default: return "Device"
+        }
+    }
+    #endif
 
     /// Stream Deck plugin-driven hardware. Only renders when the Elgato
     /// plugin has sent a `client_register` announcement — i.e. the plugin
@@ -576,24 +618,16 @@ struct TopologyRail: View {
     /// Ulanzi TC001 are not mentioned because they ride a separate desktop
     /// bridge — they appear automatically once that bridge connects, so
     /// listing them here would imply they're missing rather than optional.
-    /// On iOS/iPadOS we add a second line that explains *why* the row is
-    /// empty (iOS can't host the in-process modules so devices only appear
-    /// when a paired Mac daemon is pushing `moduleHealth`) — otherwise the
-    /// empty row reads as "broken" on a standalone iPad install.
+    /// macOS-only: iOS now renders a self-row instead of the empty-state
+    /// placeholder, so there is no iOS branch here anymore.
     private var emptyDownstreamPlaceholder: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("no devices connected")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext.opacity(0.8))
-            Text("D200H (USB) · Pixoo (Wi-Fi) · ESP32 (USB serial)")
+            Text("Stream Deck (USB) · D200H (USB) · Pixoo (Wi-Fi) · ESP32 (USB serial)")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext.opacity(0.55))
-            #if os(iOS)
-            Text("Devices appear when a paired Mac daemon is running.")
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(TerrariumHUD.subtext.opacity(0.55))
-                .padding(.top, 2)
-            #endif
         }
         .padding(.vertical, 4)
     }
@@ -728,13 +762,33 @@ struct TopologyRail: View {
     }
 
     private func formatShortDate(_ input: String) -> String {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let parsed = iso.date(from: input) ?? ISO8601DateFormatter().date(from: input)
-        guard let date = parsed else { return input }
+        guard let date = Self.parseUntilDate(input) else { return input }
         let fmt = DateFormatter()
         fmt.dateFormat = "MMM d"
         return fmt.string(from: date)
+    }
+
+    /// Parse an ISO8601 timestamp from `SubscriptionInfo.until`. Returns `nil`
+    /// when the string is empty, malformed, or unparseable. The renderer uses
+    /// the result to drop expired or invalid dates so the dashboard never
+    /// shows a stale "ChatGPT Plus · 2025-03-04" once the underlying JWT
+    /// fell behind the user's actual subscription state.
+    static func parseUntilDate(_ input: String) -> Date? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let withFractions = ISO8601DateFormatter()
+        withFractions.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFractions.date(from: trimmed) { return date }
+        let plain = ISO8601DateFormatter()
+        if let date = plain.date(from: trimmed) { return date }
+        // Tolerate "YYYY-MM-DD" (no time component) — `chatgpt_subscription_active_until`
+        // sometimes lands as a date-only string after token rewrites.
+        let dateOnly = DateFormatter()
+        dateOnly.calendar = Calendar(identifier: .iso8601)
+        dateOnly.locale = Locale(identifier: "en_US_POSIX")
+        dateOnly.timeZone = TimeZone(secondsFromGMT: 0)
+        dateOnly.dateFormat = "yyyy-MM-dd"
+        return dateOnly.date(from: trimmed)
     }
 }
 

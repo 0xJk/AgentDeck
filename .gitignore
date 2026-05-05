@@ -21,6 +21,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Local diagnostic captures from development workflows
+diagnostics/
+
 # Temp
 *.tmp
 test-*.js

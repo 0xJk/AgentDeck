@@ -47,7 +47,12 @@
 | OpenCode 세션 모니터링 | ❌ | ✅ | OpenCode 의 random-port 서버에 lock-file 이 없어 다중 인스턴스 discovery 불가. CLI/Node bridge 경로만 |
 | Claude Code 세션 실행 (`Launch Session`) | ❌ | ✅ | App Store 는 Terminal 실행을 만들지 않고 hook 모니터링 안내만 표시 |
 | Codex / OpenCode 세션 실행 | ❌ | ✅ | `agentdeck` CLI 가 PATH 에 있어야 함 |
-| OpenClaw Gateway pairing (WS 모드) | ✅ | ✅ | `ws://127.0.0.1:18789` 클라이언트 |
+| OpenClaw Gateway pairing (WS 모드) | ✅ | ✅ | `ws://127.0.0.1:18789` 클라이언트 — RPC error + ws close 1008 reason 기반 auto-fallback (device 서명 거부 시 token-only retry) 포함 |
+| OpenClaw shared-token Keychain 저장 (paste) | ✅ | — | Settings → OpenClaw → Advanced 의 SecureField → `OpenClawGatewayTokenStore` (Keychain service `…openclaw.gateway-token`) |
+| OpenClaw shared-token import from JSON config | ✅ | — | Settings → OpenClaw troubleshoot row 의 NSOpenPanel — 사용자가 명시 선택한 JSON 파일에서 `auth.token` 한 필드만 추출 → Keychain. `com.apple.security.files.user-selected.read-write` 외 entitlement 추가 없음; `startAccessingSecurityScopedResource()` + `defer stop` 페어링; `directoryURL` 은 `getpwuid(getuid()).pw_dir` 의 real home (Powerbox navigation hint, sandbox app 의 file-system access 아님) |
+| OpenClaw Gateway adapter reconnect (Settings) | ✅ | — | Settings → OpenClaw troubleshoot row 에서 `reconnectGatewayAdapter()` 만 호출. daemon/companion 실행, subprocess, 터미널 안내 없음. Claude/Codex sessions 영향 없음 |
+| OpenClaw device pairing identity reset | ✅ | — | Keychain `…openclaw.identity` 항목 삭제 (`OpenClawDeviceIdentityStore.deleteIdentity()`) → 다음 connect 에 fresh Ed25519 키쌍 self-gen. daemon 전체 restart 대신 `reconnectGatewayAdapter()` 만 호출 → Claude/Codex sessions 영향 없음 |
+| OpenClaw Web UI deep link (Approve in Web UI) | ✅ | — | `NSWorkspace.shared.open(URL("http://localhost:18789"))` — LaunchServices outbound URL, 추가 entitlement 불필요 |
 | OpenClaw Gateway pairing (CLI 모드) | ❌ | ✅ | `openclaw` 바이너리 spawn 필요 |
 
 ## 인프라

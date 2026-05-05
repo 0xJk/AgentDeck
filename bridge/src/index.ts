@@ -1285,6 +1285,47 @@ function wireAgentApme(
   ptyRingBuffer: PtyRingBuffer,
 ): void {
   const sid = core.sessionId;
+  let codexChatStart: number | null = null;
+  let codexLastPromptText: string | null = null;
+
+  const ensureCodexChatStart = (text?: string): number => {
+    if (codexChatStart) {
+      if (text && !codexLastPromptText) {
+        codexLastPromptText = text;
+        const raw = text.length > 500 ? text.slice(0, 497) + '...' : text;
+        const detail = text.length > 100
+          ? (text.length > 1000 ? text.slice(0, 997) + '...' : text)
+          : undefined;
+        core.bridgeTimeline.upsertEntry({
+          ts: codexChatStart,
+          type: 'chat_start',
+          raw,
+          ...(detail ? { detail } : {}),
+          agentType: 'codex-cli',
+          startedAt: codexChatStart,
+        });
+      }
+      return codexChatStart;
+    }
+    const now = Date.now();
+    codexChatStart = now;
+    codexLastPromptText = text || null;
+    const raw = text
+      ? (text.length > 500 ? text.slice(0, 497) + '...' : text)
+      : 'Codex turn started';
+    const detail = text && text.length > 100
+      ? (text.length > 1000 ? text.slice(0, 997) + '...' : text)
+      : undefined;
+    core.bridgeTimeline.addEntry({
+      ts: now,
+      type: 'chat_start',
+      raw,
+      ...(detail ? { detail } : {}),
+      agentType: 'codex-cli',
+      startedAt: now,
+    });
+    return now;
+  };
 
   adapter.on('event', (evt: import('./types.js').AdapterEvent) => {
     // ── Timeline events (OpenCode / OpenClaw) ──
@@ -1305,9 +1346,29 @@ function wireAgentApme(
     // ── Codex: PTY parser fallback ──
     if (evt.source === 'parser' && (agentType as string) === 'codex-cli') {
       const ctx = makeApmeAdapterCtx(apme, sid, agentType);
+      if (evt.event === 'spinner_start') {
+        ensureCodexChatStart();
+      }
+      if (evt.event === 'tool_action') {
+        const now = Date.now();
+        const data = (evt.data ?? {}) as Record<string, unknown>;
+        const tool = typeof data.tool === 'string' && data.tool ? data.tool : 'tool';
+        const args = typeof data.args === 'string' ? data.args : '';
+        const raw = args ? `${tool} ${args}` : tool;
+        ensureCodexChatStart();
+        core.bridgeTimeline.addEntry({
+          ts: now,
+          type: 'tool_exec',
+          raw: raw.length > 500 ? raw.slice(0, 497) + '...' : raw,
+          detail: args && args !== raw ? args.slice(0, 1000) : undefined,
+          agentType: 'codex-cli',
+          ...(codexChatStart ? { startedAt: codexChatStart } : {}),
+        });
+      }
       if (evt.event === 'user_prompt') {
         const text = (evt.data as Record<string, unknown>)?.text as string | undefined;
         if (text) {
+          ensureCodexChatStart(text);
           // PTY-derived prompt = synthetic turn_start span. We construct it
           // inline rather than reusing claudeHookToSpans because the source
           // is a parser event, not a hook payload.
@@ -1329,6 +1390,8 @@ function wireAgentApme(
       }
       if (evt.event === 'spinner_stop') {
         setTimeout(() => {
+          const startedAt = codexChatStart ?? ensureCodexChatStart();
+          const endedAt = Date.now();
           const tail = ptyRingBuffer.getTail(5000);
           const lines = tail.split('\n').map(l => l.trim()).filter(Boolean);
           // Filter out spinner/UI artifacts from tail (Codex PTY output)
@@ -1342,7 +1405,32 @@ function wireAgentApme(
             const span = claudePtyResponseToSpan(ctx, response);
             if (span) apme.collector.ingestSpan(sid, span);
             void classifyAndEnqueueTurn(apme, sid);
+            const respRaw = response.length > 200 ? response.slice(0, 197) + '...' : response;
+            core.bridgeTimeline.addEntry({
+              ts: endedAt - 1,
+              type: 'chat_response',
+              raw: cleanRawText(respRaw),
+              detail: cleanDetailText(response.slice(0, 3000)) || undefined,
+              agentType: 'codex-cli',
+              startedAt,
+              endedAt,
+            });
           }
+          const duration = Math.round((endedAt - startedAt) / 1000);
+          const topicHint = response ? extractTopicHint(response) : null;
+          const promptTopic = codexLastPromptText ? extractTopicHint(codexLastPromptText) : null;
+          const label = topicHint || promptTopic || 'Codex turn completed';
+          core.bridgeTimeline.addEntry({
+            ts: endedAt,
+            type: 'chat_end',
+            raw: `${label} \u00B7 ${duration}s`,
+            detail: response.length > 2 ? cleanDetailText(response.slice(0, 1000)) || undefined : undefined,
+            agentType: 'codex-cli',
+            startedAt,
+            endedAt,
+          });
+          codexChatStart = null;
+          codexLastPromptText = null;
         }, 500);
       }
     }
@@ -1402,6 +1490,7 @@ function wireClaudeCodeTimeline(
       raw: snippet || fallbackRaw,
       ...(detail ? { detail } : {}),
       agentType: 'claude-code',
+      startedAt: ccChatStart ?? Date.now(),
     });
   };
 
@@ -1428,6 +1517,7 @@ function wireClaudeCodeTimeline(
   /** Emit chat_response + chat_end from response text (shared by Stop hook and PTY fallback) */
   const emitCompletion = (responseText: string, duration: number | null, toolSummary: string) => {
     const now = Date.now();
+    const startedAt = ccChatStart ?? undefined;
 
     // Change 5: emit chat_response if meaningful response text exists
     if (responseText.length > 20) {
@@ -1437,6 +1527,8 @@ function wireClaudeCodeTimeline(
         raw: cleanRawText(respRaw),
         detail: cleanDetailText(responseText.slice(0, 3000)) || undefined,
         agentType: 'claude-code',
+        ...(startedAt ? { startedAt } : {}),
+        endedAt: now,
       });
     }
 
@@ -1457,6 +1549,8 @@ function wireClaudeCodeTimeline(
       ts: chatEndTs, type: 'chat_end', raw: summary,
       ...(chatEndDetail ? { detail: chatEndDetail } : {}),
       agentType: 'claude-code',
+      ...(startedAt ? { startedAt } : {}),
+      endedAt: chatEndTs,
     });
 
     // Async LLM summarization — fire-and-forget, upsert chat_end when ready
@@ -1475,6 +1569,8 @@ function wireClaudeCodeTimeline(
             raw: enrichedParts.join(' \u00B7 '),
             ...(savedDetail ? { detail: savedDetail } : {}),
             agentType: 'claude-code',
+            ...(startedAt ? { startedAt } : {}),
+            endedAt: chatEndTs,
           });
         }
       }).catch(() => { /* summarization failed — keep heuristic */ });

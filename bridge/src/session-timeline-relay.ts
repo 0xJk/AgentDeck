@@ -103,6 +103,13 @@ export class SessionTimelineRelay {
 
     const ws = new WebSocket(`ws://127.0.0.1:${sub.port}`);
     sub.ws = ws;
+    const session = listActiveSessions().find((s) => s.id === sessionId);
+    const enrichEntry = (entry: TimelineEntry): TimelineEntry => ({
+      ...entry,
+      projectName: entry.projectName ?? session?.projectName,
+      sessionId: entry.sessionId ?? sessionId,
+      agentType: entry.agentType ?? session?.agentType,
+    });
 
     ws.on('open', () => {
       debug(TAG, `Connected to session ${sessionId} on port ${sub.port}`);
@@ -112,12 +119,12 @@ export class SessionTimelineRelay {
       try {
         const evt = JSON.parse(raw.toString());
         if (evt.type === 'timeline_event' && evt.entry) {
-          const entry = evt.entry as TimelineEntry;
+          const entry = enrichEntry(evt.entry as TimelineEntry);
           if (evt.upsert) this.timeline.upsertEntry(entry);
           else this.timeline.addEntry(entry);
         } else if (evt.type === 'timeline_history' && Array.isArray(evt.entries)) {
           for (const entry of evt.entries as TimelineEntry[]) {
-            this.timeline.addEntry(entry);
+            this.timeline.addEntry(enrichEntry(entry));
           }
         } else if (evt.type === 'state_update' && Array.isArray(evt.modelCatalog) && evt.modelCatalog.length > 0) {
           this.onModelCatalog?.(evt.modelCatalog as ModelCatalogEntry[]);

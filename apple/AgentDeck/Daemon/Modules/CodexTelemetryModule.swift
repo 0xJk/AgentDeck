@@ -20,6 +20,7 @@ enum CodexSpanEvent: Sendable, Equatable {
     case toolCall(threadId: String, turnId: String, tool: String)
     case toolResult(threadId: String, turnId: String)
     case turnEnd(threadId: String, turnId: String)
+    case activity(threadId: String, turnId: String, name: String)
 }
 
 enum CodexTelemetryModule {
@@ -77,30 +78,100 @@ enum CodexTelemetryModule {
             uniquingKeysWith: { _, new in new }
         )
 
-        guard let threadId = stringAttr(attrs, keys: ["codex.thread_id", "thread.id", "thread_id", "session_id"]),
-              !threadId.isEmpty else {
+        guard let threadId = threadIdAttr(attrs), !threadId.isEmpty else {
             return nil
         }
         let turnId = stringAttr(attrs, keys: ["codex.turn_id", "turn.id", "turn_id"]) ?? ""
 
-        // Normalize underscore variants (`codex.tool_call`) → dotted form
-        // (`codex.tool.call`) so we don't have to enumerate every spelling.
-        let normalized = rawName.replacingOccurrences(of: "_", with: ".")
+        // Normalize underscore/slash variants (`codex.tool_call`,
+        // `turn/start`) into dotted form so current Codex builds and older
+        // logs share one dispatch table.
+        let normalized = rawName
+            .replacingOccurrences(of: "_", with: ".")
+            .replacingOccurrences(of: "/", with: ".")
 
         switch normalized {
-        case "codex.turn", "codex.turn.start", "op.dispatch.user.input.with.turn.context":
+        case "codex.turn", "codex.turn.start", "turn.start", "op.dispatch.user.input.with.turn.context":
             let cwd = stringAttr(attrs, keys: ["cwd", "codex.cwd"])
             return .turnStart(threadId: threadId, turnId: turnId, cwd: cwd)
-        case "codex.tool.call", "tool.call", "turn.tool.call":
-            let tool = stringAttr(attrs, keys: ["tool.name", "tool", "codex.tool", "tool"]) ?? "?"
+        case "codex.tool.call", "tool.call", "turn.tool.call", "build.tool.call", "handle.tool.call", "handle.tool.call.with.source", "exec.command":
+            let tool = stringAttr(attrs, keys: ["tool.name", "tool", "codex.tool"]) ?? inferredToolName(from: normalized)
             return .toolCall(threadId: threadId, turnId: turnId, tool: tool)
-        case "codex.tool.result", "tool.result", "tool.call.duration.ms":
+        case "codex.tool.result", "tool.result", "tool.call.duration.ms", "dispatch.tool.call.with.code.mode.result", "handle.output.item.done":
             return .toolResult(threadId: threadId, turnId: turnId)
-        case "codex.turn.end", "session.task.turn":
+        case "codex.turn.end", "turn.end", "session.task.turn":
             return .turnEnd(threadId: threadId, turnId: turnId)
+        case "receiving", "handle.responses", "responses.websocket.stream.request", "model.client.stream.responses.websocket", "stream.request":
+            return .activity(threadId: threadId, turnId: turnId, name: rawName)
         default:
             return nil
         }
+    }
+
+    private static func threadIdAttr(_ attrs: [String: Any]) -> String? {
+        // Apply `isDurableSessionId` to BOTH the thread-id and session_id
+        // candidates. Without the thread-id guard a span carrying
+        // `thread.id: "11"` (or any short numeric companion-task id) would
+        // still synthesize `codex:11` rows on `handleCodexTrace.turnStart`,
+        // bypassing the matching guard on the hook path
+        // (`CodexHookIdentity.threadIdSessionKey`) and producing the same
+        // ghost cloud creature the dashboard surfaced on 2026-05-03.
+        //
+        // Crucially, scan every alias and return the first DURABLE match —
+        // not the first non-empty one. Some Codex builds emit both a
+        // turn-scoped short id (`codex.thread_id: "11"`) AND the real
+        // thread UUID (`thread.id: "019dee40-…"`) on the same span; the
+        // earlier alias wins lexically but only the later one is the
+        // durable id we want. A naïve `firstNonEmpty + isDurable` reads
+        // the short id, fails the guard, falls through to `session_id`,
+        // and silently drops the perfectly-good UUID that was sitting in
+        // the next alias.
+        if let threadId = firstDurableAttr(attrs, keys: [
+            "codex.thread_id", "codex.thread.id", "thread.id", "thread_id", "threadId",
+        ]) {
+            return stripCodexPrefix(threadId)
+        }
+
+        if let sessionId = firstDurableAttr(attrs, keys: ["session_id", "session.id"]) {
+            return stripCodexPrefix(sessionId)
+        }
+        return nil
+    }
+
+    /// First attribute among `keys` whose stringified value passes
+    /// `isDurableSessionId`. Mirrors `stringAttr`'s String-or-Int handling
+    /// but skips short / non-durable matches instead of returning the
+    /// first hit. Used by `threadIdAttr` to make the alias list a
+    /// preference order rather than a winner-take-all early-exit.
+    private static func firstDurableAttr(_ attrs: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let s = attrs[key] as? String, !s.isEmpty, isDurableSessionId(s) {
+                return s
+            }
+            if let n = attrs[key] as? Int {
+                let s = String(n)
+                if isDurableSessionId(s) { return s }
+            }
+        }
+        return nil
+    }
+
+    private static func inferredToolName(from normalizedSpanName: String) -> String {
+        switch normalizedSpanName {
+        case "exec.command": return "exec"
+        default: return "tool"
+        }
+    }
+
+    private static func isDurableSessionId(_ raw: String) -> Bool {
+        let normalized = stripCodexPrefix(raw)
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 12 else { return false }
+        return trimmed.rangeOfCharacter(from: CharacterSet.decimalDigits.inverted) != nil
+    }
+
+    private static func stripCodexPrefix(_ raw: String) -> String {
+        raw.hasPrefix("codex:") ? String(raw.dropFirst("codex:".count)) : raw
     }
 
     /// First non-empty string attribute among `keys`, or nil.

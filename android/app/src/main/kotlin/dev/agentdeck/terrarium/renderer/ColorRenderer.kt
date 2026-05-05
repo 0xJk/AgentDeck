@@ -46,6 +46,7 @@ fun ColorTerrariumCanvas(
     planktonSystem: PlanktonSystem,
     waterSurface: WaterSurface,
     sandDisturbance: SandDisturbance,
+    drawMainCrayfish: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier) {
@@ -83,7 +84,9 @@ fun ColorTerrariumCanvas(
         for (wc in workerCrayfish) wc.draw(this)
 
         // Layer 7b: Main crayfish (on rocks, bottom-right)
-        mainCrayfish.draw(this)
+        if (drawMainCrayfish) {
+            mainCrayfish.draw(this)
+        }
 
         // Layer 9: Octopuses (all coding agent avatars)
         for (oct in octopuses) oct.draw(this)

@@ -1336,20 +1336,46 @@ actor OpenClawAdapter {
     }
 
     private func emitTimelineEntry(fromSessionTool payload: [String: Any]) {
-        let toolName = payload["name"] as? String ?? payload["tool"] as? String ?? "tool"
+        let nested = payload["message"] as? [String: Any]
+            ?? payload["item"] as? [String: Any]
+            ?? payload["call"] as? [String: Any]
+        let toolName = payload["name"] as? String
+            ?? payload["tool"] as? String
+            ?? payload["toolName"] as? String
+            ?? nested?["name"] as? String
+            ?? nested?["tool"] as? String
+            ?? "tool"
         let status = payload["status"] as? String
+            ?? payload["state"] as? String
+            ?? nested?["status"] as? String
         // Include tool input summary in detail so the timeline row shows what
         // the tool was actually called with, not just its name.
-        let inputSummary: String? = {
-            guard let input = payload["input"] else { return nil }
-            let s = String(describing: input)
-            return s.isEmpty ? nil : String(s.prefix(300))
-        }()
-        let detail: String? = [status, inputSummary].compactMap { $0 }.joined(separator: " | ").nonEmpty
+        let input = payload["input"]
+            ?? payload["arguments"]
+            ?? payload["args"]
+            ?? payload["tool_input"]
+            ?? nested?["input"]
+            ?? nested?["arguments"]
+        let output = payload["output"]
+            ?? payload["result"]
+            ?? payload["error"]
+            ?? nested?["output"]
+            ?? nested?["result"]
+            ?? nested?["error"]
+        var detailParts: [String] = []
+        if let status { detailParts.append("status: \(status)") }
+        if let inputSummary = Self.compactDebugValue(input, max: 600) {
+            detailParts.append("input: \(inputSummary)")
+        }
+        if let outputSummary = Self.compactDebugValue(output, max: 600) {
+            detailParts.append("output: \(outputSummary)")
+        }
+        let detail: String? = detailParts.joined(separator: "\n").nonEmpty
+        let raw = [toolName, status].compactMap { $0 }.joined(separator: " · ")
         let entry = DaemonTimelineEntry(
             ts: Self.payloadTimestamp(payload),
             type: "tool_exec",
-            raw: String(toolName.prefix(200)),
+            raw: String(raw.prefix(200)),
             detail: detail,
             approvalId: nil,
             status: status,
@@ -1374,10 +1400,29 @@ actor OpenClawAdapter {
         if let repeatCount = entry.repeatCount { entryDict["repeatCount"] = repeatCount }
         if let automated = entry.automated { entryDict["automated"] = automated }
         if let runId = entry.runId { entryDict["runId"] = runId }
+        if let projectName = entry.projectName { entryDict["projectName"] = projectName }
+        if let sessionId = entry.sessionId { entryDict["sessionId"] = sessionId }
+        if let startedAt = entry.startedAt { entryDict["startedAt"] = startedAt }
+        if let endedAt = entry.endedAt { entryDict["endedAt"] = endedAt }
         _onEvent?([
             "type": "gateway_timeline_entry",
             "entry": entryDict,
         ])
+    }
+
+    private static func compactDebugValue(_ value: Any?, max: Int) -> String? {
+        guard let value else { return nil }
+        let text: String
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            text = json
+        } else {
+            text = String(describing: value)
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.count > max ? String(trimmed.prefix(max - 1)) + "…" : trimmed
     }
 
     private static func payloadTimestamp(_ payload: [String: Any]) -> Double {

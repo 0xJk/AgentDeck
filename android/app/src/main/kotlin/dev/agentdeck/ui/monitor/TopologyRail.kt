@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.os.Build
 import dev.agentdeck.net.ModelCatalogEntry
 import dev.agentdeck.net.OllamaStatus
 import dev.agentdeck.net.SubscriptionInfo
@@ -248,7 +249,7 @@ private fun UpstreamRows(state: DashboardState, scale: MonitorLayoutScale) {
             },
         )
 
-        val openClawVisible = (state.gatewayAvailable == true || state.gatewayHasError == true)
+        val openClawVisible = (state.gatewayAvailable == true || state.gatewayConnected == true)
         if (openClawVisible) {
             // Only surface the catalog under OpenClaw when it actually
             // belongs to OpenClaw — same gate we apply to the Claude row.
@@ -257,10 +258,10 @@ private fun UpstreamRows(state: DashboardState, scale: MonitorLayoutScale) {
             } else {
                 emptyList()
             }
-            val subtitle = if (openClawLines.isNotEmpty()) {
-                openClawLines.joinToString(", ")
-            } else {
-                null
+            val subtitle = when {
+                openClawLines.isNotEmpty() -> openClawLines.joinToString(", ")
+                state.gatewayConnected != true -> "Not connected"
+                else -> null
             }
             ProviderRow(
                 name = "OpenClaw",
@@ -394,24 +395,38 @@ private fun SubscriptionsFooter(subs: List<SubscriptionInfo>) {
 }
 
 // MARK: - Downstream rows
+//
+// On Android the dashboard is a pure client — D200H/Pixoo/Stream Deck/ESP32
+// physically attach to the *daemon machine* (typically a Mac), not to the
+// tablet/reader running this view. Mirroring the daemon's full downstream
+// rail here would read as "these devices are mine", so we render a single
+// self-row instead. iOS does the same in TopologyRail.swift.
 
 @Composable
 private fun DownstreamRows(scale: MonitorLayoutScale) {
-    // The Android client sits ON the downstream side of the graph — it IS
-    // one of the devices the bridge dispatches to. Until the Android
-    // client starts receiving `moduleHealth` events the way the Swift
-    // daemon does, this section surfaces the one relationship we *do*
-    // know: this tablet is a live dashboard client connected to the hub.
-    //
-    // This also keeps the Upstream → Hub → Downstream flow meaningful
-    // even on a pure-client build — the user always sees "I am here" in
-    // the downstream slot rather than a dead placeholder.
     Column(verticalArrangement = Arrangement.spacedBy(scale.providerRowSpacing)) {
         DeviceRailRow(
-            name = "This tablet",
+            name = "This ${selfDeviceLabel()}",
             status = LEDStatus.OK,
             detail = "dashboard client",
         )
+    }
+}
+
+/// Best-effort short label for the Android device showing the dashboard.
+/// Mirrors the e-ink classification used in `EinkDetector` and the
+/// per-device-class names used by the previous Android section so a Crema
+/// shows "This Crema", a Pantone shows "This Pantone", etc.
+private fun selfDeviceLabel(): String {
+    val manufacturer = Build.MANUFACTURER.lowercase()
+    val model = Build.MODEL.lowercase()
+    return when {
+        manufacturer.contains("crema") || model.contains("crema") -> "Crema"
+        manufacturer.contains("moaan") || manufacturer.contains("moan") || model.contains("pantone") -> "Pantone"
+        manufacturer.contains("kobo") -> "Kobo"
+        manufacturer.contains("onyx") || manufacturer.contains("boyue") -> "Reader"
+        dev.agentdeck.util.EinkDetector.isEinkDevice() -> "Reader"
+        else -> "Tablet"
     }
 }
 

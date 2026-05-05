@@ -26,7 +26,7 @@ private let ICON_SIZE = 196
 
 private let POLL_INTERVAL: UInt64 = 500_000_000   // 500ms device detection
 private let KEEPALIVE_INTERVAL: TimeInterval = 15  // 15s keep-alive (D200H reverts to default after ~30s)
-private let D200H_RENDERER_REV = "creature-session-icons-v27"
+private let D200H_RENDERER_REV = "creature-session-icons-v28"
 
 // HID Commands
 private let CMD_SET_BUTTONS: UInt16    = 0x0001
@@ -1526,7 +1526,6 @@ private enum D200hRenderer {
     static let cStateDisco  = rgb(107, 114, 128)     // #6b7280 gray
 
     // UI elements
-    static let cActiveBar   = rgb(59, 130, 246)      // #3b82f6 blue-500 left indicator
     static let cPageNav     = rgb(96, 165, 250)      // #60a5fa blue-400
 
     // Option buttons
@@ -2539,24 +2538,7 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         break
     }
 
-    // 4. Stream Deck-style thin left indicator for session tiles only.
-    if slot.enabled && isBrandTile {
-        let stripColor: CGColor
-        switch slot.borderStyle {
-        case .awaitingPulse, .processingDash, .processingSolid, .solid:
-            stripColor = slot.statusColor ?? rgb(59, 130, 246)
-        case .none:
-            stripColor = slot.iconColor ?? rgb(59, 130, 246)
-        }
-        drawInTopDownCoordinates(ctx) {
-            ctx.setFillColor(stripColor)
-            ctx.setAlpha(0.78)
-            ctx.fill(CGRect(x: pad + 10, y: pad + 42, width: 5, height: s - pad * 2 - 84))
-            ctx.setAlpha(1.0)
-        }
-    }
-
-    // 5. Port the Stream Deck icon language. Text overlays remain opt-in because
+    // 4. Port the Stream Deck icon language. Text overlays remain opt-in because
     // D200H stock firmware can be selective about rich PNG payloads.
     if slot.icon != .none {
         let iconColor = slot.iconColor ?? rgb(241, 245, 249)
@@ -2587,7 +2569,7 @@ private func renderButtonPng(_ slot: ButtonSlot) -> Data {
         break
     }
 
-    // 6. Status dot at Top Right
+    // 5. Status dot at Top Right
     if slot.enabled && isBrandTile {
         let dotR: CGFloat = 8
         let dotX: CGFloat = 163

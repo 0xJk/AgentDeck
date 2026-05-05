@@ -744,10 +744,8 @@ struct ControlTowerPanel: View {
             Spacer()
 
             Button("Quit") {
-                Task {
-                    await daemonService.stop()
-                    NSApplication.shared.terminate(nil)
-                }
+                stateHolder.prepareForTermination()
+                NSApplication.shared.terminate(nil)
             }
             .font(.system(size: 11))
             .buttonStyle(.plain)

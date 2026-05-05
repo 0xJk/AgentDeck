@@ -140,11 +140,13 @@ private fun distribute(count: Int, rows: Int): IntArray {
  * Compute layout positions for OpenClaw worker crayfish.
  * Workers are smaller and arranged in an arc around the main crayfish position.
  */
-fun layoutWorkerCrayfish(count: Int): List<CreatureSlot> {
+fun layoutWorkerCrayfish(
+    count: Int,
+    mainX: Float = TerrariumLayout.CRAYFISH_CENTER_X_FRACTION,
+    mainY: Float = TerrariumLayout.CRAYFISH_CENTER_Y_FRACTION,
+): List<CreatureSlot> {
     if (count == 0) return emptyList()
 
-    val mainX = TerrariumLayout.CRAYFISH_CENTER_X_FRACTION
-    val mainY = TerrariumLayout.CRAYFISH_CENTER_Y_FRACTION
     val arcRadius = 0.08f
 
     return (0 until count).map { i ->

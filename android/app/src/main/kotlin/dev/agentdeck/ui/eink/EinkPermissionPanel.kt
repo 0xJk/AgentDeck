@@ -28,6 +28,8 @@ fun EinkPermissionPanel(
     onSelectOption: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val effectiveOptions = effectiveEinkAttentionOptions(options)
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -46,7 +48,7 @@ fun EinkPermissionPanel(
         }
 
         // Option buttons (large touch areas)
-        options.forEachIndexed { index, option ->
+        effectiveOptions.forEachIndexed { index, option ->
             Box(
                 modifier = Modifier
                     .fillMaxWidth()

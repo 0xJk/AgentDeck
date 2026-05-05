@@ -60,6 +60,7 @@ class StateTimelineGenerator private constructor() {
             lastAgentType = update.agentType
         }
         val agent = lastAgentType
+        val project = update.projectName
 
         // State transitions
         when {
@@ -75,18 +76,18 @@ class StateTimelineGenerator private constructor() {
                 val detail = if (!prompt.isNullOrEmpty() && prompt.length > 100) {
                     if (prompt.length > 1000) prompt.take(1000) + "..." else prompt
                 } else null
-                store.addEntry(TimelineEntry(now, "chat_start", raw, detail = detail, agentType = agent))
+                store.addEntry(TimelineEntry(now, "chat_start", raw, detail = detail, agentType = agent, projectName = project))
             }
 
             // -> AWAITING_PERMISSION: permission requested
             newState == AgentState.AWAITING_PERMISSION && previousState != AgentState.AWAITING_PERMISSION -> {
                 val question = update.question ?: "Permission requested"
-                store.addEntry(TimelineEntry(now, "permission", question, agentType = agent))
+                store.addEntry(TimelineEntry(now, "tool_request", question, agentType = agent, projectName = project))
             }
 
             // AWAITING -> PROCESSING: resumed
             previousState in AWAITING_STATES && newState == AgentState.PROCESSING -> {
-                store.addEntry(TimelineEntry(now, "chat_start", "Resumed", agentType = agent))
+                store.addEntry(TimelineEntry(now, "chat_start", "Resumed", agentType = agent, projectName = project))
             }
 
             // PROCESSING -> IDLE: chat completed
@@ -106,12 +107,12 @@ class StateTimelineGenerator private constructor() {
                     "Prompt: ${if (it.length > 200) it.take(200) + "..." else it}"
                 }
                 chatStartTime = null
-                store.addEntry(TimelineEntry(now, "chat_end", summary, detail = detail, agentType = agent))
+                store.addEntry(TimelineEntry(now, "chat_end", summary, detail = detail, agentType = agent, projectName = project))
             }
 
             // DISCONNECTED -> else: connected
             previousState == AgentState.DISCONNECTED && newState != AgentState.DISCONNECTED -> {
-                store.addEntry(TimelineEntry(now, "chat_start", "Connected", agentType = agent))
+                store.addEntry(TimelineEntry(now, "chat_start", "Connected", agentType = agent, projectName = project))
             }
         }
 
@@ -120,7 +121,7 @@ class StateTimelineGenerator private constructor() {
             val tool = update.currentTool
             if (tool != lastToolName || (now - lastToolTime) > TOOL_DEDUP_MS) {
                 val summary = formatToolSummary(tool, update.toolInput)
-                store.addEntry(TimelineEntry(now, "tool_request", summary, agentType = agent))
+                store.addEntry(TimelineEntry(now, "tool_request", summary, agentType = agent, projectName = project))
                 lastToolName = tool
                 lastToolTime = now
             }

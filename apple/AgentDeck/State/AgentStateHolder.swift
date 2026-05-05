@@ -48,6 +48,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     // MARK: - Lifecycle
 
     private var backgroundEnteredAt: Date?
+    private var isTerminating = false
     #if os(macOS)
     private var staleDataMonitor: Timer?
     private static let staleDataThresholdSec: TimeInterval = 20
@@ -112,6 +113,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] bridges in
                 guard let self else { return }
+                guard !self.isTerminating else { return }
                 guard self.preferredLocalBridgeUrl == nil else { return }
                 guard !self.state.bridgeConnected,
                       self.connection.status == .disconnected else { return }
@@ -130,10 +132,12 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
 
         timelineGenerator = StateTimelineGenerator(store: timelineStore)
         connection.onEvent = { [weak self] event in
-            self?.handleEvent(event)
+            guard let self, !self.isTerminating else { return }
+            self.handleEvent(event)
         }
         connection.onDisconnect = { [weak self] in
             guard let self else { return }
+            guard !self.isTerminating else { return }
             if self.state.bridgeConnected {
                 self.resetToDisconnected()
             }
@@ -147,6 +151,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         }
         connection.onReconnectExhausted = { [weak self] in
             guard let self else { return }
+            guard !self.isTerminating else { return }
             // Blacklist the failed bridge so we skip it in auto-connect
             if let url = self.connection.url,
                let bridge = self.discovery.bridges.first(where: { $0.wsUrl == url }) {
@@ -162,6 +167,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         // If found, abort stale-URL reconnect and connect to the new bridge.
         connection.onReconnectAttempt = { [weak self] in
             guard let self else { return false }
+            guard !self.isTerminating else { return true }
 
             // Check mDNS discovered bridges (skip blacklisted, prefer daemon)
             let candidates = self.discovery.bridges.filter { !self.failedBridgeIds.contains($0.id) }
@@ -262,6 +268,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     }
 
     private func handleSystemWake() {
+        guard !isTerminating else { return }
         let now = Date()
         if let last = lastWakeHandledAt, now.timeIntervalSince(last) < Self.wakeDebounceSec {
             return
@@ -290,6 +297,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     }
 
     private func checkForStaleBridgeData() {
+        guard !isTerminating else { return }
         guard state.bridgeConnected,
               connection.status == .connected,
               !connection.isReconnecting,
@@ -312,13 +320,36 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
 
     // MARK: - Lifecycle Handlers
 
+    func prepareForTermination() {
+        guard !isTerminating else { return }
+        isTerminating = true
+
+        backgroundEnteredAt = nil
+        preferredLocalBridgeUrl = nil
+        isAutoConnecting = false
+        waterfallStage = .idle
+        autoConnectTimer?.invalidate()
+        autoConnectTimer = nil
+
+        #if os(macOS)
+        staleDataMonitor?.invalidate()
+        staleDataMonitor = nil
+        stopSystemWakeListener()
+        #endif
+
+        discovery.prepareForTermination()
+        connection.prepareForTermination()
+    }
+
     func handleBackgroundEntry() {
+        guard !isTerminating else { return }
         backgroundEnteredAt = Date()
         connection.stopPingTimer()
         print("[Lifecycle] entered background")
     }
 
     func handleForegroundReturn() {
+        guard !isTerminating else { return }
         let suspendDuration: TimeInterval
         if let enteredAt = backgroundEnteredAt {
             suspendDuration = Date().timeIntervalSince(enteredAt)
@@ -355,6 +386,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             print("[Lifecycle] medium suspend (\(Int(suspendDuration))s) — health check")
             connection.forceHealthCheck { [weak self] alive in
                 guard let self else { return }
+                guard !self.isTerminating else { return }
                 if !alive {
                     print("[Lifecycle] health check failed — reconnecting preferred local bridge")
                     self.connection.forceDisconnectAndRestart()
@@ -384,6 +416,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             print("[Lifecycle] medium suspend (\(Int(suspendDuration))s) — health check")
             connection.forceHealthCheck { [weak self] alive in
                 guard let self else { return }
+                guard !self.isTerminating else { return }
                 if !alive {
                     print("[Lifecycle] health check failed — reconnecting")
                     self.connection.forceDisconnectAndRestart()
@@ -402,6 +435,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     }
 
     private func restartWaterfall() {
+        guard !isTerminating else { return }
         // Force reset waterfall stage so startConnectionWaterfall() can enter
         waterfallStage = .idle
         connection.resetReconnectCount()
@@ -411,6 +445,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     // MARK: - Connection Waterfall
 
     func startConnectionWaterfall() {
+        guard !isTerminating else { return }
         if let preferredLocalBridgeUrl {
             isAutoConnecting = false
             waterfallStage = .idle
@@ -432,6 +467,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     }
 
     private func trySavedUrl() {
+        guard !isTerminating else { return }
         if let url = savedUrl {
             print("[Waterfall] trying saved URL: \(url)")
             waterfallStage = .savedUrl
@@ -441,6 +477,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             // (iOS WiFi init can take 2-4s after app launch)
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                 guard let self, self.waterfallStage == .savedUrl else { return }
+                guard !self.isTerminating else { return }
                 if !self.state.bridgeConnected {
                     print("[Waterfall] saved URL timeout, falling through to mDNS")
                     self.connection.disconnect(reconnect: false)
@@ -454,6 +491,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     }
 
     private func startMdnsDiscovery() {
+        guard !isTerminating else { return }
         print("[Waterfall] starting mDNS discovery")
         waterfallStage = .mdns
         discovery.startSearching()
@@ -466,10 +504,16 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     private var autoConnectPollCount = 0
 
     private func startAutoConnectPolling() {
+        guard !isTerminating else { return }
         autoConnectPollCount = 0
         autoConnectTimer?.invalidate()
         autoConnectTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
+            guard !self.isTerminating else {
+                timer.invalidate()
+                self.autoConnectTimer = nil
+                return
+            }
             guard self.waterfallStage == .mdns else {
                 print("[AutoConnect] timer stopped: stage=\(self.waterfallStage)")
                 timer.invalidate()
@@ -552,6 +596,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     // MARK: - Event Handler
 
     func handleEvent(_ event: BridgeEvent) {
+        guard !isTerminating else { return }
         switch event {
         case .stateUpdate(let e):
             handleStateUpdate(e)
@@ -792,20 +837,24 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     // MARK: - Commands
 
     func sendCommand(_ command: PluginCommand) {
+        guard !isTerminating else { return }
         connection.send(command)
     }
 
     // MARK: - Connection Management
 
     func connectTo(_ bridge: DiscoveredBridge) {
+        guard !isTerminating else { return }
         connection.connect(to: bridge.wsUrl)
     }
 
     func connectTo(url: String) {
+        guard !isTerminating else { return }
         connection.connect(to: url)
     }
 
     func setPreferredLocalBridge(url: String?) {
+        guard !isTerminating else { return }
         preferredLocalBridgeUrl = url
         if let url {
             autoConnectTimer?.invalidate()
@@ -826,6 +875,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     }
 
     func disconnectBridge() {
+        guard !isTerminating else { return }
         connection.disconnect()
         resetToDisconnected()
         savedUrl = nil  // Clear saved URL on explicit disconnect

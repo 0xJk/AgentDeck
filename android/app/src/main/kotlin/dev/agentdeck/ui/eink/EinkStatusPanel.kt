@@ -63,11 +63,13 @@ fun EinkStatusPanel(
 
         HorizontalDivider(thickness = 1.dp, color = Color.Black)
 
-        val openClawPrimary = state.modelCatalog.orEmpty().let { catalog ->
-            val primary = catalog.firstOrNull { it.available && it.role == "default" }
-                ?: catalog.firstOrNull { it.available }
-            primary?.let { abbreviateModelName(it.name) }
-        }
+        val openClawPrimary = if (state.gatewayConnected == true && state.agentType == "openclaw") {
+            state.modelCatalog.orEmpty().let { catalog ->
+                val primary = catalog.firstOrNull { it.available && it.role == "default" }
+                    ?: catalog.firstOrNull { it.available }
+                primary?.let { abbreviateModelName(it.name) }
+            }
+        } else null
         if (openClawPrimary != null) {
             Text(text = "OpenClaw: $openClawPrimary", style = monoStyle, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
             HorizontalDivider(thickness = 1.dp, color = Color.Black)

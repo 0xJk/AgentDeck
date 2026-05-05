@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.agentdeck.net.ModuleHealthState
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.terrarium.renderer.einkColorEnabled
 import dev.agentdeck.util.formatBytes
@@ -36,7 +37,26 @@ import kotlin.math.roundToInt
 fun EinkStatusCompact(
     state: DashboardState,
     modifier: Modifier = Modifier,
+    showTankStatus: Boolean = true,
+    showDeviceDiagnostic: Boolean = true,
 ) {
+    if (!showTankStatus && !showDeviceDiagnostic) return
+
+    if (!showTankStatus) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(horizontal = 6.dp, vertical = 0.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            SectionLabel("DEVICES")
+            downstreamDeviceLine(state.moduleHealth)?.let { line ->
+                DataLine(line, maxLines = 2)
+            } ?: DataLine("No downstream devices", color = Color.DarkGray)
+        }
+        return
+    }
+
     Row(
         modifier = modifier
             .fillMaxSize()
@@ -58,7 +78,7 @@ fun EinkStatusCompact(
             modifier = Modifier.weight(0.70f).fillMaxHeight().padding(start = 6.dp),
             verticalArrangement = Arrangement.Center,
         ) {
-            ModelsColumn(state)
+            ModelsColumn(state, showDeviceDiagnostic)
         }
     }
 }
@@ -150,15 +170,17 @@ private fun GaugeText(label: String, percent: Double, resetTime: String, stale: 
 // -- MODELS column (inline label: "Label: data" on one line) --
 
 @Composable
-private fun ModelsColumn(state: DashboardState) {
+private fun ModelsColumn(state: DashboardState, showDeviceDiagnostic: Boolean) {
     val labelColor = if (einkColorEnabled) Color(0xFF335588) else Color.DarkGray
 
     // OpenClaw
-    val openClawPrimary = state.modelCatalog.orEmpty().let { catalog ->
-        val primary = catalog.firstOrNull { it.available && it.role == "default" }
-            ?: catalog.firstOrNull { it.available }
-        primary?.let { abbreviateModelName(it.name) }
-    }
+    val openClawPrimary = if (state.gatewayConnected == true && state.agentType == "openclaw") {
+        state.modelCatalog.orEmpty().let { catalog ->
+            val primary = catalog.firstOrNull { it.available && it.role == "default" }
+                ?: catalog.firstOrNull { it.available }
+            primary?.let { abbreviateModelName(it.name) }
+        }
+    } else null
     if (openClawPrimary != null) {
         InlineModelLine("OpenClaw", openClawPrimary, labelColor = labelColor)
     }
@@ -209,6 +231,58 @@ private fun ModelsColumn(state: DashboardState) {
             dataColor = if (einkColorEnabled) Color(0xFF335588) else Color.Black,
         )
     }
+
+    if (showDeviceDiagnostic) {
+        InlineModelLine(
+            "Devices",
+            downstreamDeviceLine(state.moduleHealth) ?: "No downstream devices",
+            labelColor = labelColor,
+            dataColor = if (state.moduleHealth == null) Color.DarkGray else Color.Black,
+            maxLines = 2,
+        )
+    }
+}
+
+private fun downstreamDeviceLine(health: ModuleHealthState?): String? {
+    if (health == null) return null
+
+    val labels = mutableListOf<String>()
+    val streamDeckCount = health.streamDeck?.devices.orEmpty().size
+    if (streamDeckCount > 0) labels += countLabel("StreamDeck", streamDeckCount)
+
+    health.d200h?.let { d200h ->
+        labels += when {
+            d200h.connected -> "D200H"
+            d200h.managerOpened -> "D200H pending"
+            d200h.lastOpenError != null -> "D200H error"
+            else -> "D200H off"
+        }
+    }
+
+    val pixoo = health.pixoo
+    if ((pixoo?.configuredDeviceCount ?: 0) > 0) {
+        labels += countLabel("Pixoo", pixoo!!.configuredDeviceCount)
+    }
+
+    val serialBoards = health.serial?.connectedBoards.orEmpty()
+    if (serialBoards.isNotEmpty()) labels += countLabel("ESP32", serialBoards.size)
+
+    val adb = health.adb
+    if (adb != null) {
+        val eInkCount = adb.classifiedDevices.count { it.deviceClass.startsWith("e-ink.") }
+        val tabletCount = adb.classifiedDevices.count { it.deviceClass == "android.tablet" }
+        val tc001Count = adb.classifiedDevices.count { it.deviceClass == "ulanzi.tc001" }
+        if (eInkCount > 0) labels += countLabel("E-ink", eInkCount)
+        if (tabletCount > 0) labels += countLabel("Tablet", tabletCount)
+        if (tc001Count > 0) labels += countLabel("TC001", tc001Count)
+        if (labels.isEmpty() && adb.lastError != null) labels += "ADB error"
+    }
+
+    return labels.takeIf { it.isNotEmpty() }?.joinToString(", ")
+}
+
+private fun countLabel(label: String, count: Int): String {
+    return if (count > 1) "$label:$count" else label
 }
 
 // -- Shared --

@@ -528,19 +528,13 @@ connMgr.on('display_state', (ev: { type: 'display_state'; displayOn: boolean }) 
   }
 });
 
-connMgr.on('connected', () => {
-  dinfo('Plugin', `connected (agentType=${proxiedAgentType} prevState=${currentState})`);
-  setDaemonConnected(true);
-  // Re-send slot map so bridge knows our layout when the WS comes up after
-  // the plugin has already loaded (onWillAppear's first send may have been
-  // dropped because the bridge was not yet connected).
-  sendSlotMap();
-  // Announce ourselves so the daemon's Dashboard → Downstream rail can
-  // surface a "Stream Deck" row with the physical devices this plugin
-  // sees. Without this the daemon treats the WS as an anonymous viewer.
-  // DeviceType 7 = Stream Deck+, 0 = Stream Deck, 1 = Stream Deck Mini,
-  // 2 = Stream Deck XL, 6 = Stream Deck Pedal. Family string is
-  // best-effort; unknown types fall through as "streamdeck-unknown".
+// Announce ourselves so the daemon's Dashboard → Downstream rail can surface
+// a "Stream Deck" row with the physical devices this plugin sees. Called
+// from `connected` (initial registration) and from device hot-plug events
+// (so the row updates without waiting for the daemon's 120 s TTL eviction).
+// DeviceType 7 = Stream Deck+, 0 = Stream Deck, 1 = Stream Deck Mini,
+// 2 = Stream Deck XL, 6 = Stream Deck Pedal.
+function sendClientRegister(reason: string): void {
   const familyFor = (type: number | undefined): string => {
     switch (type) {
       case 0: return 'streamdeck';
@@ -558,12 +552,31 @@ connMgr.on('connected', () => {
     columns: d.size?.columns as number | undefined,
     rows: d.size?.rows as number | undefined,
   }));
+  dinfo('Plugin', `client_register (${reason}) devices=${devices.length} families=[${devices.map(d => d.family).join(',')}]`);
   connMgr.send({
     type: 'client_register',
     clientType: 'streamdeck-plugin',
     clientLabel: 'Stream Deck',
     devices,
   });
+}
+
+// Re-announce on hot-plug. The Elgato SDK fires these for each physical
+// device add/remove; SDK-side `streamDeck.devices` is updated *before* the
+// listener runs, so the snapshot inside sendClientRegister picks up the
+// change. send() is a no-op if WS is down — the `connected` handler below
+// will resend on reconnect.
+streamDeck.devices.onDeviceDidConnect(() => sendClientRegister('deviceDidConnect'));
+streamDeck.devices.onDeviceDidDisconnect(() => sendClientRegister('deviceDidDisconnect'));
+
+connMgr.on('connected', () => {
+  dinfo('Plugin', `connected (agentType=${proxiedAgentType} prevState=${currentState})`);
+  setDaemonConnected(true);
+  // Re-send slot map so bridge knows our layout when the WS comes up after
+  // the plugin has already loaded (onWillAppear's first send may have been
+  // dropped because the bridge was not yet connected).
+  sendSlotMap();
+  sendClientRegister('connected');
   // Request fresh usage data immediately on connect (covers sleep/wake recovery)
   connMgr.send({ type: 'query_usage' });
 });

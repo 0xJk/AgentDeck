@@ -54,8 +54,7 @@ class MainActivity : ComponentActivity() {
         // Pantone 6 (RK3566) ignores late requestedOrientation changes,
         // so this must happen before the first frame renders.
         if (isEinkDevice) {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            applySystemRotation(Surface.ROTATION_90)
+            applyOrientationPreference(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
 
             @Suppress("DEPRECATION")
             window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
@@ -69,16 +68,7 @@ class MainActivity : ComponentActivity() {
         // Apply saved orientation preference (async — for user changes via Settings)
         lifecycleScope.launch {
             displayPrefs.orientationFlow.collect { orientation ->
-                requestedOrientation = orientation
-
-                if (isEinkDevice) {
-                    val rotation = when (orientation) {
-                        ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE -> Surface.ROTATION_90
-                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT -> Surface.ROTATION_0
-                        else -> return@collect
-                    }
-                    applySystemRotation(rotation)
-                }
+                applyOrientationPreference(orientation)
             }
         }
 
@@ -129,7 +119,20 @@ class MainActivity : ComponentActivity() {
      * Apply system-level rotation for RK3566 devices that ignore requestedOrientation.
      * Auto-requests WRITE_SETTINGS permission if not granted (lost on APK reinstall).
      */
-    private fun applySystemRotation(rotation: Int) {
+    private fun applyOrientationPreference(orientation: Int) {
+        requestedOrientation = orientation
+
+        if (!isEinkDevice) return
+
+        when (orientation) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE -> applySystemFixedRotation(Surface.ROTATION_90)
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT -> applySystemFixedRotation(Surface.ROTATION_0)
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED -> applySystemAutoRotation()
+            else -> Log.w(TAG, "Unsupported orientation preference: $orientation")
+        }
+    }
+
+    private fun applySystemFixedRotation(rotation: Int) {
         if (Settings.System.canWrite(this)) {
             try {
                 Settings.System.putInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0)
@@ -148,6 +151,18 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "Cannot open WRITE_SETTINGS screen: ${e.message}")
             }
+        }
+    }
+
+    private fun applySystemAutoRotation() {
+        if (Settings.System.canWrite(this)) {
+            try {
+                Settings.System.putInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 1)
+            } catch (e: Exception) {
+                Log.w(TAG, "System auto-rotation fallback failed: ${e.message}")
+            }
+        } else {
+            Log.w(TAG, "WRITE_SETTINGS not granted — auto-rotation fallback unavailable")
         }
     }
 

@@ -40,10 +40,12 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
 
     private var browser: NWBrowser?
     private let queue = DispatchQueue(label: "dev.agentdeck.discovery")
+    private var isTerminating = false
 
     // MARK: - Start/Stop
 
     func startSearching() {
+        guard !isTerminating else { return }
         guard browser == nil else { return }
 
         let params = NWParameters()
@@ -55,24 +57,25 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
         browser.stateUpdateHandler = { [weak self] state in
             print("[Discovery] browser state: \(state)")
             DispatchQueue.main.async {
+                guard let self, !self.isTerminating else { return }
                 switch state {
                 case .ready:
-                    self?.isSearching = true
+                    self.isSearching = true
                 case .waiting:
                     // .waiting typically means local network permission was just granted
                     // or network conditions changed. Restart the browser to pick up changes.
                     print("[Discovery] browser waiting — restarting to apply permission change")
-                    self?.isSearching = false
-                    self?.restartBrowser()
+                    self.isSearching = false
+                    self.restartBrowser()
                 case .failed(let error):
                     print("[Discovery] browser failed: \(error)")
-                    self?.isSearching = false
+                    self.isSearching = false
                     // Auto-restart after failure (e.g., network change)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                         self?.restartBrowser()
                     }
                 case .cancelled:
-                    self?.isSearching = false
+                    self.isSearching = false
                 default:
                     break
                 }
@@ -80,11 +83,12 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
         }
 
         browser.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self, !self.isTerminating else { return }
             print("[Discovery] browseResults changed: \(results.count) results")
             for r in results {
                 print("[Discovery]   endpoint=\(r.endpoint) metadata=\(r.metadata)")
             }
-            self?.handleResults(results)
+            self.handleResults(results)
         }
 
         browser.start(queue: queue)
@@ -92,11 +96,13 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
 
     /// Restart the browser (e.g., after local network permission granted or network change)
     private func restartBrowser() {
+        guard !isTerminating else { return }
         browser?.cancel()
         browser = nil
         // Brief delay to let the system settle after permission/network change
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.startSearching()
+            guard let self, !self.isTerminating else { return }
+            self.startSearching()
         }
     }
 
@@ -109,9 +115,20 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
         }
     }
 
+    func prepareForTermination() {
+        isTerminating = true
+        browser?.cancel()
+        browser = nil
+        DispatchQueue.main.async {
+            self.isSearching = false
+            self.bridges.removeAll()
+        }
+    }
+
     // MARK: - Result Handling
 
     private func handleResults(_ results: Set<NWBrowser.Result>) {
+        guard !isTerminating else { return }
         // Dedup by service instance name — same service appears on multiple interfaces
         // (WiFi + Ethernet). Keep first occurrence (with metadata preferred).
         var seenNames = Set<String>()
@@ -166,6 +183,7 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
         // Resolve all endpoints via NWConnection (live mDNS, not cached TXT)
         for item in needsResolve {
             resolveEndpoint(item.endpoint) { [weak self] resolvedHost in
+                guard let self, !self.isTerminating else { return }
                 // Reject unusable addresses:
                 //   nil            — resolve failed
                 //   169.254.*      — IPv4 link-local (APIPA), can't route between devices
@@ -190,12 +208,13 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
                 let agent = item.agentType
 
                 // Always fetch /health to get agentType (TXT records may be empty)
-                self?.fetchHealthInfo(host: resolvedHost, port: port) { [weak self] health in
+                self.fetchHealthInfo(host: resolvedHost, port: port) { [weak self] health in
+                    guard let self, !self.isTerminating else { return }
                     let resolvedToken = token ?? health.token
                     let resolvedAgent = agent ?? health.agentType
                     print("[Discovery] resolved \(name) to \(resolvedHost):\(port) token=\(resolvedToken != nil ? "yes" : "nil") agent=\(resolvedAgent ?? "nil")")
                     DispatchQueue.main.async {
-                        guard let self else { return }
+                        guard !self.isTerminating else { return }
                         let bridge = DiscoveredBridge(
                             name: name,
                             host: resolvedHost,
@@ -215,6 +234,7 @@ final class BridgeDiscovery: ObservableObject, @unchecked Sendable {
         }
 
         DispatchQueue.main.async {
+            guard !self.isTerminating else { return }
             // Remove bridges whose mDNS service disappeared (not in current browse results)
             let currentNames = Set(needsResolve.map(\.name))
             self.bridges.removeAll { !currentNames.contains($0.name) }

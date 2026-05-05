@@ -14,7 +14,7 @@
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { debug } from '../logger.js';
+import { debug, logError } from '../logger.js';
 import { ApmeStore } from './store.js';
 import { apmeDashboardHtml } from './dashboard-html.js';
 import { ApmeCollector } from './collector.js';
@@ -34,13 +34,15 @@ export interface ApmeModule {
 
 let singleton: ApmeModule | null = null;
 
-/** Initialize the APME subsystem. Returns null if the SQLite store can't open. */
+/** Initialize the APME subsystem. Returns null if the SQLite store can't open.
+ *  When null, the failure reason is logged at ERROR level — silent disable was
+ *  the dominant cause of multi-day data outages observed in user telemetry. */
 export async function initApme(dbPath?: string): Promise<ApmeModule | null> {
   if (singleton) return singleton;
   const store = new ApmeStore(dbPath);
   const ok = await store.init();
   if (!ok) {
-    debug('APME', 'initApme skipped (store disabled)');
+    logError(`APME disabled — ${store.lastInitError ?? 'unknown init failure'}. Agent runs will not be measured.`);
     return null;
   }
   const hwSampler = new ApmeHwSampler();

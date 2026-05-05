@@ -5,8 +5,13 @@
  * merged with cost-sensitive defaults. The contract is intentionally strict:
  *
  *   - Default judge backend = local MLX (zero marginal cost).
- *   - Anthropic API is opt-in — users must explicitly set `backend: "api"`
- *     AND have credentials available, otherwise the runner skips layer 2.
+ *   - `backend: "api"` is **NOT supported on the Node bridge** — `callApi()`
+ *     in runner.ts is a stub that always throws. The Swift daemon
+ *     (App Store macOS) does implement an Anthropic API adapter; users on
+ *     macOS can set "api" through the Apple Settings picker because that
+ *     value rides in a different Group Container settings.json. On the Node
+ *     bridge, "api" is silently downgraded to "mlx" with a warning so a
+ *     misconfigured value never produces silent zero-eval sessions.
  *   - `sampleRate` + `onlyWhenDisagreement` gate how often layer 2 runs at all.
  */
 
@@ -105,8 +110,28 @@ export function loadApmeConfig(): ApmeConfig {
   };
   // Clamp pathological values.
   judge.sampleRate = Math.max(0, Math.min(1, Number(judge.sampleRate) || 0));
+
+  // Any forced backend change MUST also wipe backend-specific endpoint/model
+  // so we don't end up calling, e.g., callMlx() against an Anthropic URL or
+  // a model id that only exists on the original backend. resetBackendCoupledFields
+  // restores the backend's own defaults; the user can re-state per-backend
+  // overrides cleanly in settings.json.
+  const resetBackendCoupledFields = (reason: string): void => {
+    debug('APME', `${reason} — also resetting judge.endpoint and judge.model to mlx defaults to avoid cross-backend leakage.`);
+    judge.endpoint = undefined;
+    judge.model = DEFAULT_APME_CONFIG.judge.model;
+  };
+
   if (!['mlx', 'api', 'openclaw', 'foundationModels'].includes(judge.backend)) {
-    debug('APME', `unknown judge.backend=${judge.backend}, falling back to mlx`);
+    resetBackendCoupledFields(`unknown judge.backend=${judge.backend}, falling back to mlx`);
+    judge.backend = 'mlx';
+  }
+  // The 'api' backend is currently a stub on the Node bridge (callApi() always
+  // throws). Downgrade silently to MLX with a one-shot diagnostic so a stale
+  // settings.json doesn't leave APME wedged. Swift daemon has its own loader
+  // that does NOT degrade — see apple/AgentDeck/Daemon/Apme/ApmeSettings.swift.
+  if (judge.backend === 'api') {
+    resetBackendCoupledFields('judge.backend="api" is not implemented on the Node bridge — downgrading to "mlx". Use the macOS app for Anthropic API judging, or pick "openclaw" / "foundationModels" / "mlx"');
     judge.backend = 'mlx';
   }
   judge.fallbackToMlx = Boolean(judge.fallbackToMlx);

@@ -42,6 +42,12 @@ struct CloudCreatureState: Identifiable {
     let homeX: Float
     let homeY: Float
     let scale: Float
+    /// Number of underlying Codex threads folded into this sprite. Each
+    /// Claude Code rescue/stop-gate spawn creates a fresh codex thread, so
+    /// without folding the same workspace looks like 4-5 simultaneously
+    /// "acting" creatures. Render layers may surface this with a small
+    /// "×N" badge or simply ignore it (default 1 = unfolded).
+    var groupSize: Int = 1
     var exitedWaiting = false
 }
 
@@ -179,38 +185,108 @@ extension DashboardState {
 
         result.creatures = creatures
 
-        // Cloud (Codex CLI sessions)
+        // Cloud (Codex CLI sessions) — folded by projectName.
+        //
+        // Storage keeps one entry per Codex thread (APME, timeline, focus
+        // relay all key off sessionId), but the user's mental model is "one
+        // Codex working in this project" — Claude Code's rescue/stop-gate
+        // spawns a fresh thread on every turn, which without folding shows
+        // up as 4-5 simultaneous Codex creatures for what looks like a
+        // single ongoing task. Group by projectName so the terrarium
+        // collapses companion-task bursts into a single sprite per
+        // workspace; pick the most-recent thread as the representative
+        // (its sessionId is what focus-relay/state-update target).
+        struct CloudFolded {
+            let representative: SessionInfo
+            var states: [String?]
+        }
+        struct CloudPrimary {
+            let id: String
+            let projectName: String?
+            let modelName: String?
+            let stateStr: String?
+            let cloudState: CloudVisualState
+            let startedAt: String?
+        }
         let primaryIsCloud = state != .disconnected && agentType == "codex-cli"
-        let cloudSiblings = siblingSessions
+        let cloudPrimary: CloudPrimary? = primaryIsCloud ? CloudPrimary(
+            id: sessionId ?? "cl-primary",
+            projectName: projectName,
+            modelName: modelName,
+            stateStr: nil,
+            cloudState: mapToCloudState(state),
+            startedAt: nil
+        ) : nil
+
+        let cloudSiblingsRaw = siblingSessions
             .filter { $0.agentType == "codex-cli" }
             .filter { !(primaryIsCloud && $0.id == sessionId) }
-            .sorted { $0.id < $1.id }
-        let cloudCount = (primaryIsCloud ? 1 : 0) + cloudSiblings.count
-        let cloudSlots = CreatureLayout.layoutCloudCreatures(count: cloudCount)
 
-        var cloudCreatures: [CloudCreatureState] = []
-        var cloudSlotIdx = 0
-        if primaryIsCloud {
-            let s = cloudSlots.first ?? CreatureSlot(x: 0.50, y: 0.45, scale: 1.0)
-            cloudCreatures.append(CloudCreatureState(
-                id: sessionId ?? "cl-primary",
-                projectName: projectName,
-                modelName: modelName,
-                state: mapToCloudState(state),
-                homeX: s.x, homeY: s.y, scale: s.scale
-            ))
-            cloudSlotIdx = 1
+        // Group key: projectName when present, else a single shared key so
+        // every empty-project Codex thread folds into one cloud sprite.
+        // The user's mental model is "one Codex working in this dashboard"
+        // — when Companion Tasks arrive without a project tag (low-quality
+        // hook payload, OTel span without `cwd` attr) they should still
+        // collapse instead of stacking up as separate phantoms. Distinct
+        // projects continue to render as distinct sprites.
+        func cloudGroupKey(projectName: String?, id: String) -> String {
+            if let p = projectName, !p.isEmpty { return p }
+            return "__codex_no_project__"
         }
-        for (i, sibling) in cloudSiblings.enumerated() {
-            guard !cloudSlots.isEmpty else { break }
-            let idx = min(cloudSlotIdx + i, cloudSlots.count - 1)
-            let s = cloudSlots[idx]
-            cloudCreatures.append(CloudCreatureState(
+        func cloudStatePriority(_ s: CloudVisualState) -> Int {
+            switch s {
+            case .pulsing: return 3      // processing — most active
+            case .waiting: return 2      // awaiting user
+            case .drifting: return 1     // idle
+            case .dormant: return 0      // disconnected
+            }
+        }
+
+        // Build groups in encounter order: primary first (if any) under its
+        // own key, then siblings appended under the same key.
+        var cloudGroupOrder: [String] = []
+        var cloudGroups: [String: [(id: String, projectName: String?, modelName: String?, cloudState: CloudVisualState, startedAt: String?)]] = [:]
+
+        if let p = cloudPrimary {
+            let key = cloudGroupKey(projectName: p.projectName, id: p.id)
+            cloudGroupOrder.append(key)
+            cloudGroups[key, default: []].append((id: p.id, projectName: p.projectName, modelName: p.modelName, cloudState: p.cloudState, startedAt: p.startedAt))
+        }
+        for sibling in cloudSiblingsRaw {
+            let key = cloudGroupKey(projectName: sibling.projectName, id: sibling.id)
+            if cloudGroups[key] == nil { cloudGroupOrder.append(key) }
+            cloudGroups[key, default: []].append((
                 id: sibling.id,
                 projectName: sibling.projectName,
                 modelName: sibling.modelName,
-                state: mapSiblingToCloudState(sibling.state),
-                homeX: s.x, homeY: s.y, scale: s.scale
+                cloudState: mapSiblingToCloudState(sibling.state),
+                startedAt: sibling.startedAt
+            ))
+        }
+
+        let cloudSlots = CreatureLayout.layoutCloudCreatures(count: cloudGroupOrder.count)
+        var cloudCreatures: [CloudCreatureState] = []
+        for (slotIdx, key) in cloudGroupOrder.enumerated() {
+            guard let members = cloudGroups[key], !members.isEmpty else { continue }
+            // Aggregate state = highest-priority member.
+            let aggregate = members.max(by: { cloudStatePriority($0.cloudState) < cloudStatePriority($1.cloudState) })?.cloudState ?? .drifting
+            // Representative = most-recent startedAt, fallback to last-seen
+            // member (encounter order preserves primary precedence).
+            let representative = members.max(by: { (lhs, rhs) in
+                (lhs.startedAt ?? "") < (rhs.startedAt ?? "")
+            }) ?? members.last!
+            let slot = cloudSlots.indices.contains(slotIdx)
+                ? cloudSlots[slotIdx]
+                : (cloudSlots.last ?? CreatureSlot(x: 0.50, y: 0.45, scale: 1.0))
+            cloudCreatures.append(CloudCreatureState(
+                id: representative.id,
+                projectName: representative.projectName,
+                modelName: representative.modelName,
+                state: aggregate,
+                homeX: slot.x,
+                homeY: slot.y,
+                scale: slot.scale,
+                groupSize: members.count
             ))
         }
         result.cloudCreatures = cloudCreatures

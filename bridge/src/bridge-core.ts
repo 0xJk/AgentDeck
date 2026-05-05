@@ -160,7 +160,12 @@ export class BridgeCore {
       });
     }
     this.bridgeTimeline.onEntry((entry, upsert) => {
-      const evt: BridgeEvent = { type: 'timeline_event', entry, ...(upsert ? { upsert: true } : {}) };
+      const attributedEntry = {
+        ...entry,
+        projectName: entry.projectName ?? this.projectName,
+        sessionId: entry.sessionId ?? this.sessionId,
+      };
+      const evt: BridgeEvent = { type: 'timeline_event', entry: attributedEntry, ...(upsert ? { upsert: true } : {}) };
       this.broadcast(evt);
     });
   }
@@ -420,6 +425,7 @@ export class BridgeCore {
         onAppeared?.();
       } else if (!status.available && wasAvailable) {
         this.cachedGatewayConnected = false;
+        this.cachedGatewayHasError = false;
         onDisappeared?.();
       }
       if (status.available !== wasAvailable) {
@@ -576,7 +582,11 @@ export class BridgeCore {
     } as BridgeEvent);
 
     // Timeline history
-    const history = this.bridgeTimeline.getHistory();
+    const history = this.bridgeTimeline.getHistory().map((entry) => ({
+      ...entry,
+      projectName: entry.projectName ?? this.projectName,
+      sessionId: entry.sessionId ?? this.sessionId,
+    }));
     if (history.length > 0) {
       this.wsServer.sendTo(ws, { type: 'timeline_history', entries: history } as BridgeEvent);
     }

@@ -20,6 +20,16 @@ import { dlog, dinfo, dwarn } from './log.js';
 
 const TAG = 'ConnMgr';
 
+export interface ConnectionSnapshot {
+  connected: boolean;
+  bridgePort: number;
+  daemonPort: number | null;
+  daemonStatus: 'found' | 'missing' | 'unknown';
+  lastProbeAt: number;
+  lastRetryAt: number | null;
+  message: string;
+}
+
 /** Events forwarded from the bridge */
 const FORWARDED_EVENTS = [
   'state_update',
@@ -39,6 +49,11 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
   readonly bridge: BridgeClient;
   private started = false;
   private gatewayAvailable = false;
+  private lastDaemonPort: number | null = null;
+  private daemonStatus: ConnectionSnapshot['daemonStatus'] = 'unknown';
+  private lastProbeAt = 0;
+  private lastRetryAt: number | null = null;
+  private discoveryMessage = '';
 
   constructor() {
     super();
@@ -94,6 +109,27 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
     return this.bridge.getPort();
   }
 
+  getConnectionSnapshot(): ConnectionSnapshot {
+    return {
+      connected: this.bridge.isConnected(),
+      bridgePort: this.bridge.getPort(),
+      daemonPort: this.lastDaemonPort,
+      daemonStatus: this.daemonStatus,
+      lastProbeAt: this.lastProbeAt,
+      lastRetryAt: this.lastRetryAt,
+      message: this.discoveryMessage,
+    };
+  }
+
+  retryNow(): ConnectionSnapshot {
+    this.lastRetryAt = Date.now();
+    const port = this.findDaemonPort();
+    if (!this.bridge.isConnected()) {
+      this.bridge.connect(port ?? undefined);
+    }
+    return this.getConnectionSnapshot();
+  }
+
   // ===== Agent/Session Commands (all via daemon) =====
 
   /**
@@ -143,6 +179,7 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
    * cross_dir_daemon_discovery.md). First live match wins.
    */
   private findDaemonPort(): number | null {
+    this.lastProbeAt = Date.now();
     const home = homedir();
     const candidates = [
       join(home, '.agentdeck', 'daemon.json'),
@@ -154,11 +191,17 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
         const data = readFileSync(daemonFile, 'utf-8');
         const info = JSON.parse(data) as { port: number; pid: number };
         try { process.kill(info.pid, 0); } catch { continue; }
+        this.lastDaemonPort = info.port;
+        this.daemonStatus = 'found';
+        this.discoveryMessage = daemonFile;
         return info.port;
       } catch {
         continue;
       }
     }
+    this.lastDaemonPort = null;
+    this.daemonStatus = 'missing';
+    this.discoveryMessage = 'daemon.json not found';
     return null;
   }
 

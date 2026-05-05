@@ -61,7 +61,7 @@ final class StateTimelineGenerator {
                 raw = "Prompt sent"
                 detail = nil
             }
-            store.addEntry(TimelineEntry(ts: now, type: .chatStart, raw: raw, detail: detail, agentType: agent, projectName: proj, sessionId: sid))
+            store.addEntry(TimelineEntry(ts: now, type: .chatStart, raw: raw, detail: detail, agentType: agent, projectName: proj, sessionId: sid, startedAt: now))
 
         case (_, .awaitingPermission) where previousState != .awaitingPermission:
             let q = question ?? "Permission requested"
@@ -87,8 +87,9 @@ final class StateTimelineGenerator {
             let detail = prompt.map { p in
                 "Prompt: \(p.count > 200 ? String(p.prefix(200)) + "..." : p)"
             }
+            let startedAt = chatStartTime
             chatStartTime = nil
-            store.addEntry(TimelineEntry(ts: now, type: .chatEnd, raw: summary, detail: detail, agentType: agent, projectName: proj, sessionId: sid))
+            store.addEntry(TimelineEntry(ts: now, type: .chatEnd, raw: summary, detail: detail, agentType: agent, projectName: proj, sessionId: sid, startedAt: startedAt, endedAt: now))
 
         case (.disconnected, _) where newState != .disconnected:
             store.addEntry(TimelineEntry(ts: now, type: .chatStart, raw: "Connected", agentType: agent, projectName: proj, sessionId: sid))

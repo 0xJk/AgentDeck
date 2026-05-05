@@ -68,12 +68,24 @@ fun ConnectionStatusBadge(
         )
         if (currentUrl != null) {
             Text(
-                text = currentUrl,
+                text = redactedConnectionUrl(currentUrl),
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
+}
+
+private fun redactedConnectionUrl(url: String): String {
+    val tokenPrefix = "token="
+    val tokenStart = url.indexOf(tokenPrefix)
+    if (tokenStart < 0) return url
+
+    val valueStart = tokenStart + tokenPrefix.length
+    val valueEnd = url.indexOf('&', startIndex = valueStart).let { end ->
+        if (end < 0) url.length else end
+    }
+    return url.replaceRange(valueStart, valueEnd, "redacted")
 }
 
 // ── Error Message ─────────────────────────────────────────────────────

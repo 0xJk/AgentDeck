@@ -666,6 +666,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
                 ts: Date.now(), type: 'chat_start', raw: promptRaw,
                 ...(promptDetail ? { detail: promptDetail } : {}),
                 ...(this.chatIsAutomated ? { automated: true } : {}),
+                startedAt: this.chatStartTime,
               });
             } else {
               // Gateway always sends cumulative content — replace, never append
@@ -681,6 +682,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
                   this.emitTimelineUpsert({
                     ts: this.chatStartTime, type: 'chat_start',
                     raw: cleanRawText(topicHint),
+                    startedAt: this.chatStartTime,
                   });
                 }
               }
@@ -719,6 +721,8 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
                 ts: Date.now(), type: 'chat_response',
                 raw: cleanRawText(respRaw),
                 detail: cleanDetailText(responseContent.slice(0, 3000)),
+                startedAt: this.chatStartTime,
+                endedAt: Date.now(),
               });
             }
             const cleanedResponse = responseContent ? cleanNopMarkers(cleanDetailText(responseContent)) : undefined;
@@ -736,6 +740,8 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
               ts: chatEndTs, type: 'chat_end', raw: parts.join(' \u00b7 '),
               ...(responseDetail ? { detail: responseDetail } : {}),
               ...(this.chatIsAutomated ? { automated: true } : {}),
+              startedAt: this.chatStartTime,
+              endedAt: chatEndTs,
             });
 
             // Async LLM summarization — fire-and-forget, upsert chat_end when ready
@@ -743,6 +749,7 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
               const savedToolSummary = toolSummary;
               const savedDuration = duration;
               const savedAutomated = this.chatIsAutomated;
+              const savedStartedAt = this.chatStartTime;
               summarizeResponse(responseContent).then((summary) => {
                 if (summary) {
                   const enrichedParts = [summary];
@@ -755,6 +762,8 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
                     raw: enrichedParts.join(' \u00b7 '),
                     ...(responseDetail ? { detail: responseDetail } : {}),
                     ...(savedAutomated ? { automated: true } : {}),
+                    startedAt: savedStartedAt,
+                    endedAt: chatEndTs,
                   });
                 }
               }).catch(() => { /* summarization failed — keep heuristic */ });

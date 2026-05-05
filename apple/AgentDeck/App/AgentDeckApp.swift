@@ -160,6 +160,7 @@ struct AgentDeckApp: App {
     private func configureDaemonConnection() {
         // Wire AppDelegate to daemon service for clean shutdown
         appDelegate.daemonService = daemonService
+        appDelegate.stateHolder = stateHolder
 
         daemonService.onReady = { [stateHolder] wsUrl in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -200,6 +201,7 @@ struct AgentDeckApp: App {
 /// particularly applicationWillTerminate for clean daemon shutdown.
 class AppDelegate: NSObject, NSApplicationDelegate {
     var daemonService: DaemonService?
+    weak var stateHolder: AgentStateHolder?
 
     /// Intercept termination to run daemon cleanup without blocking the main
     /// thread. The previous `applicationWillTerminate` implementation pumped
@@ -215,6 +217,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for window in sender.windows {
             window.orderOut(nil)
         }
+
+        // Stop dashboard-side reconnect loops before bringing the daemon down.
+        // Otherwise the UI client can keep reconnecting to 127.0.0.1 after
+        // the in-process server has already closed, producing connection
+        // refused spam during Quit.
+        stateHolder?.prepareForTermination()
 
         // Remove daemon.json FIRST — fast, idempotent, and prevents stale-guard
         // deadlocks on the next launch even if the async shutdown below hangs.

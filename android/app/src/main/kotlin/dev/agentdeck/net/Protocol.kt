@@ -102,6 +102,7 @@ data class StateUpdate(
     val gatewayAvailable: Boolean? = null,
     val gatewayConnected: Boolean? = null,
     val gatewayHasError: Boolean? = null,
+    val moduleHealth: ModuleHealthState? = null,
     val voiceAssistantState: String? = null,
     val voiceAssistantText: String? = null,
     val voiceAssistantResponseText: String? = null,
@@ -231,6 +232,92 @@ data class SessionInfo(
     val effortLevel: String? = null,
 )
 
+@Serializable
+data class ModuleHealthState(
+    val adb: AdbHealth? = null,
+    val d200h: D200hHealth? = null,
+    val pixoo: PixooHealth? = null,
+    val serial: SerialHealth? = null,
+    val streamDeck: StreamDeckHealth? = null,
+)
+
+@Serializable
+data class StreamDeckHealth(
+    val devices: List<StreamDeckDeviceInfo> = emptyList(),
+)
+
+@Serializable
+data class StreamDeckDeviceInfo(
+    val id: String = "",
+    val name: String = "",
+    val family: String? = null,
+    val columns: Int? = null,
+    val rows: Int? = null,
+)
+
+@Serializable
+data class AdbHealth(
+    val available: Boolean = false,
+    val devices: List<String> = emptyList(),
+    val classifiedDevices: List<ClassifiedDevice> = emptyList(),
+    val reverseReadyCount: Int = 0,
+    val lastError: String? = null,
+)
+
+@Serializable
+data class ClassifiedDevice(
+    val serial: String,
+    val manufacturer: String? = null,
+    val model: String? = null,
+    @SerialName("class") val deviceClass: String = "android.tablet",
+)
+
+@Serializable
+data class D200hHealth(
+    val connected: Boolean = false,
+    val managerOpened: Boolean = false,
+    val sandboxEnabled: Boolean = false,
+    val usbEntitlementPresent: Boolean = false,
+    val buttonPressCount: Int = 0,
+    val hidReportCount: Int = 0,
+    val writeOK: Int = 0,
+    val writeFail: Int = 0,
+    val lastWriteError: String? = null,
+    val lastOpenError: String? = null,
+)
+
+@Serializable
+data class PixooHealth(
+    val configuredDeviceCount: Int = 0,
+    val deviceIps: List<String> = emptyList(),
+    val hasFrame: Boolean = false,
+    val displayDimmed: Boolean = false,
+    val lastPushError: String? = null,
+    val devices: List<PixooDeviceHealth> = emptyList(),
+)
+
+@Serializable
+data class PixooDeviceHealth(
+    val ip: String = "",
+    val online: Boolean = false,
+    val failures: Int = 0,
+    val backedOff: Boolean = false,
+)
+
+@Serializable
+data class SerialHealth(
+    val connectedPorts: List<String> = emptyList(),
+    val connectedBoards: List<SerialPortInfo> = emptyList(),
+    val lastError: String? = null,
+)
+
+@Serializable
+data class SerialPortInfo(
+    val port: String,
+    val board: String? = null,
+    val firmwareVersion: String? = null,
+)
+
 // --- Bridge timeline entry (rich OpenClaw events) ---
 
 @Serializable
@@ -242,6 +329,11 @@ data class BridgeTimelineEntry(
     val approvalId: String? = null,
     val status: String? = null,
     val agentType: String? = null,
+    val projectName: String? = null,
+    val sessionId: String? = null,
+    val runId: String? = null,
+    val startedAt: Long? = null,
+    val endedAt: Long? = null,
 )
 
 fun BridgeTimelineEntry.toTimelineEntry() = dev.agentdeck.state.TimelineEntry(
@@ -250,6 +342,11 @@ fun BridgeTimelineEntry.toTimelineEntry() = dev.agentdeck.state.TimelineEntry(
     summary = raw,
     detail = detail,
     agentType = agentType,
+    projectName = projectName,
+    sessionId = sessionId,
+    runId = runId,
+    startedAt = startedAt,
+    endedAt = endedAt,
     status = status,
 )
 
@@ -277,6 +374,9 @@ object PluginCommands {
 
     fun selectOption(index: Int): String =
         """{"type":"select_option","index":$index}"""
+
+    fun focusSession(sessionId: String): String =
+        """{"type":"focus_session","sessionId":${Json.encodeToString(kotlinx.serialization.serializer<String>(), sessionId)}}"""
 
     fun sendPrompt(text: String): String =
         """{"type":"send_prompt","text":${Json.encodeToString(kotlinx.serialization.serializer<String>(), text)}}"""

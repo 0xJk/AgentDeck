@@ -43,6 +43,8 @@ import kotlinx.coroutines.launch
 fun EinkAgentPanel(
     state: DashboardState,
     onSettingsClick: () -> Unit,
+    onFocusSession: (String) -> Unit = {},
+    showSettingsButton: Boolean = true,
     displayPrefs: DisplayPreferences? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -57,6 +59,7 @@ fun EinkAgentPanel(
         val modelName: String?,
         val effortLevel: String?,
         val agentState: AgentState,
+        val sessionId: String?,
     )
 
     val entries = mutableListOf<AgentEntry>()
@@ -78,6 +81,7 @@ fun EinkAgentPanel(
             modelName = state.modelName,
             effortLevel = state.effortLevel,
             agentState = state.agentState,
+            sessionId = state.sessionId,
         )
     }
 
@@ -95,6 +99,7 @@ fun EinkAgentPanel(
                 modelName = session.modelName,
                 effortLevel = null,
                 agentState = mapSessionState(session),
+                sessionId = session.id,
             )
         }
 
@@ -126,6 +131,7 @@ fun EinkAgentPanel(
                 ""
             }
             val displayName = "${entry.projectName}$suffix"
+            val sessionId = entry.sessionId
 
             EinkAgentBlock(
                 agentType = entry.agentType,
@@ -133,11 +139,16 @@ fun EinkAgentPanel(
                 modelName = entry.modelName,
                 effortLevel = entry.effortLevel,
                 agentState = entry.agentState,
+                modifier = if (sessionId != null) {
+                    Modifier.clickable { onFocusSession(sessionId) }
+                } else {
+                    Modifier
+                },
             )
         }
 
         // Worker count
-        state.workerSessionCount?.takeIf { it > 0 }?.let {
+        state.workerSessionCount?.takeIf { state.gatewayConnected == true && it > 0 }?.let {
             Text(
                 text = "Workers: $it",
                 fontSize = 13.sp,
@@ -148,34 +159,39 @@ fun EinkAgentPanel(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Settings gear + rotation toggle
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                text = "\u2699 Settings",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable(onClick = onSettingsClick),
-            )
-            if (displayPrefs != null) {
-                Icon(
-                    imageVector = Icons.Default.ScreenRotation,
-                    contentDescription = "Rotate screen",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clickable {
-                            scope.launch {
-                                val newOrientation = if (currentOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
-                                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                                else
-                                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                                displayPrefs.setOrientation(newOrientation)
-                            }
-                        },
-                )
+        if (showSettingsButton || displayPrefs != null) {
+            // Settings gear + rotation toggle. Rotation stays available even
+            // when the optional Settings entry is hidden by display prefs.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (showSettingsButton) {
+                    Text(
+                        text = "\u2699 Settings",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clickable(onClick = onSettingsClick),
+                    )
+                }
+                if (displayPrefs != null) {
+                    Icon(
+                        imageVector = Icons.Default.ScreenRotation,
+                        contentDescription = "Rotate screen",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clickable {
+                                scope.launch {
+                                    val newOrientation = if (currentOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+                                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                    else
+                                        ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                    displayPrefs.setOrientation(newOrientation)
+                                }
+                            },
+                    )
+                }
             }
         }
     }
@@ -191,6 +207,7 @@ internal fun EinkAgentBlock(
     modelName: String?,
     effortLevel: String? = null,
     agentState: AgentState,
+    modifier: Modifier = Modifier,
 ) {
     // Model + effort + state merged into one line: "  opus-4 · high · ◉ PROC" or "  ◉ PROC"
     val stateMarker = compactStateMarker(agentState)
@@ -206,7 +223,7 @@ internal fun EinkAgentBlock(
         "  $stateMarker"
     }
 
-    Column {
+    Column(modifier = modifier) {
         Row(
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -240,9 +257,17 @@ internal fun EinkAgentBlock(
 fun EinkAgentColumn(
     state: DashboardState,
     onSettingsClick: () -> Unit,
+    onFocusSession: (String) -> Unit = {},
+    showSettingsButton: Boolean = true,
     displayPrefs: DisplayPreferences? = null,
     modifier: Modifier = Modifier,
 ) {
-    EinkAgentPanel(state = state, onSettingsClick = onSettingsClick, displayPrefs = displayPrefs, modifier = modifier)
+    EinkAgentPanel(
+        state = state,
+        onSettingsClick = onSettingsClick,
+        onFocusSession = onFocusSession,
+        showSettingsButton = showSettingsButton,
+        displayPrefs = displayPrefs,
+        modifier = modifier,
+    )
 }
-

@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -67,7 +68,9 @@ import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.state.TimelineStore
+import dev.agentdeck.terrarium.CrayfishVisualState
 import dev.agentdeck.terrarium.TerrariumColors
+import dev.agentdeck.terrarium.TerrariumLayout
 import dev.agentdeck.terrarium.TerrariumState
 import dev.agentdeck.terrarium.creature.BubbleSystem
 import dev.agentdeck.terrarium.creature.CrayfishCreature
@@ -92,6 +95,9 @@ import dev.agentdeck.terrarium.renderer.ColorTerrariumCanvas
 import dev.agentdeck.terrarium.toTerrariumState
 import dev.agentdeck.ui.theme.AgentDeckColors
 
+private const val TABLET_CRAYFISH_CENTER_X_FRACTION = 0.70f
+private const val TABLET_CRAYFISH_CENTER_Y_FRACTION = 0.575f
+
 /**
  * Unified Dashboard screen — terrarium fills the background,
  * semi-transparent HUD panels overlay with agent info.
@@ -111,6 +117,11 @@ fun MonitorScreen(
     val lastError by connection.lastError.collectAsState()
     val isReconnecting by connection.isReconnecting.collectAsState()
     val reconnectAttempt by connection.reconnectAttempt.collectAsState()
+    val showSessionList by displayPrefs.showSessionListFlow.collectAsState(initial = true)
+    val showTankStatus by displayPrefs.showTankStatusFlow.collectAsState(initial = true)
+    val showDeviceDiagnostic by displayPrefs.showDeviceDiagnosticFlow.collectAsState(initial = true)
+    val showTimeline by displayPrefs.showTimelineFlow.collectAsState(initial = true)
+    val showSettingsButton by displayPrefs.showSettingsButtonFlow.collectAsState(initial = true)
 
     // mDNS discovery — active while not connected (including reconnect)
     val context = LocalContext.current
@@ -133,6 +144,24 @@ fun MonitorScreen(
 
     val showDisconnected = connectionStatus != ConnectionStatus.CONNECTED &&
         dashState.agentState == AgentState.DISCONNECTED
+    val monitorScale = rememberMonitorLayoutScale()
+    val crayfishCenterX = if (monitorScale.isTablet) {
+        TABLET_CRAYFISH_CENTER_X_FRACTION
+    } else {
+        TerrariumLayout.CRAYFISH_CENTER_X_FRACTION
+    }
+    val crayfishCenterY = if (monitorScale.isTablet) {
+        TABLET_CRAYFISH_CENTER_Y_FRACTION
+    } else {
+        TerrariumLayout.CRAYFISH_CENTER_Y_FRACTION
+    }
+    val mainCrayfish = remember(monitorScale.isTablet) {
+        CrayfishCreature(crayfishCenterX, crayfishCenterY)
+    }
+    val drawCrayfishForeground = monitorScale.isTablet &&
+        !showDisconnected &&
+        showTimeline &&
+        terrariumState.crayfish != CrayfishVisualState.DORMANT
 
     var showSettingsDialog by remember { mutableStateOf(false) }
     // "Aquarium viewing" mode — when on, SessionListPanel + TopologyRail
@@ -154,7 +183,13 @@ fun MonitorScreen(
             .background(TerrariumColors.DeepSea),
     ) {
         // Layer 1: Terrarium background (always renders)
-        ColorTerrariumBackground(terrariumState)
+        ColorTerrariumBackground(
+            state = terrariumState,
+            mainCrayfish = mainCrayfish,
+            mainCrayfishCenterXFraction = crayfishCenterX,
+            mainCrayfishCenterYFraction = crayfishCenterY,
+            drawMainCrayfishInBackground = !drawCrayfishForeground,
+        )
 
         // Layer 1.5: Background tap detector — sits between terrarium and
         // HUD so panel children (which don't consume taps) still fall
@@ -191,34 +226,53 @@ fun MonitorScreen(
                 },
             )
         } else {
-            // Layer 2: HUD overlay panels — left/right panels fade with
-            // hudHidden; AttentionTheater inside MonitorHUD always shows
-            // when applicable.
-            MonitorHUD(dashState = dashState, hudHidden = hudHidden)
+            // Layer 2: Timeline over sand area
+            if (showTimeline) {
+                TimelineStrip(
+                    entries = timelineEntries,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .fillMaxHeight(TerrariumLayout.SAND_HEIGHT_FRACTION)
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                )
 
-            // Layer 3: Timeline over sand area
-            TimelineStrip(
-                entries = timelineEntries,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .fillMaxHeight(dev.agentdeck.terrarium.TerrariumLayout.SAND_HEIGHT_FRACTION)
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                // Layer 3: Tablet foreground. Keep OpenClaw visible over the
+                // lower TIMELINE detail pane without lifting all fish/canvas
+                // layers above the text.
+                if (drawCrayfishForeground) {
+                    OpenClawForegroundLayer(
+                        mainCrayfish = mainCrayfish,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+
+            // Layer 4: HUD overlay panels. Draw after the foreground crayfish
+            // so right-side topology text remains readable when their areas
+            // intersect.
+            MonitorHUD(
+                dashState = dashState,
+                hudHidden = hudHidden,
+                showSessionList = showSessionList,
+                showTopologyRail = showTankStatus || showDeviceDiagnostic,
             )
         }
 
-        // Gear icon — always visible (both connected & disconnected)
-        IconButton(
-            onClick = { showSettingsDialog = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = "Settings",
-                tint = Color.White.copy(alpha = 0.6f),
-            )
+        // Layer 5: Gear icon — follows the same dashboard visibility preference as iOS.
+        if (showSettingsButton) {
+            IconButton(
+                onClick = { showSettingsDialog = true },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = Color.White.copy(alpha = 0.6f),
+                )
+            }
         }
     }
 
@@ -414,7 +468,13 @@ private fun ConnectionOverlay(
  * 60fps animation loop with all creatures and environment.
  */
 @Composable
-private fun ColorTerrariumBackground(state: TerrariumState) {
+private fun ColorTerrariumBackground(
+    state: TerrariumState,
+    mainCrayfish: CrayfishCreature,
+    mainCrayfishCenterXFraction: Float,
+    mainCrayfishCenterYFraction: Float,
+    drawMainCrayfishInBackground: Boolean = true,
+) {
     // Create environment instances
     val waterEffect = remember { WaterEffect() }
     val rockFormation = remember { RockFormation() }
@@ -544,14 +604,17 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
         }
     }
 
-    // Main crayfish
-    val mainCrayfish = remember { CrayfishCreature() }
-
     // Worker crayfish for multi-agent OpenClaw
-    val workerSlots = layoutWorkerCrayfish(state.workerCrayfishCount)
-    val workerCrayfish = remember { mutableStateListOf<CrayfishCreature>() }
+    val workerSlots = layoutWorkerCrayfish(
+        count = state.workerCrayfishCount,
+        mainX = mainCrayfishCenterXFraction,
+        mainY = mainCrayfishCenterYFraction,
+    )
+    val workerCrayfish = remember(mainCrayfishCenterXFraction, mainCrayfishCenterYFraction) {
+        mutableStateListOf<CrayfishCreature>()
+    }
 
-    LaunchedEffect(state.workerCrayfishCount) {
+    LaunchedEffect(state.workerCrayfishCount, mainCrayfishCenterXFraction, mainCrayfishCenterYFraction) {
         while (workerCrayfish.size < state.workerCrayfishCount) {
             val slot = workerSlots.getOrElse(workerCrayfish.size) { workerSlots.last() }
             workerCrayfish.add(CrayfishCreature(slot.centerXFraction, slot.centerYFraction, slot.scaleFactor))
@@ -706,8 +769,19 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
         planktonSystem = planktonSystem,
         waterSurface = waterSurface,
         sandDisturbance = sandDisturbance,
+        drawMainCrayfish = drawMainCrayfishInBackground,
         modifier = Modifier.fillMaxSize(),
     )
+}
+
+@Composable
+private fun OpenClawForegroundLayer(
+    mainCrayfish: CrayfishCreature,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        mainCrayfish.draw(this)
+    }
 }
 
 /**
@@ -719,6 +793,8 @@ private fun ColorTerrariumBackground(state: TerrariumState) {
 private fun MonitorHUD(
     dashState: DashboardState,
     hudHidden: Boolean = false,
+    showSessionList: Boolean = true,
+    showTopologyRail: Boolean = true,
 ) {
     val systemBarsPadding = WindowInsets.systemBars.asPaddingValues()
     val scale = rememberMonitorLayoutScale()
@@ -733,7 +809,7 @@ private fun MonitorHUD(
         // both fades AND removes from composition when hidden so the
         // collapsed panels stop intercepting any future tap dispatch.
         AnimatedVisibility(
-            visible = !hudHidden,
+            visible = !hudHidden && showSessionList,
             enter = fadeIn(animationSpec = tween(durationMillis = 250)),
             exit = fadeOut(animationSpec = tween(durationMillis = 250)),
             modifier = Modifier.align(Alignment.TopStart),
@@ -746,9 +822,10 @@ private fun MonitorHUD(
                 agentState = dashState.agentState,
                 sessionId = dashState.sessionId,
                 siblingSessions = dashState.siblingSessions,
-                workerSessionCount = dashState.workerSessionCount,
+                workerSessionCount = dashState.workerSessionCount?.takeIf { dashState.gatewayConnected == true },
                 permissionMode = dashState.permissionMode,
                 scale = scale,
+                onFocusSession = { BridgeConnection.instance.sendFocusSession(it) },
                 modifier = Modifier
                     .padding(start = scale.panelEdgeInset, top = scale.panelEdgeInset)
                     .then(
@@ -763,7 +840,7 @@ private fun MonitorHUD(
         // downstream devices as a single vertical flow instead of disjoint
         // list boxes.
         AnimatedVisibility(
-            visible = !hudHidden,
+            visible = !hudHidden && showTopologyRail,
             enter = fadeIn(animationSpec = tween(durationMillis = 250)),
             exit = fadeOut(animationSpec = tween(durationMillis = 250)),
             modifier = Modifier.align(Alignment.TopEnd),
@@ -801,7 +878,11 @@ private fun MonitorHUD(
                 featured = featured,
                 queuedCount = (awaiting.size - 1).coerceAtLeast(0),
                 onRespond = { index ->
+                    featured.sessionId?.let { BridgeConnection.instance.sendFocusSession(it) }
                     BridgeConnection.instance.sendSelectOption(index)
+                },
+                onFocus = {
+                    featured.sessionId?.let { BridgeConnection.instance.sendFocusSession(it) }
                 },
                 modifier = Modifier
                     .align(Alignment.TopCenter)

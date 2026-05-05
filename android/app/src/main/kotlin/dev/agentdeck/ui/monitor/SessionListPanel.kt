@@ -1,6 +1,7 @@
 package dev.agentdeck.ui.monitor
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,6 +47,7 @@ fun SessionListPanel(
     workerSessionCount: Int?,
     permissionMode: PermissionMode = PermissionMode.DEFAULT,
     scale: MonitorLayoutScale = MonitorLayoutScale.phone,
+    onFocusSession: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // Build unified entry list: primary + siblings (excluding self)
@@ -56,6 +58,7 @@ fun SessionListPanel(
         val effortLevel: String?,
         val agentState: AgentState,
         val isPrimary: Boolean,
+        val sessionId: String?,
     )
 
     val entries = mutableListOf<SessionEntry>()
@@ -76,6 +79,7 @@ fun SessionListPanel(
             effortLevel = effortLevel,
             agentState = agentState,
             isPrimary = true,
+            sessionId = sessionId,
         )
     }
 
@@ -95,6 +99,7 @@ fun SessionListPanel(
                 effortLevel = null,
                 agentState = mapSessionState(session),
                 isPrimary = false,
+                sessionId = session.id,
             )
         }
 
@@ -157,7 +162,17 @@ fun SessionListPanel(
                 ""
             }
 
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (entry.sessionId != null) {
+                            Modifier.clickable { onFocusSession(entry.sessionId) }
+                        } else {
+                            Modifier
+                        }
+                    ),
+            ) {
                 // Agent brand icon + session name
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

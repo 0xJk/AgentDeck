@@ -8,21 +8,12 @@ struct TimelineStripView: View {
     @State private var focusedIndex: Int = -1
 
     /// Read grouped entries — triggers re-render via timelineVersion observation.
-    ///
-    /// The Claude Code daemon path emits chat_response (the assistant's
-    /// reply text) AND chat_end (a "Completed · Ns · topic" metadata
-    /// marker) for every turn so that downstream surfaces — Pixoo, D200H,
-    /// Stream Deck plugin, APME — can detect the turn boundary. On the
-    /// dashboard's compact timeline panel that second row reads as "한 줄
-    /// 더" beneath the assistant's conclusion, since the row immediately
-    /// above it already conveys the same turn's completion. Hide the
-    /// chat_end here so each turn occupies one row in this view; the
-    /// daemon still persists/broadcasts the entry, so the focusedGroup
-    /// detail pane and other surfaces are unaffected.
+    /// The daemon persists a low-level event stream, but this dashboard panel
+    /// renders task/turn lifecycle rows: an in-flight `chat_start` is visible
+    /// until a matching completion arrives, then the completion/result row
+    /// becomes the unit shown in the list.
     private var grouped: [GroupedEntry] {
-        stateHolder.timelineStore.grouped.filter { g in
-            !(g.entry.type == .chatEnd && g.entry.agentType == "claude-code")
-        }
+        timelineDisplayGroups(stateHolder.timelineStore.grouped)
     }
 
     /// Accessed in body to register SwiftUI observation on timeline changes
@@ -109,6 +100,7 @@ struct TimelineStripView: View {
         let isChatEnd = group.entry.type == .chatEnd
         let icon = timelineTypeIcon(for: group.entry.type, status: group.entry.status)
         let iconColor = timelineTypeColor(for: group.entry.type)
+        let brandColor = SessionBrand.color(for: group.entry.agentType)
         let countSuffix = group.count > 1 ? " ×\(group.count)" : ""
         // Session attribution prefix — bracketed project name differentiates
         // simultaneous Claude sessions ("ViewTrans" vs "AgentDeck") whose
@@ -130,6 +122,14 @@ struct TimelineStripView: View {
             Text(icon)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundStyle(iconColor.opacity(isChatEnd ? 0.6 : 1))
+
+            SessionCreatureIcon(
+                agentType: group.entry.agentType,
+                tint: brandColor.opacity(isChatEnd ? 0.65 : 1),
+                size: 10,
+                contentInset: group.entry.agentType == "codex-cli" ? 1.2 : 0.8
+            )
+            .frame(width: 12, height: 12)
 
             if !sessionLabel.isEmpty {
                 Text(sessionLabel)
@@ -202,6 +202,25 @@ struct TimelineStripView: View {
                         .padding(.horizontal, 8)
                 }
 
+                let lifecycleRows = lifecycleDetailRows(for: group.entry)
+                if !lifecycleRows.isEmpty {
+                    Spacer().frame(height: 4)
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(lifecycleRows.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 4) {
+                                Text(row.label)
+                                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(TerrariumHUD.subtext.opacity(0.7))
+                                    .frame(width: 42, alignment: .leading)
+                                Text(row.value)
+                                    .font(.system(size: 8, design: .monospaced))
+                                    .foregroundStyle(TerrariumHUD.subtext.opacity(0.82))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+
                 Spacer().frame(height: 4)
 
                 // Summary (11sp bold)
@@ -214,9 +233,7 @@ struct TimelineStripView: View {
                 if let detail = group.entry.detail, detail != group.entry.raw {
                     Spacer().frame(height: 4)
                     ScrollView {
-                        Text(detail)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(TerrariumHUD.subtext.opacity(0.8))
+                        TimelineMarkdownPreview(text: detail)
                     }
                     .padding(.horizontal, 8)
                 }
@@ -236,6 +253,82 @@ struct TimelineStripView: View {
 
     // MARK: - Helpers
 
+    private func timelineDisplayGroups(_ groups: [GroupedEntry]) -> [GroupedEntry] {
+        groups.filter { group in
+            let entry = group.entry
+            if entry.type == .chatStart {
+                return !hasLaterCompletion(for: entry, in: groups)
+            }
+            if entry.type == .chatEnd {
+                return !hasPairedChatResponse(for: entry, in: groups)
+            }
+            return true
+        }
+    }
+
+    private func hasLaterCompletion(for start: TimelineEntry, in groups: [GroupedEntry]) -> Bool {
+        groups.contains { other in
+            guard isCompletionEntry(other.entry) else { return false }
+            guard other.entry.ts >= start.ts else { return false }
+            return sameTimelineContext(start, other.entry)
+        }
+    }
+
+    private func hasPairedChatResponse(for end: TimelineEntry, in groups: [GroupedEntry]) -> Bool {
+        groups.contains { other in
+            guard other.entry.type == .chatResponse else { return false }
+            guard sameTimelineContext(end, other.entry) else { return false }
+            if let endStartedAt = end.startedAt,
+               let responseStartedAt = other.entry.startedAt,
+               abs(endStartedAt - responseStartedAt) < 1000 {
+                return true
+            }
+            return abs(end.ts - other.entry.ts) <= 10_000
+        }
+    }
+
+    private func isCompletionEntry(_ entry: TimelineEntry) -> Bool {
+        entry.type == .chatResponse || entry.type == .chatEnd || entry.type == .modelResponse
+    }
+
+    private func sameTimelineContext(_ a: TimelineEntry, _ b: TimelineEntry) -> Bool {
+        if let ar = a.runId, let br = b.runId, !ar.isEmpty, ar == br { return true }
+        if let asid = a.sessionId, let bsid = b.sessionId, !asid.isEmpty, asid == bsid { return true }
+        if let ap = a.projectName, let bp = b.projectName, !ap.isEmpty, ap == bp,
+           a.agentType == b.agentType {
+            return true
+        }
+        return a.runId == nil && b.runId == nil &&
+            a.sessionId == nil && b.sessionId == nil &&
+            a.projectName == nil && b.projectName == nil &&
+            a.agentType == b.agentType
+    }
+
+    private func lifecycleDetailRows(for entry: TimelineEntry) -> [(label: String, value: String)] {
+        let startMs = entry.startedAt ?? pairedStart(for: entry)?.ts
+        let endMs = entry.endedAt ?? (isCompletionEntry(entry) || entry.type == .evalResult ? entry.ts : nil)
+        var rows: [(String, String)] = []
+        if let startMs {
+            rows.append(("START", formatTimeSeconds(Date(timeIntervalSince1970: startMs / 1000))))
+        }
+        if let endMs, isCompletionEntry(entry) || entry.type == .evalResult {
+            rows.append(("END", formatTimeSeconds(Date(timeIntervalSince1970: endMs / 1000))))
+        }
+        if let startMs, let endMs, endMs >= startMs {
+            rows.append(("DUR", formatDuration(endMs - startMs)))
+        }
+        return rows
+    }
+
+    private func pairedStart(for entry: TimelineEntry) -> TimelineEntry? {
+        stateHolder.timelineStore.entries.last { candidate in
+            candidate.type == .chatStart &&
+                candidate.ts <= entry.ts &&
+                entry.ts - candidate.ts <= 12 * 60 * 60 * 1000 &&
+                sameTimelineContext(candidate, entry)
+        }
+    }
+
     private func formatTime(_ date: Date) -> String {
         let fmt = DateFormatter()
         fmt.dateFormat = "HH:mm"
@@ -248,10 +341,23 @@ struct TimelineStripView: View {
         return fmt.string(from: date)
     }
 
+    private func formatDuration(_ ms: Double) -> String {
+        let seconds = max(0, Int((ms / 1000).rounded()))
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        let rem = seconds % 60
+        if minutes < 60 { return "\(minutes)m \(rem)s" }
+        let hours = minutes / 60
+        return "\(hours)h \(minutes % 60)m"
+    }
+
     private func agentTag(_ agentType: String?) -> String {
         switch agentType {
         case "claude-code": "Claude"
+        case "codex-cli": "Codex"
         case "openclaw": "OpenClaw"
+        case "opencode": "OpenCode"
+        case "daemon": "Daemon"
         case nil: ""
         default: "Agent"
         }
@@ -273,6 +379,29 @@ struct TimelineStripView: View {
         case .userAction: "USER"
         case .evalResult: "EVAL"
         }
+    }
+}
+
+private struct TimelineMarkdownPreview: View {
+    let text: String
+
+    private var attributed: AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full
+        )
+        if let parsed = try? AttributedString(markdown: text, options: options) {
+            return parsed
+        }
+        return AttributedString(text)
+    }
+
+    var body: some View {
+        Text(attributed)
+            .font(.system(size: 10, design: .default))
+            .lineSpacing(2)
+            .foregroundStyle(TerrariumHUD.subtext.opacity(0.86))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

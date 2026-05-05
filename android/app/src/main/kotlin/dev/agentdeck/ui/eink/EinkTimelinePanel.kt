@@ -39,13 +39,16 @@ fun EinkTimelinePanel(
     entries: List<TimelineEntry>,
     modifier: Modifier = Modifier,
 ) {
+    val displayEntries = remember(entries) {
+        entries.filterNot { it.type == "chat_end" && it.agentType == "claude-code" }
+    }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
     // Track entry count for new-item detection
-    var lastSeenCount by remember { mutableIntStateOf(entries.size) }
-    val hasNewItems by remember(entries.size) {
-        derivedStateOf { entries.size > lastSeenCount }
+    var lastSeenCount by remember { mutableIntStateOf(displayEntries.size) }
+    val hasNewItems by remember(displayEntries.size) {
+        derivedStateOf { displayEntries.size > lastSeenCount }
     }
 
     // Check if scrolled near bottom
@@ -57,14 +60,14 @@ fun EinkTimelinePanel(
     }
 
     // Auto-scroll only if already at bottom
-    LaunchedEffect(entries.size) {
-        if (isNearBottom && entries.isNotEmpty()) {
-            listState.scrollToItem(entries.size - 1)
+    LaunchedEffect(displayEntries.size) {
+        if (isNearBottom && displayEntries.isNotEmpty()) {
+            listState.scrollToItem(displayEntries.size - 1)
         }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (entries.isEmpty()) {
+        if (displayEntries.isEmpty()) {
             Text(
                 text = "No timeline events",
                 style = MaterialTheme.typography.bodyMedium,
@@ -77,7 +80,7 @@ fun EinkTimelinePanel(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
-                items(entries, key = { "${it.timestamp}-${it.type}-${it.summary}" }) { entry ->
+                items(displayEntries, key = { "${it.timestamp}-${it.type}-${it.summary}" }) { entry ->
                     EinkTimelineItem(entry)
                     HorizontalDivider(
                         thickness = 1.dp,
@@ -97,8 +100,8 @@ fun EinkTimelinePanel(
                         .padding(bottom = 8.dp)
                         .clickable {
                             scope.launch {
-                                listState.scrollToItem(entries.size - 1)
-                                lastSeenCount = entries.size
+                                listState.scrollToItem(displayEntries.size - 1)
+                                lastSeenCount = displayEntries.size
                             }
                         },
                 )
@@ -109,6 +112,7 @@ fun EinkTimelinePanel(
 
 @Composable
 private fun EinkTimelineItem(entry: TimelineEntry) {
+    val source = sourceLabel(entry)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -134,6 +138,16 @@ private fun EinkTimelineItem(entry: TimelineEntry) {
 
         // Summary + detail
         Column(modifier = Modifier.weight(1f)) {
+            if (source.isNotEmpty()) {
+                Text(
+                    text = source,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = entry.summary,
                 style = MaterialTheme.typography.bodyMedium,
@@ -160,7 +174,23 @@ private fun typePrefix(type: String): String = when {
     type.contains("memory") -> "Memory"
     type.contains("scheduled") -> "Sched"
     type.contains("user") -> "User"
+    type.contains("eval") -> "Eval"
     else -> "\u00B7"
+}
+
+private fun sourceLabel(entry: TimelineEntry): String {
+    val project = entry.projectName?.takeIf { it.isNotBlank() }
+    val agent = when (entry.agentType) {
+        "claude-code" -> "Claude"
+        "openclaw" -> "OpenClaw"
+        null -> ""
+        else -> "Agent"
+    }
+    return when {
+        project != null && agent.isNotEmpty() -> "$project · $agent"
+        project != null -> project
+        else -> agent
+    }
 }
 
 private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)

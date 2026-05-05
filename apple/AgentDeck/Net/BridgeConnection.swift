@@ -62,6 +62,9 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
     private var connectionGeneration = 0
     /// Guard against concurrent handleDisconnect calls (ping callback + receive loop race)
     private var isHandlingDisconnect = false
+    /// Permanent stop flag used during app termination. Once set, no reconnect
+    /// work or late URLSession callback is allowed to revive the bridge.
+    private var isTerminating = false
 
     enum ConnectionStatus: Sendable {
         case disconnected
@@ -78,6 +81,8 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
     }
 
     private func connectInternal(_ urlString: String) {
+        guard !isTerminating else { return }
+
         // Allow handleDisconnect to run again for this new connection
         isHandlingDisconnect = false
 
@@ -152,6 +157,7 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
     // MARK: - Disconnect
 
     func disconnect(reconnect: Bool = false) {
+        guard !isTerminating else { return }
         shouldReconnect = reconnect
         reconnectWork?.cancel()
         reconnectWork = nil
@@ -170,6 +176,36 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
                 self.status = .disconnected
                 self.isReconnecting = false
                 self.reconnectAttempt = 0
+            }
+        }
+    }
+
+    /// Stop all socket activity for process termination. This is intentionally
+    /// stronger than disconnect(reconnect: false): it also blocks future
+    /// connect() calls and stale URLSession callbacks from scheduling work.
+    func prepareForTermination() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.isTerminating = true
+            self.shouldReconnect = false
+            self.connectionGeneration += 1
+            self.reconnectWork?.cancel()
+            self.reconnectWork = nil
+            self.isHandlingDisconnect = false
+            self.hasReceivedMessage = false
+
+            self.pingSource?.cancel()
+            self.pingSource = nil
+            self.webSocket?.cancel(with: .goingAway, reason: nil)
+            self.webSocket = nil
+            self.urlSession?.invalidateAndCancel()
+            self.urlSession = nil
+
+            DispatchQueue.main.async {
+                self.status = .disconnected
+                self.isReconnecting = false
+                self.reconnectAttempt = 0
+                self.shouldReconnect = false
             }
         }
     }
@@ -199,45 +235,53 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
 
         ws.receive { [weak self] result in
             guard let self else { return }
-
-            switch result {
-            case .success(let message):
-                // First successful message = connection confirmed
-                if !self.hasReceivedMessage {
-                    self.hasReceivedMessage = true
-                    print("[BridgeConnection] first message received — connected!")
-                    DispatchQueue.main.async {
-                        self.status = .connected
-                        self.backoffMs = Self.initialBackoffMs
-                        self.reconnectAttempt = 0
-                        self.isReconnecting = false
-                    }
-                }
-
-                switch message {
-                case .string(let text):
-                    if let event = BridgeEventParser.parse(text) {
-                        DispatchQueue.main.async {
-                            self.onEvent?(event)
-                        }
-                    }
-                case .data(let data):
-                    if let text = String(data: data, encoding: .utf8),
-                       let event = BridgeEventParser.parse(text) {
-                        DispatchQueue.main.async {
-                            self.onEvent?(event)
-                        }
-                    }
-                @unknown default:
-                    break
-                }
-                // Continue receiving
-                self.receiveLoop()
-
-            case .failure(let error):
-                print("[BridgeConnection] Receive error: \(error.localizedDescription)")
-                self.handleDisconnect(error: error)
+            self.queue.async {
+                guard !self.isTerminating,
+                      let currentSocket = self.webSocket,
+                      currentSocket === ws else { return }
+                self.handleReceiveResult(result)
             }
+        }
+    }
+
+    private func handleReceiveResult(_ result: Result<URLSessionWebSocketTask.Message, Error>) {
+        switch result {
+        case .success(let message):
+            // First successful message = connection confirmed
+            if !hasReceivedMessage {
+                hasReceivedMessage = true
+                print("[BridgeConnection] first message received — connected!")
+                DispatchQueue.main.async {
+                    self.status = .connected
+                    self.backoffMs = Self.initialBackoffMs
+                    self.reconnectAttempt = 0
+                    self.isReconnecting = false
+                }
+            }
+
+            switch message {
+            case .string(let text):
+                if let event = BridgeEventParser.parse(text) {
+                    DispatchQueue.main.async {
+                        self.onEvent?(event)
+                    }
+                }
+            case .data(let data):
+                if let text = String(data: data, encoding: .utf8),
+                   let event = BridgeEventParser.parse(text) {
+                    DispatchQueue.main.async {
+                        self.onEvent?(event)
+                    }
+                }
+            @unknown default:
+                break
+            }
+            // Continue receiving
+            receiveLoop()
+
+        case .failure(let error):
+            print("[BridgeConnection] Receive error: \(error.localizedDescription)")
+            handleDisconnect(error: error)
         }
     }
 
@@ -257,13 +301,16 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
 
     /// Start ping timer — must be called on `queue`
     private func startPingTimerOnQueue() {
+        guard !isTerminating else { return }
         pingSource?.cancel()
         pingSource = nil
         let source = DispatchSource.makeTimerSource(queue: queue)
         source.schedule(deadline: .now() + Self.pingIntervalSec, repeating: Self.pingIntervalSec)
         source.setEventHandler { [weak self] in
             guard let owner = self else { return }
+            guard !owner.isTerminating else { return }
             owner.webSocket?.sendPing { error in
+                guard !owner.isTerminating else { return }
                 if let error {
                     print("[BridgeConnection] Ping failed: \(error)")
                     owner.handleDisconnect(error: error)
@@ -317,7 +364,7 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
         // this prevents the second error callback (ping + receive loop both fire when
         // bridge dies) from scheduling a duplicate reconnect.
         queue.async { [weak self] in
-            guard let self, !self.isHandlingDisconnect else { return }
+            guard let self, !self.isTerminating, !self.isHandlingDisconnect else { return }
             self.isHandlingDisconnect = true
 
             self.pingSource?.cancel()
@@ -394,6 +441,7 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
             let gen = self.connectionGeneration
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.connectionGeneration == gen,
+                      !self.isTerminating,
                       self.shouldReconnect, let url = self.url else { return }
                 self.connectInternal(url)
             }
