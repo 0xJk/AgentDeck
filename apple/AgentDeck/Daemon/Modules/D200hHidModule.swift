@@ -131,6 +131,11 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     private var managerOpened = false
     private var lastStateHash = ""
     private var displaySuppressed = false
+    /// Set true at the very top of `stop()` so any in-flight or post-cancel
+    /// reactive write path (heartbeat tick, broadcast updateDisplay, button
+    /// press flash, label-style sync) skips before it can paint over the
+    /// final OFFLINE frame. Reset in `start()` to support wake recovery.
+    private var tearingDown = false
 
     private var pollTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
@@ -177,6 +182,7 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     // MARK: - DeviceModule
 
     func start() async {
+        tearingDown = false
         DaemonLogger.shared.info("D200H HID module starting")
         if sandboxEnabled && !usbEntitlementPresent {
             DaemonLogger.shared.info("""
@@ -258,11 +264,19 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     }
 
     func stop() async {
+        // Block reactive write paths BEFORE cancelling tasks, so any tick that
+        // wakes between cancel-call and Task.isCancelled check (or that's
+        // already inside updateDisplay/scheduleButtonDispatch past the guard)
+        // can't paint over the OFFLINE frame.
+        tearingDown = true
         pollTask?.cancel()
         heartbeatTask?.cancel()
         animationTask?.cancel()
         pressDispatchTasks.values.forEach { $0.cancel() }
         pressDispatchTasks.removeAll()
+        // Drain in-flight writes that already passed the tearingDown guard
+        // (e.g. a heartbeat tick mid-updateDisplay) before pushing OFFLINE.
+        try? await Task.sleep(nanoseconds: 50_000_000)
         sendOfflineFrame()
         disconnect()
 
@@ -829,6 +843,10 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     }
 
     private func scheduleButtonDispatch(_ buttonIndex: Int) {
+        // Late HID press callback during teardown: don't flash or dispatch —
+        // either path can repaint over the OFFLINE frame.
+        if tearingDown { return }
+
         if !d200hStableStockHidEnabled() {
             sendPressFlash(buttonIndex)
         }
@@ -887,6 +905,10 @@ final class D200hHidModule: DeviceModule, @unchecked Sendable {
     }
 
     private func updateDisplay(animationOnly: Bool = false) {
+        if tearingDown {
+            debugLog("updateDisplay SKIP: tearing down")
+            return
+        }
         guard connected, managerOpened else {
             debugLog("updateDisplay SKIP: connected=\(connected) managerOpened=\(managerOpened)")
             return
