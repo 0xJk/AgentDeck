@@ -15,7 +15,7 @@ import streamDeck, {
 import { State } from '@agentdeck/shared';
 import type { SessionInfo, PromptOption } from '@agentdeck/shared';
 import { SessionSlotManager, type DeckLayout, type SessionSlotConfig } from '../session-slot-manager.js';
-import { computeCenterSlot } from '../center-slot.js';
+import { computeCenterCluster } from '../center-slot.js';
 import {
   renderSessionSlot,
   renderEmptySlot,
@@ -179,10 +179,12 @@ function layoutForEvent(ev: WillAppearEvent | KeyDownEvent): DeckLayout {
 }
 
 function getDisconnectedSlotConfig(slot: number, layout: DeckLayout): DisconnectedSlotConfig {
-  if (slot === computeCenterSlot(layout)) {
+  const role = computeCenterCluster(layout).quadrantFor(slot);
+  if (role == null) return { kind: 'empty' };
+  if (role === 'full') {
     return { kind: 'open-app', label: 'OFFLINE', subtitle: 'Open AgentDeck' };
   }
-  return { kind: 'empty' };
+  return { kind: 'open-app', label: 'OFFLINE', subtitle: 'Open AgentDeck', quadrant: role };
 }
 
 function refreshAll(): void {
@@ -307,7 +309,7 @@ export class SessionSlotButtonAction extends SingletonAction {
     const { slot, layout } = entry;
 
     if (!daemonConnected) {
-      if (slot === computeCenterSlot(layout)) {
+      if (computeCenterCluster(layout).quadrantFor(slot) != null) {
         dlog('SesSlot', 'keyDown: launching AgentDeck app or GitHub');
         void openAgentDeckAppOrGitHub().catch(() => {});
       }

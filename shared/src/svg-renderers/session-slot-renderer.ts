@@ -17,11 +17,19 @@ const BORDER_PERIMETER = 512;
 
 export type DisconnectedSlotKind = 'open-app' | 'empty';
 
+export type ClusterQuadrant = 'tl' | 'tr' | 'bl' | 'br';
+
 export interface DisconnectedSlotConfig {
   kind: DisconnectedSlotKind;
   label?: string;
   subtitle?: string;
   detail?: string;
+  /**
+   * When set, render the matching 144×144 quadrant of a 288×288 cluster
+   * hero — used by even×even decks (SD+, SD XL) so the OFFLINE card sits
+   * on the geometric center 2×2 of the keypad instead of one off-center key.
+   */
+  quadrant?: ClusterQuadrant;
 }
 
 export type StatusIconKind =
@@ -338,7 +346,40 @@ export function renderStatusCard(config: StatusCardConfig): string {
 
 export function renderDisconnectedSlot(config: DisconnectedSlotConfig): string {
   if (config.kind === 'empty') return renderQuietSlot();
+  if (config.quadrant) {
+    return renderOpenAppQuadrant(config.quadrant, config.label ?? 'OFFLINE', config.subtitle ?? 'Open AgentDeck');
+  }
   return renderStatusCard({ icon: 'open-app', label: config.label ?? 'OFFLINE', subtitle: config.subtitle ?? 'Open AgentDeck', detail: config.detail, tone: 'action' });
+}
+
+/**
+ * Renders a single 144×144 viewport into a 288×288 cluster hero. Each of the
+ * four center keys (tl/tr/bl/br) emits the same logical content offset by its
+ * quadrant; viewBox clipping keeps only the relevant 144×144 visible. The
+ * cluster reads as one card visually, with the inner panel + glyph + text
+ * spanning all four keys while each key keeps its own outer rounded bezel.
+ */
+export function renderOpenAppQuadrant(quadrant: ClusterQuadrant, label = 'OFFLINE', subtitle = 'Open AgentDeck'): string {
+  const colors = toneColors('action');
+  const fontFam = 'Inter, -apple-system, system-ui, Helvetica Neue, sans-serif';
+  const offsetX = (quadrant === 'tr' || quadrant === 'br') ? -SIZE : 0;
+  const offsetY = (quadrant === 'bl' || quadrant === 'br') ? -SIZE : 0;
+  const gradId = `frame-bg-cluster-${quadrant}`;
+  // 288×288 cluster content. All coordinates are in the logical cluster space;
+  // the per-key viewBox + transform crops to one quadrant.
+  const cluster = [
+    `<rect x="16" y="16" width="256" height="256" rx="28" fill="${colors.panel}" opacity="0.68" stroke="${colors.accent}" stroke-width="2.4" stroke-opacity="0.28"/>`,
+    renderGlyphIcon('open-app', colors.icon, colors.accent, 144, 86, 1.88),
+    `<text x="144" y="208" text-anchor="middle" font-family="${fontFam}" font-size="36" font-weight="800" fill="${colors.text}">${escXml(truncate(label, 14))}</text>`,
+    `<text x="144" y="240" text-anchor="middle" font-family="${fontFam}" font-size="20" font-weight="650" fill="${colors.sub}" opacity="0.86">${escXml(truncate(subtitle, 18))}</text>`,
+  ].join('');
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
+    `<defs><linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="${colors.bg}"/><stop offset="100%" stop-color="#0A0A0E"/></linearGradient></defs>`,
+    `<rect width="${SIZE}" height="${SIZE}" rx="16" fill="url(#${gradId})"/>`,
+    `<g transform="translate(${offsetX} ${offsetY})">${cluster}</g>`,
+    `</svg>`,
+  ].join('');
 }
 
 export function renderBackButton(): string {

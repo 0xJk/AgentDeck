@@ -488,6 +488,22 @@ describe('session-slot-renderer snapshots', () => {
     expect(stableFrameIds(renderDisconnectedSlot({ kind: 'empty' }))).toMatchSnapshot();
   });
 
+  it('disconnected cluster quadrant tl', () => {
+    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'tl' }))).toMatchSnapshot();
+  });
+
+  it('disconnected cluster quadrant tr', () => {
+    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'tr' }))).toMatchSnapshot();
+  });
+
+  it('disconnected cluster quadrant bl', () => {
+    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'bl' }))).toMatchSnapshot();
+  });
+
+  it('disconnected cluster quadrant br', () => {
+    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'br' }))).toMatchSnapshot();
+  });
+
   it('connected no-session card is icon-rich', () => {
     expect(stableFrameIds(renderStatusCard({ icon: 'no-session', label: 'NO SESSION', subtitle: 'WAITING', tone: 'idle' }))).toMatchSnapshot();
   });

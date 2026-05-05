@@ -19,6 +19,7 @@ export {
   svgFrame,
 } from '@agentdeck/shared';
 export type {
+  ClusterQuadrant,
   DisconnectedSlotConfig,
   DisconnectedSlotKind,
   StatusCardConfig,
