@@ -14,7 +14,7 @@ describe('CodexOutputParser', () => {
   });
 
   describe('idle detection', () => {
-    it('emits idle on ❯ prompt', () => {
+    it('emits idle on ❯ prompt with source=prompt', () => {
       const handler = vi.fn();
       parser.on('idle', handler);
 
@@ -22,6 +22,7 @@ describe('CodexOutputParser', () => {
       parser.feed('❯ ');
       vi.advanceTimersByTime(300);
       expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0][0]).toEqual({ source: 'prompt' });
     });
 
     it('emits idle on > prompt', () => {
@@ -31,6 +32,7 @@ describe('CodexOutputParser', () => {
       parser.feed('> ');
       vi.advanceTimersByTime(300);
       expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0][0]).toEqual({ source: 'prompt' });
     });
 
     it('debounces rapid idle signals', () => {
@@ -69,7 +71,7 @@ describe('CodexOutputParser', () => {
       expect(startHandler).not.toHaveBeenCalled();
     });
 
-    it('emits spinner_stop + idle on timeout', () => {
+    it('emits spinner_stop + idle on timeout with source=timeout', () => {
       const stopHandler = vi.fn();
       const idleHandler = vi.fn();
       parser.on('spinner_stop', stopHandler);
@@ -88,6 +90,9 @@ describe('CodexOutputParser', () => {
       vi.advanceTimersByTime(2000);
       expect(stopHandler).toHaveBeenCalledTimes(1);
       expect(idleHandler).toHaveBeenCalledTimes(1);
+      // Synthetic timeout idle is distinct from prompt-driven idle so the
+      // bridge can ignore it (mid-turn tool execution looks like timeout).
+      expect(idleHandler.mock.calls[0][0]).toEqual({ source: 'timeout' });
     });
 
     it('emits spinner_stop when idle prompt appears', () => {
@@ -200,6 +205,60 @@ describe('CodexOutputParser', () => {
       expect(handler).toHaveBeenCalledWith(
         expect.objectContaining({ tool: 'editing', args: 'package.json' }),
       );
+    });
+
+    it('dedups repeated emits of the same (tool, args) within window', () => {
+      const handler = vi.fn();
+      parser.on('tool_action', handler);
+
+      // Same command fed 4 times in quick succession — Ink TUI redraws the
+      // "Running:" line into multiple PTY chunks.
+      parser.feed('Running: ls -la /tmp');
+      parser.feed('Running: ls -la /tmp');
+      vi.advanceTimersByTime(100);
+      parser.feed('Running: ls -la /tmp');
+      parser.feed('Running: ls -la /tmp');
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits a different command immediately', () => {
+      const handler = vi.fn();
+      parser.on('tool_action', handler);
+
+      parser.feed('Running: ls -la /tmp');
+      parser.feed('Running: grep foo bar.txt');
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-emits the same command after the dedup window elapses', () => {
+      const handler = vi.fn();
+      parser.on('tool_action', handler);
+
+      parser.feed('Running: ls -la /tmp');
+      vi.advanceTimersByTime(5_000);
+      parser.feed('Running: ls -la /tmp');
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-emits the same command after a turn boundary (idle resets dedup)', () => {
+      const handler = vi.fn();
+      parser.on('tool_action', handler);
+
+      // Establish first idle so spinner gating is open.
+      parser.feed('> ');
+      vi.advanceTimersByTime(300);
+
+      parser.feed('Running: ls -la /tmp');
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      // New turn cycle: spinner → idle → next prompt running same command.
+      parser.feed('⠋ Working...');
+      vi.advanceTimersByTime(100);
+      parser.feed('> ');
+      vi.advanceTimersByTime(300);
+
+      parser.feed('Running: ls -la /tmp');
+      expect(handler).toHaveBeenCalledTimes(2);
     });
   });
 

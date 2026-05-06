@@ -11,9 +11,7 @@ import { readLastTurn as readClaudeTranscriptLastTurn } from './apme/claude-tran
 import { claudeHookToSpans } from './apme/adapters/claude-hook.js';
 import { claudePtyParserEventToSpans, claudePtyResponseToSpan } from './apme/adapters/claude-pty.js';
 import { timelineEntryToSpans } from './apme/adapters/timeline.js';
-import type { AdapterContext as ApmeAdapterContext, TelemetrySpan } from '@agentdeck/shared';
-import { spanNameForKind } from '@agentdeck/shared';
-import { randomUUID } from 'crypto';
+import type { AdapterContext as ApmeAdapterContext } from '@agentdeck/shared';
 import { VoiceManager } from './voice.js';
 import { checkDependencies } from './check-deps.js';
 import { enableDebugLog, log, logError, debug, setPtyMode } from './logger.js';
@@ -1277,6 +1275,20 @@ async function classifyAndEnqueueTurn(
 // For OpenCode, Codex, OpenClaw: intercepts adapter timeline events to create
 // APME turns with prompts and responses. Claude Code uses hooks instead.
 
+// Delay between the Codex parser's idle event and the bridge closing the
+// active turn. The parser fires idle on any `›\s` match — including the
+// status line shown mid-processing — so we wait this long before committing
+// chat_end. A new spinner_start within the window cancels the close, which
+// is how we differentiate spurious mid-turn idles from real turn ends.
+const CODEX_IDLE_CLOSE_DELAY_MS = 1500;
+// Upper bound on the tool-silence flag's lifetime. If Codex finishes the
+// final tool and prints the response WITHOUT re-engaging the spinner, no
+// spinner_start arrives to clear the flag and any prompt-idle is suppressed.
+// After this window we clear the flag defensively and replay the suppressed
+// idle so the turn closes — at the cost of splitting genuine bash runs that
+// exceed this duration.
+const CODEX_TOOL_SILENCE_MAX_MS = 15_000;
+
 function wireAgentApme(
   adapter: import('./types.js').AgentAdapter,
   agentType: import('@agentdeck/shared').AgentType,
@@ -1287,6 +1299,42 @@ function wireAgentApme(
   const sid = core.sessionId;
   let codexChatStart: number | null = null;
   let codexLastPromptText: string | null = null;
+  // Codex turn-boundary state. spinner_stop is not the turn end (Ink TUI
+  // pauses the spinner whenever a bash command runs); idle is. The status
+  // line that Codex prints during processing can also match the parser's
+  // IDLE_PROMPT (`›\s`), so a single idle event is not enough — we defer
+  // the close by `CODEX_IDLE_CLOSE_DELAY_MS` and cancel the timer if a new
+  // spinner_start arrives.
+  let codexIdleCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  // True between a spinner-timeout idle and the next spinner_start. Marks
+  // periods when Codex's spinner went silent because a tool (bash, file op)
+  // is running, not because the turn ended. Prompt-source idles that arrive
+  // during this window — e.g., a stale `›` frame surfacing while bash is
+  // mid-flight — must be ignored, otherwise the deferred close fires before
+  // Codex has a chance to resume.
+  let codexInToolSilence = false;
+  // Reset on every spinner_start, set on every tool_action. A timeout-idle
+  // is treated as tool silence only when this flag is true — otherwise the
+  // silence is a normal end-of-thinking quiet (Codex finished the response
+  // without spinning again) and must not block the next prompt-idle close.
+  let codexToolActiveSinceLastSpinner = false;
+  // Auto-clear timer for codexInToolSilence. Set when entering tool silence;
+  // cleared on spinner_start. If it fires, Codex has been silent past the
+  // grace window — assume the tool finished and the turn ended without a
+  // spinner re-engagement (e.g. tool output IS the final response).
+  let codexToolSilenceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Latches a prompt-source idle that arrived while codexInToolSilence was
+  // true. If the silence later resolves via the auto-clear timer (= turn
+  // really did end after the tool), we replay it as a deferred close. On
+  // spinner_start with a latched pending, we close the previous turn now
+  // so it doesn't merge with the next one.
+  let codexPendingPromptIdle = false;
+  // PTY tail captured at the moment the prompt-idle was latched. By the
+  // time we replay (auto-clear timer or next spinner_start) the live PTY
+  // ringbuffer holds the user's next prompt and Codex's new processing,
+  // which would contaminate turn N's chat_response. The snapshot pins
+  // turn N's tail at the right boundary.
+  let codexPendingTailSnapshot: string | null = null;
 
   const ensureCodexChatStart = (text?: string): number => {
     if (codexChatStart) {
@@ -1327,6 +1375,73 @@ function wireAgentApme(
     return now;
   };
 
+  // Close the Codex turn that started at `startedAt`: extract the response
+  // tail (from the live PTY ringbuffer or a passed snapshot), emit
+  // chat_response + chat_end timeline entries, and ingest the response
+  // span. The snapshot path is used when closing in response to a delayed
+  // signal (auto-clear timer or next spinner_start) — by that point the
+  // live ringbuffer contains content from turn N+1 that would contaminate
+  // turn N's response.
+  const closeCodexTurn = (startedAt: number, tailSnapshot?: string): void => {
+    if (codexChatStart !== startedAt) return;
+    const endedAt = Date.now();
+    codexChatStart = null;
+    codexLastPromptText = null;
+    const ctx = makeApmeAdapterCtx(apme, sid, agentType);
+    const tail = tailSnapshot ?? ptyRingBuffer.getTail(5000);
+    const lines = tail.split('\n').map(l => l.trim()).filter(Boolean);
+    // Filter out spinner/UI artifacts from tail (Codex PTY output)
+    const clean = lines.filter(l =>
+      !/^[✢✳✶✻✽⏸⏵❯─>]/.test(l) &&
+      !/planmode|plan\s*mode|shift\+tab|accept\s*edits/i.test(l) &&
+      !/\?\s*for\s*shortcuts/.test(l),
+    );
+    const response = clean.slice(-5).join('\n');
+    if (response.length > 2) {
+      const span = claudePtyResponseToSpan(ctx, response);
+      if (span) apme.collector.ingestSpan(sid, span);
+      void classifyAndEnqueueTurn(apme, sid);
+      const respRaw = response.length > 200 ? response.slice(0, 197) + '...' : response;
+      core.bridgeTimeline.addEntry({
+        ts: endedAt - 1,
+        type: 'chat_response',
+        raw: cleanRawText(respRaw),
+        detail: cleanDetailText(response.slice(0, 3000)) || undefined,
+        agentType: 'codex-cli',
+        startedAt,
+        endedAt,
+      });
+    }
+    const duration = Math.round((endedAt - startedAt) / 1000);
+    const topicHint = response ? extractTopicHint(response) : null;
+    const label = topicHint || 'Codex turn completed';
+    core.bridgeTimeline.addEntry({
+      ts: endedAt,
+      type: 'chat_end',
+      raw: `${label} · ${duration}s`,
+      detail: response.length > 2 ? cleanDetailText(response.slice(0, 1000)) || undefined : undefined,
+      agentType: 'codex-cli',
+      startedAt,
+      endedAt,
+    });
+  };
+
+  const scheduleCodexClose = (startedAt: number, tailSnapshot?: string): void => {
+    if (codexIdleCloseTimer) clearTimeout(codexIdleCloseTimer);
+    codexIdleCloseTimer = setTimeout(() => {
+      codexIdleCloseTimer = null;
+      closeCodexTurn(startedAt, tailSnapshot);
+    }, CODEX_IDLE_CLOSE_DELAY_MS);
+  };
+
+  const exitCodexToolSilence = (): void => {
+    codexInToolSilence = false;
+    if (codexToolSilenceTimer) {
+      clearTimeout(codexToolSilenceTimer);
+      codexToolSilenceTimer = null;
+    }
+  };
+
   adapter.on('event', (evt: import('./types.js').AdapterEvent) => {
     // ── Timeline events (OpenCode / OpenClaw) ──
     // Both adapters emit { source: 'timeline', entry: TimelineEntry }.
@@ -1345,8 +1460,35 @@ function wireAgentApme(
 
     // ── Codex: PTY parser fallback ──
     if (evt.source === 'parser' && (agentType as string) === 'codex-cli') {
-      const ctx = makeApmeAdapterCtx(apme, sid, agentType);
       if (evt.event === 'spinner_start') {
+        // Codex resumed work. Two cases:
+        //   1. A prompt-idle was suppressed by tool-silence and now spinner
+        //      is starting fresh — that's the user submitting the NEXT
+        //      prompt, so the previous turn really did end. Close it
+        //      synchronously before opening the new one (using the tail
+        //      snapshot taken at latch time so the response doesn't pick
+        //      up turn N+1's input), otherwise the new turn inherits the
+        //      old chat_start and the two turns merge in the timeline.
+        //   2. No pending suppression — Codex is just continuing the same
+        //      turn (e.g. resuming after a bash result). Cancel any pending
+        //      deferred close (status-line false positive) and keep the
+        //      existing chat_start.
+        if (codexPendingPromptIdle && codexChatStart !== null) {
+          const prevStart = codexChatStart;
+          const snapshot = codexPendingTailSnapshot;
+          closeCodexTurn(prevStart, snapshot ?? undefined);
+        }
+        // Always reset pending state on spinner_start: either we just
+        // consumed it, or codexChatStart was null and the pending state
+        // was stale from a prior turn that closed via another path.
+        codexPendingPromptIdle = false;
+        codexPendingTailSnapshot = null;
+        if (codexIdleCloseTimer) {
+          clearTimeout(codexIdleCloseTimer);
+          codexIdleCloseTimer = null;
+        }
+        exitCodexToolSilence();
+        codexToolActiveSinceLastSpinner = false;
         ensureCodexChatStart();
       }
       if (evt.event === 'tool_action') {
@@ -1356,82 +1498,75 @@ function wireAgentApme(
         const args = typeof data.args === 'string' ? data.args : '';
         const raw = args ? `${tool} ${args}` : tool;
         ensureCodexChatStart();
+        codexToolActiveSinceLastSpinner = true;
         core.bridgeTimeline.addEntry({
           ts: now,
-          type: 'tool_exec',
+          type: 'tool_request',
           raw: raw.length > 500 ? raw.slice(0, 497) + '...' : raw,
           detail: args && args !== raw ? args.slice(0, 1000) : undefined,
           agentType: 'codex-cli',
           ...(codexChatStart ? { startedAt: codexChatStart } : {}),
         });
       }
-      if (evt.event === 'user_prompt') {
-        const text = (evt.data as Record<string, unknown>)?.text as string | undefined;
-        if (text) {
-          ensureCodexChatStart(text);
-          // PTY-derived prompt = synthetic turn_start span. We construct it
-          // inline rather than reusing claudeHookToSpans because the source
-          // is a parser event, not a hook payload.
-          const span: TelemetrySpan = {
-            traceId: ctx.traceId,
-            spanId: randomUUID(),
-            parentSpanId: ctx.activeTurnId,
-            name: spanNameForKind('turn_start'),
-            kind: 'turn_start',
-            ts: Date.now(),
-            attributes: {
-              'agentdeck.agent_type': ctx.agentType,
-              'agentdeck.prompt_text': text,
-              ...(ctx.cwd ? { 'agentdeck.cwd': ctx.cwd } : {}),
-            },
-          };
-          apme.collector.ingestSpan(sid, span);
-        }
-      }
-      if (evt.event === 'spinner_stop') {
-        setTimeout(() => {
-          const startedAt = codexChatStart ?? ensureCodexChatStart();
-          const endedAt = Date.now();
-          const tail = ptyRingBuffer.getTail(5000);
-          const lines = tail.split('\n').map(l => l.trim()).filter(Boolean);
-          // Filter out spinner/UI artifacts from tail (Codex PTY output)
-          const clean = lines.filter(l =>
-            !/^[✢✳✶✻✽⏸⏵❯─>]/.test(l) &&
-            !/planmode|plan\s*mode|shift\+tab|accept\s*edits/i.test(l) &&
-            !/\?\s*for\s*shortcuts/.test(l),
-          );
-          const response = clean.slice(-5).join('\n');
-          if (response.length > 2) {
-            const span = claudePtyResponseToSpan(ctx, response);
-            if (span) apme.collector.ingestSpan(sid, span);
-            void classifyAndEnqueueTurn(apme, sid);
-            const respRaw = response.length > 200 ? response.slice(0, 197) + '...' : response;
-            core.bridgeTimeline.addEntry({
-              ts: endedAt - 1,
-              type: 'chat_response',
-              raw: cleanRawText(respRaw),
-              detail: cleanDetailText(response.slice(0, 3000)) || undefined,
-              agentType: 'codex-cli',
-              startedAt,
-              endedAt,
-            });
+      if (evt.event === 'idle') {
+        // The parser emits two flavours: `source: 'prompt'` when the input
+        // prompt actually appeared (real turn end) and `source: 'timeout'`
+        // when the spinner went silent (typically mid-turn while a tool is
+        // running). Mark tool silence on timeout so prompt idles arriving
+        // before the next spinner_start are ignored — those are stale `›`
+        // frames or status-line redraws, not the real turn end.
+        const idleSource = (evt.data as Record<string, unknown> | undefined)?.source;
+        if (idleSource === 'timeout') {
+          // Only treat the silence as mid-tool if a tool actually ran in
+          // this thinking segment. End-of-turn quiet (final response with
+          // no further spinning) also produces a timeout idle and must NOT
+          // block the next prompt-idle close.
+          if (codexToolActiveSinceLastSpinner) {
+            codexInToolSilence = true;
+            // Bound the silence: if no spinner_start arrives within the
+            // grace window, Codex finished the tool and ended the turn
+            // without re-engaging the spinner (e.g. tool output IS the
+            // final response). On timer fire we clear the flag and replay
+            // any suppressed prompt-idle as a deferred close.
+            if (codexToolSilenceTimer) clearTimeout(codexToolSilenceTimer);
+            codexToolSilenceTimer = setTimeout(() => {
+              codexToolSilenceTimer = null;
+              codexInToolSilence = false;
+              if (codexPendingPromptIdle) {
+                const snapshot = codexPendingTailSnapshot;
+                codexPendingPromptIdle = false;
+                codexPendingTailSnapshot = null;
+                if (codexChatStart !== null) {
+                  // Close immediately rather than via scheduleCodexClose:
+                  // we already waited the full silence window, and any
+                  // further deferral would let a quickly-typed next prompt
+                  // (its spinner_start cancels codexIdleCloseTimer) drop
+                  // the close entirely.
+                  closeCodexTurn(codexChatStart, snapshot ?? undefined);
+                }
+              }
+            }, CODEX_TOOL_SILENCE_MAX_MS);
           }
-          const duration = Math.round((endedAt - startedAt) / 1000);
-          const topicHint = response ? extractTopicHint(response) : null;
-          const promptTopic = codexLastPromptText ? extractTopicHint(codexLastPromptText) : null;
-          const label = topicHint || promptTopic || 'Codex turn completed';
-          core.bridgeTimeline.addEntry({
-            ts: endedAt,
-            type: 'chat_end',
-            raw: `${label} \u00B7 ${duration}s`,
-            detail: response.length > 2 ? cleanDetailText(response.slice(0, 1000)) || undefined : undefined,
-            agentType: 'codex-cli',
-            startedAt,
-            endedAt,
-          });
-          codexChatStart = null;
-          codexLastPromptText = null;
-        }, 500);
+          return;
+        }
+        if (idleSource !== 'prompt') return;
+        if (codexChatStart === null) return;
+        if (codexInToolSilence) {
+          // Latch this prompt-idle, with a PTY tail snapshot pinned to
+          // *this* moment. Either the auto-clear timer will replay it
+          // (turn really ended without re-spinning) or the next
+          // spinner_start will close turn N before opening N+1. Both
+          // paths use the snapshot — the live tail by then would be
+          // contaminated with N+1's input/processing.
+          codexPendingPromptIdle = true;
+          codexPendingTailSnapshot = ptyRingBuffer.getTail(5000);
+          return;
+        }
+        // Defer the close. A new spinner_start within the delay cancels
+        // this timer, which is how we reject status-line false positives
+        // (the status row also matches IDLE_PROMPT) without a wall-clock
+        // guard that would also drop real fast turns.
+        scheduleCodexClose(codexChatStart);
       }
     }
   });

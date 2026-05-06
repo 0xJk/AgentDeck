@@ -191,6 +191,16 @@ describe('timelineEntryToSpans', () => {
     expect(spans[0].attributes['gen_ai.tool.name']).toBe('Bash');
   });
 
+  it('translates tool_exec the same as tool_request (legacy + Codex paths)', () => {
+    const spans = timelineEntryToSpans(ctx({ agentType: 'codex-cli' }), {
+      ts: 6, type: 'tool_exec', raw: 'shell ls -la', agentType: 'codex-cli',
+    });
+    expect(spans).toHaveLength(1);
+    expect(spans[0].kind).toBe('tool_call');
+    expect(spans[0].attributes['gen_ai.tool.name']).toBe('shell');
+    expect(spans[0].attributes['agentdeck.tool_name']).toBe('shell');
+  });
+
   it('translates tool_resolved to a tool_result span', () => {
     const spans = timelineEntryToSpans(ctx({ agentType: 'openclaw' }), {
       ts: 7, type: 'tool_resolved', raw: '', agentType: 'openclaw',

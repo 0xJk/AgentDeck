@@ -61,7 +61,12 @@ export function timelineEntryToSpans(
         'agentdeck.fallback_to_last_closed': true,
       })];
     }
-    case 'tool_request': {
+    // tool_request: Claude PreToolUse hook + Codex parser tool_action (after
+    // 2025-05 alignment) emit this. tool_exec: legacy OpenClaw parseLogLine
+    // and pre-alignment Codex emits — treated identically so APME counts
+    // every tool invocation regardless of source.
+    case 'tool_request':
+    case 'tool_exec': {
       // Some sources pack the tool name as the first whitespace-delimited token
       // in `raw`; when missing, the collector falls back to the literal 'tool'.
       const toolName = entry.raw?.split(' ')[0] ?? 'tool';

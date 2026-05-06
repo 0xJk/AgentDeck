@@ -50,6 +50,13 @@ const SPINNER_DEBOUNCE_MS = 2000;
 const IDLE_DEBOUNCE_MS = 300;
 const OPTION_DEBOUNCE_MS = 150;
 
+// Codex's Ink TUI redraws the screen frequently; the same "Running: cmd" line
+// can land in several PTY chunks within a single tool invocation, producing
+// duplicate tool_action emits. Suppress repeats of the same (tool, args) for
+// 4 s. The window is reset at turn boundaries (idle / synthetic spinner_stop)
+// so the same command run twice in a row across turns still emits twice.
+const TOOL_ACTION_DEDUP_WINDOW_MS = 4000;
+
 export class CodexOutputParser extends EventEmitter {
   private buffer = '';
   private spinnerActive = false;
@@ -60,6 +67,8 @@ export class CodexOutputParser extends EventEmitter {
   private modelName: string | null = null;
   private seenFirstIdle = false;
   private pendingAnsi = '';
+  private lastToolKey: string | null = null;
+  private lastToolTs = 0;
 
   feed(rawData: string): void {
     const data = this.pendingAnsi + rawData;
@@ -150,12 +159,16 @@ export class CodexOutputParser extends EventEmitter {
         this.emit('spinner_stop');
       }
 
-      // Debounce idle emission
+      // Debounce idle emission. `source: 'prompt'` marks this as a genuine
+      // idle (the input prompt actually appeared), as opposed to the
+      // spinner-timeout synthetic idles emitted below. Only the prompt
+      // source is a reliable turn-end signal for the bridge.
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.idleTimer = setTimeout(() => {
         this.idleTimer = null;
-        debug('CodexParser', 'EMIT idle');
-        this.emit('idle');
+        debug('CodexParser', 'EMIT idle (prompt)');
+        this.resetToolDedup();
+        this.emit('idle', { source: 'prompt' });
       }, IDLE_DEBOUNCE_MS);
       return;
     }
@@ -179,7 +192,11 @@ export class CodexOutputParser extends EventEmitter {
                 this.spinnerActive = false;
                 debug('CodexParser', 'EMIT spinner_stop (timeout)');
                 this.emit('spinner_stop');
-                this.emit('idle');
+                this.resetToolDedup();
+                // Synthetic idle: spinner data went silent. This often means
+                // a tool is running, not that the turn ended. Mark the source
+                // so the bridge can distinguish from genuine prompt idles.
+                this.emit('idle', { source: 'timeout' });
               }
             }, SPINNER_DEBOUNCE_MS);
           }
@@ -193,7 +210,8 @@ export class CodexOutputParser extends EventEmitter {
             this.spinnerActive = false;
             debug('CodexParser', 'EMIT spinner_stop (timeout)');
             this.emit('spinner_stop');
-            this.emit('idle');
+            this.resetToolDedup();
+            this.emit('idle', { source: 'timeout' });
           }
         }, SPINNER_DEBOUNCE_MS);
       }
@@ -214,16 +232,31 @@ export class CodexOutputParser extends EventEmitter {
   private parseToolAction(chunk: string): void {
     const runMatch = chunk.match(TOOL_RUNNING);
     if (runMatch) {
-      debug('CodexParser', `EMIT tool_action: ${runMatch[1]}`);
-      this.emit('tool_action', { tool: 'shell', args: runMatch[1] });
+      this.emitToolAction('shell', runMatch[1]);
       return;
     }
     const fileMatch = chunk.match(FILE_OPERATION);
     if (fileMatch) {
-      const op = chunk.match(/^(Reading|Writing|Creating|Deleting|Editing|Patching)/i)?.[1] ?? 'file';
-      debug('CodexParser', `EMIT tool_action: ${op} ${fileMatch[1]}`);
-      this.emit('tool_action', { tool: op.toLowerCase(), args: fileMatch[1] });
+      const op = (chunk.match(/^(Reading|Writing|Creating|Deleting|Editing|Patching)/i)?.[1] ?? 'file').toLowerCase();
+      this.emitToolAction(op, fileMatch[1]);
     }
+  }
+
+  private emitToolAction(tool: string, args: string): void {
+    const key = `${tool} ${args.trim()}`;
+    const now = Date.now();
+    if (this.lastToolKey === key && now - this.lastToolTs < TOOL_ACTION_DEDUP_WINDOW_MS) {
+      return;
+    }
+    this.lastToolKey = key;
+    this.lastToolTs = now;
+    debug('CodexParser', `EMIT tool_action: ${tool} ${args}`);
+    this.emit('tool_action', { tool, args });
+  }
+
+  private resetToolDedup(): void {
+    this.lastToolKey = null;
+    this.lastToolTs = 0;
   }
 
   private parseProjectName(chunk: string): void {
