@@ -81,6 +81,13 @@ actor PixooModule: DeviceModule {
     private var renderTask: Task<Void, Never>?
     private var probeTask: Task<Void, Never>?
     private var settingsReloadTask: Task<Void, Never>?
+    /// Fires after the device set changes (UI trigger or polling tick).
+    /// DaemonServer wires this to broadcastStateUpdate().
+    private var onStateChanged: (@Sendable () -> Void)?
+
+    func setOnStateChanged(_ handler: @escaping @Sendable () -> Void) {
+        self.onStateChanged = handler
+    }
 
     // Circuit breaker — matches Node.js bridge (pixoo-client.ts)
     private let backoffThreshold = 6
@@ -486,6 +493,7 @@ actor PixooModule: DeviceModule {
             shadow.writeFrame(nil)
             DaemonLogger.shared.debug("Pixoo", "No devices configured; watching settings.json for changes")
             refreshShadow()
+            onStateChanged?()
             return
         }
 
@@ -495,6 +503,7 @@ actor PixooModule: DeviceModule {
             await prepareDevice(device)
         }
         refreshShadow()
+        onStateChanged?()
     }
 
     static func loadDevices() -> [PixooDevice] {
