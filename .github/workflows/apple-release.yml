@@ -50,6 +50,11 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
           security find-identity -v -p codesigning $KEYCHAIN_PATH
+          security find-identity -v -p basic $KEYCHAIN_PATH
+          if ! security find-identity -v -p basic $KEYCHAIN_PATH | grep -q "3rd Party Mac Developer Installer"; then
+            echo "::error::APPLE_CERTIFICATE_BASE64 must include the 3rd Party Mac Developer Installer private-key identity for Mac App Store pkg export."
+            exit 1
+          fi
 
       - name: Create App Store Connect API key
         env:
