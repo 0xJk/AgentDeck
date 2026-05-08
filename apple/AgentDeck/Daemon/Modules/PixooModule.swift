@@ -499,6 +499,9 @@ actor PixooModule: DeviceModule {
 
         let ipList = devices.map(\.ip).joined(separator: ", ")
         DaemonLogger.shared.info("Pixoo \(reason): \(devices.count) configured device(s) [\(ipList)]")
+        refreshShadow()
+        onStateChanged?()
+
         for device in devices where force || previousByIP[device.ip] != device {
             await prepareDevice(device)
         }
