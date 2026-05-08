@@ -134,14 +134,26 @@ self?.broadcastStateUpdate() } }` 로 wiring. UI / 폴링 두 경로 모두
 `reloadFromSettingsExternal` 만 호출하도록 단순화 — 이중 broadcast
 방지.
 
+### 후속 3 — broadcast 가 prepareDevice 뒤로 밀림 (Codex stop-time review 3회차)
+
+후속 2 의 `onStateChanged?()` 위치가 `prepareDevice` 루프 **뒤**라,
+디바이스마다 HTTP RTT (timeout 2s × N) 동안 broadcast 가 blocking.
+unreachable Pixoo 시 HUD 가 그 시간만큼 비어 있음. configuration 자체는
+device list 갱신 시점에 이미 결정 — `devices` 할당 + `refreshShadow()`
+직후 즉시 1차 broadcast, prepareDevice 루프 후 online/probed 상태 반영해
+2차 broadcast 로 분리 (commit `344f6123`). configuredDeviceCount /
+deviceIps 는 즉시, online / failures 는 RTT 후.
+
 ### 검증
 
 - `xcodebuild -scheme AgentDeck_macOS -destination 'platform=macOS' build`
-  BUILD SUCCEEDED (세 번 모두).
+  BUILD SUCCEEDED (네 번 모두).
 - 런타임 검증은 사용자가 새 빌드 재실행 후 ① Settings UI 에서 IP
   추가/제거 → swift-daemon.log `Pixoo ui-trigger: N configured device(s)`
-  + 우측 HUD <1 초 내 변화, ② terminal 에서 settings.json 수동 편집
-  → `Pixoo settings reload: ...` 로그 + WS 구독자도 ≤ 5 초 내 반영.
+  + 우측 HUD <1 초 내 변화 (네트워크 도달성과 무관), ② terminal 에서
+  settings.json 수동 편집 → `Pixoo settings reload: ...` 로그 + WS
+  구독자도 ≤ 5 초 내 반영, ③ unreachable IP 추가 시 HUD tile 즉시
+  표시 → 1 라운드 probe 후 online=false 갱신.
 
 ---
 
