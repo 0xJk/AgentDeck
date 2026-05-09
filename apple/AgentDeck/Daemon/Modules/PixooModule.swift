@@ -218,9 +218,8 @@ actor PixooModule: DeviceModule {
         shadow.readFrame()
     }
 
-    /// Rebuilds the shadow snapshot. Fires `onStateChanged` when
-    /// user-visible fields differ from the last broadcast (lastPushAtMs /
-    /// hasFrame flicker every render tick and are excluded from the diff).
+    /// Rebuilds the shadow and broadcasts when the digest of user-visible
+    /// fields changes. `lastPushAtMs` is excluded (333ms render tick).
     private func refreshShadow() {
         let snapshot = buildSnapshot()
         shadow.writeSnapshot(snapshot)
@@ -235,6 +234,7 @@ actor PixooModule: DeviceModule {
         var parts: [String] = []
         parts.append("count=\(snapshot["configuredDeviceCount"] as? Int ?? 0)")
         parts.append("dimmed=\((snapshot["displayDimmed"] as? Bool) ?? false)")
+        parts.append("frame=\((snapshot["hasFrame"] as? Bool) ?? false)")
         if let devs = snapshot["devices"] as? [[String: Any]] {
             for d in devs {
                 let ip = d["ip"] as? String ?? ""
