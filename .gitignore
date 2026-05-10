@@ -27,6 +27,7 @@ diagnostics/
 # Temp
 *.tmp
 test-*.js
+/test-*.ts
 
 # Media (use docs/media/ for committed images)
 /screenshot*.png
