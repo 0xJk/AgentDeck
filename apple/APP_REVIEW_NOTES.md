@@ -121,14 +121,14 @@ The iOS app (same bundle family `bound.serendipity.agentdeck.dashboard`) is a re
 No account required. To see the app's features:
 
 1. Launch the app. A first-run onboarding sheet walks the user through the value prop, available AI agents, and iPad pairing. Dismissing it opens the empty dashboard with a prompt to "Preview Devices".
-2. Click "Preview Devices" from the menu bar to see how AgentDeck renders sessions on 14 different hardware targets — no real hardware required.
+2. Click "Preview Devices" from the menu bar to see how AgentDeck renders sessions on 12 built-in preview targets — no real hardware required.
 3. After hooks are enabled, sessions the user starts independently appear automatically in the dashboard. AgentDeck never launches Terminal scripts or command-line tools itself.
 4. Click "Pair iPad" to show a QR code the iOS companion app can scan.
 5. Open Settings → Hardware Setup to see the in-app flows for ESP32 and Pixoo provisioning (no subprocess calls; writes serial config directly).
 
 ## Reviewing the conditional UI (optional)
 
-The "Advanced developer integrations" panels described above do **not** appear during a normal review. Reviewers testing on a clean macOS install see only the standalone product — Device Preview shows Stream Deck+, D200H, ESP32, and Pixoo tiles; the menu bar shows no Claude-subscription quota gauge. This is the intended out-of-the-box experience and is fully functional.
+The "Advanced developer integrations" panels described above do **not** appear during a normal review. Reviewers testing on a clean macOS install see only the standalone product — Device Preview shows the 12 built-in targets (Stream Deck, D200H, Apple Watch/iPad, ESP32, Pixoo, and terminal preview); the menu bar shows no Claude-subscription quota gauge. This is the intended out-of-the-box experience and is fully functional.
 
 If a reviewer wishes to independently verify that those conditional panels are purely read-only WebSocket visualizations and not subprocess/file-I/O paths hiding in the shipped app, the optional reproduction path is:
 

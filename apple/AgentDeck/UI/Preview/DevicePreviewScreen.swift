@@ -1,7 +1,8 @@
 // DevicePreviewScreen.swift — Capstone window for the Device Preview track.
 //
 // Layout:
-//   - Sidebar: grouped list of 14 device types across 7 categories.
+//   - Sidebar: grouped list of standalone device types across 7 categories
+//     (12 in the App Store build, 16 when an external desktop bridge is active).
 //   - Main canvas: the selected device's view, centered with a header + byline.
 //   - Toolbar: Agent / State / Sessions pickers. A running animation clock
 //     ticks `selection.animationFrame` forward twice per second so dynamic

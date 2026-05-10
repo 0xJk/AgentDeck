@@ -31,7 +31,7 @@ Before starting, note your macOS version, device model, and any non-default acce
 - [ ] **A4**. Onboarding **does not reappear** on subsequent launches.
 - [ ] **A5**. After onboarding closes, the **notification permission NSAlert** fires within ~1 second (not during onboarding). Message: "Enable AgentDeck notifications?" Grant or decline — either way, dialog does not reappear.
 - [ ] **A6**. Dashboard renders with an empty terrarium. An overlay card says "Start your first session." with a "Preview Devices" button and a "Got it" dismiss. The body text reads "Sessions appear automatically once the bridge picks one up — each one shows up here as a creature in the terrarium." (no Launch button, no terminal-launch prompt).
-- [ ] **A7**. Clicking "Preview Devices" opens a 1100×760 window with 14 device categories in the sidebar. Changing agent/state/session-count picker updates all device previews live. No hardware required.
+- [ ] **A7**. Clicking "Preview Devices" opens a 1100×760 window with 12 standalone device previews in the sidebar. Changing agent/state/session-count picker updates all device previews live. No hardware required.
 
 ---
 

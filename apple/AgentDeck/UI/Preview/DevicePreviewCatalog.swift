@@ -1,8 +1,10 @@
 // DevicePreviewCatalog.swift — enum of previewable device types + the view factory.
 //
-// Device Preview lets users see what AgentDeck looks like on each supported device
-// without owning the hardware. The catalog collapses the full Android + ESP32 matrix
-// into a representative sample (14 entries) — one entry per visual archetype.
+// Device Preview lets users see what AgentDeck looks like on each supported
+// device without owning the hardware. The full catalog has 16 representative
+// entries; the standalone App Store app shows the 12 entries it can drive
+// without an external desktop bridge, and the 4 ADB-tier entries reappear
+// automatically when such a bridge is connected.
 //
 // We intentionally merged the two Apple Watch sizes (46mm / 42mm) into a single
 // `appleWatch` entry. The device mockup respects `selection.sessionCount` but

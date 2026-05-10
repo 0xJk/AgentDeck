@@ -14,6 +14,7 @@
 | Stream Deck+ 플러그인 연동 | ✅* | ✅ | *Elgato Stream Deck 앱 별도 설치 |
 | Claude Code hook 설치 | ✅ | ✅ | NSOpenPanel 명시적 동의 |
 | 음성 입력 (on-device SFSpeech) | ✅ | ✅ | 오디오 외부 송신 없음 |
+| Device Preview catalog | ✅* | ✅ | *App Store 단독 모드는 자체 구동 가능한 12개 preview target 표시. 외부 daemon 감지 시 Android e-ink / Android tablet / TC001 등 ADB-tier 4개가 read-only preview 로 추가 노출 |
 | APME 평가 Layer 2 (LLM) | ✅ | ✅ | Apple Intelligence / MLX / Anthropic API |
 | APME 평가 Layer 1 (deterministic) | ❌ | ✅ | `git` / `pnpm` 서브프로세스 필요 |
 | Timeline `chat_end` LLM 요약 | ✅ | ✅ | App Store 빌드는 Apple Intelligence (FoundationModels, macOS 26+) → MLX (127.0.0.1:8800) → 휴리스틱 chain. Settings → Timeline summary 에서 backend 픽 가능. 서브프로세스/번들 인터프리터 없음 — `verify-appstore-archive.sh` 통과 |
