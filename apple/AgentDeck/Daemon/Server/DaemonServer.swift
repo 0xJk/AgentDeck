@@ -588,9 +588,15 @@ final class DaemonServer {
                 self.broadcastRaw(["type": "display_state", "displayOn": displayOn] as [String: Any])
                 if displayOn {
                     DaemonLogger.shared.info("Display wake — recovering modules and state")
-                    _ = self.registry.listActive()
-                    self.broadcastSessionsList()
-                    Task { await self.moduleManager.wakeAll() }
+                    // Atomic refresh-then-broadcast: refreshSessions() updates
+                    // cachedSessions from the live registry AND broadcasts.
+                    // Calling broadcastSessionsList() here directly (after a
+                    // discard-only registry.listActive()) would publish the
+                    // pre-sleep cachedSessions snapshot — stale.
+                    Task {
+                        await self.refreshSessions()
+                        await self.moduleManager.wakeAll()
+                    }
                     self.broadcastStateUpdate()
                 }
             }
@@ -761,10 +767,12 @@ final class DaemonServer {
                 guard let refcon else { return }
                 let server = Unmanaged<DaemonServer>.fromOpaque(refcon).takeUnretainedValue()
                 DaemonLogger.shared.info("System wake — recovering sessions and devices")
-                // Force prune dead sessions (bridges killed during sleep)
-                _ = server.registry.listActive()
-                // Trigger immediate session list refresh for clients
-                server.broadcastSessionsList()
+                // Atomic refresh-then-broadcast: pulls live registry +
+                // pushed sessions, enriches state, then broadcasts the
+                // freshly-rebuilt cachedSessions. Calling
+                // broadcastSessionsList() directly after a discard-only
+                // registry.listActive() would publish the pre-sleep snapshot.
+                Task { await server.refreshSessions() }
                 // Re-sync timeline relay (drops dead subscriptions)
                 Task { await server.timelineRelay.sync() }
                 // Re-advertise Bonjour (mDNSResponder may have stale state)
