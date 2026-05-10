@@ -93,6 +93,23 @@
   `task_start` 회전 → `task_end` 도착 시 정지 의 패턴을 macOS dashboard 와
   Android tablet 에서 동일하게 확인 권장.
 
+### 추가 수정 (Codex stop-time review)
+
+OTel 필터를 Android `state/TimelineDisplay.kt` 의 표시 경로에만 추가했더니
+`TimelineStore` 에는 여전히 노이즈가 들어가 (1) `entries` flow 의 다른
+컨슈머에 노출, (2) 500-entry MAX 버퍼가 OTel 노이즈로 채워져 유용한 row 가
+조기 aged-out, (3) 향후 on-disk persistence 에 그대로 흘러갈 위험이
+남았다. Apple 은 `DaemonTimelineStore` add/load 단에서도 같은 룰을
+적용하고 있어 비대칭. 후속 커밋 `db4491f2 fix(android): apply OTel
+low-signal filter at TimelineStore add path` 에서:
+
+- `isLowSignalEntry` 를 `private` → `internal` 로 끌어올려 같은 패키지의
+  `TimelineStore` 가 직접 참조하도록 함. 룰 중복 회피.
+- `TimelineStore.addEntry` / `addEntries` / `upsertEntry` 가 OTel
+  low-signal 후보를 short-circuit 으로 거부.
+- `TimelineStoreTest` 4 cases (단일 add 거부 / 같은 sentinel 세션의
+  meaningful raw 유지 / 일괄 replay 필터 / upsert add fallback 거부) 추가.
+
 ---
 
 ## 2026-05-10 — Swift daemon ESP32 false-failure / Usage API fallback stability
