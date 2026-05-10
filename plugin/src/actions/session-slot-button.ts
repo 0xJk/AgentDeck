@@ -50,6 +50,15 @@ let animFrame = 0;
 let animTimer: ReturnType<typeof setInterval> | null = null;
 const ANIM_INTERVAL_MS = 150;
 
+/**
+ * Per-session animFrame at which the session entered processing/awaiting.
+ * Lets each button orbit out of phase with siblings — phase reflects real
+ * start time instead of every PROCESSING button rotating in lockstep.
+ * Cleared on animation restart (animFrame resets to 0) and when sessions
+ * leave the animated state or the visible slot set.
+ */
+const processingStartFrame = new Map<string, number>();
+
 /** Callback for press actions that need bridge interaction */
 let onSlotAction: ((action: ReturnType<typeof manager.handleSlotPress>) => void) | null = null;
 
@@ -123,6 +132,7 @@ export function setDaemonConnected(connected: boolean): void {
 function startAnimation(): void {
   if (animTimer) return;
   animFrame = 0;
+  processingStartFrame.clear();
   animTimer = setInterval(() => {
     animFrame++;
     refreshAll();
@@ -208,6 +218,7 @@ function refreshAll(): void {
     stopAnimation();
   }
 
+  const liveSessionIds = new Set<string>();
   for (const id of actionIds) {
     const entry = slotMap.get(id);
     if (entry == null) continue;
@@ -215,15 +226,30 @@ function refreshAll(): void {
     if (!act) continue;
 
     const config = manager.getSlotConfig(entry.slot, entry.layout);
+    if (config.type === 'session' && config.session) liveSessionIds.add(config.session.id);
     const svg = renderSlotSvg(config, entry.slot);
     void act.setImage(svgToDataUrl(svg)).catch(() => {});
+  }
+  // Drop phase entries for sessions that are no longer visible.
+  for (const id of processingStartFrame.keys()) {
+    if (!liveSessionIds.has(id)) processingStartFrame.delete(id);
   }
 }
 
 function renderSlotSvg(config: SessionSlotConfig, _slot: number): string {
   switch (config.type) {
-    case 'session':
-      return renderSessionSlot(config.session!, config.isActive ?? false, animFrame);
+    case 'session': {
+      const sess = config.session!;
+      const animatedState = sess.state === 'processing' || (sess.state?.startsWith('awaiting') ?? false);
+      if (animatedState) {
+        if (!processingStartFrame.has(sess.id)) processingStartFrame.set(sess.id, animFrame);
+      } else {
+        processingStartFrame.delete(sess.id);
+      }
+      return renderSessionSlot(sess, config.isActive ?? false, animFrame, undefined, {
+        processingStartFrame: processingStartFrame.get(sess.id),
+      });
+    }
 
     case 'back':
       return renderBackButton();

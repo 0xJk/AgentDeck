@@ -169,6 +169,28 @@ describe('SessionSlotManager detail layout', () => {
     });
   });
 
+  it('aliases the model name on detail MODEL surfaces (status card + OpenClaw preset)', () => {
+    // Claude Code IDLE: MODEL status card subtitle uses the alias, not the raw upstream id.
+    const cc = new SessionSlotManager();
+    cc.updateSessions([makeSession({ modelName: 'claude-sonnet-4-6', effortLevel: undefined })], false);
+    cc.enterDetailView('session-1');
+    cc.updateDetailState(State.IDLE, [], undefined, undefined, undefined, 'claude-sonnet-4-6');
+    const ccModelCard = [0, 1, 2, 3, 4, 5, 6, 7]
+      .map(i => cc.getSlotConfig(i, SD_PLUS_LAYOUT))
+      .find(c => c.type === 'status' && c.label === 'MODEL');
+    expect(ccModelCard).toMatchObject({ type: 'status', label: 'MODEL', subtitle: 'sonnet 4.6' });
+
+    // OpenClaw IDLE: model preset subtitle is aliased too.
+    const oc = new SessionSlotManager();
+    oc.updateSessions([makeSession({ id: 'oc', agentType: 'openclaw', modelName: 'claude-opus-4-7' })], true);
+    oc.enterDetailView('oc');
+    oc.updateDetailState(State.IDLE, [], undefined, undefined, undefined, 'claude-opus-4-7');
+    const ocModelPreset = [0, 1, 2, 3, 4, 5, 6, 7]
+      .map(i => oc.getSlotConfig(i, SD_PLUS_LAYOUT))
+      .find(c => c.type === 'preset' && c.preset?.label === 'MODEL');
+    expect(ocModelPreset?.preset?.subtitle).toBe('opus 4.7');
+  });
+
   it('uses actual parser options and reserves MORE only when awaiting overflow exists', () => {
     const manager = new SessionSlotManager();
     manager.updateSessions([makeSession({ state: State.AWAITING_OPTION })], false);

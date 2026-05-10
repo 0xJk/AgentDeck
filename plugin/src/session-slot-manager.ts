@@ -6,7 +6,7 @@
  * - Detail View: button 1=BACK, button 2=session info, buttons 3-7=options, button 8=ESC/STOP
  */
 import type { SessionInfo, StatusCardTone, StatusIconKind } from '@agentdeck/shared';
-import { State, sortSessions, assignDisplayNames, foldCodexSessionsForDisplay } from '@agentdeck/shared';
+import { State, sortSessions, assignDisplayNames, foldCodexSessionsForDisplay, aliasModelName } from '@agentdeck/shared';
 import type { PromptOption } from '@agentdeck/shared';
 import { dlog } from './log.js';
 
@@ -483,8 +483,9 @@ export class SessionSlotManager {
   }
 
   private modelStatusCard(session: SessionInfo | undefined): SessionSlotConfig | null {
-    const modelText = this._detailModelName ?? session?.modelName;
-    if (!modelText) return null;
+    const rawModel = this._detailModelName ?? session?.modelName;
+    if (!rawModel) return null;
+    const modelText = aliasModelName(rawModel);
     return {
       type: 'status',
       label: 'MODEL',
@@ -609,7 +610,7 @@ export class SessionSlotManager {
           iconSvg,
           color: def.color,
           textColor: def.textColor,
-          subtitle: def.dynamicIcon === 'model' ? truncateStr(this._detailModelName ?? session?.modelName ?? 'model', 14) : undefined,
+          subtitle: def.dynamicIcon === 'model' ? truncateStr(aliasModelName(this._detailModelName ?? session?.modelName ?? 'model'), 14) : undefined,
           prompt: def.prompt,
           localAction: def.localAction,
           loading: def.dynamicIcon === 'model' ? this._modelSwitching : undefined,

@@ -91,6 +91,19 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '\u2026';
 }
 
+/**
+ * Compact, readable model strings for narrow surfaces (StreamDeck 144\u00d7144 keys).
+ * - claude-sonnet-4-6              \u2192 "sonnet 4.6"
+ * - claude-opus-4-7                \u2192 "opus 4.7"
+ * - claude-haiku-4-5-20251001      \u2192 "haiku 4.5"   (date suffix dropped)
+ * - gpt-5-codex / gpt-5 / others   \u2192 unchanged (caller still truncates if needed)
+ */
+export function aliasModelName(name: string): string {
+  const claude = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d+)?$/i.exec(name);
+  if (claude) return `${claude[1].toLowerCase()} ${claude[2]}.${claude[3]}`;
+  return name;
+}
+
 function stateLabel(state?: string, agentType?: AgentType): string {
   if (!state) return 'OFFLINE';
   if (agentType === 'openclaw') {
@@ -110,13 +123,14 @@ function stateLabel(state?: string, agentType?: AgentType): string {
 
 export function formatModelEffort(modelName?: string, effortLevel?: string, maxLen = 14): string {
   if (!modelName) return '';
+  const aliased = aliasModelName(modelName);
   const showEffort = effortLevel && effortLevel !== 'medium' && effortLevel !== 'default';
-  if (!showEffort) return truncate(modelName, maxLen);
-  const combined = `${modelName} · ${effortLevel}`;
+  if (!showEffort) return truncate(aliased, maxLen);
+  const combined = `${aliased} · ${effortLevel}`;
   if (combined.length <= maxLen) return combined;
   const effortSuffix = ` · ${effortLevel}`;
   const modelBudget = Math.max(4, maxLen - effortSuffix.length);
-  return truncate(modelName, modelBudget) + effortSuffix;
+  return truncate(aliased, modelBudget) + effortSuffix;
 }
 
 function toneColors(tone: StatusCardTone = 'info') {
@@ -246,7 +260,7 @@ export function renderSessionSlot(
   isActive: boolean,
   animFrame: number,
   displayName?: string,
-  options?: { animated?: boolean },
+  options?: { animated?: boolean; processingStartFrame?: number },
 ): string {
   const isWorking = session.state === 'processing';
   const isAsking = session.state?.startsWith('awaiting') ?? false;
@@ -276,10 +290,16 @@ export function renderSessionSlot(
       ? (animated ? 0.55 + 0.45 * Math.abs(Math.sin(animFrame * 0.15)) : 0.95)
       : (animated ? 0.72 + 0.20 * Math.abs(Math.sin(animFrame * 0.12)) : 0.9);
     const borderColor = isWorking ? signalColor : sColor;
+    const orbitSpeedPx = isWorking ? 22 : 20;
+    // Anchor the rotation to when this session entered the animated state so
+    // sibling buttons that started later orbit out of phase, not in lockstep.
+    const startFrame = options?.processingStartFrame ?? animFrame;
+    const processingPhasePx = -((startFrame * orbitSpeedPx) % BORDER_PERIMETER);
     stateBorder = animated
       ? renderOrbitingRect({
           x: 8, y: 8, width: 128, height: 128, rx: 12, color: borderColor, animFrame,
-          speedPx: isWorking ? 22 : 20, dashPx: isWorking ? 92 : 86,
+          speedPx: orbitSpeedPx, dashPx: isWorking ? 92 : 86,
+          phasePx: processingPhasePx,
           glowOpacity: pulseOpacity * 0.72, coreOpacity: Math.min(1, pulseOpacity + 0.06), filterId,
         })
       : `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${borderColor}" stroke-width="4.5" opacity="${pulseOpacity.toFixed(2)}" filter="url(#${filterId})"/><rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${borderColor}" stroke-width="1.5" opacity="${(pulseOpacity * 0.9).toFixed(2)}"/>`;
@@ -303,7 +323,7 @@ export function renderSessionSlot(
       : `<rect x="10.5" y="10.5" width="123" height="123" rx="10.5" fill="none" stroke="#60A5FA" stroke-width="1.5" opacity="${isIdle ? '0.72' : '0.36'}"/>`;
   }
 
-  const watermark = `<g transform="translate(92, 80)" opacity="${isIdle ? '0.54' : '0.42'}">${agentLogoIcon(agent, 48, 1, 0, 0)}</g>`;
+  const watermark = `<g transform="translate(92, 80)" opacity="${isIdle ? '0.62' : '0.55'}">${agentLogoIcon(agent, 72, 1, 0, 0)}</g>`;
   const badgeObj = isIdle ? `<rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" /><text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">ACT</text>` : '';
   const toolStr = isWorking ? 'Running task' : modelText;
 
