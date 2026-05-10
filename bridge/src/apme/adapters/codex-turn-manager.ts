@@ -31,7 +31,7 @@ import type { AdapterHookEvent, AdapterParserEvent } from '@agentdeck/shared';
 import type { BridgeCore } from '../../bridge-core.js';
 import type { ApmeModule } from '../index.js';
 import type { PtyRingBuffer } from '../../pty-ringbuffer.js';
-import { cleanRawText, cleanDetailText } from '@agentdeck/shared';
+import { cleanRawText, cleanDetailText, prepareMarkdownDetail } from '@agentdeck/shared';
 import { extractTopicHintWithKind, promptSnippetFallback } from '@agentdeck/shared';
 import { timelineEntryToSpans } from './timeline.js';
 import { classifyAndEnqueueTurn } from '../classify-turn.js';
@@ -393,7 +393,7 @@ export class CodexTurnManager {
         ts: endedAt - 1,
         type: 'chat_response',
         raw: cleanRawText(respRaw),
-        detail: cleanDetailText(response.slice(0, 3000)) || undefined,
+        detail: prepareMarkdownDetail(response.slice(0, 3000)) || undefined,
         agentType: 'codex-cli',
         startedAt,
         endedAt,
@@ -436,7 +436,7 @@ export class CodexTurnManager {
       ts: endedAt,
       type: 'chat_end',
       raw: `${label} · ${duration}s`,
-      detail: response.length > 2 ? cleanDetailText(response.slice(0, 1000)) || undefined : undefined,
+      detail: response.length > 2 ? prepareMarkdownDetail(response.slice(0, 1000)) || undefined : undefined,
       agentType: 'codex-cli',
       startedAt,
       endedAt,

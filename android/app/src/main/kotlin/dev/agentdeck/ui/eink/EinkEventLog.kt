@@ -22,6 +22,7 @@ import dev.agentdeck.state.TimelineEntry
 import dev.agentdeck.state.groupConsecutive
 import dev.agentdeck.state.timelineDisplayGroups
 import dev.agentdeck.terrarium.renderer.einkColorEnabled
+import dev.agentdeck.ui.timeline.stripMarkdownInline
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -83,7 +84,11 @@ fun EinkEventLog(
                 val eventColor = typeColor(entry.type, entry.status)
                 val countSuffix = if (group.count > 1) " (×${group.count})" else ""
                 val line = "$time $sourceTag$icon ${entry.summary}$countSuffix"
-                val hasDetail = !entry.detail.isNullOrEmpty() && entry.detail != entry.summary
+                // Bridge ships chat detail with markdown markers preserved
+                // for the colour-screen renderer; e-ink is plain-text only,
+                // so strip markers before displaying the inline detail line.
+                val plainDetail = entry.detail?.let { stripMarkdownInline(it) }?.replace("\n", " ")?.trim()
+                val hasDetail = !plainDetail.isNullOrEmpty() && plainDetail != entry.summary
                 Text(
                     text = line,
                     style = MaterialTheme.typography.bodySmall.copy(
@@ -98,7 +103,7 @@ fun EinkEventLog(
                 )
                 if (hasDetail) {
                     Text(
-                        text = "  ${entry.detail}",
+                        text = "  $plainDetail",
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 13.sp,

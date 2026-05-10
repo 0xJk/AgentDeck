@@ -7,7 +7,7 @@ import { createPublicKey, createPrivateKey, sign as cryptoSign, randomUUID } fro
 import WebSocket from 'ws';
 import { debug, logError } from '../logger.js';
 import { summarizeResponse } from '../timeline-summarizer.js';
-import { extractTopicHint, extractTopicHintWithKind, promptSnippetFallback } from '@agentdeck/shared';
+import { extractTopicHint, extractTopicHintWithKind, promptSnippetFallback, prepareMarkdownDetail } from '@agentdeck/shared';
 import {
   cleanDetailText,
   cleanRawText,
@@ -715,18 +715,21 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
             const responseContent = (finalText || undefined)
               || (this.accumulatedResponse || undefined);
 
-            // Emit chat_response for APME turn response capture
+            // Emit chat_response for APME turn response capture. Preserve
+            // markdown — dashboard renderer applies heading / table / inline
+            // styles. Use prepareMarkdownDetail (JSON-blob filter + length cap)
+            // instead of cleanDetailText (which would strip the markdown).
             if (responseContent) {
               const respRaw = responseContent.length > 500 ? responseContent.slice(0, 497) + '...' : responseContent;
               this.emitTimelineEntry({
                 ts: Date.now(), type: 'chat_response',
                 raw: cleanRawText(respRaw),
-                detail: cleanDetailText(responseContent.slice(0, 3000)),
+                detail: prepareMarkdownDetail(responseContent.slice(0, 3000)),
                 startedAt: this.chatStartTime,
                 endedAt: Date.now(),
               });
             }
-            const cleanedResponse = responseContent ? cleanNopMarkers(cleanDetailText(responseContent)) : undefined;
+            const cleanedResponse = responseContent ? cleanNopMarkers(prepareMarkdownDetail(responseContent)) : undefined;
             const responseDetail = cleanedResponse
               ? (cleanedResponse.length > 1000 ? cleanedResponse.slice(0, 997) + '...' : cleanedResponse)
               : undefined;

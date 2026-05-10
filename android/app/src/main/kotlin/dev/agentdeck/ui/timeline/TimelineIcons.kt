@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.ui.graphics.vector.ImageVector
+import dev.agentdeck.state.TimelineEntry
 
 /**
  * Semantic icon key for a timeline entry. Mirrors `shared/src/timeline-icons.ts`
@@ -84,3 +85,30 @@ fun timelineIconKey(type: String, status: String? = null): TimelineIconKey = whe
 
 /** Whether this entry type carries detail-pane body content (not a hierarchy marker). */
 fun entryHasDetailBody(type: String): Boolean = type != "task_start" && type != "task_end"
+
+/**
+ * True when [entry] is a `task_start` whose matching `task_end` (same
+ * `taskId`) hasn't yet appeared in [siblings]. Mirrors `isInFlightTask` in
+ * shared/src/timeline-icons.ts — used to spin the leading icon for in-flight
+ * task hierarchy markers instead of the static `task` glyph.
+ */
+fun isInFlightTask(entry: TimelineEntry, siblings: List<TimelineEntry>): Boolean {
+    if (entry.type != "task_start") return false
+    val taskId = entry.taskId ?: return false
+    if (taskId.isEmpty()) return false
+    for (s in siblings) {
+        if (s.type == "task_end" && s.taskId == taskId) return false
+    }
+    return true
+}
+
+/**
+ * True when a turn row should rotate its leading icon. Combines the
+ * `Running` icon-key (chat_start, unknown types) with the in-flight task
+ * hierarchy signal so an open `task_start` also spins until its `task_end`
+ * arrives. Mirrors `isRotatingEntry` in shared/src/timeline-icons.ts.
+ */
+fun isRotatingEntry(entry: TimelineEntry, siblings: List<TimelineEntry>): Boolean {
+    if (timelineIconKey(entry.type, entry.status) == TimelineIconKey.Running) return true
+    return isInFlightTask(entry, siblings)
+}

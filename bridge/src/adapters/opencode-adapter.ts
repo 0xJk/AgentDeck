@@ -13,7 +13,7 @@
 
 import { OpenCodeClient, type OpenCodeSSEEvent, type OpenCodeMessageInfo, type OpenCodeMessagePart, type OpenCodeSessionInfo } from '../opencode-client.js';
 import { debug, log as stderrLog } from '../logger.js';
-import { cleanDetailText, cleanRawText } from '@agentdeck/shared';
+import { cleanDetailText, cleanRawText, prepareMarkdownDetail } from '@agentdeck/shared';
 import type { AgentCapabilities, AdapterStartOptions, AdapterEvent, PluginCommand, TimelineEntry } from '../types.js';
 import { OPENCODE_CAPABILITIES } from '../types.js';
 import { PtyAdapter } from './pty-adapter.js';
@@ -369,7 +369,10 @@ export class OpenCodeAdapter extends PtyAdapter {
       this.emitTimelineEntry({
         ts: Date.now(), type: 'chat_response',
         raw: cleanRawText(responseRaw),
-        detail: cleanDetailText(this.accumulatedResponse.slice(0, 1000)),
+        // Chat path — preserve markdown so the dashboard can render heading
+        // / table / inline styles. Tool-output detail above stays on
+        // cleanDetailText since that's typically JSON / log noise.
+        detail: prepareMarkdownDetail(this.accumulatedResponse.slice(0, 1000)),
       });
     }
 

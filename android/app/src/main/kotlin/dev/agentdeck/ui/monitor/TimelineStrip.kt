@@ -55,6 +55,7 @@ import dev.agentdeck.terrarium.TerrariumColors
 import dev.agentdeck.ui.component.BrandIcon
 import dev.agentdeck.ui.timeline.TimelineIconKey
 import dev.agentdeck.ui.timeline.TimelineMarkdownView
+import dev.agentdeck.ui.timeline.isRotatingEntry
 import dev.agentdeck.ui.timeline.stripMarkdownForSummary
 import dev.agentdeck.ui.timeline.timelineDetailIsRedundant
 import dev.agentdeck.ui.timeline.timelineIconKey
@@ -238,6 +239,7 @@ private fun TimelineList(
                         isSelected = isSelected,
                         allowMultiline = allowExpand,
                         scale = scale,
+                        siblings = displayEntries,
                         onClick = { onClick(index) },
                     )
                     if (allowExpand && expandedIndex == index) {
@@ -259,17 +261,25 @@ private fun CompactLogRow(
     isSelected: Boolean,
     allowMultiline: Boolean,
     scale: MonitorLayoutScale,
+    siblings: List<TimelineEntry>,
     onClick: () -> Unit,
 ) {
     val entry = group.entry
     if (entry.type == "task_start" || entry.type == "task_end") {
-        TaskHeaderRow(group = group, isSelected = isSelected, scale = scale, onClick = onClick)
+        TaskHeaderRow(
+            group = group,
+            isSelected = isSelected,
+            scale = scale,
+            siblings = siblings,
+            onClick = onClick,
+        )
     } else {
         TurnRow(
             group = group,
             isSelected = isSelected,
             allowMultiline = allowMultiline,
             scale = scale,
+            siblings = siblings,
             onClick = onClick,
         )
     }
@@ -281,6 +291,7 @@ private fun TurnRow(
     isSelected: Boolean,
     allowMultiline: Boolean,
     scale: MonitorLayoutScale,
+    siblings: List<TimelineEntry>,
     onClick: () -> Unit,
 ) {
     val entry = group.entry
@@ -332,9 +343,13 @@ private fun TurnRow(
             fontFamily = FontFamily.Monospace,
             style = tight,
         )
-        // Animate the leading icon when iconKey == Running. Non-running rows
-        // get angle=0 from the helper and skip the infinite transition entirely.
-        val rowAngle = rememberRunningRotation(active = iconKey == TimelineIconKey.Running)
+        // Animate the leading icon when the row is in flight (running icon
+        // key, or an open task_start whose task_end hasn't arrived). Non-
+        // rotating rows get angle=0 from the helper and skip the infinite
+        // transition entirely. Mirrors `isRotatingEntry` in shared.
+        val rowAngle = rememberRunningRotation(
+            active = isRotatingEntry(entry, siblings),
+        )
         Icon(
             imageVector = iconKey.materialIcon,
             contentDescription = iconKey.name,
@@ -390,6 +405,7 @@ private fun TaskHeaderRow(
     group: GroupedEntry,
     isSelected: Boolean,
     scale: MonitorLayoutScale,
+    siblings: List<TimelineEntry>,
     onClick: () -> Unit,
 ) {
     val entry = group.entry
@@ -426,11 +442,16 @@ private fun TaskHeaderRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Spin the TASK marker while task_start has no matching task_end yet
+        // — at-a-glance "this task is still running" signal.
+        val taskAngle = rememberRunningRotation(
+            active = isRotatingEntry(entry, siblings),
+        )
         Icon(
             imageVector = TimelineIconKey.Task.materialIcon,
             contentDescription = "Task",
             tint = accent,
-            modifier = Modifier.width(14.dp).height(14.dp),
+            modifier = Modifier.width(14.dp).height(14.dp).rotate(taskAngle),
         )
         Text(
             text = if (isEnd) "TASK END" else "TASK",
@@ -528,7 +549,9 @@ private fun DetailPane(
                     horizontalArrangement = Arrangement.spacedBy(3.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val badgeAngle = rememberRunningRotation(active = iconKey == TimelineIconKey.Running)
+                    val badgeAngle = rememberRunningRotation(
+                        active = isRotatingEntry(entry, entries),
+                    )
                     Icon(
                         imageVector = iconKey.materialIcon,
                         contentDescription = iconKey.name,

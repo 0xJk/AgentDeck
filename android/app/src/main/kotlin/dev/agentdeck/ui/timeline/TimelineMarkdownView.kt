@@ -1,21 +1,31 @@
 package dev.agentdeck.ui.timeline
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agentdeck.terrarium.TerrariumColors
@@ -41,7 +51,7 @@ fun TimelineMarkdownView(
             when (line) {
                 TimelineMarkdownLine.Blank -> Spacer(modifier = Modifier.height(4.dp))
                 is TimelineMarkdownLine.Heading -> Text(
-                    text = line.content,
+                    text = annotatedInline(line.content),
                     color = TerrariumColors.HUDText.copy(alpha = 0.95f),
                     fontSize = if (line.level == 1) 11.sp else 10.sp,
                     fontWeight = FontWeight.Bold,
@@ -60,7 +70,7 @@ fun TimelineMarkdownView(
                         style = tight,
                     )
                     Text(
-                        text = line.content,
+                        text = annotatedInline(line.content),
                         color = TerrariumColors.HUDSubtext.copy(alpha = 0.86f),
                         fontSize = 10.sp,
                         softWrap = true,
@@ -81,20 +91,31 @@ fun TimelineMarkdownView(
                         style = tight,
                     )
                     Text(
-                        text = line.content,
+                        text = annotatedInline(line.content),
                         color = TerrariumColors.HUDSubtext.copy(alpha = 0.86f),
                         fontSize = 10.sp,
                         softWrap = true,
                         style = tight,
                     )
                 }
-                is TimelineMarkdownLine.Quote -> Text(
-                    text = "│ ${line.content}",
-                    color = TerrariumColors.HUDSubtext.copy(alpha = 0.72f),
-                    fontSize = 10.sp,
-                    softWrap = true,
-                    style = tight,
-                )
+                is TimelineMarkdownLine.Quote -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        text = "│",
+                        color = TerrariumColors.HUDSubtext.copy(alpha = 0.72f),
+                        fontSize = 10.sp,
+                        style = tight,
+                    )
+                    Text(
+                        text = annotatedInline(line.content),
+                        color = TerrariumColors.HUDSubtext.copy(alpha = 0.72f),
+                        fontSize = 10.sp,
+                        softWrap = true,
+                        style = tight,
+                    )
+                }
                 is TimelineMarkdownLine.Code -> Text(
                     text = if (line.content.isEmpty()) " " else line.content,
                     color = TerrariumColors.LEDGreen.copy(alpha = 0.8f),
@@ -104,11 +125,98 @@ fun TimelineMarkdownView(
                     style = tight,
                 )
                 is TimelineMarkdownLine.Plain -> Text(
-                    text = line.content,
+                    text = annotatedInline(line.content),
                     color = TerrariumColors.HUDSubtext.copy(alpha = 0.86f),
                     fontSize = 10.sp,
                     softWrap = true,
                     style = tight,
+                )
+                is TimelineMarkdownLine.Table -> TableBlock(
+                    rows = line.rows,
+                    hasHeader = line.hasHeader,
+                    tight = tight,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Compose [AnnotatedString] from inline-markdown content. Wraps
+ * [parseInlineSpans] and pushes Compose `SpanStyle`s for bold / italic /
+ * code / link. Plain spans inherit the surrounding `Text` style.
+ */
+private fun annotatedInline(content: String): AnnotatedString = buildAnnotatedString {
+    for (span in parseInlineSpans(content)) {
+        when (span) {
+            is InlineSpan.Plain -> append(span.text)
+            is InlineSpan.Bold -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(span.text) }
+            is InlineSpan.Italic -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(span.text) }
+            is InlineSpan.Code -> withStyle(
+                SpanStyle(
+                    fontFamily = FontFamily.Monospace,
+                    color = TerrariumColors.LEDGreen.copy(alpha = 0.85f),
+                )
+            ) { append(span.text) }
+            is InlineSpan.Link -> withStyle(
+                SpanStyle(
+                    color = TerrariumColors.TetraNeon.copy(alpha = 0.9f),
+                    textDecoration = TextDecoration.Underline,
+                )
+            ) { append(span.text) }
+        }
+    }
+}
+
+private inline fun androidx.compose.ui.text.AnnotatedString.Builder.withStyle(
+    style: SpanStyle,
+    block: androidx.compose.ui.text.AnnotatedString.Builder.() -> Unit,
+) {
+    val idx = pushStyle(style)
+    try { block() } finally { pop(idx) }
+}
+
+/**
+ * Compact table layout. Rows scroll horizontally so wide tables don't blow
+ * up the detail-pane width on iPhone-portrait inline-detail. First row
+ * bold + bottom hairline when [hasHeader].
+ */
+@Composable
+private fun TableBlock(
+    rows: List<List<String>>,
+    hasHeader: Boolean,
+    tight: TextStyle,
+) {
+    if (rows.isEmpty()) return
+    val scroll = rememberScrollState()
+    Column(
+        modifier = Modifier.horizontalScroll(scroll).padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        rows.forEachIndexed { i, row ->
+            val isHeaderRow = hasHeader && i == 0
+            Row(verticalAlignment = Alignment.Top) {
+                row.forEach { cell ->
+                    Text(
+                        text = annotatedInline(cell),
+                        color = if (isHeaderRow)
+                            TerrariumColors.HUDText.copy(alpha = 0.95f)
+                        else
+                            TerrariumColors.HUDSubtext.copy(alpha = 0.86f),
+                        fontSize = 9.sp,
+                        fontWeight = if (isHeaderRow) FontWeight.Bold else FontWeight.Normal,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .widthIn(min = 60.dp),
+                        style = tight,
+                    )
+                }
+            }
+            if (isHeaderRow) {
+                HorizontalDivider(
+                    thickness = 0.5.dp,
+                    color = TerrariumColors.HUDSubtext.copy(alpha = 0.35f),
                 )
             }
         }
@@ -165,8 +273,14 @@ fun timelineDetailIsRedundant(detail: String, raw: String): Boolean {
 }
 
 /**
- * Lightweight inline markdown stripper. Mirrors `cleanDetailText` from
- * `shared/src/timeline.ts`.
+ * Lightweight inline markdown stripper for plain-text surfaces (e-ink).
+ * Strips block markers AND table syntax — bridge now ships chat detail with
+ * markdown markers preserved for the colour-screen renderer, so plain
+ * surfaces have to clean up before display.
+ *
+ * Mirrors `cleanDetailText` from `shared/src/timeline.ts` plus extra table
+ * handling: separator rows (`|---|---|`) are dropped entirely; body rows
+ * (`| a | b |`) become space-delimited (`a  b`).
  */
 fun stripMarkdownInline(s: String): String {
     if (s.isEmpty()) return s
@@ -187,6 +301,24 @@ fun stripMarkdownInline(s: String): String {
     out = out.replace(Regex("\\[([^\\]]+)]\\([^)]+\\)"), "$1")
     // Inline code
     out = out.replace(Regex("`([^`]+)`"), "$1")
+    // Table handling — line-walker (regex-multiline `\\s*$` interactions
+    // with `\n` proved brittle). Walk each line:
+    //   - separator row (`|---|---|`, only `-`/`:`/` `/`\t`/`|` between
+    //     boundary pipes, must contain at least one `-`) → drop entirely
+    //   - body row (starts AND ends with `|`) → strip the boundary pipes
+    //     and convert internal `|` to double-space cell separators
+    //   - everything else → leave intact
+    out = out.split('\n').mapNotNull { line ->
+        val trimmed = line.trim()
+        if (trimmed.length >= 2 && trimmed.startsWith("|") && trimmed.endsWith("|")) {
+            val inner = trimmed.substring(1, trimmed.length - 1)
+            val isSeparator = inner.contains('-') &&
+                inner.all { it == '-' || it == ':' || it == ' ' || it == '\t' || it == '|' }
+            if (isSeparator) null else inner.split('|').joinToString("  ") { it.trim() }
+        } else {
+            line
+        }
+    }.joinToString("\n")
     return out.trim()
 }
 

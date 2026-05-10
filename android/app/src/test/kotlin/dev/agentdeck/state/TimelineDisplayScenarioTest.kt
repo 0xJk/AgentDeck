@@ -26,8 +26,11 @@ class TimelineDisplayScenarioTest {
         val display = timelineDisplayGroups(groupConsecutive(entries))
         val renderedKeys = display.map { "${it.entry.sessionId}:${it.entry.type}:${it.entry.projectName}" }
 
-        assertFalse(
-            "Completed Claude turn should be represented by response/eval rows, not stale chat_start",
+        // Updated 2026-05-10: meaningful chat_start ("Fix Android timeline")
+        // is now kept post-completion so the user's prompt stays visible.
+        // Synthetic starters ("Prompt sent" etc.) still hide.
+        assertTrue(
+            "Meaningful Claude prompt row should remain visible alongside response",
             renderedKeys.contains("claude-a:chat_start:AgentDeck"),
         )
         assertFalse(
@@ -46,6 +49,90 @@ class TimelineDisplayScenarioTest {
         val agentTypes = display.mapNotNull { it.entry.agentType }.distinct()
         assertEquals(4, agentTypes.size)
         assertTrue(agentTypes.containsAll(listOf("claude-code", "codex-cli", "openclaw", "opencode")))
+    }
+
+    @Test
+    fun `codex otel low-signal tool entries are suppressed`() {
+        val entries = listOf(
+            event(1_000, "chat_start", "Real prompt", "codex-real", "codex-cli", "Compiler"),
+            // codex:otel-active sentinel: bridge wires synthetic OTel rows here.
+            // raws: "tool", "exec", "unknown" — strictly noise, drop.
+            event(1_100, "tool_exec", "tool", "codex:otel-active", "codex-cli", "Compiler"),
+            event(1_200, "tool_request", "exec", "codex:otel-active", "codex-cli", "Compiler"),
+            event(1_300, "tool_resolved", "tool completed", "codex:otel-active", "codex-cli", "Compiler"),
+            // Same session_id but raw is meaningful — must NOT be filtered.
+            event(1_400, "tool_exec", "Bash: pnpm vitest", "codex:otel-active", "codex-cli", "Compiler"),
+        )
+        val display = timelineDisplayGroups(groupConsecutive(entries))
+        val rendered = display.map { it.entry.summary }
+
+        assertFalse("OTel synthetic 'tool' raw should be hidden", rendered.contains("tool"))
+        assertFalse("OTel synthetic 'exec' raw should be hidden", rendered.contains("exec"))
+        assertFalse("OTel 'tool completed' raw should be hidden", rendered.contains("tool completed"))
+        assertTrue("Real Bash command must remain visible", rendered.contains("Bash: pnpm vitest"))
+        assertTrue("Real prompt remains visible", rendered.contains("Real prompt"))
+    }
+
+    @Test
+    fun `synthetic chat_start is suppressed once completion arrives`() {
+        // "Codex turn started" / "Prompt sent" / "Connected" / "Resumed" /
+        // "Starting chat" are bridge-inserted lifecycle markers — once a
+        // completion arrives they should be elided. A meaningful prompt with
+        // identical lifecycle stays visible.
+        val entries = listOf(
+            event(1_000, "chat_start", "Codex turn started", "codex-1", "codex-cli", "App", startedAt = 1_000),
+            event(2_000, "chat_response", "Built ok", "codex-1", "codex-cli", "App", startedAt = 1_000, endedAt = 2_000),
+
+            event(3_000, "chat_start", "Refactor TimelineStrip", "codex-2", "codex-cli", "App", startedAt = 3_000),
+            event(5_000, "chat_response", "Done", "codex-2", "codex-cli", "App", startedAt = 3_000, endedAt = 5_000),
+        )
+        val display = timelineDisplayGroups(groupConsecutive(entries))
+        val keys = display.map { "${it.entry.sessionId}:${it.entry.type}:${it.entry.summary}" }
+
+        assertFalse(
+            "Synthetic 'Codex turn started' should not survive completion",
+            keys.contains("codex-1:chat_start:Codex turn started"),
+        )
+        assertTrue(
+            "Meaningful user prompt should remain alongside the response",
+            keys.contains("codex-2:chat_start:Refactor TimelineStrip"),
+        )
+    }
+
+    @Test
+    fun `chat_end with summaryKind survives even when chat_response paired`() {
+        // When the bridge tags chat_end with a real summary backend ("llm" or
+        // "heuristic"), the row carries info distinct from chat_response and
+        // must stay visible — that's how the Settings → Timeline summary
+        // picker is observable on the timeline.
+        val withSummary = TimelineEntry(
+            timestamp = 6_000,
+            type = "chat_end",
+            summary = "Completed · 4s",
+            sessionId = "claude-a",
+            agentType = "claude-code",
+            projectName = "AgentDeck",
+            startedAt = 1_000,
+            endedAt = 6_000,
+            summaryKind = "llm",
+        )
+        val withoutSummary = withSummary.copy(timestamp = 6_500, sessionId = "claude-b", summaryKind = "none")
+        val response = TimelineEntry(
+            timestamp = 5_900,
+            type = "chat_response",
+            summary = "Body",
+            sessionId = "claude-a",
+            agentType = "claude-code",
+            projectName = "AgentDeck",
+            startedAt = 1_000,
+            endedAt = 5_900,
+        )
+        val responseB = response.copy(timestamp = 6_400, sessionId = "claude-b")
+        val display = timelineDisplayGroups(groupConsecutive(listOf(response, responseB, withSummary, withoutSummary).sortedBy { it.timestamp }))
+        val pairs = display.map { it.entry.sessionId to it.entry.type }
+
+        assertTrue("chat_end with summaryKind=llm must survive", pairs.contains("claude-a" to "chat_end"))
+        assertFalse("chat_end with summaryKind=none must drop next to chat_response", pairs.contains("claude-b" to "chat_end"))
     }
 
     @Test

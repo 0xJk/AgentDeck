@@ -102,8 +102,46 @@ function extractReadableMessage(message: string): string {
 }
 
 /**
+ * Prepare a chat-response body for storage as `entry.detail` while keeping
+ * markdown intact. Use this on chat_response / chat_end emit paths so the
+ * client renderer can apply heading / bullet / table / inline span styles —
+ * `cleanDetailText` would have stripped all of that before it ever reached
+ * the dashboard.
+ *
+ * Filters and caps:
+ *   - System JSON blobs (`{"connectionId": ...}` etc.) → empty
+ *   - Error JSON (`{"error": ...}`) → the error string
+ *   - Other JSON object → compact stringified form (200 char cap)
+ *   - Otherwise → original text with 3+ blank lines collapsed to 2, trimmed
+ *
+ * Markdown markers (`**`, `##`, `|`, `` ` ``, `[text](url)`, etc.) are
+ * preserved verbatim so the client `parseTimelineMarkdown` /
+ * `parseInlineSpans` can do their job.
+ */
+export function prepareMarkdownDetail(text: string): string {
+  if (!text) return text;
+  if (typeof text !== 'string') return '';
+
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed.connectionId || parsed.stateVersion || parsed.seq) return '';
+      if (parsed.error) return String(parsed.error);
+      return JSON.stringify(parsed).slice(0, 200);
+    } catch { /* not valid JSON, fall through */ }
+  }
+
+  // Preserve markdown — only collapse runs of blank lines + trim ends.
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
  * Clean detail text — strip markdown artifacts, JSON blobs, and system noise.
- * Applied to timeline entry `detail` fields before storage.
+ * Applied to timeline entry `detail` fields before storage on **non-chat**
+ * paths (tool errors, system log lines). Chat response detail should go
+ * through `prepareMarkdownDetail` instead so the dashboard can render the
+ * markdown.
  */
 export function cleanDetailText(text: string): string {
   if (!text) return text;

@@ -74,6 +74,40 @@ export const TIMELINE_ICON_KEYS: readonly TimelineIconKey[] = [
 ] as const;
 
 /**
+ * True when `entry` is a `task_start` whose matching `task_end` (same `taskId`)
+ * has not yet appeared among `siblings`. Lets clients render in-flight task
+ * hierarchy markers with the rotating "running" treatment instead of the
+ * static `task` icon. Mirrored in Apple `isInFlightTask` and Android
+ * `isInFlightTask`.
+ */
+export function isInFlightTask(
+  entry: Pick<TimelineEntry, 'type' | 'taskId'>,
+  siblings: ReadonlyArray<Pick<TimelineEntry, 'type' | 'taskId'>>,
+): boolean {
+  if (entry.type !== 'task_start') return false;
+  if (!entry.taskId) return false;
+  for (const s of siblings) {
+    if (s.type === 'task_end' && s.taskId === entry.taskId) return false;
+  }
+  return true;
+}
+
+/**
+ * True when a turn row should rotate its leading icon. Combines the static
+ * `running` icon-key (chat_start, unknown types) with the in-flight
+ * task-hierarchy signal so an open `task_start` also spins until its
+ * `task_end` arrives. `siblings` should be the entries the row sees in its
+ * group/list — passing `[]` falls back to icon-key only.
+ */
+export function isRotatingEntry(
+  entry: Pick<TimelineEntry, 'type' | 'status' | 'taskId'>,
+  siblings: ReadonlyArray<Pick<TimelineEntry, 'type' | 'taskId'>>,
+): boolean {
+  if (timelineIconKey(entry) === 'running') return true;
+  return isInFlightTask(entry, siblings);
+}
+
+/**
  * E-ink ASCII glyphs — bracket-padded so total width is constant (4 chars)
  * for column alignment on monospace bitmap fonts.
  */

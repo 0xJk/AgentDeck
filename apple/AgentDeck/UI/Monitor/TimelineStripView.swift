@@ -290,7 +290,7 @@ struct TimelineStripView: View {
                 font: .system(size: fontScale.sub, weight: .bold),
                 color: iconColor.opacity(isChatEnd ? 0.6 : 1),
                 size: 12,
-                isRotating: iconKey == .running
+                isRotating: timelineIsRotatingEntry(group.entry, siblings: grouped.map(\.entry))
             )
             .accessibilityLabel(iconKey.rawValue)
 
@@ -446,10 +446,16 @@ struct TimelineStripView: View {
         let sessionLabel = rowPrefixLabel(for: entry)
 
         return HStack(spacing: 6) {
-            Image(systemName: sfSymbol(for: .task))
-                .font(.system(size: fontScale.body, weight: .bold))
-                .foregroundStyle(accent)
-                .frame(width: 14, height: 14)
+            // Rotate the TASK marker while the task_start has no matching
+            // task_end yet — gives an at-a-glance "this task is still running"
+            // signal alongside the static `.task` glyph for closed tasks.
+            RotatingTimelineIcon(
+                symbolName: sfSymbol(for: .task),
+                font: .system(size: fontScale.body, weight: .bold),
+                color: accent,
+                size: 14,
+                isRotating: timelineIsRotatingEntry(entry, siblings: grouped.map(\.entry))
+            )
             Text(isEnd ? "TASK END" : "TASK")
                 .font(.system(size: fontScale.sub, weight: .heavy, design: .monospaced))
                 .foregroundStyle(accent)
@@ -528,7 +534,7 @@ struct TimelineStripView: View {
                             font: .system(size: fontScale.label, weight: .bold),
                             color: .white,
                             size: nil,
-                            isRotating: iconKey == .running
+                            isRotating: timelineIsRotatingEntry(group.entry, siblings: grouped.map(\.entry))
                         )
                         Text(formatType(group.entry.type))
                             .font(.system(size: fontScale.label, weight: .bold, design: .monospaced))
@@ -1042,18 +1048,21 @@ private struct TimelineMarkdownPreview: View {
         case .blank:
             Spacer().frame(height: 4)
         case let .heading(level, content):
-            Text(content)
-                .font(.system(size: level == 1 ? 11 : 10, weight: .bold, design: .default))
-                .foregroundStyle(TerrariumHUD.text.opacity(0.95))
+            attributedText(content,
+                            font: .system(size: level == 1 ? 11 : 10,
+                                          weight: .bold,
+                                          design: .default),
+                            color: TerrariumHUD.text.opacity(0.95))
                 .padding(.top, level == 1 ? 2 : 1)
+                .fixedSize(horizontal: false, vertical: true)
         case let .bullet(content):
             HStack(alignment: .top, spacing: 5) {
                 Text("•")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(TerrariumHUD.subtext.opacity(0.78))
-                Text(content)
-                    .font(.system(size: 10, design: .default))
-                    .foregroundStyle(TerrariumHUD.subtext.opacity(0.86))
+                attributedText(content,
+                                font: .system(size: 10, design: .default),
+                                color: TerrariumHUD.subtext.opacity(0.86))
                     .fixedSize(horizontal: false, vertical: true)
             }
         case let .numbered(marker, content):
@@ -1062,26 +1071,82 @@ private struct TimelineMarkdownPreview: View {
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(TerrariumHUD.subtext.opacity(0.78))
                     .frame(width: 22, alignment: .trailing)
-                Text(content)
-                    .font(.system(size: 10, design: .default))
-                    .foregroundStyle(TerrariumHUD.subtext.opacity(0.86))
+                attributedText(content,
+                                font: .system(size: 10, design: .default),
+                                color: TerrariumHUD.subtext.opacity(0.86))
                     .fixedSize(horizontal: false, vertical: true)
             }
         case let .quote(content):
-            Text("│ \(content)")
-                .font(.system(size: 10, design: .default))
-                .foregroundStyle(TerrariumHUD.subtext.opacity(0.72))
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: 4) {
+                Text("│")
+                    .font(.system(size: 10, design: .default))
+                    .foregroundStyle(TerrariumHUD.subtext.opacity(0.72))
+                attributedText(content,
+                                font: .system(size: 10, design: .default),
+                                color: TerrariumHUD.subtext.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         case let .code(content):
             Text(content.isEmpty ? " " : content)
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.ledGreen.opacity(0.8))
                 .fixedSize(horizontal: false, vertical: true)
         case let .text(content):
-            Text(content)
-                .font(.system(size: 10, design: .default))
-                .foregroundStyle(TerrariumHUD.subtext.opacity(0.86))
+            attributedText(content,
+                            font: .system(size: 10, design: .default),
+                            color: TerrariumHUD.subtext.opacity(0.86))
                 .fixedSize(horizontal: false, vertical: true)
+        case let .table(rows, hasHeader):
+            tableView(rows: rows, hasHeader: hasHeader)
+        }
+    }
+
+    /// Render a single line of inline markdown content as styled `Text`.
+    /// Wraps `parseInlineSpans` and folds spans into one `Text` via
+    /// concatenation so SwiftUI lays out / wraps it as a single paragraph.
+    private func attributedText(_ content: String, font: Font, color: Color) -> Text {
+        let spans = TimelineInlineSpan.parse(content)
+        return spans.reduce(Text("")) { acc, span in
+            acc + span.text(baseFont: font, baseColor: color)
+        }
+    }
+
+    /// Compact table layout. Equal-width columns via Grid; first row bolded
+    /// when hasHeader. Wrapped in a horizontal scroll so wide tables don't
+    /// blow up the detail pane width.
+    @ViewBuilder
+    private func tableView(rows: [[String]], hasHeader: Bool) -> some View {
+        if rows.isEmpty {
+            EmptyView()
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 2) {
+                    ForEach(rows.indices, id: \.self) { i in
+                        let isHeader = hasHeader && i == 0
+                        GridRow {
+                            ForEach(rows[i].indices, id: \.self) { j in
+                                attributedText(rows[i][j],
+                                                font: .system(
+                                                    size: 9,
+                                                    weight: isHeader ? .bold : .regular,
+                                                    design: .monospaced),
+                                                color: isHeader
+                                                    ? TerrariumHUD.text.opacity(0.95)
+                                                    : TerrariumHUD.subtext.opacity(0.86))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(minWidth: 60, alignment: .leading)
+                            }
+                        }
+                        if isHeader {
+                            // separator hairline under the header row
+                            Rectangle()
+                                .fill(TerrariumHUD.subtext.opacity(0.35))
+                                .frame(height: 0.5)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
         }
     }
 }
@@ -1094,22 +1159,59 @@ private enum TimelineMarkdownLine {
     case quote(String)
     case code(String)
     case text(String)
+    /// Markdown table. `rows[0]` is the header when `hasHeader == true`.
+    case table(rows: [[String]], hasHeader: Bool)
 
     static func parse(_ text: String) -> [TimelineMarkdownLine] {
         var parsed: [TimelineMarkdownLine] = []
         var inCodeFence = false
+        let allLines = text.components(separatedBy: .newlines)
 
-        for rawLine in text.components(separatedBy: .newlines) {
+        var i = 0
+        while i < allLines.count {
+            let rawLine = allLines[i]
             let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+
             if trimmed.hasPrefix("```") {
                 inCodeFence.toggle()
+                i += 1
                 continue
             }
             if inCodeFence {
                 parsed.append(.code(rawLine))
-            } else if trimmed.isEmpty {
+                i += 1
+                continue
+            }
+            if trimmed.isEmpty {
                 parsed.append(.blank)
-            } else if let heading = parseHeading(trimmed) {
+                i += 1
+                continue
+            }
+
+            // Table block — current line is `|...|` and not a separator.
+            if isTableRow(trimmed) {
+                var rows: [[String]] = [splitCells(trimmed)]
+                var hasHeader = false
+                var j = i + 1
+                if j < allLines.count {
+                    let nextTrimmed = allLines[j].trimmingCharacters(in: .whitespaces)
+                    if isTableSeparator(nextTrimmed) {
+                        hasHeader = true
+                        j += 1
+                    }
+                }
+                while j < allLines.count {
+                    let nextTrimmed = allLines[j].trimmingCharacters(in: .whitespaces)
+                    if !isTableRow(nextTrimmed) { break }
+                    rows.append(splitCells(nextTrimmed))
+                    j += 1
+                }
+                parsed.append(.table(rows: rows, hasHeader: hasHeader))
+                i = j
+                continue
+            }
+
+            if let heading = parseHeading(trimmed) {
                 parsed.append(.heading(level: heading.level, content: heading.content))
             } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
                 parsed.append(.bullet(String(trimmed.dropFirst(2))))
@@ -1120,6 +1222,7 @@ private enum TimelineMarkdownLine {
             } else {
                 parsed.append(.text(rawLine))
             }
+            i += 1
         }
 
         return parsed.isEmpty ? [.text(text)] : parsed
@@ -1134,7 +1237,7 @@ private enum TimelineMarkdownLine {
                 break
             }
         }
-        guard (1...3).contains(level) else { return nil }
+        guard (1...6).contains(level) else { return nil }
         guard trimmed.dropFirst(level).first == " " else { return nil }
         let content = trimmed.dropFirst(level + 1)
         return (level, String(content))
@@ -1148,6 +1251,164 @@ private enum TimelineMarkdownLine {
         guard contentStart < trimmed.endIndex, trimmed[contentStart].isWhitespace else { return nil }
         let content = trimmed[contentStart...].trimmingCharacters(in: .whitespaces)
         return ("\(number)\(trimmed[markerEnd])", content)
+    }
+
+    // ---- Table helpers ----
+
+    private static func isTableRow(_ trimmed: String) -> Bool {
+        guard trimmed.hasPrefix("|"), trimmed.hasSuffix("|"), trimmed.count >= 2 else { return false }
+        if isTableSeparator(trimmed) { return false }
+        return trimmed.contains("|")
+    }
+
+    private static func isTableSeparator(_ trimmed: String) -> Bool {
+        guard trimmed.hasPrefix("|"), trimmed.hasSuffix("|") else { return false }
+        let inner = String(trimmed.dropFirst().dropLast())
+        // Real separator must contain at least one dash.
+        guard inner.contains("-") else { return false }
+        let allowed: Set<Character> = ["-", ":", " ", "|", "\t"]
+        return inner.allSatisfy { allowed.contains($0) }
+    }
+
+    private static func splitCells(_ trimmed: String) -> [String] {
+        let inner = trimmed
+            .trimmingCharacters(in: .whitespaces)
+            .dropFirst()  // leading |
+            .dropLast()   // trailing |
+        return inner.split(separator: "|", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+    }
+}
+
+/// Inline-span tokenizer (single line of content). Mirrors the TypeScript
+/// `parseInlineSpans` in `shared/src/timeline-markdown.ts`. First-match-wins
+/// left-to-right walker; never recurses.
+private enum TimelineInlineSpan {
+    case plain(String)
+    case bold(String)
+    case italic(String)
+    case code(String)
+    case link(text: String, href: String)
+
+    /// Render a span as a styled SwiftUI `Text` over a base font + colour.
+    func text(baseFont: Font, baseColor: Color) -> Text {
+        switch self {
+        case .plain(let s):
+            return Text(s).font(baseFont).foregroundStyle(baseColor)
+        case .bold(let s):
+            return Text(s).font(baseFont.weight(.bold)).foregroundStyle(baseColor)
+        case .italic(let s):
+            return Text(s).font(baseFont.italic()).foregroundStyle(baseColor)
+        case .code(let s):
+            return Text(s)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(TerrariumHUD.ledGreen.opacity(0.85))
+        case .link(let label, _):
+            // We don't make the link tappable — just style it. (Detail-pane
+            // taps already drive selection; routing through `URL` would
+            // conflict with the tap-to-expand gesture on iPhone portrait.)
+            return Text(label)
+                .font(baseFont)
+                .foregroundStyle(TerrariumHUD.tetraNeon.opacity(0.9))
+                .underline()
+        }
+    }
+
+    static func parse(_ text: String) -> [TimelineInlineSpan] {
+        if text.isEmpty { return [] }
+        var out: [TimelineInlineSpan] = []
+        var pending = ""
+        let chars = Array(text)
+        var i = 0
+
+        func flushPlain() {
+            if !pending.isEmpty {
+                out.append(.plain(pending))
+                pending = ""
+            }
+        }
+
+        while i < chars.count {
+            let ch = chars[i]
+
+            // `code`
+            if ch == "`" {
+                if let close = chars[(i + 1)...].firstIndex(of: "`") {
+                    flushPlain()
+                    let body = String(chars[(i + 1)..<close])
+                    out.append(.code(body))
+                    i = close + 1
+                    continue
+                }
+            }
+
+            // **bold**
+            if ch == "*", i + 1 < chars.count, chars[i + 1] == "*" {
+                if let close = findDoubleStar(chars, from: i + 2) {
+                    flushPlain()
+                    let body = String(chars[(i + 2)..<close])
+                    out.append(.bold(body))
+                    i = close + 2
+                    continue
+                }
+            }
+
+            // *italic*
+            if ch == "*",
+               i + 1 < chars.count,
+               chars[i + 1] != "*",
+               (i == 0 || chars[i - 1] != "*") {
+                if let close = findSingleStar(chars, from: i + 1) {
+                    flushPlain()
+                    let body = String(chars[(i + 1)..<close])
+                    out.append(.italic(body))
+                    i = close + 1
+                    continue
+                }
+            }
+
+            // [text](href)
+            if ch == "[" {
+                if let bracketClose = chars[(i + 1)...].firstIndex(of: "]"),
+                   bracketClose + 1 < chars.count,
+                   chars[bracketClose + 1] == "(",
+                   let parenClose = chars[(bracketClose + 2)...].firstIndex(of: ")") {
+                    let label = String(chars[(i + 1)..<bracketClose])
+                    let href = String(chars[(bracketClose + 2)..<parenClose])
+                    flushPlain()
+                    out.append(.link(text: label, href: href))
+                    i = parenClose + 1
+                    continue
+                }
+            }
+
+            pending.append(ch)
+            i += 1
+        }
+        flushPlain()
+        return out.isEmpty ? [.plain(text)] : out
+    }
+
+    private static func findDoubleStar(_ chars: [Character], from start: Int) -> Int? {
+        var i = start
+        while i + 1 < chars.count {
+            if chars[i] == "*", chars[i + 1] == "*" { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    private static func findSingleStar(_ chars: [Character], from start: Int) -> Int? {
+        var i = start
+        while i < chars.count {
+            if chars[i] == "*" {
+                let prev = i > 0 ? chars[i - 1] : nil
+                let next = i + 1 < chars.count ? chars[i + 1] : nil
+                if prev != "*" && next != "*" { return i }
+            }
+            i += 1
+        }
+        return nil
     }
 }
 
@@ -1175,6 +1436,28 @@ enum TimelineIconKey: String {
     case task
     case scheduled
     case memory
+}
+
+/// True when `entry` is a `task_start` whose matching `task_end` (same
+/// `taskId`) hasn't yet appeared in `siblings`. Mirrors `isInFlightTask` in
+/// shared/src/timeline-icons.ts — used to spin the leading icon for in-flight
+/// task hierarchy markers instead of the static `task` glyph.
+func timelineIsInFlightTask(_ entry: TimelineEntry, siblings: [TimelineEntry]) -> Bool {
+    if entry.type != .taskStart { return false }
+    guard let taskId = entry.taskId, !taskId.isEmpty else { return false }
+    for s in siblings {
+        if s.type == .taskEnd && s.taskId == taskId { return false }
+    }
+    return true
+}
+
+/// True when a turn row should rotate its leading icon. Combines the
+/// `running` icon-key (chat_start, unknown types) with the in-flight task
+/// hierarchy signal so an open `task_start` also spins until its `task_end`
+/// arrives. Mirrors `isRotatingEntry` in shared/src/timeline-icons.ts.
+func timelineIsRotatingEntry(_ entry: TimelineEntry, siblings: [TimelineEntry]) -> Bool {
+    if timelineIconKey(for: entry.type, status: entry.status) == .running { return true }
+    return timelineIsInFlightTask(entry, siblings: siblings)
 }
 
 /// Map a timeline entry to its semantic icon key. Mirrors

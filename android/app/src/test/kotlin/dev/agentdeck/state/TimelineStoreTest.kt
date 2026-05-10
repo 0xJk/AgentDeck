@@ -320,7 +320,12 @@ class TimelineStoreTest {
     }
 
     @Test
-    fun `timelineDisplayGroups replaces chat_start with same-session response`() {
+    fun `timelineDisplayGroups keeps meaningful chat_start alongside response`() {
+        // Updated semantics (DEVELOPMENT_LOG 2026-05-10): chat_start with a
+        // user-meaningful summary stays visible after completion so the
+        // user's prompt isn't lost. Only synthetic starters ("Prompt sent",
+        // "Codex turn started", "Starting chat", "Connected", "Resumed")
+        // collapse behind the response.
         val groups = groupConsecutive(listOf(
             TimelineEntry(
                 timestamp = 1000,
@@ -343,9 +348,27 @@ class TimelineStoreTest {
 
         val result = timelineDisplayGroups(groups)
 
+        assertEquals(2, result.size)
+        assertEquals(listOf("chat_start", "chat_response"), result.map { it.entry.type })
+    }
+
+    @Test
+    fun `timelineDisplayGroups collapses synthetic chat_start once response arrives`() {
+        // Synthetic starters (e.g. "Prompt sent") still hide behind the
+        // response — they carry no user-meaningful content.
+        val groups = groupConsecutive(listOf(
+            TimelineEntry(
+                timestamp = 1000, type = "chat_start", summary = "Prompt sent",
+                sessionId = "s1", startedAt = 1000,
+            ),
+            TimelineEntry(
+                timestamp = 7000, type = "chat_response", summary = "Done",
+                sessionId = "s1", startedAt = 1000, endedAt = 7000,
+            ),
+        ))
+        val result = timelineDisplayGroups(groups)
         assertEquals(1, result.size)
         assertEquals("chat_response", result[0].entry.type)
-        assertEquals("Timeline rows now show summarized unit sessions", result[0].entry.summary)
     }
 
     @Test
@@ -376,6 +399,9 @@ class TimelineStoreTest {
 
     @Test
     fun `timelineDisplayGroups hides chat_end when chat_response already represents the same turn`() {
+        // Meaningful chat_start "Prompt" stays visible (post-DEVELOPMENT_LOG
+        // 2026-05-10 visibility refactor); chat_response wins over chat_end
+        // when both represent the same turn. Result is chat_start + chat_response.
         val groups = groupConsecutive(listOf(
             entry(1000, "chat_start", "Prompt").copy(sessionId = "s1", startedAt = 1000),
             entry(5000, "chat_response", "Useful summary").copy(sessionId = "s1", startedAt = 1000),
@@ -384,8 +410,8 @@ class TimelineStoreTest {
 
         val result = timelineDisplayGroups(groups)
 
-        assertEquals(1, result.size)
-        assertEquals("chat_response", result[0].entry.type)
+        assertEquals(2, result.size)
+        assertEquals(listOf("chat_start", "chat_response"), result.map { it.entry.type })
     }
 
     @Test

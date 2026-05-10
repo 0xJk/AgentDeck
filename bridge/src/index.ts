@@ -27,7 +27,7 @@ import { UtilityProxy } from './utility-proxy.js';
 import { BridgeLogStream } from './log-stream.js';
 import { summarizeResponse } from './timeline-summarizer.js';
 import {
-  cleanDetailText, cleanRawText,
+  cleanDetailText, cleanRawText, prepareMarkdownDetail,
   extractTopicHintWithKind, promptSnippetFallback,
 } from '@agentdeck/shared';
 import { VoiceAssistantManager } from './voice-assistant.js';
@@ -1380,7 +1380,10 @@ function wireClaudeCodeTimeline(
       core.bridgeTimeline.addEntry({
         ts: now - 1, type: 'chat_response',
         raw: cleanRawText(respRaw),
-        detail: cleanDetailText(responseText.slice(0, 3000)) || undefined,
+        // Preserve markdown so the dashboard renderer can apply heading /
+        // table / bold / code styles. cleanDetailText would have stripped
+        // all of that before it ever reached the client.
+        detail: prepareMarkdownDetail(responseText.slice(0, 3000)) || undefined,
         agentType: 'claude-code',
         ...(startedAt ? { startedAt } : {}),
         endedAt: now,
@@ -1414,7 +1417,7 @@ function wireClaudeCodeTimeline(
     let summary = duration != null ? `${completedLabel} \u00B7 ${duration}s` : completedLabel;
     if (toolSummary) summary += ` \u00B7 ${toolSummary}`;
     const chatEndDetail = responseText
-      ? (() => { const c = cleanDetailText(responseText); return c ? (c.length > 1000 ? c.slice(0, 1000) + '...' : c) : undefined; })()
+      ? (() => { const c = prepareMarkdownDetail(responseText); return c ? (c.length > 1000 ? c.slice(0, 1000) + '...' : c) : undefined; })()
       : ccLastPromptText
         ? `Prompt: ${ccLastPromptText.length > 200 ? ccLastPromptText.slice(0, 200) + '...' : ccLastPromptText}`
         : undefined;

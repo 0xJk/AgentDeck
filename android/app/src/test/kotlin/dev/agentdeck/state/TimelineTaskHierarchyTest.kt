@@ -1,7 +1,10 @@
 package dev.agentdeck.state
 
 import dev.agentdeck.ui.timeline.TimelineIconKey
+import dev.agentdeck.ui.timeline.isInFlightTask
+import dev.agentdeck.ui.timeline.isRotatingEntry
 import dev.agentdeck.ui.timeline.parseTimelineMarkdown
+import dev.agentdeck.ui.timeline.stripMarkdownInline
 import dev.agentdeck.ui.timeline.timelineDetailIsRedundant
 import dev.agentdeck.ui.timeline.timelineIconKey
 import dev.agentdeck.ui.timeline.TimelineMarkdownLine
@@ -153,5 +156,105 @@ class TimelineTaskHierarchyTest {
     @Suppress("unused")
     private fun assertNotSameContext(a: TimelineEntry, b: TimelineEntry) {
         assertNotEquals(true, sameTimelineContext(a, b))
+    }
+
+    // ============================================================
+    // stripMarkdownInline — e-ink plain-text fallback
+    // ============================================================
+
+    @Test
+    fun `stripMarkdownInline drops markers including table syntax`() {
+        val md = "## 정리\n\n**bold** and *italic* and `code`\n\n| col1 | col2 |\n|------|------|\n| a    | b    |\n| c    | d    |"
+        val out = stripMarkdownInline(md)
+        // No markdown markers leak.
+        assertFalse("heading marker leaked", out.contains("##"))
+        assertFalse("bold marker leaked", out.contains("**"))
+        assertFalse("inline code marker leaked", out.contains("`"))
+        // No pipe characters from table rows.
+        assertFalse("table pipe leaked", out.contains('|'))
+        // Header separator row is dropped entirely.
+        assertFalse("table separator leaked", out.contains("---"))
+        // Cells survive as content (space-delimited).
+        assertTrue(out.contains("col1"))
+        assertTrue(out.contains("col2"))
+        assertTrue(out.contains("a"))
+        assertTrue(out.contains("d"))
+    }
+
+    @Test
+    fun `stripMarkdownInline preserves non-table pipes`() {
+        // A line with a literal `|` mid-text shouldn't be touched (not a row).
+        val out = stripMarkdownInline("Run cmd1 | cmd2 to see output")
+        assertTrue(out.contains("cmd1 | cmd2"))
+    }
+
+    @Test
+    fun `stripMarkdownInline handles single-cell table row`() {
+        assertEquals("just one", stripMarkdownInline("| just one |"))
+    }
+
+    // ============================================================
+    // isInFlightTask + isRotatingEntry — sibling-aware in-flight signal
+    // ============================================================
+
+    @Test
+    fun `task_start without matching task_end is in flight`() {
+        val taskStart = entry("task_start", taskId = "a")
+        assertTrue(isInFlightTask(taskStart, emptyList()))
+        assertTrue(isInFlightTask(taskStart, listOf(entry("task_start", taskId = "a"))))
+    }
+
+    @Test
+    fun `task_start whose task_end (same taskId) appeared is finished`() {
+        val taskStart = entry("task_start", taskId = "a")
+        assertFalse(isInFlightTask(taskStart, listOf(entry("task_end", taskId = "a"))))
+    }
+
+    @Test
+    fun `mismatched taskId on task_end does not close it`() {
+        val taskStart = entry("task_start", taskId = "a")
+        assertTrue(isInFlightTask(taskStart, listOf(entry("task_end", taskId = "b"))))
+    }
+
+    @Test
+    fun `task_start without taskId is never considered in flight`() {
+        val taskStart = entry("task_start", taskId = null)
+        assertFalse(isInFlightTask(taskStart, emptyList()))
+    }
+
+    @Test
+    fun `non task_start entries are never in flight`() {
+        assertFalse(isInFlightTask(entry("chat_start"), emptyList()))
+        assertFalse(isInFlightTask(entry("task_end", taskId = "a"), emptyList()))
+    }
+
+    @Test
+    fun `chat_start always rotates via icon-key running`() {
+        assertTrue(isRotatingEntry(entry("chat_start"), emptyList()))
+    }
+
+    @Test
+    fun `orphan task_start rotates via in-flight predicate`() {
+        val taskStart = entry("task_start", taskId = "a")
+        assertTrue(isRotatingEntry(taskStart, listOf(taskStart)))
+    }
+
+    @Test
+    fun `closed task_start does not rotate`() {
+        val taskStart = entry("task_start", taskId = "a")
+        assertFalse(isRotatingEntry(taskStart, listOf(entry("task_end", taskId = "a"))))
+    }
+
+    @Test
+    fun `static rows do not rotate`() {
+        assertFalse(isRotatingEntry(entry("tool_exec"), emptyList()))
+        assertFalse(isRotatingEntry(entry("model_call"), emptyList()))
+        assertFalse(isRotatingEntry(entry("chat_end"), emptyList()))
+    }
+
+    @Test
+    fun `eval_result and task_end never rotate`() {
+        assertFalse(isRotatingEntry(entry("eval_result"), emptyList()))
+        assertFalse(isRotatingEntry(entry("task_end", taskId = "a"), emptyList()))
     }
 }
