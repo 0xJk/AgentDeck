@@ -57,8 +57,14 @@ private val syntheticChatStarts = setOf(
  * "tool" / "exec" / "unknown" markers that have no user value next to the
  * adapter-generated rich rows. Mirrors `timelineIsLowSignalEntry` in
  * apple/AgentDeck/UI/Monitor/TimelineStripView.swift.
+ *
+ * Visible at package level so `TimelineStore` can drop these on the
+ * **add** path too — Apple filters at storage AND display, so legacy
+ * persisted entries never come back when timeline.json replays. Android
+ * doesn't persist (in-memory store only) but the same guard keeps the
+ * 500-entry buffer from aging out useful rows behind OTel noise.
  */
-private fun isLowSignalEntry(entry: TimelineEntry): Boolean {
+internal fun isLowSignalEntry(entry: TimelineEntry): Boolean {
     if (entry.agentType != "codex-cli") return false
     if (entry.sessionId != "codex:otel-active") return false
     if (entry.type !in lowSignalTypes) return false

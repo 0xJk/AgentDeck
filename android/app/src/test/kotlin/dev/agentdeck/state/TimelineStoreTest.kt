@@ -436,6 +436,68 @@ class TimelineStoreTest {
         assertTrue(store.entries.value.isEmpty())
     }
 
+    // --- low-signal storage filter (Apple parity, mirrors DaemonTimelineStore) ---
+
+    @Test
+    fun `addEntry drops codex otel low-signal tool noise`() {
+        val noise = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "tool",
+            agentType = "codex-cli",
+            sessionId = "codex:otel-active",
+        )
+        store.addEntry(noise)
+        assertTrue("OTel noise must not enter store", store.entries.value.isEmpty())
+    }
+
+    @Test
+    fun `addEntry keeps meaningful raw on otel-active session`() {
+        // Same session_id but raw is a real bash command — must stay so we
+        // don't lose user-visible exec rows under the same sentinel.
+        val real = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "Bash: pnpm vitest",
+            agentType = "codex-cli",
+            sessionId = "codex:otel-active",
+        )
+        store.addEntry(real)
+        assertEquals(1, store.entries.value.size)
+        assertEquals("Bash: pnpm vitest", store.entries.value[0].summary)
+    }
+
+    @Test
+    fun `addEntries filters otel noise from bulk replay`() {
+        store.addEntries(
+            listOf(
+                TimelineEntry(1_000, "chat_start", "Real prompt", agentType = "codex-cli", sessionId = "codex-real"),
+                TimelineEntry(1_100, "tool_exec", "tool", agentType = "codex-cli", sessionId = "codex:otel-active"),
+                TimelineEntry(1_200, "tool_request", "exec", agentType = "codex-cli", sessionId = "codex:otel-active"),
+                TimelineEntry(1_300, "tool_resolved", "tool completed", agentType = "codex-cli", sessionId = "codex:otel-active"),
+            )
+        )
+        val summaries = store.entries.value.map { it.summary }
+        assertTrue("Real prompt survives", summaries.contains("Real prompt"))
+        assertFalse("Bulk replay drops 'tool' noise", summaries.contains("tool"))
+        assertFalse("Bulk replay drops 'exec' noise", summaries.contains("exec"))
+        assertFalse("Bulk replay drops 'tool completed' noise", summaries.contains("tool completed"))
+    }
+
+    @Test
+    fun `upsertEntry refuses to insert otel noise via add fallback`() {
+        store.upsertEntry(
+            TimelineEntry(
+                timestamp = 1_000,
+                type = "tool_exec",
+                summary = "exec completed",
+                agentType = "codex-cli",
+                sessionId = "codex:otel-active",
+            )
+        )
+        assertTrue(store.entries.value.isEmpty())
+    }
+
     // --- helpers ---
 
     private fun entry(ts: Long, type: String, summary: String) =

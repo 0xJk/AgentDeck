@@ -88,6 +88,12 @@ class TimelineStore private constructor() {
     val entries: StateFlow<List<TimelineEntry>> = _entries.asStateFlow()
 
     fun addEntry(entry: TimelineEntry) {
+        // Drop codex:otel-active noise at the **storage** layer so it never
+        // reaches consumers that bypass `timelineDisplayGroups` (raw
+        // `entries` flow readers, persistence in future, etc.) and so the
+        // MAX_ENTRIES buffer doesn't age out useful rows behind it.
+        // Mirrors Apple `DaemonTimelineStore` add-path filter.
+        if (isLowSignalEntry(entry)) return
         val list = _entries.value
         // 5s dedup — skip if same type+summary within window
         for (i in list.indices.reversed()) {
@@ -116,6 +122,10 @@ class TimelineStore private constructor() {
      *  pre-LLM kind and (for 'none' rows) the detail pane stays suppressed
      *  even after the LLM rescues it. */
     fun upsertEntry(entry: TimelineEntry) {
+        // Storage-layer guard mirrors addEntry — never let an OTel low-
+        // signal row enter, even via the upsert path used for progressive
+        // summaryKind enrichment.
+        if (isLowSignalEntry(entry)) return
         val list = _entries.value.toMutableList()
         val idx = list.indexOfLast { it.type == entry.type && kotlin.math.abs(it.timestamp - entry.timestamp) < 1000L }
         if (idx >= 0) {
@@ -140,7 +150,11 @@ class TimelineStore private constructor() {
     }
 
     fun addEntries(newEntries: List<TimelineEntry>) {
-        _entries.value = (_entries.value + newEntries)
+        // Same storage-layer guard as addEntry — bulk replay paths
+        // (sessions_list snapshots, daemon resync) must not bypass the
+        // OTel filter.
+        val filtered = newEntries.filterNot { isLowSignalEntry(it) }
+        _entries.value = (_entries.value + filtered)
             .distinctBy { "${it.timestamp}-${it.type}-${it.summary}" }
             .sortedBy { it.timestamp }
             .takeLast(MAX_ENTRIES)
