@@ -246,6 +246,68 @@ final class TerrariumCloudFoldTests: XCTestCase {
         XCTAssertEqual(CodexHookIdentity.sessionKey(from: ["session_id": uuid]), "codex:\(uuid)")
     }
 
+    /// Regression guard for the anonymous-OTel duplicate-row fix.
+    /// `DaemonServer.hasRealCodexSession` decides whether the OTel
+    /// anonymous placeholder (`codex:otel-active`) should be suppressed in
+    /// favour of a real thread-id session. Without this predicate the
+    /// macOS dashboard surfaced two Codex rows per process: one blank
+    /// (anonymous OTel spans with no cwd) and one with the real project.
+    func testHasRealCodexSessionIgnoresAnonymousPlaceholder() {
+        let anonymous = DaemonSessionEntry(
+            id: "codex:otel-active",
+            port: 9120,
+            pid: 0,
+            projectName: "",
+            agentType: "codex-cli"
+        )
+        let realCodex = DaemonSessionEntry(
+            id: "codex:019dee40-c853-74e0-b46d-dae33eb1d02b",
+            port: 9120,
+            pid: 0,
+            projectName: "AgentDeck",
+            agentType: "codex-cli"
+        )
+        let claude = DaemonSessionEntry(
+            id: "claude:1",
+            port: 9121,
+            pid: 0,
+            projectName: "OtherRepo",
+            agentType: "claude-code"
+        )
+
+        // Empty registry — no real codex session.
+        XCTAssertFalse(DaemonServer.hasRealCodexSession(in: [:]))
+
+        // Only the anonymous placeholder — still "no real codex". The OTel
+        // placeholder must never count as real, else we'd skip the eviction
+        // and the duplicate row would stay.
+        XCTAssertFalse(DaemonServer.hasRealCodexSession(in: [anonymous.id: anonymous]))
+
+        // Claude-only — agent type guard rejects non-codex sessions.
+        XCTAssertFalse(DaemonServer.hasRealCodexSession(in: [claude.id: claude]))
+
+        // Real codex thread-id session — predicate fires, anonymous insert
+        // gets skipped at the call site.
+        XCTAssertTrue(DaemonServer.hasRealCodexSession(in: [realCodex.id: realCodex]))
+
+        // Real codex + anonymous coexisting (the actual regression
+        // scenario): predicate still returns true so anonymous would be
+        // suppressed/evicted on the next codex insert.
+        XCTAssertTrue(DaemonServer.hasRealCodexSession(in: [
+            anonymous.id: anonymous,
+            realCodex.id: realCodex,
+        ]))
+
+        // Claude + anonymous coexisting: anonymous alone does not count as
+        // a real codex session, so the predicate stays false. This guards
+        // the invariant that anonymous never gets promoted by the mere
+        // presence of an unrelated agent type.
+        XCTAssertFalse(DaemonServer.hasRealCodexSession(in: [
+            anonymous.id: anonymous,
+            claude.id: claude,
+        ]))
+    }
+
     /// Octopus (Claude Code) is intentionally NOT folded — multi-instance
     /// in the same workspace is a deliberate user pattern.
     func testClaudeOctopusIsNotFolded() {

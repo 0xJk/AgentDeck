@@ -300,7 +300,11 @@ final class DaemonServer {
 
     /// Singleton row used when Codex OTLP spans have a trace id but no durable
     /// thread id. Keep this in sync with CodexTelemetryModule's fallback id.
-    private static let codexAnonymousOtelSessionId = "codex:otel-active"
+    /// `nonisolated` so `hasRealCodexSession(in:)` (also nonisolated) and the
+    /// XCTest target — which run off the main actor — can read the literal
+    /// without a Swift 6 strict-concurrency violation. The value is an
+    /// immutable `let`, so the relaxation is pure compile-time visibility.
+    nonisolated private static let codexAnonymousOtelSessionId = "codex:otel-active"
 
     /// Session id of the most recent hook event that carried one. Used to
     /// stamp state_update broadcasts so dashboard clients can attribute
@@ -1608,6 +1612,7 @@ final class DaemonServer {
                 startedAt: entry.startedAt
             )
         }
+        evictCodexAnonymousIfNeeded(forIncomingSid: sessionId, agentType: entry.agentType)
         pushedSessionsById[sessionId] = entry
         DaemonLogger.shared.debug("Daemon", "session_push_register: \(sessionId) port=\(port) agent=\(agentType ?? "?")")
 
@@ -1644,6 +1649,7 @@ final class DaemonServer {
                 startedAt: entry.startedAt
             )
         }
+        evictCodexAnonymousIfNeeded(forIncomingSid: sessionId, agentType: entry.agentType)
         pushedSessionsById[sessionId] = entry
 
         upsertIntoCachedSessions(entry)
@@ -1657,6 +1663,51 @@ final class DaemonServer {
         cachedSessions.removeAll { $0.id == entry.id }
         cachedSessions.append(entry)
         cachedSessions = DashboardDataRules.sortSessions(cachedSessions)
+    }
+
+    /// Drop every per-session map entry keyed on `sessionId`. Mirrors the
+    /// `session_end` cleanup so the anonymous-OTel evict path leaves no
+    /// stale `processing`-touched / chat-topic / current-tool residue
+    /// behind. Caller decides whether to broadcast.
+    @MainActor
+    private func purgeCodexSessionState(_ sessionId: String) {
+        pushedSessionsById.removeValue(forKey: sessionId)
+        cachedSessions.removeAll { $0.id == sessionId }
+        codexProcessingTouchedAtBySession.removeValue(forKey: sessionId)
+        lastTerminalCodexEventBySession.removeValue(forKey: sessionId)
+        codexChatStartTsBySession.removeValue(forKey: sessionId)
+        codexLastPromptTopicBySession.removeValue(forKey: sessionId)
+        codexCurrentToolBySession.removeValue(forKey: sessionId)
+        lastHookAtByPushedSession.removeValue(forKey: sessionId)
+    }
+
+    /// Returns true when at least one real (non-anonymous) codex session is
+    /// being tracked. Used to suppress the OTel anonymous placeholder
+    /// (`codex:otel-active`) so dashboards never show a blank duplicate row
+    /// next to a real thread-id session. `nonisolated` so XCTest can call
+    /// it directly without hopping onto the main actor.
+    nonisolated static func hasRealCodexSession(in entries: [String: DaemonSessionEntry]) -> Bool {
+        for (sid, entry) in entries {
+            if sid == codexAnonymousOtelSessionId { continue }
+            if entry.agentType == "codex-cli" { return true }
+        }
+        return false
+    }
+
+    /// Drop the OTel anonymous placeholder (`codex:otel-active`) when a
+    /// real-thread-id codex entry is about to be inserted on a different
+    /// sid. Centralises the anonymous-evict invariant across every codex
+    /// insert path — `session_push_register`, `session_push_state`, the
+    /// resurrection synthesizer, `codex_session_start`, and the codex
+    /// notification agentType-refresh fast path. Without a single helper
+    /// each new insert site had to remember to evict; missing one was the
+    /// Codex stop-time review's recurring complaint.
+    @MainActor
+    private func evictCodexAnonymousIfNeeded(forIncomingSid sid: String, agentType: String?) {
+        guard agentType == "codex-cli" else { return }
+        guard sid != Self.codexAnonymousOtelSessionId else { return }
+        guard pushedSessionsById[Self.codexAnonymousOtelSessionId] != nil else { return }
+        purgeCodexSessionState(Self.codexAnonymousOtelSessionId)
     }
 
     // MARK: - Commands
@@ -1901,6 +1952,13 @@ final class DaemonServer {
             // (Pixoo, D200H, Terrarium, SessionListPanel) pick the Codex
             // brand instead of mis-painting them as Claude Code.
             let resurrectedAgentType = isCodexEvent ? "codex-cli" : "claude-code"
+            // Mid-session codex hooks (e.g. `codex_user_prompt_submit` after
+            // a daemon restart) reach here with a real thread-id sessionId
+            // and resurrect a `codex-cli` row. The OTel anonymous placeholder
+            // may already be alive from progress spans the daemon saw before
+            // this hook — evict it so the resurrected real row doesn't ship
+            // as a blank duplicate alongside the recovered thread.
+            evictCodexAnonymousIfNeeded(forIncomingSid: sessionId, agentType: resurrectedAgentType)
             var entry = DaemonSessionEntry(
                 id: sessionId,
                 port: Int(port),
@@ -1931,6 +1989,12 @@ final class DaemonServer {
             let projectName = ProjectNameResolver.projectName(fromHookPayload: json)
             if !projectName.isEmpty { stateMachine.projectName = projectName }
             if let sessionId {
+                // Evict the OTel anonymous placeholder (`codex:otel-active`)
+                // when a real thread-id session_start hook lands. The hook
+                // path bypasses `ensureCodexSession`, so without this the
+                // anonymous row hangs around as a blank duplicate next to
+                // the real session row.
+                evictCodexAnonymousIfNeeded(forIncomingSid: sessionId, agentType: "codex-cli")
                 var entry: DaemonSessionEntry
                 if let existing = pushedSessionsById[sessionId] {
                     entry = existing.projectName.isEmpty && !projectName.isEmpty
@@ -2084,6 +2148,11 @@ final class DaemonServer {
             // both signals are configured).
             if let sessionId, var entry = pushedSessionsById[sessionId] {
                 entry.agentType = "codex-cli"
+                // notify can race ahead of an OTel turn_start span when both
+                // signals are configured; if the anonymous placeholder was
+                // alive at that moment it now has a real codex twin, so the
+                // helper drops it the same way every other insert path does.
+                evictCodexAnonymousIfNeeded(forIncomingSid: sessionId, agentType: "codex-cli")
                 pushedSessionsById[sessionId] = entry
                 upsertIntoCachedSessions(entry)
             }
@@ -2301,14 +2370,35 @@ final class DaemonServer {
             if let cwd, let projectName = Self.nonEmptyString(ProjectNameResolver.resolve(cwd: cwd)) {
                 return projectName
             }
-            if sessionId == Self.codexAnonymousOtelSessionId,
-               let inferred = inferredCodexProjectNameFromVisibleSessions() {
-                return inferred
-            }
+            // OTel anonymous session (cwd unknown): leave projectName empty
+            // rather than borrowing a sibling Claude/OpenClaw session's name.
+            // Borrowing was the macOS dashboard regression where codex showed
+            // a neighbouring agent's project label (e.g. AgentDeck claude →
+            // codex tagged "AgentDeck" even when running elsewhere, or worse
+            // the other way around). `ensureCodexSession`'s upgrade path
+            // fills the entry when a later hook event arrives with cwd.
+            _ = sessionId
             return ""
         }
 
         func ensureCodexSession(_ sid: String, projectName: String = "") {
+            // Anonymous OTel placeholder (`codex:otel-active`) is only useful
+            // when no real Codex session is tracked yet — its job is to keep
+            // the dashboard creature alive while OTel emits progress spans
+            // without a durable thread id. The moment any real `codex:<id>`
+            // row exists, the anonymous insert would just become a blank
+            // duplicate row, which is exactly the Codex stop-time review
+            // complaint we just landed a fix for. Suppress the create here;
+            // the symmetric branch below evicts a stale anonymous row when
+            // a real codex sid arrives.
+            if sid == Self.codexAnonymousOtelSessionId {
+                if Self.hasRealCodexSession(in: pushedSessionsById) {
+                    return
+                }
+            } else if pushedSessionsById[Self.codexAnonymousOtelSessionId] != nil {
+                purgeCodexSessionState(Self.codexAnonymousOtelSessionId)
+                didTouchSessionsList = true
+            }
             let resolvedProjectName = Self.nonEmptyString(projectName) ?? ""
             if let existing = pushedSessionsById[sid] {
                 if existing.projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -2486,31 +2576,6 @@ final class DaemonServer {
         let lowered = trimmed.lowercased()
         guard lowered != "tool" && lowered != "unknown" else { return nil }
         return trimmed
-    }
-
-    @MainActor
-    private func inferredCodexProjectNameFromVisibleSessions() -> String? {
-        let candidates = pushedSessionsById.values.compactMap { entry -> String? in
-            guard entry.agentType != "codex-cli" else { return nil }
-            guard let projectName = Self.nonEmptyString(entry.projectName) else { return nil }
-            switch projectName.lowercased() {
-            case "daemon", "openclaw":
-                return nil
-            default:
-                return projectName
-            }
-        }
-        let unique = Array(Set(candidates))
-        if unique.count == 1 { return unique[0] }
-
-        guard let rawStateProject = stateMachine.projectName,
-              let stateProject = Self.nonEmptyString(rawStateProject) else { return nil }
-        switch stateProject.lowercased() {
-        case "daemon", "openclaw":
-            return nil
-        default:
-            return stateProject
-        }
     }
 
     /// Apply a per-session state/tool update coming from a hook event and
