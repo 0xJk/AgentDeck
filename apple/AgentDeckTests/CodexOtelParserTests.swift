@@ -202,19 +202,55 @@ final class CodexOtelParserTests: XCTestCase {
         )
     }
 
-    /// Per-span cwd wins over per-thread fallback so a heterogeneous batch
-    /// still attributes per-span correctly.
-    func testPerSpanCwdWinsOverTraceLevelCwd() {
+    /// CRITICAL: a tool/activity span's OWN cwd attribute is ignored — it
+    /// typically carries a per-call subprocess cwd (e.g. `process.cwd` on
+    /// `exec_command` pointing at /tmp or a sub-directory). If that span-
+    /// local cwd surfaced through the event, the daemon's
+    /// `ensureCodexSession` upgrade guard (fires once, empty→non-empty)
+    /// would permanently lock the dashboard's projectName at the wrong
+    /// path. Codex stop-time review caught this 2026-05-17. The toolCall
+    /// event must reflect the session-level cwd from turnStart/resource
+    /// fallback, not its own attribute.
+    func testToolCallOwnCwdAttrIgnoredAsSubprocessCwd() {
         let json = otlp(spans: [
             ["name": "codex.turn.start", "attributes": attr(["thread.id": tidCurrent, "turn.id": "u-mix", "cwd": "/Users/me/proj-a"])],
-            ["name": "codex.tool.call", "attributes": attr(["thread.id": tidCurrent, "turn.id": "u-mix", "tool.name": "Read", "cwd": "/Users/me/proj-b"])],
+            ["name": "codex.tool.call", "attributes": attr(["thread.id": tidCurrent, "turn.id": "u-mix", "tool.name": "Read", "process.cwd": "/tmp/subprocess"])],
         ])
         XCTAssertEqual(
             CodexTelemetryModule.parse(json),
             [
                 .turnStart(threadId: tidCurrent, turnId: "u-mix", cwd: "/Users/me/proj-a"),
-                .toolCall(threadId: tidCurrent, turnId: "u-mix", tool: "Read", cwd: "/Users/me/proj-b"),
-            ]
+                .toolCall(threadId: tidCurrent, turnId: "u-mix", tool: "Read", cwd: "/Users/me/proj-a"),
+            ],
+            "toolCall's process.cwd must NOT override the session-level cwd from turnStart fallback"
+        )
+    }
+
+    /// Lone tool span (no turnStart, no resource cwd) carrying its own
+    /// cwd attribute must NOT surface that cwd on the event. Otherwise it
+    /// becomes the first non-empty projectName in cachedSessions and the
+    /// daemon's one-shot upgrade guard locks the wrong label forever.
+    func testLoneToolSpanProcessCwdDoesNotProduceSessionCwd() {
+        let json = otlp(spans: [
+            ["name": "exec_command", "attributes": attr(["thread.id": tidTool, "turn.id": "u-lone", "process.cwd": "/tmp/exec"])]
+        ])
+        XCTAssertEqual(
+            CodexTelemetryModule.parse(json),
+            [.toolCall(threadId: tidTool, turnId: "u-lone", tool: "exec", cwd: nil)],
+            "Lone tool span's process.cwd must NOT become the session cwd"
+        )
+    }
+
+    /// Same lock-prevention rule for `activity` spans. An anomalous cwd
+    /// attribute on a non-turnStart span must not be promoted to the event.
+    func testLoneActivityOwnCwdAttrIsIgnored() {
+        let json = otlp(spans: [
+            ["name": "receiving", "attributes": attr(["thread.id": tidStream, "turn.id": "u-act", "cwd": "/tmp/wrong"])]
+        ])
+        XCTAssertEqual(
+            CodexTelemetryModule.parse(json),
+            [.activity(threadId: tidStream, turnId: "u-act", name: "receiving", cwd: nil)],
+            "activity span's own cwd attribute is ignored — only turnStart / resource cwd is trusted"
         )
     }
 

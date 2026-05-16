@@ -42,22 +42,44 @@ enum CodexTelemetryModule {
         var out: [CodexSpanEvent] = []
         let resourceSpans = (json["resourceSpans"] as? [[String: Any]]) ?? []
 
-        // First pass: build a per-thread cwd map. Codex Desktop emits cwd
-        // on the turn-boundary span only, so a same-batch toolCall/activity
-        // span for the SAME thread needs to inherit that cwd — otherwise the
-        // empty-projectName placeholder inserted by ensureCodexSession can
-        // never be upgraded (resolvedProjectName == "" fails the empty→
-        // non-empty guard). Scoping to threadId, not batch-wide, prevents
-        // session A's cwd from leaking into session B when both are active
-        // under one exporter.
+        // Build a per-thread cwd fallback in two priority tiers — never
+        // batch-wide (that would leak A→B across concurrent sessions) and
+        // never sourced from tool/activity spans' own cwd attrs (those can
+        // carry per-call subprocess cwd like `exec_command`'s `process.cwd`
+        // pointing at /tmp or a sub-directory). The daemon's
+        // `ensureCodexSession` upgrade guard only fires once
+        // (empty→non-empty), so a wrong first value would *permanently lock*
+        // the dashboard's projectName at the bad path — that's the lock the
+        // Codex stop-time review caught (2026-05-17). Restricting the
+        // fallback source preserves the original fix's goal (toolCall/activity
+        // events landing before turnStart still upgrade the placeholder) while
+        // making the source trustworthy.
         //
-        // Resource-level cwd is replicated for every thread that has a span
-        // under that resourceSpans entry: it represents the shared workspace
-        // for the whole resource, so cross-thread "propagation" is intended
-        // (and matches `testResourceLevelCwdAliasFallsThrough`).
+        // Tier 1 — turnStart spans' own cwd attribute. Session-level per
+        //          Codex's OTel contract.
+        // Tier 2 — resource-level cwd attribute. Workspace-scoped for every
+        //          thread that has a span under that resource.
         var cwdByThreadId: [String: String] = [:]
         for r in resourceSpans {
             let resourceAttrs = flattenAttrs(((r["resource"] as? [String: Any])?["attributes"] as? [[String: Any]]) ?? [])
+            let scopeSpans = (r["scopeSpans"] as? [[String: Any]]) ?? []
+            for ss in scopeSpans {
+                let spans = (ss["spans"] as? [[String: Any]]) ?? []
+                for span in spans {
+                    guard isTurnStartSpan(span) else { continue }
+                    let spanAttrs = flattenAttrs(span["attributes"] as? [[String: Any]] ?? [])
+                    guard let cwd = cwdFromAttributes(spanAttrs) else { continue }
+                    let merged = resourceAttrs.merging(spanAttrs, uniquingKeysWith: { _, new in new })
+                    let threadId = threadIdAttr(merged) ?? anonymousThreadIdIfTraceBacked(span)
+                    if let tid = threadId, !tid.isEmpty, cwdByThreadId[tid] == nil {
+                        cwdByThreadId[tid] = cwd
+                    }
+                }
+            }
+        }
+        for r in resourceSpans {
+            let resourceAttrs = flattenAttrs(((r["resource"] as? [String: Any])?["attributes"] as? [[String: Any]]) ?? [])
+            guard let resCwd = cwdFromAttributes(resourceAttrs) else { continue }
             let scopeSpans = (r["scopeSpans"] as? [[String: Any]]) ?? []
             for ss in scopeSpans {
                 let spans = (ss["spans"] as? [[String: Any]]) ?? []
@@ -66,10 +88,9 @@ enum CodexTelemetryModule {
                         flattenAttrs(span["attributes"] as? [[String: Any]] ?? []),
                         uniquingKeysWith: { _, new in new }
                     )
-                    guard let cwd = cwdFromAttributes(merged) else { continue }
                     let threadId = threadIdAttr(merged) ?? anonymousThreadIdIfTraceBacked(span)
                     if let tid = threadId, !tid.isEmpty, cwdByThreadId[tid] == nil {
-                        cwdByThreadId[tid] = cwd
+                        cwdByThreadId[tid] = resCwd
                     }
                 }
             }
@@ -129,13 +150,20 @@ enum CodexTelemetryModule {
             ?? traceIdAttr(span)
             ?? ""
 
-        // Per-span cwd wins over the per-thread fallback so a turnStart with
-        // an explicit cwd attr always reflects exactly what Codex reported.
-        // The fallback only fires for SAME-thread events that omit cwd (the
-        // toolCall/activity case Codex Desktop produces in practice) —
-        // cross-thread leakage is impossible because the map key is the
-        // resolved threadId itself.
-        let cwd = cwdFromAttributes(attrs) ?? cwdByThreadId[threadId]
+        // turnStart events: trust the span's own cwd attr (session-level per
+        // Codex's contract), falling back to the per-thread map only when
+        // the span itself omits cwd.
+        //
+        // Non-turnStart events (toolCall, activity, etc.): deliberately
+        // IGNORE their own cwd attr — it's typically a per-call subprocess
+        // cwd (e.g. `process.cwd` on `exec_command` pointing at /tmp) that
+        // would lock the daemon's projectName at the wrong path through the
+        // one-shot upgrade guard. They use only the thread-scoped fallback
+        // built above from turn-boundary + resource spans, which is the
+        // trustworthy session cwd.
+        let cwd: String? = isTurnStartSpan(span)
+            ? (cwdFromAttributes(attrs) ?? cwdByThreadId[threadId])
+            : cwdByThreadId[threadId]
 
         // Normalize underscore/slash variants (`codex.tool_call`,
         // `turn/start`) into dotted form so current Codex builds and older
@@ -159,6 +187,26 @@ enum CodexTelemetryModule {
         default:
             return nil
         }
+    }
+
+    /// Span names that represent the start of a user turn. Their own
+    /// `cwd` attribute is session-level (the workspace), unlike tool spans
+    /// whose `cwd` attribute may be subprocess-scoped. Keep aligned with
+    /// the classify() turnStart dispatch case.
+    private static let turnStartSpanNames: Set<String> = [
+        "codex.turn",
+        "codex.turn.start",
+        "turn.start",
+        "op.dispatch.user.turn",
+        "op.dispatch.user.input.with.turn.context",
+    ]
+
+    private static func isTurnStartSpan(_ span: [String: Any]) -> Bool {
+        guard let rawName = span["name"] as? String else { return false }
+        let normalized = rawName
+            .replacingOccurrences(of: "_", with: ".")
+            .replacingOccurrences(of: "/", with: ".")
+        return turnStartSpanNames.contains(normalized)
     }
 
     /// 16 attribute aliases under which Codex builds (and the Codex Desktop
