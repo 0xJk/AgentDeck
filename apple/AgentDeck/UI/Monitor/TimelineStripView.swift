@@ -602,8 +602,26 @@ struct TimelineStripView: View {
     private func detailPane(_ group: GroupedEntry?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if let group {
-                let iconKey = timelineIconKey(for: group.entry.type, status: group.entry.status)
-                let iconColor = timelineTypeColor(for: group.entry.type)
+                // Mirror the turnRow's hasResponse-aware spinner stop —
+                // detail pane shares the same chat_start row identity,
+                // so when chat_response (or chat_end) is merged in, the
+                // pane's leading icon must also flip to success and
+                // stop rotating. Without this, opening the detail pane
+                // on a delivered turn whose chat_end dropped (Stop hook
+                // unreliability / async summarize hang) shows a spinner
+                // that keeps rotating forever even though the row above
+                // is already a static checkmark. Codex stop-time review
+                // #12 (2026-05-17).
+                let isTurnCompleted = group.entry.type == .chatStart && group.hasResponse
+                let iconKey: TimelineIconKey = isTurnCompleted
+                    ? .success
+                    : timelineIconKey(for: group.entry.type, status: group.entry.status)
+                let iconColor = isTurnCompleted
+                    ? timelineTypeColor(for: .chatEnd)
+                    : timelineTypeColor(for: group.entry.type)
+                let isRotating: Bool = isTurnCompleted
+                    ? false
+                    : timelineIsRotatingEntry(group.entry, siblings: grouped.map(\.entry))
                 let countSuffix = group.count > 1 ? " (×\(group.count))" : ""
 
                 // Header: type badge chip + timestamp
@@ -614,7 +632,7 @@ struct TimelineStripView: View {
                             font: .system(size: fontScale.label, weight: .bold),
                             color: .white,
                             size: nil,
-                            isRotating: timelineIsRotatingEntry(group.entry, siblings: grouped.map(\.entry))
+                            isRotating: isRotating
                         )
                         Text(formatType(group.entry.type))
                             .font(.system(size: fontScale.label, weight: .bold, design: .monospaced))
