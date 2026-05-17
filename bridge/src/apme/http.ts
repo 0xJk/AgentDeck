@@ -86,14 +86,41 @@ export async function handleApmeRequest(
         ...t,
         turnEvals: apme.store.listEvalsForTurn(t.id as string),
       }));
+      // Include per-task rollup evals — task-unit granularity is the canonical
+      // evaluation surface for "how well did this agent do this task".
+      const rawTasks = apme.store.listTasksForRun(id);
+      const tasks = rawTasks.map((t) => ({
+        ...t,
+        evals: apme.store.listEvalsForTask(t.id),
+      }));
       sendJson(res, 200, {
         schema: EVAL_SCHEMA_VERSION,
         run,
         evals,
         steps,
         turns,
+        tasks,
         vibe,
         overallScore: aggregateOverall(evals),
+      });
+      return true;
+    }
+
+    if (method === 'GET' && path.startsWith('/apme/tasks/')) {
+      const taskId = path.slice('/apme/tasks/'.length);
+      const task = apme.store.getTask(taskId);
+      if (!task) {
+        sendJson(res, 404, { error: 'task not found' });
+        return true;
+      }
+      const taskEvals = apme.store.listEvalsForTask(taskId);
+      const turns = apme.store.listTurnsForTask(taskId);
+      sendJson(res, 200, {
+        schema: EVAL_SCHEMA_VERSION,
+        task,
+        evals: taskEvals,
+        turns,
+        overallScore: aggregateOverall(taskEvals),
       });
       return true;
     }

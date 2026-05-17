@@ -28,9 +28,10 @@ fun BrandIcon(
     isEink: Boolean = false,
     size: Dp = 13.dp,
     modifier: Modifier = Modifier,
+    tint: Color? = null,
 ) {
     val spec = remember(agentType) { BrandIconSpec.fromAgentType(agentType) } ?: return
-    val color = if (isEink) spec.einkColor else spec.color
+    val color = tint ?: if (isEink) spec.einkColor else spec.color
     val paths = remember(agentType) { spec.pathDataList.map { parseSvgPath(it) } }
 
     Canvas(modifier = modifier.size(size)) {

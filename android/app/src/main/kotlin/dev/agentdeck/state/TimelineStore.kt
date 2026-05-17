@@ -20,11 +20,26 @@ data class TimelineEntry(
     val status: String? = null,
     /** APME task id. Set on task_start/task_end and on every turn entry inside the task scope. */
     val taskId: String? = null,
-    /** Only on task_end. todo_complete | clear | session_end | manual. */
+    /** Only on task_end. todo_complete | clear | session_end | manual | idle_gap. */
     val boundarySignal: String? = null,
     /** "llm" | "heuristic" | "none". Lets clients suppress the detail pane
      *  when the heuristic gave up and the body is just the raw response. */
     val summaryKind: String? = null,
+    /**
+     * Task-judge rollup, attached on the SECOND `task_end` emit the runner
+     * fires once the LLM judge resolves (5–30 s after the boundary). Stores
+     * upsert by (type, taskId) — see `upsertEntry`. Nil on the initial emit
+     * and for non-task entries / pre-existing on-disk rows. Mirrors the four
+     * task* fields on shared/src/timeline.ts::TimelineEntry.
+     *   - `taskScore`    : 0..1 composite
+     *   - `taskOutcome`  : "success" | "partial" | "fail" | "pending"
+     *   - `taskCategory` : task_rollup category
+     *   - `taskSummary`  : one-line judge summary
+     */
+    val taskScore: Double? = null,
+    val taskOutcome: String? = null,
+    val taskCategory: String? = null,
+    val taskSummary: String? = null,
 )
 
 data class GroupedEntry(
@@ -127,7 +142,17 @@ class TimelineStore private constructor() {
         // summaryKind enrichment.
         if (isLowSignalEntry(entry)) return
         val list = _entries.value.toMutableList()
-        val idx = list.indexOfLast { it.type == entry.type && kotlin.math.abs(it.timestamp - entry.timestamp) < 1000L }
+        // Task-judge follow-up emits land 5–30 s after the initial boundary,
+        // so the 1 s timestamp window won't match. For task_end rows, prefer
+        // matching by (type, taskId) — that pair is stable across both emits
+        // and lets the score-bearing update merge in place. Mirrors Apple
+        // `DaemonTimelineStore::upsert`.
+        val taskMatchIdx = if (entry.type == "task_end" && !entry.taskId.isNullOrEmpty()) {
+            list.indexOfLast { it.type == "task_end" && it.taskId == entry.taskId }
+        } else -1
+        val idx = if (taskMatchIdx >= 0) taskMatchIdx else {
+            list.indexOfLast { it.type == entry.type && kotlin.math.abs(it.timestamp - entry.timestamp) < 1000L }
+        }
         if (idx >= 0) {
             list[idx] = list[idx].copy(
                 summary = entry.summary,
@@ -142,6 +167,10 @@ class TimelineStore private constructor() {
                 taskId = entry.taskId ?: list[idx].taskId,
                 boundarySignal = entry.boundarySignal ?: list[idx].boundarySignal,
                 summaryKind = entry.summaryKind ?: list[idx].summaryKind,
+                taskScore = entry.taskScore ?: list[idx].taskScore,
+                taskOutcome = entry.taskOutcome ?: list[idx].taskOutcome,
+                taskCategory = entry.taskCategory ?: list[idx].taskCategory,
+                taskSummary = entry.taskSummary ?: list[idx].taskSummary,
             )
             _entries.value = list
         } else {

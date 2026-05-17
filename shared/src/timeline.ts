@@ -37,6 +37,24 @@ export interface TimelineEntry {
   /** Only on task_end. Why the task closed. */
   boundarySignal?: TaskBoundarySignal;
   /**
+   * Per-task evaluation result, attached when the task_judge resolves
+   * (always AFTER the initial task_end emit — clients upsert the existing
+   * row by (type='task_end', taskId) and merge these four fields).
+   *
+   *   - `taskScore`   : 0..1 composite (matches `tasks.composite_score`)
+   *   - `taskOutcome` : terminal outcome string from `bridge/src/apme/outcome.ts`
+   *     (`'committed' | 'abandoned' | 'iterated' | 'ab_winner' | 'ab_loser'
+   *     | 'interrupted' | 'exploratory' | 'pending'`). UIs collapse into
+   *     three visual classes — success / fail / partial / pending — and pick
+   *     the badge color via design-system status tokens.
+   *   - `taskCategory`: task_rollup category ('general' | 'conversation' | …)
+   *   - `taskSummary` : one-line judge summary
+   */
+  taskScore?: number;
+  taskOutcome?: string;
+  taskCategory?: string;
+  taskSummary?: string;
+  /**
    * How the row's `raw` summary was produced. Lets clients decide whether
    * the detail pane is worth showing — when `'none'`, detail is just the
    * unfiltered response that the heuristic couldn't summarize, and showing

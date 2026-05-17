@@ -127,8 +127,15 @@ struct SessionListPanel: View {
         // creature.
         let primarySessionId = stateHolder.state.sessionId
         let focusedSessionId = stateHolder.state.focusedSessionId
-        let primaryBackedBySibling = primarySessionId != nil &&
-            stateHolder.state.siblingSessions.contains(where: { $0.id == primarySessionId })
+        // Capture the sibling that backs the primary so we can borrow its
+        // startedAt below. Without an anchor the primary entry collapses to
+        // nil-startedAt, which sorts to the end of its (project, agentType)
+        // group via DashboardDataRules.startedAtTime → .greatestFiniteMagnitude
+        // and made the #N suffix order race-sensitive on iPad / iOS.
+        let primaryAnchorSibling: SessionInfo? = primarySessionId.flatMap { pid in
+            stateHolder.state.siblingSessions.first(where: { $0.id == pid })
+        }
+        let primaryBackedBySibling = primaryAnchorSibling != nil
         let duplicatePrimaryWithoutId = primarySessionId == nil &&
             stateHolder.state.agentType != nil &&
             stateHolder.state.siblingSessions.contains(where: {
@@ -145,7 +152,7 @@ struct SessionListPanel: View {
                 modelName: stateHolder.state.modelName,
                 effortLevel: stateHolder.state.effortLevel,
                 state: stateHolder.state.state,
-                startedAt: nil,
+                startedAt: primaryAnchorSibling?.startedAt,
                 isPrimary: true,
                 isFocused: focusedSessionId != nil && stateHolder.state.sessionId == focusedSessionId,
                 sessionId: stateHolder.state.sessionId

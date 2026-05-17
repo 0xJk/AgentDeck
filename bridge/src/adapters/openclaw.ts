@@ -29,8 +29,16 @@ import type {
   DeviceIdentity,
   DeviceAuthToken,
 } from '../types.js';
+import type { AdapterContext, ChatEventPayload } from '@agentdeck/shared';
 import { OPENCLAW_CAPABILITIES, OPENCLAW_GATEWAY_PORT } from '../types.js';
 import { fetchModelCatalog, getDefaultModelName, invalidateModelCache } from '../model-catalog.js';
+import { getApme } from '../apme/index.js';
+import {
+  openclawChatEventToSpans,
+  openclawChatSendToSpan,
+  openclawIdleGapTaskBoundary,
+  OPENCLAW_IDLE_GAP_MS,
+} from '../apme/adapters/openclaw-hook.js';
 
 /**
  * Inbound message envelopes — responses to our requests, or server-initiated events.
@@ -96,6 +104,19 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
   private deviceIdentity: DeviceIdentity | null = null;
   private deviceAuthToken: DeviceAuthToken | null = null;
 
+  // APME bridge — set by `setApmeSession`. OpenClaw has no hook layer; the
+  // Gateway WS stream is the only event source. Without this APME wiring,
+  // OpenClaw sessions land in the runs table but fall through to a single
+  // `session_end` task boundary per session, collapsing all conversations
+  // into one "task" and defeating per-task evaluation.
+  private apmeSessionId: string | null = null;
+  private apmeTraceId = randomUUID();
+  private apmeCwdHint: string | undefined;
+  /** Idle-gap timer — fires the `task_boundary` (idle_gap) span when the
+   *  user hasn't sent a new `chat.send` for OPENCLAW_IDLE_GAP_MS after the
+   *  last `chat.final`. Reset on every new send, cleared on session end. */
+  private apmeIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
   /** Reconnect delay (doubles on each failure, max 30s) */
   private reconnectDelay = 1000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
@@ -148,6 +169,60 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
     });
+  }
+
+  /** Bind the adapter to an APME session id so Gateway events can be
+   *  ingested as TelemetrySpans. No-op when APME isn't initialized. */
+  setApmeSession(sessionId: string, cwd?: string): void {
+    this.apmeSessionId = sessionId;
+    this.apmeCwdHint = cwd;
+  }
+
+  private buildApmeCtx(): AdapterContext | null {
+    if (!this.apmeSessionId || !getApme()) return null;
+    return {
+      sessionId: this.apmeSessionId,
+      agentType: 'openclaw',
+      cwd: this.apmeCwdHint,
+      traceId: this.apmeTraceId,
+      activeTurnId: undefined,
+    };
+  }
+
+  private ingestApmeSpans(spans: ReadonlyArray<ReturnType<typeof openclawChatSendToSpan>>): void {
+    const apme = getApme();
+    if (!apme || !this.apmeSessionId || spans.length === 0) return;
+    for (const span of spans) {
+      try { apme.collector.ingestSpan(this.apmeSessionId, span); }
+      catch (err) { debug('apme:openclaw', `ingestSpan failed: ${String(err)}`); }
+    }
+  }
+
+  /** Reset (or start) the idle-gap timer. Fires
+   *  `openclawIdleGapTaskBoundary` after OPENCLAW_IDLE_GAP_MS of silence
+   *  (no new `chat.send`) following the last `chat.final`. */
+  private armIdleGapTimer(): void {
+    this.clearIdleGapTimer();
+    const ctx = this.buildApmeCtx();
+    if (!ctx) return;
+    this.apmeIdleTimer = setTimeout(() => {
+      this.apmeIdleTimer = null;
+      const apme = getApme();
+      if (!apme || !this.apmeSessionId) return;
+      const span = openclawIdleGapTaskBoundary(ctx);
+      try { apme.collector.ingestSpan(this.apmeSessionId, span); }
+      catch (err) { debug('apme:openclaw', `idle_gap ingestSpan failed: ${String(err)}`); }
+    }, OPENCLAW_IDLE_GAP_MS);
+    // Don't keep the event loop alive just for this timer; the adapter is
+    // already pinning the loop via WebSocket.
+    this.apmeIdleTimer.unref?.();
+  }
+
+  private clearIdleGapTimer(): void {
+    if (this.apmeIdleTimer) {
+      clearTimeout(this.apmeIdleTimer);
+      this.apmeIdleTimer = null;
+    }
   }
 
   async start(options: AdapterStartOptions & { externalServer?: Server }): Promise<void> {
@@ -243,6 +318,14 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
         }
 
         if (this.currentSessionKey) {
+          // APME: open a turn. The matching `turn_response` lands on
+          // `chat.final` below. Cancel any pending idle-gap timer — a new
+          // send means the conversation is still active.
+          const ctx = this.buildApmeCtx();
+          if (ctx) {
+            this.clearIdleGapTimer();
+            this.ingestApmeSpans([openclawChatSendToSpan(ctx, cmd.text)]);
+          }
           this.rpcCall('chat.send', {
             sessionKey: this.currentSessionKey,
             message: cmd.text,
@@ -358,6 +441,9 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+
+    // Cancel any pending idle-gap timer so it doesn't fire after shutdown.
+    this.clearIdleGapTimer();
 
     for (const [id, pending] of this.pendingRpc) {
       pending.reject(new Error('Adapter shutting down'));
@@ -799,6 +885,24 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
               });
             }
 
+            // APME: emit turn_response + tool_result spans, then arm the
+            // idle-gap timer. If the user sends a new prompt within
+            // OPENCLAW_IDLE_GAP_MS the timer is cancelled (above in
+            // `send_prompt`); otherwise it fires `task_boundary` (idle_gap)
+            // and closes the task.
+            const apmeCtx = this.buildApmeCtx();
+            if (apmeCtx) {
+              const apmePayload: ChatEventPayload = {
+                state: 'final',
+                ...(payload.runId ? { runId: payload.runId as string } : {}),
+                ...(payload.sessionKey ? { sessionKey: payload.sessionKey as string } : {}),
+                ...(responseContent ? { response: responseContent } : {}),
+                ...(Array.isArray(payload.tools) ? { tools: payload.tools as ChatEventPayload['tools'] } : {}),
+              };
+              this.ingestApmeSpans(openclawChatEventToSpans(apmeCtx, apmePayload));
+              this.armIdleGapTimer();
+            }
+
             this.chatStarted = false;
             this.lastPrompt = null;
             this.accumulatedResponse = '';
@@ -819,6 +923,18 @@ export class OpenClawAdapter extends EventEmitter implements AgentAdapter {
               ...(abortDetail ? { detail: abortDetail } : {}),
               ...(this.chatIsAutomated ? { automated: true } : {}),
             });
+            // APME: emit task_boundary so the abort itself closes the task
+            // immediately \u2014 don't wait for the idle timer. The user
+            // explicitly stopped this turn.
+            const abortCtx = this.buildApmeCtx();
+            if (abortCtx) {
+              this.clearIdleGapTimer();
+              this.ingestApmeSpans(openclawChatEventToSpans(abortCtx, {
+                state: 'aborted',
+                ...(payload.runId ? { runId: payload.runId as string } : {}),
+                ...(payload.sessionKey ? { sessionKey: payload.sessionKey as string } : {}),
+              }));
+            }
             this.chatStarted = false;
             this.lastPrompt = null;
             this.accumulatedResponse = '';

@@ -1335,16 +1335,51 @@ actor OpenClawAdapter {
         emitTimelineEntry(entry)
     }
 
+    /// Resolve a session.tool payload's tool name, returning nil if every
+    /// candidate (top-level + nested) is absent / NSNull. Exposed as a
+    /// static helper so the placeholder-row drop predicate is testable
+    /// without spinning up a full adapter actor.
+    static func resolveToolName(_ payload: [String: Any]) -> String? {
+        let nested = payload["message"] as? [String: Any]
+            ?? payload["item"] as? [String: Any]
+            ?? payload["call"] as? [String: Any]
+        return firstJSONValue([
+            payload["name"], payload["tool"], payload["toolName"],
+            nested?["name"], nested?["tool"],
+        ]) as? String
+    }
+
+    /// True when a session.tool payload carries zero user-visible signal —
+    /// no name (would fall back to the literal "tool" placeholder), no
+    /// input, no output. The producer guard in
+    /// `emitTimelineEntry(fromSessionTool:)` calls this to drop such rows
+    /// at source so they never reach disk, broadcast, or APME hook
+    /// routing.
+    static func isPlaceholderOnlySessionTool(_ payload: [String: Any]) -> Bool {
+        let nested = payload["message"] as? [String: Any]
+            ?? payload["item"] as? [String: Any]
+            ?? payload["call"] as? [String: Any]
+        let name = resolveToolName(payload)
+        let input = firstJSONValue([
+            payload["input"], payload["arguments"], payload["args"],
+            payload["tool_input"], nested?["input"], nested?["arguments"],
+        ])
+        let output = firstJSONValue([
+            payload["output"], payload["result"], payload["error"],
+            nested?["output"], nested?["result"], nested?["error"],
+        ])
+        return name == nil && input == nil && output == nil
+    }
+
     private func emitTimelineEntry(fromSessionTool payload: [String: Any]) {
         let nested = payload["message"] as? [String: Any]
             ?? payload["item"] as? [String: Any]
             ?? payload["call"] as? [String: Any]
-        let toolName = payload["name"] as? String
-            ?? payload["tool"] as? String
-            ?? payload["toolName"] as? String
-            ?? nested?["name"] as? String
-            ?? nested?["tool"] as? String
-            ?? "tool"
+        // Resolve tool name and remember whether we hit the literal "tool"
+        // fallback so the placeholder guard below can drop rows that carry
+        // zero useful signal.
+        let resolvedName = Self.resolveToolName(payload)
+        let toolName = resolvedName ?? "tool"
         let status = (payload["status"] as? String)
             ?? (payload["state"] as? String)
             ?? (nested?["status"] as? String)
@@ -1364,6 +1399,20 @@ actor OpenClawAdapter {
             payload["output"], payload["result"], payload["error"],
             nested?["output"], nested?["result"], nested?["error"],
         ])
+        // Placeholder-only row drop. When OpenClaw upstream sends a
+        // session.tool event with no usable name and no input/output, the
+        // resulting timeline row is "tool · running" / "tool · complete"
+        // with an empty detail — pure noise that pushes real chat/turn
+        // rows off the visible window. Drop at source so the noise
+        // never reaches disk, broadcast, or APME hook routing. Mirrors
+        // `Self.isPlaceholderOnlySessionTool(_:)` (the testable predicate).
+        //
+        // Real tool calls (e.g. `name="shell"` + `input={command:...}`)
+        // still pass through because either `resolvedName` is non-nil or
+        // `input`/`output` carries content.
+        if resolvedName == nil, input == nil, output == nil {
+            return
+        }
         var detailParts: [String] = []
         if let status { detailParts.append("status: \(status)") }
         if let inputSummary = Self.compactDebugValue(input, max: 600) {

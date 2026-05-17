@@ -61,7 +61,7 @@ export interface TelemetryAttributes {
   /** Assistant response text for turn_response. */
   'agentdeck.response_text'?: string;
   /** Task boundary discriminator. */
-  'agentdeck.boundary_signal'?: 'todo_complete' | 'clear' | 'session_end' | 'manual';
+  'agentdeck.boundary_signal'?: 'todo_complete' | 'clear' | 'session_end' | 'manual' | 'idle_gap';
   /** Original event name for raw_step. */
   'agentdeck.raw_event'?: string;
   /** Original event payload for raw_step (JSON-serializable). */

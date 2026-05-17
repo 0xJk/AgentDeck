@@ -563,6 +563,69 @@ program
     }
   });
 
+// ===== Task control =====
+//
+// User-driven APME task boundary signal. Closes the currently-active task on
+// the daemon's APME collector via POST /task/close — same path the macOS
+// detail-pane "Mark task complete" button uses. Without this command, the
+// only ways to declare task completion are TodoWrite all-completed (Claude /
+// Codex / OpenCode) or /clear (also splits the run); OpenClaw users had no
+// manual gesture at all before idle_gap landed.
+
+const task = program.command('task').description('Manage APME task boundaries');
+
+async function postTaskClose(opts: { signal: string; outcome?: string; sessionId?: string }): Promise<void> {
+  const { readDaemonInfo, findDaemonPort } = await import('./session-registry.js');
+  const info = readDaemonInfo();
+  const port = info?.httpPort ?? info?.port ?? findDaemonPort();
+  if (!port) {
+    log('Daemon not running. Start it with `agentdeck daemon start`.');
+    process.exit(1);
+  }
+  const body = JSON.stringify({
+    signal: opts.signal,
+    ...(opts.outcome ? { outcome: opts.outcome } : {}),
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/task/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      log(`Failed (${res.status}): ${JSON.stringify(json)}`);
+      process.exit(1);
+    }
+    if ((json as { closed?: boolean }).closed) {
+      log(`Task closed (signal=${opts.signal}${opts.outcome ? `, outcome=${opts.outcome}` : ''})`);
+    } else {
+      log('No active task to close.');
+    }
+  } catch (err) {
+    log(`Request failed: ${String(err)}`);
+    process.exit(1);
+  }
+}
+
+task
+  .command('done')
+  .description('Mark the active task as complete (manual boundary signal)')
+  .option('-o, --outcome <v>', 'Outcome class: success | fail | partial | abandoned', 'success')
+  .option('-s, --session <id>', 'Target session id (defaults to active OpenClaw session)')
+  .action(async (opts: { outcome?: string; session?: string }) => {
+    await postTaskClose({ signal: 'manual', outcome: opts.outcome, sessionId: opts.session });
+  });
+
+task
+  .command('cancel')
+  .description('Mark the active task as abandoned (shorthand for `task done --outcome abandoned`)')
+  .option('-s, --session <id>', 'Target session id (defaults to active OpenClaw session)')
+  .action(async (opts: { session?: string }) => {
+    await postTaskClose({ signal: 'manual', outcome: 'abandoned', sessionId: opts.session });
+  });
+
 // ===== Pixoo commands =====
 
 const pixoo = program.command('pixoo').description('Manage Pixoo64 LED matrix devices');

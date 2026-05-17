@@ -1,6 +1,7 @@
 package dev.agentdeck.ui.eink
 
 import android.content.res.Configuration
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,7 +21,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -31,6 +36,7 @@ import dev.agentdeck.data.DashboardOrientation
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.state.DashboardState
+import dev.agentdeck.terrarium.renderer.einkColorEnabled
 import dev.agentdeck.ui.component.AgentDeckLogo
 import dev.agentdeck.ui.component.BrandIcon
 import kotlinx.coroutines.launch
@@ -48,6 +54,8 @@ fun EinkAgentPanel(
     onFocusSession: (String) -> Unit = {},
     showSettingsButton: Boolean = true,
     displayPrefs: DisplayPreferences? = null,
+    showBrandHeader: Boolean = true,
+    showFooterControls: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -111,8 +119,17 @@ fun EinkAgentPanel(
 
     // Siblings (skip self and daemon), stable sort: agentType → numeric-aware
     // projectName → startedAt → id.
+    //
+    // The "skip self" filter must only fire when we actually added a primary
+    // entry above (single-bridge mode). In daemon-like mode, no primary
+    // entry was added — and `state.sessionId` is now the focused session id
+    // (propagated from `state_update.sessionId` so visual focus tracking
+    // works); using it as a filter here would silently drop the focused
+    // sibling row from the list. Apple's SessionListPanel relies on the
+    // same "primary id only when primary was added" invariant.
+    val primarySessionId = if (!isDaemonLike) state.sessionId else null
     state.siblingSessions
-        .filter { it.id != state.sessionId && it.agentType != "daemon" }
+        .filter { it.id != primarySessionId && it.agentType != "daemon" }
         .sortedWith(::compareSessionsForDisplay)
         .forEach { session ->
             entries += AgentEntry(
@@ -140,9 +157,45 @@ fun EinkAgentPanel(
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        // Brand logo — centered with accent bar
-        AgentDeckLogo(isEink = true, modifier = Modifier.fillMaxWidth())
-        Spacer(modifier = Modifier.height(6.dp))
+        if (showBrandHeader) {
+            // Brand logo — centered with accent bar.
+            AgentDeckLogo(isEink = true, modifier = Modifier.fillMaxWidth())
+            Spacer(modifier = Modifier.height(6.dp))
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 3.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Sessions",
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = displayEntries.size.toString(),
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+
+        // Visual selection uses `state.focusedSessionId` directly per the
+        // shared/src/protocol.ts contract — that field is the only one
+        // promised to track explicit user focus. `state.sessionId` "may
+        // move with hook activity" (and is a daemon connection UUID for
+        // daemon-bridged clients), so it must NOT drive highlights — the
+        // routing-side fallback (`focusedSessionId ?? sessionId`) belongs
+        // on focus_session command paths, not the visual highlight.
+        // Apple SessionListPanel.swift:194 follows the same rule.
+        val focusedId = state.focusedSessionId
 
         displayEntries.forEach { entry ->
             val key = NameKey(entry.projectName, entry.agentType)
@@ -156,13 +209,18 @@ fun EinkAgentPanel(
             }
             val displayName = "${entry.projectName}$suffix"
             val sessionId = entry.sessionId
+            val isFocused = focusedId != null && sessionId != null && sessionId == focusedId
+            val isAwaiting = entry.agentState.isAwaitingInput()
 
             EinkAgentBlock(
                 agentType = entry.agentType,
                 displayName = displayName,
+                projectName = entry.projectName,
                 modelName = entry.modelName,
                 effortLevel = entry.effortLevel,
                 agentState = entry.agentState,
+                isFocused = isFocused,
+                isAwaiting = isAwaiting,
                 modifier = if (sessionId != null) {
                     Modifier.clickable { onFocusSession(sessionId) }
                 } else {
@@ -184,7 +242,7 @@ fun EinkAgentPanel(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        if (showSettingsButton || displayPrefs != null) {
+        if (showFooterControls && (showSettingsButton || displayPrefs != null)) {
             // Settings gear + rotation toggle. Rotation stays available even
             // when the optional Settings entry is hidden by display prefs.
             Row(
@@ -223,18 +281,29 @@ fun EinkAgentPanel(
 }
 
 /**
- * Compact agent identity block: display name (up to 2 lines) + model·state on one line.
+ * Compact agent identity row.
+ *
+ * Layout (matches docs/design-mockups/eink-screens.jsx SessionRow):
+ *   [icon] displayName                    [state]
+ *          project + model
+ *
+ * Focus is rendered as inverse video — the only high-contrast hierarchy
+ * break the e-ink panel can carry. Attention (awaiting input) draws a
+ * 3.dp left accent bar instead. Focus and attention can co-exist; focus
+ * wins because the inversion already dominates visually.
  */
 @Composable
 internal fun EinkAgentBlock(
     agentType: String?,
     displayName: String,
+    projectName: String?,
     modelName: String?,
     effortLevel: String? = null,
     agentState: AgentState,
+    isFocused: Boolean = false,
+    isAwaiting: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    // Model + effort + state merged into one line: "  opus-4 · high · ◉ PROC" or "  ◉ PROC"
     val stateMarker = compactStateMarker(agentState)
     val abbrevModel = modelName?.let { abbreviateModelName(it) }
     val modelEffort = when {
@@ -242,38 +311,94 @@ internal fun EinkAgentBlock(
         abbrevModel != null -> abbrevModel
         else -> null
     }
-    val subLine = if (modelEffort != null) {
-        "  $modelEffort \u00B7 $stateMarker"
-    } else {
-        "  $stateMarker"
+    // Subline keeps project (canonical row identity in the mockup) and
+    // appends the abbreviated model when present so the row carries
+    // dispatcher info without growing to a third line.
+    val subLine = when {
+        projectName != null && modelEffort != null -> "$projectName \u00B7 $modelEffort"
+        projectName != null -> projectName
+        modelEffort != null -> modelEffort
+        else -> null
     }
 
-    Column(modifier = modifier) {
+    val paperColor = MaterialTheme.colorScheme.background
+    val inkColor = MaterialTheme.colorScheme.onSurface
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val accentColor = if (einkColorEnabled) Color(0xFFBB7700) else Color.Black
+
+    val containerModifier = modifier
+        .fillMaxWidth()
+        .let { base ->
+            when {
+                isFocused -> base.background(inkColor)
+                isAwaiting -> base.drawBehind {
+                    drawRect(
+                        color = accentColor,
+                        size = Size(3.dp.toPx(), size.height),
+                    )
+                }
+                else -> base
+            }
+        }
+        .padding(
+            start = if (isAwaiting && !isFocused) 9.dp else 6.dp,
+            end = 6.dp,
+            top = 4.dp,
+            bottom = 4.dp,
+        )
+
+    val nameColor = if (isFocused) paperColor else inkColor
+    val subColor = if (isFocused) paperColor else mutedColor
+    val stateColor = if (isFocused) paperColor else inkColor
+    val iconTint = if (isFocused) paperColor else null
+
+    Column(modifier = containerModifier) {
         Row(
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            BrandIcon(agentType = agentType, isEink = true)
+            BrandIcon(agentType = agentType, isEink = true, tint = iconTint)
             Text(
                 text = displayName,
-                fontSize = 16.sp,
-                lineHeight = 20.sp,
+                fontSize = 15.sp,
+                lineHeight = 19.sp,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
+                color = nameColor,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = stateMarker,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                color = stateColor,
+                maxLines = 1,
             )
         }
-        Text(
-            text = subLine,
-            fontSize = 14.sp,
-            lineHeight = 18.sp,
-            fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        if (subLine != null) {
+            Text(
+                text = subLine,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                fontFamily = FontFamily.Monospace,
+                color = subColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 19.dp),
+            )
+        }
     }
+}
+
+private fun AgentState.isAwaitingInput(): Boolean = when (this) {
+    AgentState.AWAITING_PERMISSION,
+    AgentState.AWAITING_OPTION,
+    AgentState.AWAITING_DIFF -> true
+    else -> false
 }
 
 /**
@@ -287,6 +412,8 @@ fun EinkAgentColumn(
     onFocusSession: (String) -> Unit = {},
     showSettingsButton: Boolean = true,
     displayPrefs: DisplayPreferences? = null,
+    showBrandHeader: Boolean = true,
+    showFooterControls: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     EinkAgentPanel(
@@ -295,6 +422,8 @@ fun EinkAgentColumn(
         onFocusSession = onFocusSession,
         showSettingsButton = showSettingsButton,
         displayPrefs = displayPrefs,
+        showBrandHeader = showBrandHeader,
+        showFooterControls = showFooterControls,
         modifier = modifier,
     )
 }

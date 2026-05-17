@@ -198,8 +198,170 @@ type SessionRenderInfo = {
   totalTokens?: number;
 };
 
-function sessionHotkeyIndex(session: SessionRenderInfo, nextIndex: number): number | null {
-  if (!session.port || session.controlMode === 'observed') return null;
+// ===== HUD Entry Builder (shared with macOS / iOS / Android) =====
+
+export interface HudEntry {
+  id: string;
+  /** projectName + optional " #N" suffix from assignDisplayNames */
+  displayName: string;
+  projectName: string;
+  agentType: string | undefined;
+  state: string;
+  modelName: string | undefined;
+  startedAt: string | undefined;
+  port: number | undefined;
+  controlMode: 'managed' | 'observed' | undefined;
+  currentTask: string | undefined;
+  contextPercent: number | undefined;
+  totalTokens: number | undefined;
+  /** Self entry promoted from a sibling, or appended synthetic primary. */
+  isPrimary: boolean;
+  /** Gateway placeholder when sessions list lacks an OpenClaw entry. */
+  isVirtualOpenClaw: boolean;
+}
+
+/**
+ * Build the unified left-HUD entry list shared with macOS / iOS / Android.
+ *
+ * Collapses primary + siblings + virtual OpenClaw into one array, sorts via
+ * the shared sortSessions (agentType → projectName → startedAt → id), and
+ * applies #N suffix via assignDisplayNames so the display order and #N
+ * numbering match every other surface.
+ *
+ * Primary handling mirrors apple/AgentDeck/UI/Monitor/SessionListPanel.swift:
+ *   - if a sibling matches our connected port, that sibling becomes the
+ *     primary anchor (its startedAt anchors the sort position)
+ *   - otherwise primary is appended only when no sibling shares its
+ *     agentType (duplicatePrimaryWithoutId guard)
+ *   - daemon / openclaw primaries are never appended (they're virtual)
+ */
+export function buildHudEntries(state: DashboardState): HudEntry[] {
+  type Item = {
+    id: string;
+    projectName: string;
+    agentType: string | undefined;
+    state: string;
+    modelName: string | undefined;
+    startedAt: string | undefined;
+    port: number | undefined;
+    controlMode: 'managed' | 'observed' | undefined;
+    currentTask: string | undefined;
+    contextPercent: number | undefined;
+    totalTokens: number | undefined;
+    isPrimary: boolean;
+    isVirtualOpenClaw: boolean;
+  };
+
+  const items: Item[] = [];
+  const portToItem = new Map<number, Item>();
+
+  for (const s of state.sessions) {
+    const ri = s as SessionInfo & SessionRenderInfo;
+    const item: Item = {
+      id: s.id,
+      projectName: s.projectName ?? 'unknown',
+      agentType: s.agentType ?? undefined,
+      state: s.state ?? 'idle',
+      modelName: s.modelName ?? undefined,
+      startedAt: s.startedAt ?? undefined,
+      port: s.port ?? undefined,
+      controlMode: ri.controlMode,
+      currentTask: ri.currentTask,
+      contextPercent: ri.contextPercent,
+      totalTokens: ri.totalTokens,
+      isPrimary: false,
+      isVirtualOpenClaw: false,
+    };
+    items.push(item);
+    if (item.port !== undefined) portToItem.set(item.port, item);
+  }
+
+  if (state.agentType && state.agentType !== 'daemon' && state.agentType !== 'openclaw' && state.state) {
+    const anchor = state.currentPort != null ? portToItem.get(state.currentPort) : undefined;
+    if (anchor) {
+      // Patch anchor with primary's live fields. macOS / Android compose
+      // SessionEntry from primary state and only borrow the anchor sibling's
+      // startedAt; if we left the sibling's snapshot in place the row would
+      // render stale modelName / state / currentTask whenever the sibling
+      // payload lagged the primary state_update. startedAt, port, id, and
+      // controlMode stay with the anchor so sort position and hotkey
+      // identity match every other surface.
+      anchor.isPrimary = true;
+      anchor.projectName = state.projectName ?? anchor.projectName;
+      anchor.agentType = state.agentType;
+      anchor.state = state.state;
+      anchor.modelName = state.modelName ?? undefined;
+      anchor.currentTask = state.currentTool ?? undefined;
+    } else {
+      const duplicateAgentType = state.sessions.some(s => s.agentType === state.agentType);
+      if (!duplicateAgentType) {
+        items.push({
+          id: '__self__',
+          projectName: state.projectName ?? 'unknown',
+          agentType: state.agentType,
+          state: state.state,
+          modelName: state.modelName ?? undefined,
+          startedAt: undefined,
+          port: state.currentPort ?? undefined,
+          controlMode: undefined,
+          currentTask: state.currentTool ?? undefined,
+          contextPercent: undefined,
+          totalTokens: undefined,
+          isPrimary: true,
+          isVirtualOpenClaw: false,
+        });
+      }
+    }
+  }
+
+  const hasOpenClaw = items.some(it => it.agentType === 'openclaw' || it.agentType === 'gateway');
+  if (state.gatewayAvailable && !hasOpenClaw) {
+    items.push({
+      id: '__virtual_openclaw__',
+      projectName: 'OpenClaw',
+      agentType: 'openclaw',
+      state: state.crayfishRouting ? 'processing' : 'idle',
+      modelName: undefined,
+      startedAt: undefined,
+      port: undefined,
+      controlMode: undefined,
+      currentTask: undefined,
+      contextPercent: undefined,
+      totalTokens: undefined,
+      isPrimary: false,
+      isVirtualOpenClaw: true,
+    });
+  }
+
+  const sorted = sortSessions(items);
+  const named = assignDisplayNames(sorted.map(it => ({
+    id: it.id,
+    projectName: it.projectName,
+    agentType: it.agentType,
+    state: it.state,
+  })));
+
+  return sorted.map((it, i) => ({
+    id: it.id,
+    displayName: named[i]!.displayName,
+    projectName: it.projectName,
+    agentType: it.agentType,
+    state: it.state,
+    modelName: it.modelName,
+    startedAt: it.startedAt,
+    port: it.port,
+    controlMode: it.controlMode,
+    currentTask: it.currentTask,
+    contextPercent: it.contextPercent,
+    totalTokens: it.totalTokens,
+    isPrimary: it.isPrimary,
+    isVirtualOpenClaw: it.isVirtualOpenClaw,
+  }));
+}
+
+function hudHotkeyIndex(entry: HudEntry, nextIndex: number): number | null {
+  if (entry.isPrimary || entry.isVirtualOpenClaw) return null;
+  if (!entry.port || entry.controlMode === 'observed') return null;
   return nextIndex;
 }
 
@@ -243,67 +405,21 @@ function renderAgentLines(state: DashboardState, maxWidth: number, useLogo: bool
     lines.push(`${colors.dim}    ${truncText(secondary, maxWidth - 4)}${RESET}`);
   };
 
-  // #N suffix via shared assignDisplayNames
-
-  // Daemon mode: sessions list already contains all agents (including virtual OpenClaw).
-  // Also applies when daemon relays OpenClaw (agentType='openclaw' but sessions has the entry).
-  // Session bridge mode: sessions has siblings only — prepend self.
-  const isDaemonLike = state.agentType === 'daemon' ||
-    (state.agentType && state.sessions.some(s => s.agentType === state.agentType));
-  if (isDaemonLike) {
-    const sorted = sortSessions(state.sessions);
-    const displayed = assignDisplayNames(sorted.map(s => ({
-      id: s.id, projectName: s.projectName || 'unknown', agentType: s.agentType, state: s.state,
-      modelName: s.modelName,
-      port: s.port, controlMode: (s as SessionInfo & SessionRenderInfo).controlMode,
-      currentTask: (s as SessionInfo & SessionRenderInfo).currentTask,
-      contextPercent: (s as SessionInfo & SessionRenderInfo).contextPercent,
-      totalTokens: (s as SessionInfo & SessionRenderInfo).totalTokens,
-    })));
-    let focusableIndex = 0;
-    for (const d of displayed) {
-      const hotkeyIndex = sessionHotkeyIndex(d.session, focusableIndex);
-      if (hotkeyIndex !== null) focusableIndex += 1;
-      renderSession(d.displayName, d.session.modelName as string | undefined,
-        d.session.state || 'idle', d.session.agentType as string | undefined, hotkeyIndex, d.session);
-    }
-  } else if (state.state) {
-    // Self (primary session)
-    renderSession(state.projectName || 'unknown', state.modelName ?? undefined,
-      state.state, state.agentType ?? undefined, null);
-    // Siblings — include self as virtual entry for correct #N numbering
-    const sorted = sortSessions(state.sessions);
-    const selfEntry = {
-      id: '__self__', projectName: state.projectName || 'unknown',
-      agentType: state.agentType ?? undefined, state: state.state,
-    };
-    const allForNumbering = [selfEntry, ...sorted.map(s => ({
-      id: s.id, projectName: s.projectName || 'unknown', agentType: s.agentType, state: s.state,
-      modelName: s.modelName,
-      port: s.port, controlMode: (s as SessionInfo & SessionRenderInfo).controlMode,
-      currentTask: (s as SessionInfo & SessionRenderInfo).currentTask,
-      contextPercent: (s as SessionInfo & SessionRenderInfo).contextPercent,
-      totalTokens: (s as SessionInfo & SessionRenderInfo).totalTokens,
-    }))];
-    const displayed = assignDisplayNames(allForNumbering);
-    // Skip the self entry (index 0), render siblings with hotkey indices
-    let focusableIndex = 0;
-    for (let i = 1; i < displayed.length; i++) {
-      const d = displayed[i]!;
-      const sessionInfo = d.session as unknown as SessionRenderInfo;
-      const hotkeyIndex = sessionHotkeyIndex(sessionInfo, focusableIndex);
-      if (hotkeyIndex !== null) focusableIndex += 1;
-      renderSession(d.displayName, (d.session as any).modelName,
-        d.session.state || 'idle', d.session.agentType as string | undefined, hotkeyIndex, sessionInfo);
-    }
-  }
-
-  // Virtual OpenClaw entry when gateway detected but not in sessions list
-  const hasOcSession = state.sessions.some(s =>
-    s.agentType === 'openclaw' || (s.agentType as string) === 'gateway'
-  );
-  if (state.gatewayAvailable && !hasOcSession) {
-    renderSession('OpenClaw', undefined, state.crayfishRouting ? 'processing' : 'idle', 'openclaw', null);
+  // Unified entry list (primary + siblings + virtual OpenClaw). Order and #N
+  // suffix matches macOS / iOS / Android via the shared sortSessions +
+  // assignDisplayNames pipeline inside buildHudEntries.
+  const entries = buildHudEntries(state);
+  let focusableIndex = 0;
+  for (const e of entries) {
+    const hotkeyIndex = hudHotkeyIndex(e, focusableIndex);
+    if (hotkeyIndex !== null) focusableIndex += 1;
+    renderSession(e.displayName, e.modelName, e.state, e.agentType, hotkeyIndex, {
+      port: e.port,
+      controlMode: e.controlMode,
+      currentTask: e.currentTask,
+      contextPercent: e.contextPercent,
+      totalTokens: e.totalTokens,
+    });
   }
 
   // Gateway error warning
@@ -472,11 +588,32 @@ function renderTimelineLines(
     const e = entries[i];
     const time = new Date(e.ts);
     const timeStr = `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`;
-    const raw = truncText(e.raw, width - 10);
+    // task_end rows append a score+outcome suffix once the LLM judge resolves
+    // (5–30 s after the boundary itself). Until then the `taskOutcome` field
+    // is undefined and we render only the boundary label.
+    const evalSuffix = (e.type === 'task_end' && e.taskOutcome)
+      ? formatTaskEvalSuffix(e.taskScore, e.taskOutcome)
+      : '';
+    const raw = truncText(`${e.raw}${evalSuffix}`, width - 10);
     const pending = e.status === 'pending' ? `${colors.dim} [PENDING]${RESET}` : '';
     lines.push(` ${colors.dim}${timeStr}${RESET} ${typeColor(e.type)}${typeIcon(e.type)}${RESET} ${raw}${pending}`);
   }
   return lines;
+}
+
+export function formatTaskEvalSuffix(score: number | undefined, outcome: string | undefined): string {
+  // `abandoned` flows from the manual `agentdeck task cancel` path and
+  // must render as its own glyph — not fall through to '' (which would
+  // make the task look pending) and not borrow the fail glyph (which
+  // would read as agent failure rather than user-initiated stop).
+  const glyph = outcome === 'success' ? '✓'
+    : outcome === 'fail' ? '✗'
+    : outcome === 'partial' ? '△'
+    : outcome === 'abandoned' ? '⊘'
+    : '';
+  if (!glyph) return '';
+  const scoreText = typeof score === 'number' ? score.toFixed(2) : '?';
+  return ` · ${scoreText} ${glyph}`;
 }
 
 function timelineHeader(state: DashboardState, width: number, maxLines: number, scrollOffset: number): string {
@@ -711,58 +848,20 @@ function renderStandardLayout(
 
 function renderAgentCompactLines(state: DashboardState, width: number): string[] {
   const lines: string[] = [];
-  const isDaemonLikeCompact = state.agentType === 'daemon' ||
-    (state.agentType && state.sessions.some(s => s.agentType === state.agentType));
-  if (isDaemonLikeCompact) {
-    let focusableIndex = 0;
-    for (const s of sortSessions(state.sessions)) {
-      const renderInfo = s as SessionInfo & SessionRenderInfo;
-      const st = s.state || 'idle';
-      const col = stateColor(st);
-      const emoji = `${creatureBrandColor(s.agentType as string | undefined)}${creatureEmoji(s.agentType as string | undefined)}${RESET}`;
-      const status = `${col}${stateIcon(st)} ${compactStateLabel(st)}${RESET}`;
-      const detail = renderInfo.currentTask || s.modelName;
-      const model = detail ? `${colors.dim} · ${truncText(detail, Math.max(8, width - 24))}${RESET}` : '';
-      const marker = renderInfo.controlMode === 'observed' ? `${colors.dim} · obs${RESET}` : '';
-      const project = truncText(s.projectName || '?', Math.max(8, width - 20));
-      const hotkeyIndex = sessionHotkeyIndex(renderInfo, focusableIndex);
-      if (hotkeyIndex !== null) focusableIndex += 1;
-      lines.push(` ${colors.dim}[${sessionHotkeyLabel(hotkeyIndex)}]${RESET} ${emoji} ${project} ${status}${marker}${model}`);
-    }
-  } else if (state.state) {
-    // Self first
-    const col = stateColor(state.state);
-    const proj = truncText(state.projectName || '?', Math.max(8, width - 16));
-    const status = `${col}${stateIcon(state.state)} ${compactStateLabel(state.state)}${RESET}`;
-    const model = state.modelName ? `${colors.dim} · ${truncText(state.modelName, Math.max(8, width - 24))}${RESET}` : '';
-    const emoji = `${creatureBrandColor(state.agentType ?? undefined)}${creatureEmoji(state.agentType ?? undefined)}${RESET}`;
-    lines.push(` ${emoji} ${proj} ${status}${model}`);
-    // Siblings
-    let focusableIndex = 0;
-    for (const s of sortSessions(state.sessions)) {
-      const renderInfo = s as SessionInfo & SessionRenderInfo;
-      const st = s.state || 'idle';
-      const sCol = stateColor(st);
-      const sEmoji = `${creatureBrandColor(s.agentType as string | undefined)}${creatureEmoji(s.agentType as string | undefined)}${RESET}`;
-      const sStatus = `${sCol}${stateIcon(st)} ${compactStateLabel(st)}${RESET}`;
-      const detail = renderInfo.currentTask || s.modelName;
-      const sModel = detail ? `${colors.dim} · ${truncText(detail, Math.max(8, width - 24))}${RESET}` : '';
-      const marker = renderInfo.controlMode === 'observed' ? `${colors.dim} · obs${RESET}` : '';
-      const sProject = truncText(s.projectName || '?', Math.max(8, width - 20));
-      const hotkeyIndex = sessionHotkeyIndex(renderInfo, focusableIndex);
-      if (hotkeyIndex !== null) focusableIndex += 1;
-      lines.push(` ${colors.dim}[${sessionHotkeyLabel(hotkeyIndex)}]${RESET} ${sEmoji} ${sProject} ${sStatus}${marker}${sModel}`);
-    }
-  }
-  // Virtual OpenClaw entry
-  const hasOcCompact = state.sessions.some(s =>
-    s.agentType === 'openclaw' || (s.agentType as string) === 'gateway'
-  );
-  if (state.gatewayAvailable && !hasOcCompact) {
-    const ocState = state.crayfishRouting ? 'processing' : 'idle';
-    const ocCol = stateColor(ocState);
-    const ocEmoji = `${creatureBrandColor('openclaw')}${creatureEmoji('openclaw')}${RESET}`;
-    lines.push(` ${ocEmoji} OpenClaw ${ocCol}${stateIcon(ocState)}${ocState.toUpperCase()}${RESET}`);
+  // Unified entry list — same ordering and #N suffix as macOS / iOS / Android.
+  const entries = buildHudEntries(state);
+  let focusableIndex = 0;
+  for (const e of entries) {
+    const hotkeyIndex = hudHotkeyIndex(e, focusableIndex);
+    if (hotkeyIndex !== null) focusableIndex += 1;
+    const col = stateColor(e.state);
+    const emoji = `${creatureBrandColor(e.agentType)}${creatureEmoji(e.agentType)}${RESET}`;
+    const status = `${col}${stateIcon(e.state)} ${compactStateLabel(e.state)}${RESET}`;
+    const detail = e.currentTask || e.modelName;
+    const model = detail ? `${colors.dim} · ${truncText(detail, Math.max(8, width - 24))}${RESET}` : '';
+    const marker = e.controlMode === 'observed' ? `${colors.dim} · obs${RESET}` : '';
+    const project = truncText(e.displayName, Math.max(8, width - 20));
+    lines.push(` ${colors.dim}[${sessionHotkeyLabel(hotkeyIndex)}]${RESET} ${emoji} ${project} ${status}${marker}${model}`);
   }
   // Gateway error warning
   if (state.gatewayHasError) {

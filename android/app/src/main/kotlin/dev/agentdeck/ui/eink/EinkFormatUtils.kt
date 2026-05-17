@@ -126,11 +126,15 @@ fun compareSessionsForDisplay(left: SessionInfo, right: SessionInfo): Int {
 
     val leftStarted = left.startedAt
     val rightStarted = right.startedAt
-    if (leftStarted != null && rightStarted != null && leftStarted != rightStarted) {
-        return leftStarted.compareTo(rightStarted)
+    if (leftStarted != null && rightStarted != null) {
+        val cmp = leftStarted.compareTo(rightStarted)
+        if (cmp != 0) return cmp
+        // identical timestamps fall through to the id tiebreak below
+    } else if (leftStarted != null) {
+        return -1
+    } else if (rightStarted != null) {
+        return 1
     }
-    if (leftStarted != null) return -1
-    if (rightStarted != null) return 1
 
     return naturalLabelCompare(left.id, right.id)
 }

@@ -52,7 +52,7 @@ final class CodexConfigInstallerTests: XCTestCase {
         )
         let withFence = MiniToml.applyManagedBlock(in: "", body: body)
         XCTAssertTrue(withFence.contains("[features]"))
-        XCTAssertTrue(withFence.contains("codex_hooks = true"))
+        XCTAssertTrue(withFence.contains("hooks = true"))
         XCTAssertTrue(withFence.contains("[[hooks.UserPromptSubmit]]"))
         XCTAssertTrue(withFence.contains("[[hooks.PreToolUse]]"))
         XCTAssertTrue(withFence.contains("[[hooks.PostToolUse]]"))
@@ -77,7 +77,7 @@ final class CodexConfigInstallerTests: XCTestCase {
             includeOtel: false,
             otelEndpoint: "http://127.0.0.1:9120/otel/v1/traces"
         )
-        XCTAssertTrue(body.contains("codex_hooks = true"))
+        XCTAssertTrue(body.contains("hooks = true"))
         XCTAssertTrue(body.contains("[[hooks.Stop]]"))
         XCTAssertFalse(body.contains("notify ="))
         XCTAssertFalse(body.contains("[otel.trace_exporter.otlp-http]"))
@@ -104,7 +104,7 @@ final class CodexConfigInstallerTests: XCTestCase {
     }
 
     func testUserLifecycleHookTableConflictsDetected() {
-        XCTAssertTrue(MiniToml.hasTableOutsideFence(in: "[features]\ncodex_hooks = true", table: "features"))
+        XCTAssertTrue(MiniToml.hasTableOutsideFence(in: "[features]\nhooks = true", table: "features"))
         XCTAssertTrue(MiniToml.hasTableOutsideFence(in: "[hooks]\nmanaged_dir = \"/tmp/hooks\"", table: "hooks"))
         XCTAssertTrue(MiniToml.hasTableOutsideFence(in: "[[hooks.Stop]]\nmatcher = \"\"", table: "hooks"))
     }

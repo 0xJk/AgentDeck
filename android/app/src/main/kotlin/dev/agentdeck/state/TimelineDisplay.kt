@@ -65,10 +65,50 @@ private val syntheticChatStarts = setOf(
  * 500-entry buffer from aging out useful rows behind OTel noise.
  */
 internal fun isLowSignalEntry(entry: TimelineEntry): Boolean {
-    if (entry.agentType != "codex-cli") return false
-    if (entry.sessionId != "codex:otel-active") return false
     if (entry.type !in lowSignalTypes) return false
-    return entry.summary.trim().lowercase() in lowSignalRawSet
+    // Real signal in detail → keep regardless of placeholder raw. The
+    // OpenClaw producer's detail format is
+    //   `[status: X]\n[input: ...]\n[output: ...]`
+    // with each line independently optional, so a detail of just
+    // "status: running" alone is still placeholder noise — only
+    // `input:` / `output:` lines (or any non-status line) qualify as
+    // real signal. Codex stop-time review 2026-05-18.
+    if (detailHasRealSignal(entry.detail)) return false
+    val raw = entry.summary.trim().lowercase()
+    if (entry.agentType == "codex-cli" && entry.sessionId == "codex:otel-active") {
+        return raw in lowSignalRawSet
+    }
+    // OpenClaw session.tool placeholder rows. The macOS daemon producer
+    // (OpenClawAdapter.swift, 2026-05-18) drops new placeholders at source
+    // when name + input + output are all absent, but earlier entries
+    // persisted to timeline.json (or replayed from a daemon that doesn't
+    // run the new guard) still leak through with raw=`tool · running`
+    // etc. Structural match (`raw == "tool"` or starts with `"tool · "`)
+    // so any status is covered — Gateway's SessionToolPayload.status is
+    // free-form (running/complete/pending/error/failed/aborted/...).
+    // Codex stop-time review 2026-05-18 (third round) flagged `failed`
+    // slipping past the enumerated set.
+    if (entry.agentType == "openclaw") {
+        return raw == "tool" || raw.startsWith("tool · ")
+    }
+    return false
+}
+
+/**
+ * Mirror of `DaemonTimelineStore.detailHasRealSignal` (Swift). Detail
+ * counts as real signal when it contains at least one non-empty line
+ * that is not just a `status: ...` ack — i.e. there's an `input:` /
+ * `output:` line (OpenClaw producer format) or any other content
+ * worth surfacing.
+ */
+internal fun detailHasRealSignal(detail: String?): Boolean {
+    if (detail == null) return false
+    for (line in detail.lineSequence()) {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) continue
+        if (!trimmed.lowercase().startsWith("status:")) return true
+    }
+    return false
 }
 
 private val lowSignalTypes = setOf("tool_exec", "tool_request", "tool_resolved")
@@ -80,6 +120,10 @@ private val lowSignalRawSet = setOf(
     "exec",
     "exec completed",
 )
+// OpenClaw uses a structural check inside `isLowSignalEntry` (raw == "tool"
+// or starts with "tool · "), so no enumerated set is needed — Gateway's
+// SessionToolPayload.status is free-form and any status suffix counts as
+// placeholder when paired with the literal "tool" name fallback.
 
 fun isTimelineCompletionEntry(entry: TimelineEntry): Boolean =
     entry.type == "chat_response" || entry.type == "chat_end" || entry.type == "model_response"

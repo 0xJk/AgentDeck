@@ -1037,13 +1037,50 @@ func timelineSameContext(_ a: TimelineEntry, _ b: TimelineEntry) -> Bool {
 // whether to merge a chat_start with its trailing chat_response/chat_end.
 
 func timelineIsLowSignalEntry(_ entry: TimelineEntry) -> Bool {
-    guard entry.agentType == "codex-cli",
-          entry.sessionId == "codex:otel-active",
-          entry.type == .toolExec || entry.type == .toolRequest || entry.type == .toolResolved else {
+    guard entry.type == .toolExec || entry.type == .toolRequest || entry.type == .toolResolved else {
+        return false
+    }
+    // Real signal in detail → keep regardless of placeholder raw.
+    // OpenClaw producer's detail format is
+    //   `[status: X]\n[input: ...]\n[output: ...]`
+    // with each line independently optional, so an entry whose detail
+    // is just "status: running" alone is still placeholder noise —
+    // only `input:` / `output:` lines (or any non-status line) qualify
+    // as real signal. Codex stop-time review 2026-05-18.
+    if timelineDetailHasRealSignal(entry.detail) {
         return false
     }
     let raw = entry.raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    return ["tool", "tool completed", "unknown", "unknown completed", "exec", "exec completed"].contains(raw)
+    if entry.agentType == "codex-cli", entry.sessionId == "codex:otel-active" {
+        return ["tool", "tool completed", "unknown", "unknown completed", "exec", "exec completed"].contains(raw)
+    }
+    // OpenClaw placeholder rows. Producer drops new ones at source as of
+    // 2026-05-18; this filter catches historical entries loaded from
+    // timeline.json. Structural match (`raw == "tool"` or starts with
+    // `"tool · "`) so any status string is covered — Gateway's
+    // SessionToolPayload.status is free-form (running/complete/pending/
+    // error/failed/aborted/canceled/...). Codex stop-time review 2026-05-18
+    // (third round) flagged `failed` slipping past the enumerated set.
+    if entry.agentType == "openclaw" {
+        return raw == "tool" || raw.hasPrefix("tool · ")
+    }
+    return false
+}
+
+/// Mirror of `DaemonTimelineStore.detailHasRealSignal`. Detail counts as
+/// real signal when it contains at least one non-empty line that is not
+/// just a `status: ...` ack — i.e. there's an `input:` / `output:` line
+/// (OpenClaw producer format) or any other content worth surfacing.
+func timelineDetailHasRealSignal(_ detail: String?) -> Bool {
+    guard let detail else { return false }
+    for rawLine in detail.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+        let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { continue }
+        if !trimmed.lowercased().hasPrefix("status:") {
+            return true
+        }
+    }
+    return false
 }
 
 /// Score + outcome chip rendered at the right edge of a `task_end` header.
@@ -1629,12 +1666,27 @@ enum TimelineIconKey: String {
 /// `taskId`) hasn't yet appeared in `siblings`. Mirrors `isInFlightTask` in
 /// shared/src/timeline-icons.ts — used to spin the leading icon for in-flight
 /// task hierarchy markers instead of the static `task` glyph.
+///
+/// **Staleness guard**: a task_start older than `inFlightTaskMaxAgeSec`
+/// without a matching task_end is treated as a *resolved-but-orphaned*
+/// task (daemon was killed mid-task / hook delivery race / sibling
+/// session_end took a closeTask early-return path). Without this guard
+/// the leading task icon spins forever on rows the user already
+/// considers done — exactly the "/session-end 했는데 아직 진행중처럼
+/// 나옴" report. The daemon-side orphan reaper (DaemonServer.swift)
+/// will eventually upsert a synthetic task_end with
+/// `boundarySignal="interrupted"`, but this UI guard is independent so a
+/// stale row reads as completed even before that reaper runs (or on
+/// dashboard-only sessions that bypass the daemon path entirely).
+private let inFlightTaskMaxAgeSec: TimeInterval = 600
 func timelineIsInFlightTask(_ entry: TimelineEntry, siblings: [TimelineEntry]) -> Bool {
     if entry.type != .taskStart { return false }
     guard let taskId = entry.taskId, !taskId.isEmpty else { return false }
     for s in siblings {
         if s.type == .taskEnd && s.taskId == taskId { return false }
     }
+    let ageSec = Date().timeIntervalSince(entry.date)
+    if ageSec > inFlightTaskMaxAgeSec { return false }
     return true
 }
 

@@ -494,6 +494,117 @@ describe('runDeterministic (end-to-end spawn)', () => {
   });
 });
 
+// ─── Task evaluation listener (Step 2: score → timeline pipeline) ────────────
+
+describe('onTaskEvaluated', () => {
+  let store: ApmeStore = null;
+
+  beforeEach(async () => { store = await makeStore(); });
+  afterEach(() => { closeStore(store); });
+
+  it('fires after enqueueTask resolves and carries the composite score + outcome', async () => {
+    const collector = new ApmeCollector(store);
+    const runId = collector.openRun({
+      sessionId: 's-eval', agentType: 'claude-code', projectName: 'proj', projectPath: '/tmp/p',
+    });
+    collector.ingestHook('s-eval', 'UserPromptSubmit', { message: { content: 'add a feature' } });
+    collector.setTurnResponse('s-eval', 'Added the feature, tests pass.');
+    collector.ingestHook('s-eval', 'PostToolUse', {
+      tool_name: 'TodoWrite',
+      tool_input: { todos: [{ status: 'completed', content: 'a' }] },
+    });
+
+    const runner = new ApmeRunner(store);
+    runner._setJudgeFn(async () => '{"overall":0.92,"task_completion":0.9,"summary":"feature landed clean"}');
+
+    const events: Array<{ taskId: string; compositeScore: number | null; outcome: string; summary?: string }> = [];
+    runner.onTaskEvaluated((e) => events.push({
+      taskId: e.taskId, compositeScore: e.compositeScore, outcome: e.outcome, summary: e.summary,
+    }));
+
+    const tasks = store.listTasksForRun(runId);
+    expect(tasks.length).toBe(1);
+    const tid = tasks[0].id;
+    runner.enqueueTask({ runId, taskId: tid, category: 'general', boundarySignal: 'todo_complete' });
+
+    // enqueueTask is fire-and-forget; drain microtasks.
+    for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
+
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    const e = events[0];
+    expect(e.taskId).toBe(tid);
+    expect(e.compositeScore).toBeCloseTo(0.92);
+    expect(e.outcome).toBe('success');
+    expect(e.summary).toContain('feature');
+
+    // Task row should now carry the outcome class persisted from the
+    // judge — drives the dashboard badge color + APME export.
+    const stored = store.getTask(tid);
+    expect(stored?.outcome).toBe('success');
+    expect(stored?.compositeScore).toBeCloseTo(0.92);
+  });
+
+  it('derives outcome=fail for low composite scores', async () => {
+    const collector = new ApmeCollector(store);
+    const runId = collector.openRun({
+      sessionId: 's-fail', agentType: 'codex-cli', projectName: 'p', projectPath: '/tmp/p',
+    });
+    collector.ingestHook('s-fail', 'UserPromptSubmit', { message: { content: 'fix' } });
+    collector.setTurnResponse('s-fail', 'I tried.');
+    collector.ingestHook('s-fail', 'PostToolUse', {
+      tool_name: 'TodoWrite',
+      tool_input: { todos: [{ status: 'completed', content: 'a' }] },
+    });
+
+    const runner = new ApmeRunner(store);
+    runner._setJudgeFn(async () => '{"overall":0.2,"summary":"missed the goal"}');
+
+    const captured: string[] = [];
+    runner.onTaskEvaluated((e) => captured.push(e.outcome));
+
+    const tasks = store.listTasksForRun(runId);
+    runner.enqueueTask({ runId, taskId: tasks[0].id, boundarySignal: 'todo_complete' });
+    for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
+
+    expect(captured).toContain('fail');
+  });
+
+  it('preserves a manually-set outcome — judge does not overwrite `abandoned`', async () => {
+    // Bug surfaced by Codex stop-time review: `closeTaskExternal` writes
+    // outcome='abandoned' synchronously, then the async judge resolves 5-30s
+    // later and `runTaskEval` would overwrite it with the score-derived
+    // class, silently losing the user's `agentdeck task cancel` gesture.
+    const collector = new ApmeCollector(store);
+    const runId = collector.openRun({
+      sessionId: 's-manual-runner', agentType: 'openclaw', projectName: 'p', projectPath: '/tmp/p',
+    });
+    collector.ingestHook('s-manual-runner', 'UserPromptSubmit', { message: { content: 'try this' } });
+    collector.setTurnResponse('s-manual-runner', 'partial attempt — gave up halfway.');
+    const ok = collector.closeTaskExternal('s-manual-runner', 'manual', 'abandoned');
+    expect(ok).toBe(true);
+
+    const tasks = store.listTasksForRun(runId);
+    const tid = tasks[0].id;
+    expect(store.getTask(tid)?.outcome).toBe('abandoned');
+
+    const runner = new ApmeRunner(store);
+    // Score 0.55 → derived outcome would normally be 'partial' and clobber.
+    runner._setJudgeFn(async () => '{"overall":0.55,"summary":"some progress but unfinished"}');
+
+    const captured: string[] = [];
+    runner.onTaskEvaluated((e) => captured.push(e.outcome));
+
+    runner.enqueueTask({ runId, taskId: tid, category: 'general', boundarySignal: 'manual' });
+    for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
+
+    const final = store.getTask(tid);
+    expect(final?.outcome).toBe('abandoned');
+    expect(final?.compositeScore).toBeCloseTo(0.55);
+    expect(final?.summary).toContain('progress');
+    expect(captured).toContain('abandoned');
+  });
+});
+
 // ─── buildJudgePrompt sanity ─────────────────────────────────────────────────
 
 describe('buildJudgePrompt', () => {

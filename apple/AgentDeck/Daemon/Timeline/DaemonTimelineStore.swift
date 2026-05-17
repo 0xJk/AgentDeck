@@ -33,6 +33,32 @@ struct DaemonTimelineEntry: Codable, Sendable {
     /// disk (Codable's optional-missing-key behaviour) and for rows where
     /// summarization isn't applicable (Gateway pass-through, tool events).
     var summaryKind: String?
+    /// APME task id. Set on `task_start` / `task_end` rows so the dashboard
+    /// `timelineIsInFlightTask` check can pair them. Without this field the
+    /// pair lookup fails (UI guard returns false on nil) and the leading
+    /// task icon spins forever after `/clear`. Mirrors `TimelineEntry.taskId`
+    /// in shared/src/timeline.ts. Default = nil so existing call sites that
+    /// only pass core fields (chat/tool/error rows) keep compiling.
+    var taskId: String? = nil
+    /// Why a `task_end` row closed — `"todo_complete"`, `"clear"`,
+    /// `"session_end"`, `"manual"`, `"idle_gap"`, etc. Mirrors
+    /// `TimelineEntry.boundarySignal`. Only meaningful on `task_end`.
+    var boundarySignal: String? = nil
+    /// Task-judge verdict, attached on the SECOND `task_end` emit the runner
+    /// fires once the LLM judge resolves (5–30 s after the initial boundary).
+    /// `upsert(_:)` merges by (type=="task_end", taskId) and updates the
+    /// existing row in place, so dashboard task headers see the score badge
+    /// arrive without a duplicate row. Mirrors the four task-* fields on
+    /// `shared/src/timeline.ts::TimelineEntry`. Nil on the first emit /
+    /// for pre-existing on-disk rows (Codable optional default).
+    ///   - `taskScore`   : 0..1 composite (matches `tasks.composite_score`)
+    ///   - `taskOutcome` : `"success" | "partial" | "fail" | "pending"`
+    ///   - `taskCategory`: task_rollup category
+    ///   - `taskSummary` : one-line judge summary
+    var taskScore: Double? = nil
+    var taskOutcome: String? = nil
+    var taskCategory: String? = nil
+    var taskSummary: String? = nil
 }
 
 actor DaemonTimelineStore {
@@ -77,6 +103,15 @@ actor DaemonTimelineStore {
     }
 
     func upsert(_ entry: DaemonTimelineEntry) {
+        // task_end follow-up emits land 5–30 s later than the initial boundary
+        // emit, so the original (ts, type) key won't match. Prefer matching by
+        // (type=="task_end", taskId) — the taskId is stable across both emits.
+        if entry.type == "task_end", let taskId = entry.taskId, !taskId.isEmpty,
+           let idx = entries.lastIndex(where: { $0.type == "task_end" && $0.taskId == taskId }) {
+            entries[idx] = entry
+            dirty = true
+            return
+        }
         if let idx = entries.lastIndex(where: { $0.ts == entry.ts && $0.type == entry.type }) {
             entries[idx] = entry
         } else {
@@ -121,14 +156,78 @@ actor DaemonTimelineStore {
         entries = Array(loaded.filter { !Self.shouldDropLowSignalEntry($0) }.suffix(maxEntries))
     }
 
-    private static func shouldDropLowSignalEntry(_ entry: DaemonTimelineEntry) -> Bool {
-        guard entry.agentType == "codex-cli",
-              entry.sessionId == "codex:otel-active",
-              entry.type == "tool_exec" || entry.type == "tool_request" || entry.type == "tool_resolved" else {
+    // Exposed (default internal) so test targets can drive the predicate
+    // directly via `@testable import AgentDeck`. The store's `add()` path
+    // already exercises it, but a pure-function test gives sharper
+    // failure messages than reading back `getAll()` after an actor hop.
+    //
+    // **Detail gate**: a placeholder-raw entry is only kept when its
+    // `detail` carries content beyond a bare `status: ...` line. The
+    // OpenClaw producer's detail format is
+    //   `[status: X]\n[input: ...]\n[output: ...]`
+    // with each line independently optional — so an entry with detail
+    // "status: running" alone is still placeholder noise (just an ack
+    // of state, no tool/payload to inspect). Only `input:` / `output:`
+    // lines (or any non-status line) qualify as real signal. Codex
+    // stop-time review 2026-05-18.
+    static func shouldDropLowSignalEntry(_ entry: DaemonTimelineEntry) -> Bool {
+        guard entry.type == "tool_exec" || entry.type == "tool_request" || entry.type == "tool_resolved" else {
+            return false
+        }
+        // Real signal in detail → keep regardless of placeholder raw.
+        if Self.detailHasRealSignal(entry.detail) {
             return false
         }
         let raw = entry.raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["tool", "tool completed", "unknown", "unknown completed", "exec", "exec completed"].contains(raw)
+        if entry.agentType == "codex-cli", entry.sessionId == "codex:otel-active" {
+            return ["tool", "tool completed", "unknown", "unknown completed", "exec", "exec completed"].contains(raw)
+        }
+        // OpenClaw session.tool placeholder rows. The producer guard added
+        // 2026-05-18 drops new placeholders at source, but historical
+        // entries persisted to timeline.json before that fix still leak
+        // through on load — also catch tool_exec rows whose raw devolves
+        // to just the literal "tool" placeholder name (with optional
+        // status suffix). Always-empty rows that pre-date the fix.
+        //
+        // **Structural match, not enumerated**: the OpenClaw producer
+        // formats raw as `"{toolName} · {status}"` and Gateway's
+        // `SessionToolPayload.status` is a free-form String (not an
+        // enum), so listing specific statuses (running/complete/pending/
+        // error) misses `failed`, `aborted`, `canceled`, and anything
+        // upstream adds tomorrow. Match the placeholder *name* portion
+        // ("tool") + any status suffix, instead of enumerating statuses.
+        // Codex stop-time review 2026-05-18 (third round) flagged
+        // `failed` slipping past the enumerated set.
+        if entry.agentType == "openclaw" {
+            return Self.isOpenClawPlaceholderRaw(raw)
+        }
+        return false
+    }
+
+    /// True when `raw` (already lowercased + trimmed) is an OpenClaw
+    /// placeholder — either the bare fallback `"tool"` or
+    /// `"tool · <status>"` for any status string. Exposed default-
+    /// internal for direct testing of the structural contract.
+    static func isOpenClawPlaceholderRaw(_ raw: String) -> Bool {
+        return raw == "tool" || raw.hasPrefix("tool · ")
+    }
+
+    /// True when `detail` has at least one non-empty line that isn't a
+    /// `status: ...` ack — that's the signal threshold worth keeping a
+    /// placeholder-raw row visible for. Matches the OpenClaw producer's
+    /// detail composition (`status:` / `input:` / `output:` lines), so an
+    /// `input: {...}` or `output: {...}` line passes; `status: running`
+    /// alone does not. Exposed default-internal for direct testing.
+    static func detailHasRealSignal(_ detail: String?) -> Bool {
+        guard let detail else { return false }
+        for rawLine in detail.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            if !trimmed.lowercased().hasPrefix("status:") {
+                return true
+            }
+        }
+        return false
     }
 }
 

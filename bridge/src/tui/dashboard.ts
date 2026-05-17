@@ -10,11 +10,10 @@ import type {
   ModelCatalogEntry,
 } from '@agentdeck/shared';
 import type { TimelineEntry } from '@agentdeck/shared';
-import { sortSessions } from '@agentdeck/shared';
 import { listActive, findDaemonPort } from '../session-registry.js';
 import { Screen } from './screen.js';
 import {
-  renderDashboard, getLayout, shouldShowTerrarium, spinner,
+  renderDashboard, getLayout, shouldShowTerrarium, spinner, buildHudEntries,
 } from './renderer.js';
 import {
   initTerrarium, updateTerrarium, setOctopi, setJellyfish, setOpenCode, setCrayfish,
@@ -22,8 +21,6 @@ import {
 } from './terrarium.js';
 
 // ===== Types =====
-
-type SessionWithControlMode = SessionInfo & { controlMode?: 'managed' | 'observed' };
 
 export type LayoutMode = 'wide' | 'standard' | 'narrow';
 
@@ -218,15 +215,17 @@ export async function startDashboard(opts: DashboardOptions): Promise<void> {
         break;
       default:
         if (state.helpVisible) break;
-        // 1-9: switch session
+        // 1-9: switch session — uses the same buildHudEntries pipeline as
+        // the renderer so hotkey indices align with what's drawn on screen
+        // (primary self and the virtual OpenClaw row never claim a hotkey).
         if (key >= '1' && key <= '9') {
           const idx = parseInt(key, 10) - 1;
-          const focusableSessions = sortSessions(state.sessions).filter((s) =>
-            s.port && (s as SessionWithControlMode).controlMode !== 'observed'
+          const focusable = buildHudEntries(state).filter((e) =>
+            !e.isPrimary && !e.isVirtualOpenClaw && e.port !== undefined && e.controlMode !== 'observed'
           );
-          if (idx < focusableSessions.length) {
-            const sess = focusableSessions[idx]!;
-            if (sess.port !== targetPort) {
+          if (idx < focusable.length) {
+            const sess = focusable[idx]!;
+            if (sess.port !== undefined && sess.port !== targetPort) {
               targetPort = sess.port;
               state.currentPort = targetPort;
               reconnect();

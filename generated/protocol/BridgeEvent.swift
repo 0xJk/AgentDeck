@@ -889,8 +889,23 @@ struct ADTimelineEntry: Codable, Equatable {
     /// topic-hint extracted from response or prompt   - `'none'`    : last-resort fallback
     /// (literal "Completed", bare tool name, etc.)
     var summaryKind: ADSummaryKind?
+    var taskCategory: String?
     /// APME task id. Set on task_start/task_end and on every turn entry inside the task scope.
     var taskId: String?
+    var taskOutcome: String?
+    /// Per-task evaluation result, attached when the task_judge resolves (always AFTER the
+    /// initial task_end emit — clients upsert the existing row by (type='task_end', taskId) and
+    /// merge these four fields).
+    ///
+    /// - `taskScore`   : 0..1 composite (matches `tasks.composite_score`)   - `taskOutcome` :
+    /// terminal outcome string from `bridge/src/apme/outcome.ts`     (`'committed' | 'abandoned'
+    /// | 'iterated' | 'ab_winner' | 'ab_loser'     | 'interrupted' | 'exploratory' |
+    /// 'pending'`). UIs collapse into     three visual classes — success / fail / partial /
+    /// pending — and pick     the badge color via design-system status tokens.   -
+    /// `taskCategory`: task_rollup category ('general' | 'conversation' | …)   - `taskSummary` :
+    /// one-line judge summary
+    var taskScore: Double?
+    var taskSummary: String?
     var ts: Double
     var type: ADTimelineEntryType
 
@@ -909,7 +924,11 @@ struct ADTimelineEntry: Codable, Equatable {
         case startedAt = "startedAt"
         case status = "status"
         case summaryKind = "summaryKind"
+        case taskCategory = "taskCategory"
         case taskId = "taskId"
+        case taskOutcome = "taskOutcome"
+        case taskScore = "taskScore"
+        case taskSummary = "taskSummary"
         case ts = "ts"
         case type = "type"
     }
@@ -948,7 +967,11 @@ extension ADTimelineEntry {
         startedAt: Double?? = nil,
         status: ADEntryStatus?? = nil,
         summaryKind: ADSummaryKind?? = nil,
+        taskCategory: String?? = nil,
         taskId: String?? = nil,
+        taskOutcome: String?? = nil,
+        taskScore: Double?? = nil,
+        taskSummary: String?? = nil,
         ts: Double? = nil,
         type: ADTimelineEntryType? = nil
     ) -> ADTimelineEntry {
@@ -967,7 +990,11 @@ extension ADTimelineEntry {
             startedAt: startedAt ?? self.startedAt,
             status: status ?? self.status,
             summaryKind: summaryKind ?? self.summaryKind,
+            taskCategory: taskCategory ?? self.taskCategory,
             taskId: taskId ?? self.taskId,
+            taskOutcome: taskOutcome ?? self.taskOutcome,
+            taskScore: taskScore ?? self.taskScore,
+            taskSummary: taskSummary ?? self.taskSummary,
             ts: ts ?? self.ts,
             type: type ?? self.type
         )

@@ -178,7 +178,7 @@ describe('codex-install: managedBlockBody', () => {
     });
     const withFence = applyManagedBlock('', body);
     expect(withFence).toContain('[features]');
-    expect(withFence).toContain('codex_hooks = true');
+    expect(withFence).toContain('hooks = true');
     expect(withFence).toContain('[[hooks.UserPromptSubmit]]');
     expect(withFence).toContain('[[hooks.PreToolUse]]');
     expect(withFence).toContain('[[hooks.PostToolUse]]');
@@ -201,7 +201,7 @@ describe('codex-install: managedBlockBody', () => {
       includeOtel: false,
       otelEndpoint: 'http://127.0.0.1:9120/otel/v1/traces',
     });
-    expect(body).toContain('codex_hooks = true');
+    expect(body).toContain('hooks = true');
     expect(body).toContain('[[hooks.Stop]]');
     expect(body).not.toContain('notify =');
     expect(body).not.toContain('[otel.trace_exporter.otlp-http]');
@@ -230,7 +230,7 @@ describe('codex-install: install / uninstall (file I/O)', () => {
     expect(result.installed).toBe(true);
     const text = readFileSync(configPath, 'utf-8');
     expect(text).toContain(OPEN_FENCE);
-    expect(text).toContain('codex_hooks = true');
+    expect(text).toContain('hooks = true');
     expect(text).toContain('http://127.0.0.1:9120/otel/v1/traces');
   });
 
@@ -246,7 +246,7 @@ describe('codex-install: install / uninstall (file I/O)', () => {
   });
 
   it('skips when user already has [features] table outside fence', () => {
-    writeFileSync(configPath, `[features]\ncodex_hooks = true\n`, 'utf-8');
+    writeFileSync(configPath, `[features]\nhooks = true\n`, 'utf-8');
     const result = installCodexHooksIfNeeded({ configPath });
     expect(result.installed).toBe(false);
     expect(result.reason).toContain('[features]');
@@ -269,7 +269,7 @@ describe('codex-install: install / uninstall (file I/O)', () => {
     const managed = text.split(OPEN_FENCE)[1].split(CLOSE_FENCE)[0];
     expect(managed).not.toContain('notify =');
     // Lifecycle hooks still installed
-    expect(managed).toContain('codex_hooks = true');
+    expect(managed).toContain('hooks = true');
   });
 
   it('omits OTel when user has [otel] table', () => {
@@ -279,7 +279,7 @@ describe('codex-install: install / uninstall (file I/O)', () => {
     expect(text).toContain('exporter = "otlp-grpc"');
     const managed = text.split(OPEN_FENCE)[1].split(CLOSE_FENCE)[0];
     expect(managed).not.toContain('[otel.trace_exporter.otlp-http]');
-    expect(managed).toContain('codex_hooks = true');
+    expect(managed).toContain('hooks = true');
   });
 
   it('uninstall strips fence and preserves user content', () => {
@@ -289,7 +289,7 @@ describe('codex-install: install / uninstall (file I/O)', () => {
     uninstallCodexHooks({ configPath });
     const text = readFileSync(configPath, 'utf-8');
     expect(text).not.toContain(OPEN_FENCE);
-    expect(text).not.toContain('codex_hooks');
+    expect(text).not.toContain('hooks = true');
     expect(text).toContain('model = "gpt-5"');
     expect(text).toContain('[profiles.work]');
   });

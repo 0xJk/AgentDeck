@@ -669,6 +669,20 @@ final class DaemonServer {
 
         // 5. Start timeline store
         await timelineStore.start()
+        // Orphan task_start reaper. The dashboard's `timelineIsInFlightTask`
+        // gate spins the leading task icon until a matching `task_end` with
+        // the same `taskId` appears in the visible siblings — but a previous
+        // daemon process can leave the on-disk timeline with `task_start`
+        // rows whose `task_end` was never emitted (force-quit, hook
+        // delivery race, closeTask early-return because the active task
+        // was already cleared). On startup, walk the persisted entries
+        // and upsert a synthetic `task_end` for every orphan so the
+        // restored UI doesn't lie about in-flight work that ended with
+        // the prior process. `boundarySignal="interrupted"` keeps the row
+        // distinguishable from real closes (todo_complete / clear /
+        // session_end / idle_gap) in case it ends up downstream of the
+        // tuner or judge.
+        await reapOrphanTaskStarts()
 
         // 6. Start display monitor
         await displayMonitor.start()
@@ -5232,6 +5246,84 @@ final class DaemonServer {
         if let v = e.taskCategory { dict["taskCategory"] = v }
         if let v = e.taskSummary { dict["taskSummary"] = v }
         return dict
+    }
+
+    /// Pure-function core of the orphan reaper: scan a snapshot of timeline
+    /// entries and return the synthetic `task_end` rows that need to be
+    /// upserted to close every `task_start` lacking a matching pair. Side-
+    /// effect-free so tests can drive it without standing up an actor or
+    /// the disk path; the live wrapper `reapOrphanTaskStarts()` calls
+    /// this, then applies each result via `timelineStore.upsert` +
+    /// `broadcastRaw`.
+    static func computeOrphanTaskEnds(from snapshot: [DaemonTimelineEntry]) -> [DaemonTimelineEntry] {
+        var closedTaskIds = Set<String>()
+        for e in snapshot where e.type == "task_end" {
+            if let id = e.taskId, !id.isEmpty { closedTaskIds.insert(id) }
+        }
+        var result: [DaemonTimelineEntry] = []
+        for start in snapshot where start.type == "task_start" {
+            guard let taskId = start.taskId, !taskId.isEmpty else { continue }
+            if closedTaskIds.contains(taskId) { continue }
+            let startedAtMs = start.startedAt ?? start.ts
+            // ts: nudge 1ms past the task_start so the synthetic end
+            // sorts immediately after the orphaned start in chronological
+            // views. endedAt: leave nil — duration is genuinely unknown
+            // (daemon died between start and end), and the UI renders
+            // "Interrupted · –" for that case rather than guessing.
+            result.append(DaemonTimelineEntry(
+                ts: startedAtMs + 1,
+                type: "task_end",
+                raw: "Interrupted · –",
+                agentType: start.agentType,
+                projectName: start.projectName,
+                sessionId: start.sessionId,
+                startedAt: startedAtMs,
+                endedAt: nil,
+                runId: start.runId,
+                taskId: taskId,
+                boundarySignal: "interrupted"
+            ))
+            // Track so a second orphaned `task_start` with the same taskId
+            // (which would be a producer bug, not a normal state) doesn't
+            // produce two synthetics for one logical task.
+            closedTaskIds.insert(taskId)
+        }
+        return result
+    }
+
+    /// Walk the persisted timeline and synthesize a `task_end` for every
+    /// `task_start` whose pair was never written. Called once at startup,
+    /// after `timelineStore.start()` has loaded entries from disk.
+    ///
+    /// The producer guarantees `task_start`/`task_end` pair emission within
+    /// a single daemon lifetime via `ApmeCollector.closeTask` +
+    /// `timelineEmitted` flag, but that flag is in-memory. If the daemon
+    /// is killed mid-task, the next process boots with task_start rows
+    /// on disk and no `activeTask` to close. The UI guard
+    /// `timelineIsInFlightTask` (TimelineStripView.swift) treats those
+    /// as in-flight and spins their leading icon forever — exactly the
+    /// "/session-end 했는데 진행중처럼 나옴" report. This reaper closes
+    /// the loop on the daemon side so the deception is bounded to a
+    /// single startup, not a permanent UI lie.
+    ///
+    /// Idempotent: the upsert path matches by (type="task_end", taskId),
+    /// so re-running the reaper on the next startup finds the synthetic
+    /// task_end already there and is a no-op.
+    @MainActor
+    private func reapOrphanTaskStarts() async {
+        let snapshot = await timelineStore.getAll()
+        let synthetics = Self.computeOrphanTaskEnds(from: snapshot)
+        for synthetic in synthetics {
+            await timelineStore.upsert(synthetic)
+            broadcastRaw([
+                "type": "timeline_event",
+                "entry": claudeCodeEntryDict(synthetic),
+                "upsert": true,
+            ] as [String: Any])
+        }
+        if !synthetics.isEmpty {
+            DaemonLogger.shared.info("Timeline reaper: synthesized \(synthetics.count) task_end row(s) for orphaned task_start entries")
+        }
     }
 
     @MainActor

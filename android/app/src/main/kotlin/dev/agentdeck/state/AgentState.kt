@@ -53,6 +53,13 @@ data class DashboardState(
     val navigable: Boolean? = null,
     val cursorIndex: Int? = null,
     val hostDisplayOn: Boolean = true,
+    /**
+     * Session explicitly focused by the user, broadcast by the daemon's
+     * focus relay. Use this — not [sessionId] — for visual selection
+     * (the daemon connection's [sessionId] is a bridge-core UUID, not a
+     * real session id).
+     */
+    val focusedSessionId: String? = null,
     val siblingSessions: List<SessionInfo> = emptyList(),
     val workerSessionCount: Int? = null,
     val oauthConnected: Boolean? = null,
@@ -160,6 +167,25 @@ class AgentStateHolder private constructor() {
                         voiceAssistantState = event.data.voiceAssistantState ?: current.voiceAssistantState,
                         voiceAssistantText = event.data.voiceAssistantText,
                         voiceAssistantResponseText = event.data.voiceAssistantResponseText,
+                        // sessionId on state_update tracks the latest
+                        // hook-active session ("may move with hook activity"
+                        // per shared/src/protocol.ts). Mirrors Apple
+                        // `if let sid = e.sessionId { state.sessionId = sid }`.
+                        // Absent → keep current (set originally by
+                        // BridgeEvent.Connected).
+                        sessionId = event.data.sessionId ?: current.sessionId,
+                        // focusedSessionId carries explicit user-focus state.
+                        // Mirror Apple AgentStateHolder.handleStateUpdate:
+                        //   absent → keep current (session-bridge updates
+                        //     don't carry focus context).
+                        //   present empty ("") → daemon explicitly cleared
+                        //     focus; propagate as null so highlights drop.
+                        //   present non-empty → adopt as the new focus.
+                        focusedSessionId = if (event.data.focusedSessionId != null) {
+                            event.data.focusedSessionId.takeIf { it.isNotEmpty() }
+                        } else {
+                            current.focusedSessionId
+                        },
                     )
                 }
                 lastKnownState = _state.value
@@ -217,6 +243,11 @@ class AgentStateHolder private constructor() {
                     it.copy(
                         bridgeConnected = true,
                         sessionId = event.sessionId,
+                        // Drop any focus carried over from a prior connection.
+                        // The daemon's relay re-emits focus on its first
+                        // state_update, so re-establishing connection should
+                        // start clean.
+                        focusedSessionId = null,
                     )
                 }
                 SessionMetrics.instance.onConnected()
@@ -260,6 +291,11 @@ class AgentStateHolder private constructor() {
                         gatewayHasError = false,
                         workerSessionCount = null,
                         siblingSessions = emptyList(),
+                        // Both session ids are connection-scoped — clear so
+                        // a fresh connection starts clean (mirrors Apple
+                        // AgentStateHolder.resetToDisconnected).
+                        sessionId = null,
+                        focusedSessionId = null,
                     )
                 }
                 SessionMetrics.instance.onDisconnected()

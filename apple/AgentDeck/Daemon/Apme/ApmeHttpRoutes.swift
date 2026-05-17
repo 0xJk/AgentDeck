@@ -104,6 +104,14 @@ enum ApmeHttpRoutes {
             return Self.runDetailResponse(id: id, store: store)
         }
 
+        // Single task detail — mirrors Node bridge `GET /apme/tasks/:id`.
+        // Returns the task row, its evals, and the turns belonging to it.
+        await httpServer.get("/apme/tasks/*") { request in
+            if let denied = Self.requireToken(request) { return denied }
+            let taskId = String(request.path.dropFirst("/apme/tasks/".count))
+            return Self.taskDetailResponse(id: taskId, store: store)
+        }
+
         await httpServer.get("/apme/scorecard") { request in
             if let denied = Self.requireToken(request) { return denied }
             return .json(["schema": Self.schemaVersion, "scorecards": store.scorecard()])
@@ -215,6 +223,11 @@ enum ApmeHttpRoutes {
             }
             return row
         }
+        let tasks = store.listTasksForRun(run.id).map { t -> [String: Any] in
+            var dict = taskDict(t)
+            dict["evals"] = store.listEvalsForTask(t.id).map { evalDict($0, includeRaw: true) }
+            return dict
+        }
         let vibe = store.latestVibeForRun(run.id)
 
         var runDict: [String: Any] = [
@@ -240,6 +253,7 @@ enum ApmeHttpRoutes {
             "evals": evals.map { evalDict($0, includeRaw: true) },
             "steps": steps.count,
             "turns": turns,
+            "tasks": tasks,
             "vibe": vibeDict(vibe) ?? NSNull(),
         ]
         if let score = evals.first(where: { $0.layer == "llm_judge" && $0.metric == "overall" })?.score
@@ -247,6 +261,47 @@ enum ApmeHttpRoutes {
             body["overallScore"] = score
         }
         return .json(body)
+    }
+
+    private static func taskDetailResponse(id: String, store: ApmeStore) -> HTTPServer.HTTPResponse {
+        guard !id.isEmpty else {
+            return .json(["error": "missing task id"], status: 400)
+        }
+        guard let task = store.getTask(id: id) else {
+            return .json(["error": "task not found"], status: 404)
+        }
+        let evals = store.listEvalsForTask(id)
+        let turns = store.listTurnsForTask(id)
+        let body: [String: Any] = [
+            "schema": schemaVersion,
+            "task": taskDict(task),
+            "evals": evals.map { evalDict($0, includeRaw: true) },
+            "turns": turns,
+            "overallScore": evals.first(where: { $0.layer == "task_judge" && $0.metric == "overall" })?.score
+                ?? task.compositeScore
+                ?? NSNull(),
+        ]
+        return .json(body)
+    }
+
+    /// Serialize ApmeTask → JSON dict using snake_case keys for Node-bridge parity.
+    private static func taskDict(_ t: ApmeTask) -> [String: Any] {
+        var dict: [String: Any] = [
+            "id": t.id,
+            "run_id": t.runId,
+            "task_index": t.taskIndex,
+            "boundary_signal": t.boundarySignal,
+            "started_at": t.startedAt,
+        ]
+        if let v = t.endedAt { dict["ended_at"] = v }
+        if let v = t.firstTurnIndex { dict["first_turn_index"] = v }
+        if let v = t.lastTurnIndex { dict["last_turn_index"] = v }
+        if let v = t.summary { dict["summary"] = v }
+        if let v = t.outcome { dict["outcome"] = v }
+        if let v = t.compositeScore { dict["composite_score"] = v }
+        if let v = t.taskCategory { dict["task_category"] = v }
+        if let v = t.notesJson { dict["notes_json"] = v }
+        return dict
     }
 
     private static func recommendResponse(store: ApmeStore, input: ApmeRecommendInput) -> HTTPServer.HTTPResponse {

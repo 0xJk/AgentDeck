@@ -241,7 +241,7 @@ async function selectRun(id){
   el.innerHTML='<div class="detail-empty">Loading...</div>';
   try{
     let r=await fetch(api('/apme/run/'+id));if(!r.ok)r=await fetch(api('/apme/run?id='+id));
-    const d=await r.json();const run=d.run||{};const evals=d.evals||[];const turns=d.turns||[];const vibe=d.vibe;
+    const d=await r.json();const run=d.run||{};const evals=d.evals||[];const turns=d.turns||[];const tasks=d.tasks||[];const vibe=d.vibe;
 
     // Normalize field names — Node.js uses snake_case, Swift may use camelCase in some paths.
     const startedAt=run.started_at??run.startedAt;
@@ -340,6 +340,38 @@ async function selectRun(id){
     }else if(layer1Skipped){
       h+='<div class="section"><div class="section-head">Deterministic Checks</div>';
       h+='<div style="font-size:12px;color:var(--muted);line-height:1.5">LLM-only evaluation for this run. Deterministic project checks were skipped ('+esc(layer1Skipped)+').</div>';
+      h+='</div>';
+    }
+
+    // Tasks — meaningful per-task units bounded by todo_complete/clear/session_end/manual/idle_gap
+    if(tasks.length>0){
+      h+='<div class="section"><div class="section-head">Tasks ('+tasks.length+')</div>';
+      for(const tk of tasks){
+        const idx=tk.task_index??tk.taskIndex??0;
+        const sig=tk.boundary_signal??tk.boundarySignal??'open';
+        const sigLabel=sig==='todo_complete'?'TODO done':sig==='clear'?'/clear':sig==='session_end'?'Session end':sig==='manual'?'Manual':sig==='idle_gap'?'Idle gap':sig;
+        const summary=tk.summary||'';
+        const cat=tk.task_category??tk.taskCategory;
+        const cscore=tk.composite_score??tk.compositeScore;
+        const oc=tk.outcome;
+        const sa=tk.started_at??tk.startedAt;
+        const ea=tk.ended_at??tk.endedAt;
+        const dur=ea&&sa?fd(ea-sa):'open';
+        const firstT=tk.first_turn_index??tk.firstTurnIndex;
+        const lastT=tk.last_turn_index??tk.lastTurnIndex;
+        const turnSpan=(firstT!=null&&lastT!=null)?(firstT===lastT?'turn '+firstT:'turns '+firstT+'–'+lastT):'';
+        h+='<div class="turn-card">';
+        h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">';
+        h+='<span class="turn-idx">Task '+(idx+1)+'</span>';
+        h+='<span style="font-size:11px;color:var(--dim)">'+sigLabel+(turnSpan?' · '+turnSpan:'')+' · '+dur+'</span>';
+        if(cscore!=null)h+=fs(cscore);else h+='<span style="font-size:11px;color:var(--dim)">…</span>';
+        h+='</div>';
+        const ocGlyph=oc==='success'?'✓':oc==='partial'?'△':oc==='fail'?'✗':oc==='abandoned'?'⊘':'';
+        const ocColor=oc==='success'?'var(--green)':oc==='fail'?'var(--red)':oc==='partial'?'var(--orange,#f59e0b)':oc==='abandoned'?'var(--dim)':'var(--dim)';
+        if(cat||oc)h+='<div style="margin-top:4px">'+(cat?'<span class="badge-cat">'+cat+'</span>':'')+(oc?' <span style="font-size:11px;color:'+ocColor+';margin-left:6px">'+ocGlyph+' '+oc+'</span>':'')+'</div>';
+        if(summary)h+='<div style="color:var(--muted);font-size:12px;margin:6px 0 0;padding:6px 8px;background:var(--bg);border-radius:4px;border-left:2px solid var(--accent)">'+esc(summary.slice(0,500))+'</div>';
+        h+='</div>';
+      }
       h+='</div>';
     }
 

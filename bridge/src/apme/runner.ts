@@ -38,6 +38,53 @@ export interface EvalJobResult {
   overall?: number;
 }
 
+/**
+ * Emitted after `runTaskEval` writes the task_judge axis scores + summary +
+ * compositeScore. Carries enough context for the timeline layer to upsert the
+ * existing `task_end` row with the verdict (score + outcome class + category +
+ * summary) so dashboard task headers can render the score badge.
+ */
+export interface TaskEvaluatedEvent {
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  agentType?: string;
+  projectName?: string;
+  startedAt: number;
+  endedAt: number;
+  compositeScore: number | null;
+  /** Coarse outcome class. Normally derived from `compositeScore`:
+   *  - `'success'`  (≥0.75)
+   *  - `'partial'`  (≥0.50)
+   *  - `'fail'`     (<0.50)
+   *  - `'pending'`  (judge produced no score)
+   *  May also be `'abandoned'` when the user manually closed the task
+   *  via `agentdeck task cancel` (or the macOS detail-pane button) — that
+   *  outcome takes priority and is never overwritten by the judge.
+   *  Distinct from the run-level git outcome (`committed | abandoned |
+   *  iterated`) which lives on the parent `runs` row.
+   */
+  outcome: 'success' | 'partial' | 'fail' | 'pending' | 'abandoned';
+  taskCategory?: string;
+  summary?: string;
+  boundarySignal: string;
+}
+
+function deriveTaskOutcome(score: number | null | undefined): TaskEvaluatedEvent['outcome'] {
+  if (score == null) return 'pending';
+  if (score >= 0.75) return 'success';
+  if (score >= 0.5) return 'partial';
+  return 'fail';
+}
+
+/** Narrow an arbitrary DB `outcome` string to the typed union, so a row
+ *  written via the manual path (`closeTaskExternal` outcome override) can
+ *  flow back into `TaskEvaluatedEvent` without losing type-safety. */
+function isPreservableOutcome(value: string | null): value is TaskEvaluatedEvent['outcome'] {
+  return value === 'success' || value === 'partial' || value === 'fail'
+      || value === 'pending' || value === 'abandoned';
+}
+
 type Lang = 'typescript' | 'swift' | 'kotlin';
 
 interface DetStepResult {
@@ -73,6 +120,7 @@ export class ApmeRunner {
   private queue: EvalJob[] = [];
   private drainPromise: Promise<void> | null = null;
   private readonly listeners = new Set<(r: EvalJobResult) => void>();
+  private readonly taskListeners = new Set<(e: TaskEvaluatedEvent) => void>();
   private configOverride: ApmeConfig | null = null;
   private judgeOverride: ((prompt: string, judgeCfg: ApmeJudgeConfig) => Promise<string>) | null = null;
   private detOverride: ((runRow: ApmeRunRow, cfg: ApmeConfig) => Promise<DetStepResult[]>) | null = null;
@@ -101,6 +149,16 @@ export class ApmeRunner {
   onResult(fn: (r: EvalJobResult) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  /** Subscribe to per-task judge completions. The event fires AFTER the
+   *  task_judge axis scores and summary are persisted, so listeners can read
+   *  the final state directly from the event payload without re-querying.
+   *  Used by the timeline emitter to upsert the corresponding `task_end` row
+   *  with score + outcome metadata. */
+  onTaskEvaluated(fn: (e: TaskEvaluatedEvent) => void): () => void {
+    this.taskListeners.add(fn);
+    return () => this.taskListeners.delete(fn);
   }
 
   enqueue(job: EvalJob): void {
@@ -217,9 +275,23 @@ export class ApmeRunner {
         });
       }
 
+      const compositeScore = parsed.scores.overall ?? null;
+      const derivedOutcome = deriveTaskOutcome(compositeScore);
+      // Preserve a previously-set outcome — that only happens when the user
+      // explicitly closed the task via `agentdeck task done/cancel` (or the
+      // macOS detail-pane button) with an outcome override. Without this
+      // guard the async judge resolves 5–30 s after the manual close and
+      // overwrites e.g. `abandoned` with `partial`, silently losing the
+      // user's gesture. `closeTask` itself never writes outcome — only the
+      // manual path does — so a non-null read here is unambiguous.
+      const existingOutcome = this.store.getTask(taskId)?.outcome ?? null;
+      const taskOutcome: TaskEvaluatedEvent['outcome'] = isPreservableOutcome(existingOutcome)
+        ? existingOutcome
+        : derivedOutcome;
       this.store.updateTask(taskId, {
         summary: parsed.summary ?? null,
-        compositeScore: parsed.scores.overall ?? null,
+        compositeScore,
+        outcome: taskOutcome,
         notesJson: JSON.stringify({
           reasoning: parsed.reasoning,
           done: parsed.done,
@@ -227,10 +299,32 @@ export class ApmeRunner {
         }),
       });
 
-      debug('APME', `task eval ${taskId.slice(0, 8)}: overall=${parsed.scores.overall} summary=${parsed.summary?.slice(0, 40) ?? '-'}`);
+      debug('APME', `task eval ${taskId.slice(0, 8)}: overall=${compositeScore} outcome=${taskOutcome} summary=${parsed.summary?.slice(0, 40) ?? '-'}`);
       for (const fn of this.listeners) {
-        try { fn({ runId, taskId, layer1Ran: false, layer2Ran: true, overall: parsed.scores.overall }); }
+        try { fn({ runId, taskId, layer1Ran: false, layer2Ran: true, overall: compositeScore ?? undefined }); }
         catch { /* ignore */ }
+      }
+
+      if (this.taskListeners.size > 0) {
+        const run = this.store.getRun(runId);
+        const updatedTask = this.store.getTask(taskId) ?? task;
+        const event: TaskEvaluatedEvent = {
+          runId,
+          taskId,
+          sessionId: run?.sessionId ?? '',
+          agentType: run?.agentType ?? undefined,
+          projectName: run?.projectName ?? undefined,
+          startedAt: updatedTask.startedAt,
+          endedAt: updatedTask.endedAt ?? Date.now(),
+          compositeScore,
+          outcome: taskOutcome,
+          taskCategory: category ?? updatedTask.taskCategory ?? undefined,
+          summary: parsed.summary ?? undefined,
+          boundarySignal: boundarySignal ?? updatedTask.boundarySignal,
+        };
+        for (const fn of this.taskListeners) {
+          try { fn(event); } catch { /* ignore */ }
+        }
       }
     } catch (err) {
       debug('APME', `task eval error taskId=${taskId.slice(0, 8)}: ${String(err)}`);

@@ -15,8 +15,12 @@ import { OpenCodeClient, type OpenCodeSSEEvent, type OpenCodeMessageInfo, type O
 import { debug, log as stderrLog } from '../logger.js';
 import { cleanDetailText, cleanRawText, prepareMarkdownDetail } from '@agentdeck/shared';
 import type { AgentCapabilities, AdapterStartOptions, AdapterEvent, PluginCommand, TimelineEntry } from '../types.js';
+import type { AdapterContext } from '@agentdeck/shared';
 import { OPENCODE_CAPABILITIES } from '../types.js';
 import { PtyAdapter } from './pty-adapter.js';
+import { randomUUID } from 'crypto';
+import { getApme } from '../apme/index.js';
+import { opencodePartToSpans, opencodeMessageToSpans } from '../apme/adapters/opencode-hook.js';
 
 const log = (...args: unknown[]) => debug('adapter:opencode', ...args);
 
@@ -39,6 +43,18 @@ export class OpenCodeAdapter extends PtyAdapter {
 
   // Permission tracking
   private pendingPermissionID: string | null = null;
+
+  // APME bridge — set by `setApmeSession` so the adapter can pipe SSE-derived
+  // spans (tool_call / tool_result / task_boundary / turn_*) into the same
+  // collector that Claude / Codex feed via HTTP hooks. Without this OpenCode
+  // sessions land in APME's `runs` table but never get per-task evaluation:
+  // todowrite all-completed silently has no effect, idle just closes the run.
+  private apmeSessionId: string | null = null;
+  private apmeTraceId = randomUUID();
+  private apmeCwdHint: string | undefined;
+  /** Last seen user prompt — buffered so the assistant's response can be
+   *  attached to the matching turn_start span. */
+  private lastUserPrompt: string | undefined;
 
   protected getDefaultCommand(): string {
     return 'opencode';
@@ -80,6 +96,38 @@ export class OpenCodeAdapter extends PtyAdapter {
     this.connectToEmbeddedServer().catch((err) => {
       stderrLog(`[opencode] SSE overlay setup threw unexpectedly — TUI still works, state events missing: ${err}`);
     });
+  }
+
+  /**
+   * Bind this adapter to an APME session id so SSE events can be ingested
+   * as TelemetrySpans. Called by the bridge once it knows the session id
+   * + cwd. No-op when the global APME module isn't initialized. */
+  setApmeSession(sessionId: string, cwd?: string): void {
+    this.apmeSessionId = sessionId;
+    this.apmeCwdHint = cwd;
+  }
+
+  private buildApmeCtx(): AdapterContext | null {
+    if (!this.apmeSessionId || !getApme()) return null;
+    return {
+      sessionId: this.apmeSessionId,
+      agentType: 'opencode',
+      cwd: this.apmeCwdHint,
+      traceId: this.apmeTraceId,
+      activeTurnId: undefined,
+    };
+  }
+
+  private ingestApmeSpans(spans: ReturnType<typeof opencodePartToSpans>): void {
+    const apme = getApme();
+    if (!apme || !this.apmeSessionId || spans.length === 0) return;
+    for (const span of spans) {
+      try {
+        apme.collector.ingestSpan(this.apmeSessionId, span);
+      } catch (err) {
+        debug('apme:opencode', `ingestSpan failed: ${String(err)}`);
+      }
+    }
   }
 
   protected override handleAgentCommand(cmd: PluginCommand): boolean {
@@ -290,6 +338,13 @@ export class OpenCodeAdapter extends PtyAdapter {
           raw: cleanRawText(raw),
           ...(part.state?.output ? { detail: cleanDetailText(part.state.output.slice(0, 1000)) } : {}),
         });
+
+        // APME: emit tool_call / tool_result / task_boundary spans so the
+        // collector knows when a todowrite cycle completes (= task done).
+        const ctx = this.buildApmeCtx();
+        if (ctx) {
+          this.ingestApmeSpans(opencodePartToSpans(ctx, part));
+        }
         break;
       }
 
@@ -329,6 +384,43 @@ export class OpenCodeAdapter extends PtyAdapter {
         data: { model: info.modelID, provider: info.providerID, agent: info.agent },
       });
     }
+
+    // APME: open / close turns. User messages open a turn (carrying the
+    // prompt text); assistant messages close it once the accumulated text
+    // response is available. The collector's session_end + todowrite
+    // boundary detection still owns task lifecycle — this just feeds the
+    // per-turn rows the rubric judge reads.
+    const ctx = this.buildApmeCtx();
+    if (ctx) {
+      const promptText = info.role === 'user' ? this.extractUserPrompt(info) : undefined;
+      if (info.role === 'user' && promptText) this.lastUserPrompt = promptText;
+      const responseText = info.role === 'assistant' && this.accumulatedResponse
+        ? this.accumulatedResponse
+        : undefined;
+      this.ingestApmeSpans(opencodeMessageToSpans(ctx, info, promptText, responseText));
+    }
+  }
+
+  /** Best-effort prompt extraction. OpenCode v1 surfaces user prompts via
+   *  `message.updated` events that may carry `text`, `content`, or a nested
+   *  parts array. Returns undefined when nothing extractable is present so
+   *  callers can skip the span. */
+  private extractUserPrompt(info: OpenCodeMessageInfo): string | undefined {
+    const candidate = (info as unknown as Record<string, unknown>);
+    const direct = candidate['text'];
+    if (typeof direct === 'string' && direct.trim()) return direct.trim();
+    const content = candidate['content'];
+    if (typeof content === 'string' && content.trim()) return content.trim();
+    const parts = candidate['parts'];
+    if (Array.isArray(parts)) {
+      for (const p of parts) {
+        if (p && typeof p === 'object') {
+          const pt = (p as Record<string, unknown>).text;
+          if (typeof pt === 'string' && pt.trim()) return pt.trim();
+        }
+      }
+    }
+    return undefined;
   }
 
   private handlePermissionRequested(props: Record<string, unknown>): void {

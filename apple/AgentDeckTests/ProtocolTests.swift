@@ -373,6 +373,40 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(sorted.map(\.id), ["4", "3", "2", "1"])
     }
 
+    func testSortSessionsPlacesNilStartedAtAtGroupTail() {
+        // Same (project, agentType) group with one nil startedAt entry —
+        // DashboardDataRules.startedAtTime(nil) == .greatestFiniteMagnitude,
+        // so the nil row sorts to the end of its group. Mirrors the assumption
+        // that SessionListPanel relied on before primary started borrowing
+        // its anchor sibling's startedAt.
+        let sessions = [
+            SessionInfo(id: "nil-row", port: 9120, projectName: "AgentDeck", agentType: "claude-code", alive: true, state: "idle", modelName: nil, startedAt: nil),
+            SessionInfo(id: "older", port: 9121, projectName: "AgentDeck", agentType: "claude-code", alive: true, state: "idle", modelName: nil, startedAt: "2026-05-11T10:00:00Z"),
+            SessionInfo(id: "newer", port: 9122, projectName: "AgentDeck", agentType: "claude-code", alive: true, state: "idle", modelName: nil, startedAt: "2026-05-11T11:00:00Z"),
+        ]
+
+        let sorted = DashboardDataRules.sortSessions(sessions)
+
+        XCTAssertEqual(sorted.map(\.id), ["older", "newer", "nil-row"])
+    }
+
+    func testSortSessionsTieBreaksOnNaturalIdWhenStartedAtMatches() {
+        // When two sessions share the same project, agentType, and startedAt
+        // ms, the natural-id tie-breaker decides — and must be deterministic
+        // across re-sorts so the #N suffix order stays stable on every surface
+        // (this is the iPad/iOS reproduction with two AgentDeck claude-code
+        // sessions started in the same second).
+        let same = "2026-05-11T10:00:00Z"
+        let sessions = [
+            SessionInfo(id: "session-10", port: 9131, projectName: "AgentDeck", agentType: "claude-code", alive: true, state: "idle", modelName: nil, startedAt: same),
+            SessionInfo(id: "session-2", port: 9122, projectName: "AgentDeck", agentType: "claude-code", alive: true, state: "idle", modelName: nil, startedAt: same),
+        ]
+
+        let sorted = DashboardDataRules.sortSessions(sessions)
+
+        XCTAssertEqual(sorted.map(\.id), ["session-2", "session-10"])
+    }
+
     func testFoldCodexSessionPayloadsForDisplayCollapsesSameProject() {
         let folded = DashboardDataRules.foldCodexSessionPayloadsForDisplay([
             [

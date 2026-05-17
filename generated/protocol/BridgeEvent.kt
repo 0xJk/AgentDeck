@@ -448,12 +448,32 @@ data class TimelineEntry (
      */
     val summaryKind: SummaryKind? = null,
 
+    val taskCategory: String? = null,
+
     /**
      * APME task id. Set on task_start/task_end and on every turn entry inside the task scope.
      */
     @Json(name = "taskId")
     val taskID: String? = null,
 
+    val taskOutcome: String? = null,
+
+    /**
+     * Per-task evaluation result, attached when the task_judge resolves (always AFTER the
+     * initial task_end emit — clients upsert the existing row by (type='task_end', taskId) and
+     * merge these four fields).
+     *
+     * - `taskScore`   : 0..1 composite (matches `tasks.composite_score`)   - `taskOutcome` :
+     * terminal outcome string from `bridge/src/apme/outcome.ts`     (`'committed' | 'abandoned'
+     * | 'iterated' | 'ab_winner' | 'ab_loser'     | 'interrupted' | 'exploratory' |
+     * 'pending'`). UIs collapse into     three visual classes — success / fail / partial /
+     * pending — and pick     the badge color via design-system status tokens.   -
+     * `taskCategory`: task_rollup category ('general' | 'conversation' | …)   - `taskSummary` :
+     * one-line judge summary
+     */
+    val taskScore: Double? = null,
+
+    val taskSummary: String? = null,
     val ts: Double,
     val type: TimelineEntryType
 )

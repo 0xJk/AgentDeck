@@ -318,6 +318,28 @@ export class ApmeCollector {
     return task;
   }
 
+  /** Public wrapper for closeTask. Used by the manual-boundary CLI /
+   *  HTTP route + the macOS detail-pane button — lets the user declare
+   *  "this task is done" without `/clear` (which would also split the
+   *  run). No-op when no task is active. Passing `outcome` overrides the
+   *  judge's coarse score-derived class — handy for `task cancel` where
+   *  the user wants the row tagged "abandoned" regardless of partial
+   *  progress. */
+  closeTaskExternal(
+    sessionId: string,
+    boundarySignal: TaskBoundarySignal = 'manual',
+    outcome?: 'success' | 'fail' | 'partial' | 'abandoned',
+  ): boolean {
+    const task = this.sessionToTask.get(sessionId);
+    if (!task) return false;
+    this.closeTask(sessionId, boundarySignal);
+    if (outcome) {
+      try { this.store.updateTask(task.id, { outcome }); }
+      catch (err) { debug('APME', `manual outcome write failed: ${String(err)}`); }
+    }
+    return true;
+  }
+
   /** Close the current task for a session, persisting boundary metadata.
    *  No-op if no task is active. Fires `onTaskClosed` so the runner can
    *  enqueue a task-level judge call. Tasks that never saw a turn

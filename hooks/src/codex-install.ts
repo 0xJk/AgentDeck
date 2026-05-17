@@ -92,7 +92,7 @@ export function managedBlockBody(opts: ManagedBlockOptions = {}): string {
     '# Codex lifecycle hooks. Command hooks receive JSON on stdin;',
     '# each snippet forwards that stdin body unchanged to AgentDeck.',
     '[features]',
-    'codex_hooks = true',
+    'hooks = true',
   ];
 
   lines.push('');

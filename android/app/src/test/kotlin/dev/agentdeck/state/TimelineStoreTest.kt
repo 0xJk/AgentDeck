@@ -498,6 +498,165 @@ class TimelineStoreTest {
         assertTrue(store.entries.value.isEmpty())
     }
 
+    // OpenClaw Gateway session.tool emits "tool · running" / "tool · complete"
+    // when upstream omits the tool name AND has no input/output to show. The
+    // producer guard in OpenClawAdapter.swift (2026-05-18) drops new ones at
+    // source; this filter catches the historical entries that persisted to
+    // timeline.json before that fix shipped, so replays don't repopulate the
+    // dashboard with the same noise it just cleaned up.
+    @Test
+    fun `addEntry drops openclaw placeholder tool rows`() {
+        val noise = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "tool · running",
+            agentType = "openclaw",
+        )
+        store.addEntry(noise)
+        assertTrue("OpenClaw placeholder must not enter store", store.entries.value.isEmpty())
+    }
+
+    @Test
+    fun `addEntry keeps real openclaw tool rows`() {
+        // Real tool execution — `shell · complete` has the real tool name in
+        // raw and carries detail data. Must survive the filter.
+        val real = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "shell · complete",
+            agentType = "openclaw",
+        )
+        store.addEntry(real)
+        assertEquals(1, store.entries.value.size)
+        assertEquals("shell · complete", store.entries.value[0].summary)
+    }
+
+    // Codex stop-time review 2026-05-18: producer keeps unnamed tool rows
+    // when input/output is present — the JSON ends up in `detail` while
+    // `summary` (raw) falls back to the literal "tool" placeholder.
+    // The filter must NOT drop those because the detail pane is exactly
+    // what makes the row useful for the user.
+    @Test
+    fun `addEntry keeps openclaw placeholder summary when detail has content`() {
+        val unnamedWithIO = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "tool · running",
+            detail = "status: running\ninput: {\"command\":\"ls -la\"}",
+            agentType = "openclaw",
+        )
+        store.addEntry(unnamedWithIO)
+        assertEquals(
+            "Unnamed tool with input/output in detail must survive — it carries signal even with a placeholder summary",
+            1,
+            store.entries.value.size,
+        )
+    }
+
+    // Codex stop-time review 2026-05-18 (second round): detail="status: running"
+    // alone (no input/output) is still placeholder noise — looser
+    // detail-gate had let these bypass. Producer no longer emits this
+    // case (name+input+output all absent → early return), but legacy
+    // on-disk entries can have it.
+    @Test
+    fun `addEntry drops openclaw placeholder with status-only detail`() {
+        val statusOnly = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "tool · running",
+            detail = "status: running",  // no input/output line
+            agentType = "openclaw",
+        )
+        store.addEntry(statusOnly)
+        assertTrue(
+            "Status-only detail is still placeholder noise — bypass must be closed",
+            store.entries.value.isEmpty(),
+        )
+    }
+
+    // Codex stop-time review 2026-05-18 (third round): enumerated status
+    // set used to miss `failed` (and would miss any future Gateway-side
+    // status string). Structural match — `raw == "tool"` or
+    // `raw.startsWith("tool · ")` — must catch all of them.
+    @Test
+    fun `addEntry drops openclaw placeholder with failed status`() {
+        val failed = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "tool · failed",
+            detail = "status: failed",
+            agentType = "openclaw",
+        )
+        store.addEntry(failed)
+        assertTrue(
+            "tool · failed placeholder must drop — Codex #3 regression guard",
+            store.entries.value.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `addEntry drops openclaw placeholder with arbitrary future status`() {
+        val futureStatus = TimelineEntry(
+            timestamp = 1_000,
+            type = "tool_exec",
+            summary = "tool · whatever_new_status",
+            detail = "status: whatever_new_status",
+            agentType = "openclaw",
+        )
+        store.addEntry(futureStatus)
+        assertTrue(
+            "Structural match must cover any future status string without code change",
+            store.entries.value.isEmpty(),
+        )
+    }
+
+    // --- Task-judge upsert (Step 2: score → timeline pipeline) ---
+
+    @Test
+    fun `upsertEntry merges task_end by taskId beyond the 1s tolerance window`() {
+        // Initial task_end emit — no score yet (judge still running)
+        val initial = TimelineEntry(
+            timestamp = 1000L,
+            type = "task_end",
+            summary = "TODO done · 12s",
+            taskId = "task-abc",
+        )
+        store.addEntry(initial)
+
+        // Judge resolves 20 s later (well past the 1 s ts tolerance). The
+        // upsert MUST find the existing row by (type, taskId) and merge,
+        // not append a duplicate. Without the taskId fallback this row
+        // would stack and the dashboard would show two TASK END rows.
+        val followup = TimelineEntry(
+            timestamp = 21000L,
+            type = "task_end",
+            summary = "TODO done · 12s",
+            taskId = "task-abc",
+            taskScore = 0.85,
+            taskOutcome = "success",
+            taskCategory = "general",
+            taskSummary = "Refactored auth and verified tests",
+        )
+        store.upsertEntry(followup)
+
+        assertEquals("only one task_end row should remain after upsert",
+            1, store.entries.value.size)
+        val merged = store.entries.value[0]
+        assertEquals(0.85, merged.taskScore!!, 0.0001)
+        assertEquals("success", merged.taskOutcome)
+        assertEquals("general", merged.taskCategory)
+        assertEquals("Refactored auth and verified tests", merged.taskSummary)
+    }
+
+    @Test
+    fun `upsertEntry without taskId falls back to ts-window match`() {
+        // Pre-existing behavior must keep working for non-task entries.
+        store.addEntry(TimelineEntry(timestamp = 1000L, type = "chat_end", summary = "Original"))
+        store.upsertEntry(TimelineEntry(timestamp = 1500L, type = "chat_end", summary = "Updated"))
+        assertEquals(1, store.entries.value.size)
+        assertEquals("Updated", store.entries.value[0].summary)
+    }
+
     // --- helpers ---
 
     private fun entry(ts: Long, type: String, summary: String) =

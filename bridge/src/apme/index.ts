@@ -122,6 +122,42 @@ export async function initApme(
     };
   }
 
+  // Wire task-eval completion → re-emit `task_end` with score + outcome.
+  // The original `task_end` (above) fires synchronously on closeTask so the
+  // boundary is visible immediately; the judge runs async and may take
+  // 5-30 s. When it resolves, this listener emits a second `task_end` with
+  // the same `taskId`. Timeline stores upsert by (type='task_end', taskId)
+  // and merge the new score fields onto the existing row, so dashboard task
+  // headers get the score badge as soon as the judge returns.
+  if (emitTimeline) {
+    runner.onTaskEvaluated((e) => {
+      const durationSec = Math.max(0, Math.round((e.endedAt - e.startedAt) / 1000));
+      const signalLabel = e.boundarySignal === 'todo_complete' ? 'TODO done'
+        : e.boundarySignal === 'clear' ? '/clear'
+        : e.boundarySignal === 'session_end' ? 'Session end'
+        : e.boundarySignal === 'manual' ? 'Manual'
+        : e.boundarySignal === 'idle_gap' ? 'Idle gap'
+        : 'Task end';
+      emitTimeline({
+        ts: e.endedAt,
+        type: 'task_end',
+        raw: `${signalLabel} · ${durationSec}s`,
+        agentType: e.agentType,
+        projectName: e.projectName,
+        sessionId: e.sessionId,
+        runId: e.runId,
+        taskId: e.taskId,
+        boundarySignal: e.boundarySignal,
+        startedAt: e.startedAt,
+        endedAt: e.endedAt,
+        taskScore: e.compositeScore ?? undefined,
+        taskOutcome: e.outcome,
+        taskCategory: e.taskCategory,
+        taskSummary: e.summary,
+      });
+    });
+  }
+
   // Write dashboard HTML for Swift daemon to pick up.
   try {
     const dataDir = process.env.AGENTDECK_DATA_DIR || join(homedir(), '.agentdeck');

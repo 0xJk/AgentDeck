@@ -85,6 +85,10 @@ data class StateUpdate(
     val state: AgentState = AgentState.DISCONNECTED,
     val permissionMode: PermissionMode = PermissionMode.DEFAULT,
     val agentType: String? = null,
+    /** Session this state payload describes; may move with hook activity. */
+    val sessionId: String? = null,
+    /** Session explicitly focused by the user; visual selection must use this. */
+    val focusedSessionId: String? = null,
     val currentTool: String? = null,
     val toolInput: String? = null,
     val toolProgress: String? = null,
@@ -350,6 +354,14 @@ data class BridgeTimelineEntry(
     val taskId: String? = null,
     val boundarySignal: String? = null,
     val summaryKind: String? = null,
+    // Task-judge rollup attached on the second task_end emit. Daemon mirrors
+    // these in DaemonServer::claudeCodeEntryDict; missing one here would
+    // silently nil-strip on decode and dashboard task headers would never
+    // show a score badge even though the Node daemon broadcast it.
+    val taskScore: Double? = null,
+    val taskOutcome: String? = null,
+    val taskCategory: String? = null,
+    val taskSummary: String? = null,
 )
 
 fun BridgeTimelineEntry.toTimelineEntry() = dev.agentdeck.state.TimelineEntry(
@@ -367,6 +379,10 @@ fun BridgeTimelineEntry.toTimelineEntry() = dev.agentdeck.state.TimelineEntry(
     taskId = taskId,
     boundarySignal = boundarySignal,
     summaryKind = summaryKind,
+    taskScore = taskScore,
+    taskOutcome = taskOutcome,
+    taskCategory = taskCategory,
+    taskSummary = taskSummary,
 )
 
 sealed class BridgeEvent {

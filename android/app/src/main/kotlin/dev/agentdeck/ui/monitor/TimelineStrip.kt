@@ -52,6 +52,7 @@ import dev.agentdeck.state.groupConsecutive
 import dev.agentdeck.state.timelineDisplayGroups
 import dev.agentdeck.state.timelineLifecycleBounds
 import dev.agentdeck.terrarium.TerrariumColors
+import dev.agentdeck.ui.theme.DesignTokens
 import dev.agentdeck.ui.component.BrandIcon
 import dev.agentdeck.ui.timeline.TimelineIconKey
 import dev.agentdeck.ui.timeline.TimelineMarkdownView
@@ -485,10 +486,72 @@ private fun TaskHeaderRow(
             modifier = Modifier.weight(1f),
             style = tight,
         )
+        // Task-judge verdict badge — only on task_end. Renders score + outcome
+        // glyph once the async judge resolves. While pending shows a dim "…".
+        if (isEnd) {
+            TaskEvalBadge(
+                score = entry.taskScore,
+                outcome = entry.taskOutcome,
+                fontSize = (scale.fontSub.value - 1f).sp,
+                tight = tight,
+            )
+        }
         Text(
             text = timeStr,
             color = TerrariumColors.HUDSubtext.copy(alpha = 0.6f),
             fontSize = (scale.fontSub.value - 1f).sp,
+            fontFamily = FontFamily.Monospace,
+            style = tight,
+        )
+    }
+}
+
+/**
+ * Eval chip rendered at the right edge of a `task_end` header. Stays neutral
+ * (dim "…") until the judge resolves and the timeline row upserts with score
+ * + outcome metadata. Mirrors `TaskEvalBadge` in Apple TimelineStripView.swift.
+ */
+@Composable
+private fun TaskEvalBadge(
+    score: Double?,
+    outcome: String?,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    tight: TextStyle,
+) {
+    val (glyph, color) = when (outcome) {
+        "success"   -> "✓" to DesignTokens.UI.ok
+        "partial"   -> "△" to DesignTokens.UI.attn
+        "fail"      -> "✗" to DesignTokens.UI.error
+        // User explicitly cancelled (`agentdeck task cancel`). The judge
+        // preserves this outcome instead of overwriting with its
+        // score-derived class — render as a neutral "explicitly stopped"
+        // so the row doesn't masquerade as pending nor as agent failure.
+        "abandoned" -> "⊘" to DesignTokens.UI.error.copy(alpha = 0.55f)
+        else        -> "…" to TerrariumColors.HUDSubtext.copy(alpha = 0.6f)
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(color.copy(alpha = if (score == null) 0.08f else 0.16f))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (score != null) {
+            Text(
+                text = String.format(Locale.US, "%.2f", score),
+                color = color,
+                fontSize = fontSize,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace,
+                style = tight,
+            )
+        }
+        Text(
+            text = glyph,
+            color = color,
+            fontSize = fontSize,
+            fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
             style = tight,
         )
@@ -617,6 +680,49 @@ private fun DetailPane(
             }
 
             Spacer(modifier = Modifier.height(4.dp))
+
+            // Task eval verdict — score badge + category + summary. Only
+            // meaningful on task_end. Mirrors Apple `TimelineStripView`
+            // detail-pane TaskEvalBadge rendering for cross-platform parity.
+            if (entry.type == "task_end") {
+                val tightStyle = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TaskEvalBadge(
+                        score = entry.taskScore,
+                        outcome = entry.taskOutcome,
+                        fontSize = labelSp,
+                        tight = tightStyle,
+                    )
+                    if (!entry.taskCategory.isNullOrEmpty()) {
+                        Text(
+                            text = entry.taskCategory,
+                            color = TerrariumColors.HUDSubtext.copy(alpha = 0.85f),
+                            fontSize = labelSp,
+                            fontWeight = FontWeight.Medium,
+                            fontFamily = FontFamily.Monospace,
+                            style = tightStyle,
+                        )
+                    }
+                }
+                if (!entry.taskSummary.isNullOrEmpty()) {
+                    Text(
+                        text = entry.taskSummary,
+                        color = TerrariumColors.HUDSubtext.copy(alpha = 0.85f),
+                        fontSize = labelSp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 8.dp).padding(top = 2.dp),
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+            }
 
             // Summary — strip markdown so `**bold**` / `## heading` don't
             // appear as literal characters next to the markdown-rendered detail.

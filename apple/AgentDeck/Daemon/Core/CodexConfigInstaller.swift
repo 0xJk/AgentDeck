@@ -5,7 +5,7 @@
 // Mirrors HookInstaller.swift's NSAlert + NSOpenPanel + security-scoped
 // bookmark flow. The channels we register:
 //
-//   1. `[features] codex_hooks = true` + inline `[hooks]` tables
+//   1. `[features] hooks = true` + inline `[hooks]` tables
 //      Official Codex lifecycle hooks send one JSON object on stdin. We
 //      register UserPromptSubmit / PreToolUse / PostToolUse / Stop and POST
 //      the exact stdin body to daemon `/hooks/codex_*` endpoints.
@@ -254,7 +254,7 @@ enum CodexConfigInstaller {
             "# Codex lifecycle hooks. Command hooks receive JSON on stdin;",
             "# each snippet forwards that stdin body unchanged to AgentDeck.",
             "[features]",
-            "codex_hooks = true",
+            "hooks = true",
         ]
 
         lines.append("")

@@ -353,6 +353,13 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     hookServer.setMeta({ agentType, projectName });
     hookServer.setVoiceManager(voiceManager);
     hookServer.pairingToken = core.authToken;
+    // OpenCode has no CLI-level hooks; SSE is the only event channel. Bind
+    // the adapter to the APME session so SSE-derived spans (tool_call /
+    // tool_result / task_boundary / turn_*) can reach the collector. Without
+    // this OpenCode sessions land in APME's runs table but never get
+    // per-task evaluation — every session collapses to a single session_end
+    // task boundary, defeating per-task scoring.
+    adapter.setApmeSession(core.sessionId, process.cwd());
   } else if (adapter instanceof MonitorAdapter) {
     hookServer = adapter.getHookServer();
     hookServer.setMeta({ agentType, projectName });

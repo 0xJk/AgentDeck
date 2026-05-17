@@ -88,9 +88,18 @@ fun SessionListPanel(
     // entry with the same agentType. Hardening "openclaw" unconditionally protects
     // against a race between state_update and sessions_list where the primary
     // briefly carries agentType=openclaw + agentState=DISCONNECTED.
+    //
+    // Mirrors macOS SessionListPanel.swift's primaryBackedBySibling /
+    // duplicatePrimaryWithoutId guard so newly-started sessions don't disappear
+    // for the 5–15 s race window between state_update and sessions_list.
+    val primaryAnchorSibling = sessionId?.let { sid -> siblingSessions.firstOrNull { it.id == sid } }
+    val primaryBackedBySibling = primaryAnchorSibling != null
+    val duplicatePrimaryWithoutId = sessionId == null &&
+        agentType != null &&
+        siblingSessions.any { it.agentType == agentType }
     val isDaemonLike = agentType == "daemon" ||
         agentType == "openclaw" ||
-        siblingSessions.any { it.agentType == agentType }
+        (!primaryBackedBySibling && duplicatePrimaryWithoutId)
     if (!isDaemonLike) {
         entries += SessionEntry(
             projectName = projectName ?: "Agent",
@@ -98,7 +107,10 @@ fun SessionListPanel(
             modelName = modelName,
             effortLevel = effortLevel,
             agentState = agentState,
-            startedAt = null,
+            // Borrow startedAt from the matching sibling so primary anchors
+            // at a deterministic spot inside its (project, agentType) group.
+            // Without this the #N suffix flips depending on event arrival order.
+            startedAt = primaryAnchorSibling?.startedAt,
             isPrimary = true,
             sessionId = sessionId,
         )
@@ -106,8 +118,15 @@ fun SessionListPanel(
 
     // Siblings (skip self and daemon), stable sort: agentType → numeric-aware
     // projectName → startedAt → id. Must match Apple/shared sortSessions.
+    //
+    // The "skip self" filter must only fire when we actually added a primary
+    // entry above. In daemon-like mode no primary entry was added — and
+    // `sessionId` is the focused session id (propagated from
+    // `state_update.sessionId`), so using it as a filter would silently
+    // drop the focused sibling row. Same trap as EinkAgentColumn 2026-05-11.
+    val primarySessionId = if (!isDaemonLike) sessionId else null
     siblingSessions
-        .filter { it.id != sessionId && it.agentType != "daemon" }
+        .filter { it.id != primarySessionId && it.agentType != "daemon" }
         .sortedWith(::compareSessionsForDisplay)
         .forEach { session ->
             entries += SessionEntry(

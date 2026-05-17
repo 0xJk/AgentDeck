@@ -8,20 +8,19 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -57,24 +56,19 @@ import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
+import dev.agentdeck.net.UsageUpdate
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.state.TimelineStore
 import dev.agentdeck.ui.eink.EinkAgentPanel
 import dev.agentdeck.ui.eink.EinkAttentionPanel
-import dev.agentdeck.ui.eink.EinkContextArea
-import dev.agentdeck.ui.eink.EinkEventLog
 import dev.agentdeck.ui.eink.EinkAquariumFrame
 import dev.agentdeck.ui.eink.EinkSettingsOverlay
-import dev.agentdeck.ui.eink.EinkStatusCompact
+import dev.agentdeck.ui.eink.EinkTimelinePanel
 import dev.agentdeck.ui.eink.buildEinkAttentionFeatured
-import dev.agentdeck.ui.component.BrandIcon
-import dev.agentdeck.ui.eink.abbreviateModelName
-import dev.agentdeck.ui.eink.compactStateMarker
-import dev.agentdeck.ui.eink.mapSessionState
+import dev.agentdeck.terrarium.renderer.einkColorEnabled
 import dev.agentdeck.terrarium.toTerrariumState
 import dev.agentdeck.ui.eink.EinkAnimatedRefreshZone
 import dev.agentdeck.ui.eink.EinkRefreshZone
-import dev.agentdeck.ui.eink.RefreshMode
 import dev.agentdeck.ui.eink.Zone
 import dev.agentdeck.data.DashboardOrientation
 import android.util.Log
@@ -182,11 +176,8 @@ fun EinkMonitorScreen(
     val isReconnecting by connection.isReconnecting.collectAsState()
     val reconnectAttempt by connection.reconnectAttempt.collectAsState()
     val showSessionList by displayPrefs.showSessionListFlow.collectAsState(initial = true)
-    val showTankStatus by displayPrefs.showTankStatusFlow.collectAsState(initial = true)
-    val showDeviceDiagnostic by displayPrefs.showDeviceDiagnosticFlow.collectAsState(initial = true)
     val showTimeline by displayPrefs.showTimelineFlow.collectAsState(initial = true)
     val showSettingsButton by displayPrefs.showSettingsButtonFlow.collectAsState(initial = true)
-    val showStatusPanel = showTankStatus || showDeviceDiagnostic
     val featuredAttention = remember(state) { buildEinkAttentionFeatured(state) }
 
     // Show not-connected screen only when truly disconnected (not reconnecting)
@@ -227,186 +218,118 @@ fun EinkMonitorScreen(
                 showSettingsButton = showSettingsButton,
             )
         } else if (isLandscape) {
-            // Aquarium-centered layout: agent panel | aquarium + content + timeline
+            // App Store-ready E-ink projection:
+            //   chrome + optional attention strip
+            //   top row: Sessions | Terrarium
+            //   bottom row: text timeline
+            // Models/devices/large limits are intentionally absent; limits
+            // appear only as a small corner card when fresh usage data exists.
             // Use state as key so toTerrariumState() recomputes when siblingSessions etc. change.
             // derivedStateOf + remember would capture the initial state parameter (plain value,
             // not a Compose State) and never re-evaluate — causing stale creature counts.
             val terrariumState = remember(state) { state.toTerrariumState() }
-            val isActive = state.agentState == AgentState.PROCESSING ||
-                state.agentState == AgentState.AWAITING_PERMISSION ||
-                state.agentState == AgentState.AWAITING_OPTION ||
-                state.agentState == AgentState.AWAITING_DIFF
 
             // Stable key that captures session count + individual states (for refresh triggers)
             val sessionsKey = state.siblingSessions.joinToString(",") { "${it.id}:${it.state}" }
 
-            Row(modifier = Modifier.fillMaxSize()) {
-                if (showSessionList) {
-                    // Left: readable session rail — refresh on state, session list, or worker count changes.
-                    // ZONE: CHROME — fast A2 refresh; sessions list mutates often.
+            Column(modifier = Modifier.fillMaxSize()) {
+                EinkRefreshZone(
+                    mode = Zone.CHROME.mode,
+                    debounceMs = Zone.CHROME.debounceMs,
+                    triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
+                    modifier = Modifier.height(44.dp).fillMaxWidth(),
+                ) {
+                    EinkDashboardChromeBar(
+                        state = state,
+                        displayPrefs = displayPrefs,
+                        showSettingsButton = showSettingsButton,
+                        onSettingsClick = { showSettings = true },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+
+                if (featuredAttention != null) {
+                    HorizontalDivider(thickness = 1.dp, color = Color.Black)
+                    val attentionIdentity = listOf(
+                        featuredAttention.sessionId,
+                        featuredAttention.question,
+                        featuredAttention.promptType,
+                        featuredAttention.options.map { it.label },
+                    )
                     EinkRefreshZone(
-                        mode = Zone.CHROME.mode,
-                        debounceMs = Zone.CHROME.debounceMs,
-                        triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
-                        modifier = Modifier.weight(0.28f).fillMaxHeight(),
+                        mode = Zone.ATTENTION.mode,
+                        debounceMs = Zone.ATTENTION.debounceMs,
+                        triggerKey = attentionIdentity,
+                        softTriggerKey = featuredAttention.cursorIndex,
+                        modifier = Modifier.height(112.dp).fillMaxWidth(),
                     ) {
-                        EinkAgentPanel(
-                            state = state,
-                            onSettingsClick = { showSettings = true },
+                        EinkAttentionPanel(
+                            featured = featuredAttention,
                             onFocusSession = { connection.sendFocusSession(it) },
-                            showSettingsButton = showSettingsButton,
-                            displayPrefs = displayPrefs,
+                            onSelectOption = { connection.sendSelectOption(it) },
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
-
-                    VerticalDivider(thickness = 2.dp, color = Color.Black)
                 }
 
-                // Main content: aquarium + context/status + timeline.
-                // Fixed weights prevent layout jump on state change; optional
-                // panels collapse according to the shared dashboard settings.
-                Column(modifier = Modifier.weight(if (showSessionList) 0.72f else 1f).fillMaxHeight()) {
-                    // Aquarium frame — animated EPD refresh via callback
-                    EinkAnimatedRefreshZone(
-                        stateKey = Pair(state.agentState, sessionsKey),
-                        modifier = Modifier.weight(0.42f).fillMaxWidth(),
-                    ) { onFrameRendered ->
-                        EinkAquariumFrame(
-                            state = terrariumState,
-                            onFrameRendered = onFrameRendered,
-                        )
-                    }
-
-                    HorizontalDivider(thickness = 1.dp, color = Color.Black)
-
-                    // Context + Status row
-                    // Show split layout only when there's context to display
-                    val hasContext = isActive && (
-                        state.currentTool != null ||
-                        state.options.isNotEmpty() ||
-                        timelineEntries.any { it.type == "tool_request" }
-                    )
-
-                    // ZONE: ATTENTION — split out as its own zone with FULL_ONCE policy.
-                    // Permission/option prompts are user blockers; one clean GC16 flash on
-                    // appearance, then quiet — never share an A2 waveform with neighbors.
-                    if (featuredAttention != null) {
-                        // Stable prompt identity — excludes cursorIndex / navigable so cursor
-                        // churn does not re-fire the GC16; includes the fields that change
-                        // when a new queued prompt takes over so the next prompt DOES flash.
-                        val attentionIdentity = listOf(
-                            featuredAttention.sessionId,
-                            featuredAttention.question,
-                            featuredAttention.promptType,
-                            featuredAttention.options.map { it.label },
-                        )
-                        EinkRefreshZone(
-                            mode = Zone.ATTENTION.mode,
-                            debounceMs = Zone.ATTENTION.debounceMs,
-                            triggerKey = attentionIdentity,
-                            // Soft A2 refresh on cursor moves so navigation stays visible —
-                            // GC16 mode is sticky on Rockchip (would full-flash per keypress)
-                            // and absent on Onyx/Kobo (cursor would never repaint).
-                            softTriggerKey = featuredAttention.cursorIndex,
-                            modifier = Modifier
-                                .weight(0.30f)
-                                .fillMaxWidth(),
-                        ) {
-                            if (showStatusPanel) {
-                                Row(modifier = Modifier.fillMaxSize()) {
-                                    EinkAttentionPanel(
-                                        featured = featuredAttention,
-                                        onFocusSession = { connection.sendFocusSession(it) },
-                                        onSelectOption = { connection.sendSelectOption(it) },
-                                        modifier = Modifier.weight(0.62f).fillMaxHeight(),
-                                    )
-                                    VerticalDivider(thickness = 1.dp, color = Color.Black)
-                                    EinkStatusCompact(
-                                        state = state,
-                                        showTankStatus = showTankStatus,
-                                        showDeviceDiagnostic = showDeviceDiagnostic,
-                                        modifier = Modifier.weight(0.38f).fillMaxHeight(),
-                                    )
-                                }
-                            } else {
-                                EinkAttentionPanel(
-                                    featured = featuredAttention,
+                Column(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .weight(if (showTimeline) 0.64f else 1f)
+                            .fillMaxWidth(),
+                    ) {
+                        if (showSessionList) {
+                            EinkRefreshZone(
+                                mode = Zone.CHROME.mode,
+                                debounceMs = Zone.CHROME.debounceMs,
+                                triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
+                                modifier = Modifier.weight(0.36f).fillMaxHeight(),
+                            ) {
+                                EinkAgentPanel(
+                                    state = state,
+                                    onSettingsClick = { showSettings = true },
                                     onFocusSession = { connection.sendFocusSession(it) },
-                                    onSelectOption = { connection.sendSelectOption(it) },
+                                    showSettingsButton = showSettingsButton,
+                                    displayPrefs = displayPrefs,
+                                    showBrandHeader = false,
+                                    showFooterControls = false,
                                     modifier = Modifier.fillMaxSize(),
                                 )
                             }
+
+                            VerticalDivider(thickness = 2.dp, color = Color.Black)
                         }
-                    } else if (hasContext || showStatusPanel) {
-                        // ZONE: CONTEXT_FAST when active, STATUS_SLOW when idle (gauges only).
-                        // The ATTENTION case never reaches here, so no FULL_ONCE inheritance.
-                        val zone = if (isActive) Zone.CONTEXT_FAST else Zone.STATUS_SLOW
-                        EinkRefreshZone(
-                            mode = zone.mode,
-                            debounceMs = zone.debounceMs,
-                            triggerKey = Triple(state.agentState, state.currentTool,
-                                listOf(
-                                    state.usage,
-                                    state.oauthConnected,
-                                    state.ollamaStatus,
-                                    state.moduleHealth,
-                                )),
-                            modifier = Modifier
-                                .weight(if (hasContext) 0.22f else 0.20f)
-                                .fillMaxWidth(),
-                        ) {
-                            when {
-                                hasContext && showStatusPanel -> Row(modifier = Modifier.fillMaxSize()) {
-                                    // Context area (50%)
-                                    EinkContextArea(
-                                        state = state,
-                                        timelineEntries = timelineEntries,
-                                        onSelectOption = { index ->
-                                            state.sessionId?.let { connection.sendFocusSession(it) }
-                                            connection.sendSelectOption(index)
-                                        },
-                                        modifier = Modifier.weight(0.50f).fillMaxHeight(),
-                                    )
-                                    VerticalDivider(thickness = 1.dp, color = Color.Black)
-                                    // Compact status (50%)
-                                    EinkStatusCompact(
-                                        state = state,
-                                        showTankStatus = showTankStatus,
-                                        showDeviceDiagnostic = showDeviceDiagnostic,
-                                        modifier = Modifier.weight(0.50f).fillMaxHeight(),
-                                    )
-                                }
-                                hasContext -> EinkContextArea(
-                                    state = state,
-                                    timelineEntries = timelineEntries,
-                                    onSelectOption = { index ->
-                                        state.sessionId?.let { connection.sendFocusSession(it) }
-                                        connection.sendSelectOption(index)
-                                    },
-                                    modifier = Modifier.fillMaxSize(),
+
+                        Box(modifier = Modifier.weight(if (showSessionList) 0.64f else 1f).fillMaxHeight()) {
+                            EinkAnimatedRefreshZone(
+                                stateKey = Pair(state.agentState, sessionsKey),
+                                modifier = Modifier.fillMaxSize(),
+                            ) { onFrameRendered ->
+                                EinkAquariumFrame(
+                                    state = terrariumState,
+                                    onFrameRendered = onFrameRendered,
                                 )
-                                else -> EinkStatusCompact(
-                                    state = state,
-                                    showTankStatus = showTankStatus,
-                                    showDeviceDiagnostic = showDeviceDiagnostic,
-                                    modifier = Modifier.fillMaxSize(),
+                            }
+                            if (hasEinkLimitData(state.usage)) {
+                                EinkLimitsCornerCard(
+                                    usage = state.usage,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(10.dp),
                                 )
                             }
                         }
                     }
 
                     if (showTimeline) {
-                        HorizontalDivider(thickness = 1.dp, color = Color.Black)
-
-                        // ZONE: TIMELINE — append-only A2; entries only grow.
+                        HorizontalDivider(thickness = 2.dp, color = Color.Black)
                         EinkRefreshZone(
                             mode = Zone.TIMELINE.mode,
                             debounceMs = Zone.TIMELINE.debounceMs,
                             triggerKey = timelineEntries.size,
-                            modifier = Modifier.weight(0.38f).fillMaxWidth(),
+                            modifier = Modifier.weight(0.36f).fillMaxWidth(),
                         ) {
-                            EinkEventLog(entries = timelineEntries)
+                            EinkTimelinePanel(entries = timelineEntries, modifier = Modifier.fillMaxSize())
                         }
                     }
                 }
@@ -418,9 +341,6 @@ fun EinkMonitorScreen(
                 connection = connection,
                 displayPrefs = displayPrefs,
                 showSessionList = showSessionList,
-                showStatusPanel = showStatusPanel,
-                showTankStatus = showTankStatus,
-                showDeviceDiagnostic = showDeviceDiagnostic,
                 showTimeline = showTimeline,
                 showSettingsButton = showSettingsButton,
                 onSettingsClick = { showSettings = true },
@@ -438,6 +358,203 @@ fun EinkMonitorScreen(
         }
     }
 }
+
+@Composable
+private fun EinkDashboardChromeBar(
+    state: dev.agentdeck.state.DashboardState,
+    displayPrefs: DisplayPreferences,
+    showSettingsButton: Boolean,
+    onSettingsClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    val isCurrentlyLandscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val currentOrientation by displayPrefs.orientationFlow.collectAsState(
+        initial = DashboardOrientation.defaultFor(isEink = true),
+    )
+    val grayscaleFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
+    Row(
+        modifier = modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Image(
+            painter = painterResource(R.drawable.agentdeck_icon),
+            contentDescription = "AgentDeck",
+            modifier = Modifier.size(30.dp),
+            contentScale = ContentScale.Fit,
+            colorFilter = if (einkColorEnabled) null else grayscaleFilter,
+        )
+        // Wordmark uses default sans (IBM Plex Sans where bundled, system sans
+        // otherwise). DESIGN.md §10-3 reserves Monospace for diagnostic/data
+        // glyphs — the brand line itself stays sans for identity.
+        Text(
+            text = "AgentDeck",
+            fontSize = 18.sp,
+            lineHeight = 21.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = "· :9120",
+            fontSize = 12.sp,
+            lineHeight = 15.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        state.workerSessionCount?.takeIf { state.gatewayConnected == true && it > 0 }?.let {
+            Text(
+                text = "W:$it",
+                fontSize = 12.sp,
+                lineHeight = 15.sp,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = "S:${einkSessionCount(state)}",
+            fontSize = 12.sp,
+            lineHeight = 15.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        EinkChromeIconButton(
+            onClick = {
+                scope.launch {
+                    val newOrientation = DashboardOrientation.nextManualOrientation(
+                        currentOrientation,
+                        isCurrentlyLandscape,
+                    )
+                    displayPrefs.setOrientation(newOrientation)
+                }
+            },
+        ) {
+            Icon(
+                imageVector = Icons.Default.ScreenRotation,
+                contentDescription = "Rotate screen",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+        if (showSettingsButton) {
+            EinkChromeIconButton(
+                onClick = onSettingsClick,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EinkChromeIconButton(
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .size(32.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(3.dp),
+        border = BorderStroke(1.dp, Color.Black),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            content()
+        }
+    }
+}
+
+private fun einkSessionCount(state: dev.agentdeck.state.DashboardState): Int {
+    val primaryIsAggregate = state.agentType == "daemon" ||
+        state.agentType == "openclaw" ||
+        state.siblingSessions.any { it.agentType == state.agentType }
+    val primaryCount = if (!primaryIsAggregate && state.agentType != null) 1 else 0
+    return primaryCount + state.siblingSessions.count { it.agentType != "daemon" }
+}
+
+private fun hasEinkLimitData(usage: UsageUpdate): Boolean {
+    return usage.usageStale != true &&
+        (usage.fiveHourPercent != null || usage.sevenDayPercent != null)
+}
+
+@Composable
+private fun EinkLimitsCornerCard(
+    usage: UsageUpdate,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    val width = if (compact) 148.dp else 176.dp
+    Surface(
+        modifier = modifier
+            .width(width)
+            .height(if (compact) 68.dp else 78.dp),
+        shape = RoundedCornerShape(4.dp),
+        border = BorderStroke(2.dp, Color.Black),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "LIMITS",
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "node",
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            usage.fiveHourPercent?.let { pct ->
+                EinkLimitRow(label = "5h", percent = pct)
+            }
+            usage.sevenDayPercent?.let { pct ->
+                EinkLimitRow(label = "7d", percent = pct)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EinkLimitRow(label: String, percent: Double) {
+    val pct = percent.coerceIn(0.0, 100.0).toInt()
+    Text(
+        text = "$label ${einkBlockGauge(pct)} $pct%",
+        fontSize = 11.sp,
+        lineHeight = 13.sp,
+        fontFamily = FontFamily.Monospace,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 1,
+    )
+}
+
+private fun einkBlockGauge(percent: Int): String {
+    val cells = 8
+    val filled = ((percent.coerceIn(0, 100) / 100.0) * cells).toInt()
+    return "\u2588".repeat(filled) + "\u2591".repeat(cells - filled)
+}
+
 @Composable
 private fun EinkNotConnectedScreen(
     connectionStatus: ConnectionStatus,
@@ -748,87 +865,32 @@ private fun EinkPortraitLayout(
     connection: BridgeConnection,
     displayPrefs: DisplayPreferences,
     showSessionList: Boolean,
-    showStatusPanel: Boolean,
-    showTankStatus: Boolean,
-    showDeviceDiagnostic: Boolean,
     showTimeline: Boolean,
     showSettingsButton: Boolean,
     onSettingsClick: () -> Unit,
 ) {
     val terrariumState = remember(state) { state.toTerrariumState() }
     val featuredAttention = remember(state) { buildEinkAttentionFeatured(state) }
-    val isActive = state.agentState == AgentState.PROCESSING ||
-        state.agentState == AgentState.AWAITING_PERMISSION ||
-        state.agentState == AgentState.AWAITING_OPTION ||
-        state.agentState == AgentState.AWAITING_DIFF
     val sessionsKey = state.siblingSessions.joinToString(",") { "${it.id}:${it.state}" }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header: logo + primary agent + state + settings gear
-        EinkPortraitHeader(
-            state = state,
-            displayPrefs = displayPrefs,
-            showSessionList = showSessionList,
-            showSettingsButton = showSettingsButton,
-            onSettingsClick = onSettingsClick,
-            onFocusSession = { connection.sendFocusSession(it) },
-        )
-
-        HorizontalDivider(thickness = 2.dp, color = Color.Black)
-
-        // Aquarium (35%) — landscape is 50% of 78% column ≈ 39% of total
-        EinkAnimatedRefreshZone(
-            stateKey = Pair(state.agentState, sessionsKey),
-            modifier = Modifier.weight(0.35f).fillMaxWidth(),
-        ) { onFrameRendered ->
-            EinkAquariumFrame(
-                state = terrariumState,
-                onFrameRendered = onFrameRendered,
+        EinkRefreshZone(
+            mode = Zone.CHROME.mode,
+            debounceMs = Zone.CHROME.debounceMs,
+            triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
+            modifier = Modifier.height(44.dp).fillMaxWidth(),
+        ) {
+            EinkDashboardChromeBar(
+                state = state,
+                displayPrefs = displayPrefs,
+                showSettingsButton = showSettingsButton,
+                onSettingsClick = onSettingsClick,
+                modifier = Modifier.fillMaxSize(),
             )
         }
 
-        if (showStatusPanel) {
-            HorizontalDivider(thickness = 1.dp, color = Color.Black)
-
-            // Status (10%) — compact: limits + models + downstream devices.
-            // Mirrors landscape policy: A2 when active, DU when idle.
-            if (isActive) {
-                EinkRefreshZone(
-                    mode = Zone.CONTEXT_FAST.mode,
-                    debounceMs = Zone.CONTEXT_FAST.debounceMs,
-                    triggerKey = Triple(state.agentState, state.currentTool,
-                        listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.moduleHealth)),
-                    modifier = Modifier.weight(0.10f).fillMaxWidth(),
-                ) {
-                    EinkStatusCompact(
-                        state = state,
-                        showTankStatus = showTankStatus,
-                        showDeviceDiagnostic = showDeviceDiagnostic,
-                    )
-                }
-            } else {
-                EinkRefreshZone(
-                    mode = Zone.STATUS_SLOW.mode,
-                    debounceMs = Zone.STATUS_SLOW.debounceMs,
-                    triggerKey = listOf(state.usage, state.oauthConnected, state.ollamaStatus, state.modelCatalog?.size, state.moduleHealth),
-                    modifier = Modifier.weight(0.10f).fillMaxWidth(),
-                ) {
-                    EinkStatusCompact(
-                        state = state,
-                        showTankStatus = showTankStatus,
-                        showDeviceDiagnostic = showDeviceDiagnostic,
-                    )
-                }
-            }
-        }
-
-        // Portrait ATTENTION (22%) — own zone with FULL_ONCE policy so permission /
-        // option prompts arrive with a single clean GC16 flash, never sharing the
-        // CONTEXT A2 waveform with the side panels.
         if (featuredAttention != null) {
             HorizontalDivider(thickness = 1.dp, color = Color.Black)
-
-            // Stable prompt identity — see landscape branch for rationale.
             val attentionIdentity = listOf(
                 featuredAttention.sessionId,
                 featuredAttention.question,
@@ -840,7 +902,7 @@ private fun EinkPortraitLayout(
                 debounceMs = Zone.ATTENTION.debounceMs,
                 triggerKey = attentionIdentity,
                 softTriggerKey = featuredAttention.cursorIndex,
-                modifier = Modifier.weight(0.22f).fillMaxWidth(),
+                modifier = Modifier.height(136.dp).fillMaxWidth(),
             ) {
                 EinkAttentionPanel(
                     featured = featuredAttention,
@@ -848,238 +910,59 @@ private fun EinkPortraitLayout(
                     onSelectOption = { connection.sendSelectOption(it) },
                 )
             }
-
-            HorizontalDivider(thickness = 1.dp, color = Color.Black)
-        } else if (isActive) {
-            // Portrait CONTEXT (15%) — A2 fast refresh; never reached when
-            // featuredAttention != null, so no FULL_ONCE inheritance.
-            HorizontalDivider(thickness = 1.dp, color = Color.Black)
-
-            EinkRefreshZone(
-                mode = Zone.CONTEXT_FAST.mode,
-                debounceMs = Zone.CONTEXT_FAST.debounceMs,
-                triggerKey = listOf(
-                    state.agentState,
-                    state.currentTool,
-                    state.question,
-                    state.options,
-                    state.cursorIndex,
-                ),
-                modifier = Modifier.weight(0.15f).fillMaxWidth(),
-            ) {
-                EinkContextArea(
-                    state = state,
-                    timelineEntries = timelineEntries,
-                    onSelectOption = { index ->
-                        state.sessionId?.let { connection.sendFocusSession(it) }
-                        connection.sendSelectOption(index)
-                    },
-                )
-            }
-
-            HorizontalDivider(thickness = 1.dp, color = Color.Black)
         }
 
-        // Timeline (remaining: 0.40 idle / 0.25 active)
+        if (showSessionList) {
+            EinkRefreshZone(
+                mode = Zone.CHROME.mode,
+                debounceMs = Zone.CHROME.debounceMs,
+                triggerKey = Triple(state.agentState, sessionsKey, state.workerSessionCount),
+                modifier = Modifier.weight(if (showTimeline) 0.26f else 0.34f).fillMaxWidth(),
+            ) {
+                EinkAgentPanel(
+                    state = state,
+                    onSettingsClick = onSettingsClick,
+                    onFocusSession = { connection.sendFocusSession(it) },
+                    showSettingsButton = showSettingsButton,
+                    displayPrefs = displayPrefs,
+                    showBrandHeader = false,
+                    showFooterControls = false,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            HorizontalDivider(thickness = 2.dp, color = Color.Black)
+        }
+
+        Box(modifier = Modifier.weight(if (showTimeline) 0.32f else 0.66f).fillMaxWidth()) {
+            EinkAnimatedRefreshZone(
+                stateKey = Pair(state.agentState, sessionsKey),
+                modifier = Modifier.fillMaxSize(),
+            ) { onFrameRendered ->
+                EinkAquariumFrame(
+                    state = terrariumState,
+                    onFrameRendered = onFrameRendered,
+                )
+            }
+            if (hasEinkLimitData(state.usage)) {
+                EinkLimitsCornerCard(
+                    usage = state.usage,
+                    compact = true,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
+                )
+            }
+        }
+
         if (showTimeline) {
+            HorizontalDivider(thickness = 2.dp, color = Color.Black)
             EinkRefreshZone(
                 mode = Zone.TIMELINE.mode,
                 debounceMs = Zone.TIMELINE.debounceMs,
                 triggerKey = timelineEntries.size,
-                modifier = Modifier.weight(if (isActive) 0.25f else 0.40f).fillMaxWidth(),
+                modifier = Modifier.weight(0.42f).fillMaxWidth(),
             ) {
-                EinkEventLog(entries = timelineEntries)
-            }
-        }
-
-    }
-}
-
-/**
- * Portrait header — mirrors landscape EinkAgentPanel info in compact horizontal form.
- * Row 1: "AgentDeck" brand + ⚙ settings
- * Row 2+: All agents (primary + siblings) as FlowRow chips — handles any count.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun EinkPortraitHeader(
-    state: dev.agentdeck.state.DashboardState,
-    displayPrefs: DisplayPreferences,
-    showSessionList: Boolean,
-    showSettingsButton: Boolean,
-    onSettingsClick: () -> Unit,
-    onFocusSession: (String) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    val currentOrientation by displayPrefs.orientationFlow.collectAsState(
-        initial = DashboardOrientation.defaultFor(isEink = true)
-    )
-    // Build agent list — same logic as EinkAgentPanel
-    data class AgentEntry(
-        val projectName: String,
-        val agentType: String?,
-        val modelName: String?,
-        val effortLevel: String?,
-        val agentState: AgentState,
-        val sessionId: String?,
-    )
-
-    val entries = mutableListOf<AgentEntry>()
-    val isDaemonLike = state.agentType == "daemon" ||
-        state.agentType == "openclaw" ||
-        state.siblingSessions.any { it.agentType == state.agentType }
-    if (!isDaemonLike) {
-        entries += AgentEntry(
-            projectName = state.projectName ?: "Agent",
-            agentType = state.agentType,
-            modelName = state.modelName,
-            effortLevel = state.effortLevel,
-            agentState = state.agentState,
-            sessionId = state.sessionId,
-        )
-    }
-    state.siblingSessions.forEach { session ->
-        if (session.id == state.sessionId) return@forEach
-        if (session.agentType == "daemon") return@forEach
-        if (session.agentType == state.agentType && entries.any { it.agentType == session.agentType }) return@forEach
-        entries += AgentEntry(
-            projectName = session.projectName ?: "Agent",
-            agentType = session.agentType,
-            modelName = null,
-            effortLevel = null,
-            agentState = mapSessionState(session),
-            sessionId = session.id,
-        )
-    }
-
-    // Dedup numbering per (name, type) — same as EinkAgentPanel
-    data class NameKey(val projectName: String, val agentType: String?)
-    val nameCounts = entries.groupBy { NameKey(it.projectName, it.agentType) }
-        .mapValues { it.value.size }
-    val nameCounters = mutableMapOf<NameKey, Int>()
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    ) {
-        // Brand + gear
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "AgentDeck",
-                style = MaterialTheme.typography.bodyLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            state.workerSessionCount?.takeIf { state.gatewayConnected == true && it > 0 }?.let {
-                Text(
-                    text = "W:$it",
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.padding(horizontal = 4.dp))
-            }
-            Icon(
-                imageVector = Icons.Default.ScreenRotation,
-                contentDescription = "Rotate screen",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .size(16.dp)
-                    .clickable {
-                        scope.launch {
-                            val newOrientation = DashboardOrientation.nextManualOrientation(
-                                currentOrientation,
-                                currentOrientation == DashboardOrientation.Landscape,
-                            )
-                            displayPrefs.setOrientation(newOrientation)
-                        }
-                    },
-            )
-            if (showSettingsButton) {
-                Spacer(modifier = Modifier.padding(horizontal = 4.dp))
-                Text(
-                    text = "\u2699 Settings",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.clickable(onClick = onSettingsClick),
-                )
-            }
-        }
-
-        // Agent list — adaptive font: ≤4 normal, 5-8 smaller, 9+ compact
-        // Max 2 lines (≈80dp) to protect aquarium space
-        val fontSize = when {
-            entries.size <= 4 -> 13.sp
-            entries.size <= 8 -> 11.sp
-            else -> 9.sp
-        }
-        val gap = if (entries.size <= 4) 10.dp else 6.dp
-
-        if (showSessionList) {
-            FlowRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 80.dp),
-                horizontalArrangement = Arrangement.spacedBy(gap),
-                verticalArrangement = Arrangement.spacedBy(0.dp),
-            ) {
-                entries.forEach { entry ->
-                    val key = NameKey(entry.projectName, entry.agentType)
-                    val needsSuffix = (nameCounts[key] ?: 1) > 1
-                    val suffix = if (needsSuffix) {
-                        val idx = (nameCounters[key] ?: 0) + 1
-                        nameCounters[key] = idx
-                        "#$idx"
-                    } else ""
-
-                    val stateMarker = compactStateMarker(entry.agentState)
-                    // Truncate project name for many agents
-                    val name = if (entries.size > 8) {
-                        entry.projectName.take(6)
-                    } else {
-                        entry.projectName
-                    }
-                    val abbrevModel = entry.modelName?.let { abbreviateModelName(it) }
-                    val modelPart = when {
-                        abbrevModel != null && entry.effortLevel != null
-                            && entry.effortLevel != "medium" && entry.effortLevel != "default" ->
-                            "$abbrevModel\u00B7${entry.effortLevel}"
-                        abbrevModel != null -> abbrevModel
-                        else -> null
-                    }
-                    val label = buildString {
-                        append("$name$suffix ")
-                        if (modelPart != null) append("$modelPart ")
-                        append(stateMarker)
-                    }
-                    val sessionId = entry.sessionId
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        modifier = if (sessionId != null) {
-                            Modifier.clickable { onFocusSession(sessionId) }
-                        } else {
-                            Modifier
-                        },
-                    ) {
-                        BrandIcon(agentType = entry.agentType, isEink = true, size = fontSize.value.dp)
-                        Text(
-                            text = label,
-                            fontSize = fontSize,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                        )
-                    }
-                }
+                EinkTimelinePanel(entries = timelineEntries, modifier = Modifier.fillMaxSize())
             }
         }
     }

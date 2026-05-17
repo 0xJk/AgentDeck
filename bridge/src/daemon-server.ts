@@ -12,6 +12,7 @@
  */
 
 import { createServer, type Server } from 'http';
+import { randomUUID } from 'crypto';
 import WebSocket from 'ws';
 import { BridgeCore } from './bridge-core.js';
 import { OpenClawAdapter } from './adapters/openclaw.js';
@@ -526,6 +527,58 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       core.shutdown();
       return;
     }
+
+    // Manual task-close endpoint — drives `closeTaskExternal` on the APME
+    // collector. Used by the CLI (`agentdeck task done` / `task cancel`)
+    // and the macOS detail-pane "Mark task complete" button. Body:
+    //   { sessionId: string, signal?: 'manual', outcome?: 'success'|'fail'|'abandoned' }
+    // sessionId defaults to the active session derived from the daemon's
+    // registry; supplying it explicitly is the contract the CLI uses.
+    if (req.method === 'POST' && pathname === '/task/close') {
+      if (!apme) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'APME not initialized' }));
+        return;
+      }
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; if (body.length > 4096) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const parsed = body ? JSON.parse(body) as Record<string, unknown> : {};
+          const sessionId = typeof parsed.sessionId === 'string' && parsed.sessionId
+            ? parsed.sessionId
+            : (openclawApmeSessionId ?? '');
+          if (!sessionId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'sessionId required (no active session to default to)' }));
+            return;
+          }
+          const signalRaw = typeof parsed.signal === 'string' ? parsed.signal : 'manual';
+          const outcomeRaw = typeof parsed.outcome === 'string' ? parsed.outcome : undefined;
+          const outcome = (outcomeRaw === 'success' || outcomeRaw === 'fail' || outcomeRaw === 'partial' || outcomeRaw === 'abandoned')
+            ? outcomeRaw
+            : undefined;
+          // closeTaskExternal accepts TaskBoundarySignal (open union with
+          // string fallback). Narrow only the well-known signals; pass
+          // unknown strings through as-is (the runner labels them
+          // generically).
+          const apmeRef = apme;
+          if (!apmeRef) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'APME not initialized' }));
+            return;
+          }
+          const closed = apmeRef.collector.closeTaskExternal(sessionId, signalRaw as Parameters<typeof apmeRef.collector.closeTaskExternal>[1], outcome);
+          res.writeHead(closed ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ closed, sessionId, signal: signalRaw, outcome: outcome ?? null }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `bad body: ${String(err)}` }));
+        }
+      });
+      return;
+    }
+
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
   });
@@ -791,12 +844,38 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }];
   });
 
+  // OpenClaw-specific APME session id. Distinct from `core.sessionId`
+  // (the daemon meta-session, which doesn't open a run) and rotates on
+  // every connect/disconnect cycle so each Gateway lifetime gets its own
+  // APME run with its own task hierarchy. Captured here so both the
+  // `connectGatewayAdapter` open + `disconnectGatewayAdapter` close paths
+  // can reference the same id.
+  let openclawApmeSessionId: string | null = null;
+
   function connectGatewayAdapter(): void {
     if (gatewayAdapter || gatewayConnecting) return;
     gatewayConnecting = true;
     log('[agentdeck] OpenClaw Gateway detected, connecting...');
 
     const adapter = new OpenClawAdapter({ autoReconnect: false });
+    // Bind APME — without this OpenClaw never reaches the collector and
+    // every chat session collapses to a single session_end task. The
+    // adapter's idle-gap timer + chat.send/final ingestion needs an active
+    // run to attach turns and task boundaries to.
+    if (apme) {
+      openclawApmeSessionId = `openclaw-${randomUUID()}`;
+      try {
+        apme.collector.openRun({
+          sessionId: openclawApmeSessionId,
+          agentType: 'openclaw',
+          projectName: 'openclaw',
+        });
+        adapter.setApmeSession(openclawApmeSessionId, process.cwd());
+      } catch (err) {
+        debug('APME', `openRun for OpenClaw failed: ${String(err)}`);
+        openclawApmeSessionId = null;
+      }
+    }
 
     adapter.on('event', (evt: AdapterEvent) => {
       switch (evt.source) {
@@ -897,6 +976,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     const wasAlive = gatewayAdapter.isAlive();
     gatewayAdapter.shutdown().catch(() => {});
     gatewayAdapter = null;
+    // APME: close the OpenClaw run so the collector fires its
+    // session_end boundary and the run becomes eligible for the layer-2
+    // judge queue.
+    if (apme && openclawApmeSessionId) {
+      try { apme.collector.closeRun(openclawApmeSessionId); }
+      catch (err) { debug('APME', `closeRun for OpenClaw failed: ${String(err)}`); }
+      openclawApmeSessionId = null;
+    }
     core.cachedGatewayConnected = false;
     core.cachedModelCatalog = null;
     if (wasAlive) core.stateMachine.handleHookEvent('SessionEnd', {});

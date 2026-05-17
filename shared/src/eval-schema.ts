@@ -112,6 +112,7 @@ export type TaskBoundarySignal =
   | 'clear'
   | 'session_end'
   | 'manual'
+  | 'idle_gap'      // OpenClaw chat-style: closed by 90 s of silence after final
   | 'open'
   | string;
 

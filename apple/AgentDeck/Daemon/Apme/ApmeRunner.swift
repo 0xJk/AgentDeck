@@ -55,6 +55,28 @@ struct ApmeEvalJobResult {
     var layer1SkippedReason: String? = nil
 }
 
+/// Fired after `runTaskEval` writes the per-axis `task_judge` rows + summary
+/// + compositeScore + outcome onto the `tasks` row. Carries enough context
+/// for `DaemonServer` to re-emit the corresponding `task_end` timeline row
+/// with the score badge metadata. Mirrors `TaskEvaluatedEvent` in
+/// `bridge/src/apme/runner.ts`.
+struct ApmeTaskEvaluatedEvent: Sendable {
+    let runId: String
+    let taskId: String
+    let sessionId: String
+    let agentType: String?
+    let projectName: String?
+    let startedAt: Int
+    let endedAt: Int
+    let compositeScore: Double?
+    /// `"success" | "partial" | "fail" | "pending"` — coarse outcome class
+    /// derived from `compositeScore` (mirrors TS `deriveTaskOutcome`).
+    let outcome: String
+    let taskCategory: String?
+    let summary: String?
+    let boundarySignal: String
+}
+
 /// Parsed judge output.
 struct ApmeParsedJudge {
     /// All numeric axes from the JSON response. Must include `overall` or
@@ -77,6 +99,20 @@ actor ApmeRunner {
     /// one to broadcast `apmeEval` WebSocket events and append `eval_result`
     /// timeline entries.
     private var listeners: [@Sendable (ApmeEvalJobResult) -> Void] = []
+
+    /// Listeners notified after a task_judge writes its rollup. DaemonServer
+    /// registers one to upsert the original `task_end` timeline row with the
+    /// score + outcome metadata so dashboard task headers render the badge.
+    private var taskEvaluatedListeners: [@Sendable (ApmeTaskEvaluatedEvent) -> Void] = []
+
+    /// Coarse outcome class derived from `compositeScore`. Parity with
+    /// `bridge/src/apme/runner.ts::deriveTaskOutcome`.
+    static func deriveTaskOutcome(_ score: Double?) -> String {
+        guard let s = score else { return "pending" }
+        if s >= 0.75 { return "success" }
+        if s >= 0.5 { return "partial" }
+        return "fail"
+    }
 
     // MARK: - Layer 1 availability gate
 
@@ -122,6 +158,10 @@ actor ApmeRunner {
     /// Register a result listener. The closure must be `@Sendable` because
     /// listeners are invoked from within the actor and dispatched across
     /// arbitrary tasks.
+    func onTaskEvaluated(_ handler: @Sendable @escaping (ApmeTaskEvaluatedEvent) -> Void) {
+        taskEvaluatedListeners.append(handler)
+    }
+
     func onResult(_ handler: @Sendable @escaping (ApmeEvalJobResult) -> Void) {
         listeners.append(handler)
     }
@@ -313,11 +353,23 @@ actor ApmeRunner {
             store.insertEvalForTask(eval, taskId: taskId)
         }
 
-        // Persist the summary + composite score on the task row itself so
-        // listTasksForRun returns it without a join.
+        // Persist the summary + composite score + outcome on the task row so
+        // listTasksForRun returns them without a join. Preserve any
+        // previously-set outcome — that only happens when the user closed
+        // the task manually with an outcome override (CLI `agentdeck task
+        // cancel`, App-target detail-pane button, or future
+        // /task/close caller). `closeTask` itself never writes outcome —
+        // only the manual path does — so a non-nil read here unambiguously
+        // means "user gesture, do not overwrite". Mirrors the same guard
+        // in bridge/src/apme/runner.ts::runTaskEval.
+        let overall = parsed.scores["overall"]
+        let derivedOutcome = Self.deriveTaskOutcome(overall)
+        let existingOutcome = store.getTask(id: taskId)?.outcome
+        let taskOutcome = (existingOutcome?.isEmpty == false) ? existingOutcome! : derivedOutcome
         var taskFields: [String: Any?] = [:]
         taskFields["summary"] = parsed.summary as Any?
-        taskFields["compositeScore"] = parsed.scores["overall"] as Any?
+        taskFields["compositeScore"] = overall as Any?
+        taskFields["outcome"] = taskOutcome as Any?
         let notes: [String: Any] = [
             "reasoning": parsed.reasoning,
             "done": parsed.done ?? [],
@@ -329,8 +381,7 @@ actor ApmeRunner {
         }
         store.updateTask(id: taskId, fields: taskFields)
 
-        let overall = parsed.scores["overall"]
-        DaemonLogger.shared.debug("APME", "task eval \(taskId.prefix(8)): overall=\(overall ?? -1) summary=\(parsed.summary?.prefix(40) ?? "-")")
+        DaemonLogger.shared.debug("APME", "task eval \(taskId.prefix(8)): overall=\(overall ?? -1) outcome=\(taskOutcome) summary=\(parsed.summary?.prefix(40) ?? "-")")
 
         var result = ApmeEvalJobResult(
             runId: runId,
@@ -342,6 +393,26 @@ actor ApmeRunner {
         )
         result.taskId = taskId
         for listener in listeners { listener(result) }
+
+        if !taskEvaluatedListeners.isEmpty {
+            let run = store.getRun(id: runId)
+            let refreshedTask = store.getTask(id: taskId) ?? task
+            let event = ApmeTaskEvaluatedEvent(
+                runId: runId,
+                taskId: taskId,
+                sessionId: run?.sessionId ?? "",
+                agentType: run?.agentType,
+                projectName: run?.projectName,
+                startedAt: refreshedTask.startedAt,
+                endedAt: refreshedTask.endedAt ?? Int(Date().timeIntervalSince1970 * 1000),
+                compositeScore: overall,
+                outcome: taskOutcome,
+                taskCategory: category ?? refreshedTask.taskCategory,
+                summary: parsed.summary,
+                boundarySignal: boundarySignal ?? refreshedTask.boundarySignal
+            )
+            for listener in taskEvaluatedListeners { listener(event) }
+        }
     }
 
     // MARK: - Run-level eval (layer 2 only in Phase 1)

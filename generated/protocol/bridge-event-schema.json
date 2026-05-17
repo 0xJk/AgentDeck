@@ -1139,8 +1139,21 @@
           ],
           "type": "string"
         },
+        "taskCategory": {
+          "type": "string"
+        },
         "taskId": {
           "description": "APME task id. Set on task_start/task_end and on every turn entry inside the task scope.",
+          "type": "string"
+        },
+        "taskOutcome": {
+          "type": "string"
+        },
+        "taskScore": {
+          "description": "Per-task evaluation result, attached when the task_judge resolves (always AFTER the initial task_end emit — clients upsert the existing row by (type='task_end', taskId) and merge these four fields).\n\n  - `taskScore`   : 0..1 composite (matches `tasks.composite_score`)   - `taskOutcome` : terminal outcome string from `bridge/src/apme/outcome.ts`     (`'committed' | 'abandoned' | 'iterated' | 'ab_winner' | 'ab_loser'     | 'interrupted' | 'exploratory' | 'pending'`). UIs collapse into     three visual classes — success / fail / partial / pending — and pick     the badge color via design-system status tokens.   - `taskCategory`: task_rollup category ('general' | 'conversation' | …)   - `taskSummary` : one-line judge summary",
+          "type": "number"
+        },
+        "taskSummary": {
           "type": "string"
         },
         "ts": {

@@ -140,6 +140,101 @@ describe('APME HTTP routes', () => {
     expect(resp.status).toBe(404);
   });
 
+  it('GET /apme/run/:id includes per-task rollup with attached evals', async () => {
+    // Seed a run, ingest a tool span, close a task via TodoWrite all-completed.
+    const runId = apme!.collector.openRun({
+      sessionId: 's-task', agentType: 'claude-code', projectName: 'p', projectPath: '/tmp/p',
+    });
+    apme!.collector.ingestHook('s-task', 'UserPromptSubmit', { message: { content: 'do it' } });
+    apme!.collector.ingestHook('s-task', 'PostToolUse', {
+      tool_name: 'TodoWrite',
+      tool_input: { todos: [{ status: 'completed', content: 'step' }] },
+    });
+    apme!.collector.closeRun('s-task', 0, '/tmp/p');
+
+    // Manually attach a task_judge eval row so the API surfaces it.
+    const tasks = apme!.store.listTasksForRun(runId);
+    expect(tasks.length).toBeGreaterThan(0);
+    const firstTaskId = tasks[0].id;
+    apme!.store.insertEvalForTask({
+      id: 0,
+      runId,
+      taskId: firstTaskId,
+      layer: 'task_judge',
+      metric: 'overall',
+      score: 0.83,
+      raw: null,
+      rubricVer: 1,
+      judgeModel: 'mlx',
+      createdAt: Date.now(),
+    });
+
+    const resp = await fetch(`${base}/apme/run/${runId}`);
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as {
+      tasks: Array<{
+        id: string;
+        boundarySignal: string;
+        evals: Array<{ metric: string; score: number; layer: string }>;
+      }>;
+    };
+    expect(body.tasks).toBeDefined();
+    expect(body.tasks.length).toBeGreaterThan(0);
+    // todo_complete boundary fired
+    expect(body.tasks.some((t) => t.boundarySignal === 'todo_complete')).toBe(true);
+    // The seeded task_judge eval is attached
+    const judged = body.tasks.find((t) => t.id === firstTaskId);
+    expect(judged?.evals.some((e) => e.layer === 'task_judge' && e.metric === 'overall' && e.score === 0.83)).toBe(true);
+  });
+
+  it('GET /apme/tasks/:id returns task detail with evals + turns', async () => {
+    const runId = apme!.collector.openRun({
+      sessionId: 's-tasksingle', agentType: 'codex-cli', projectName: 'p', projectPath: '/tmp/p',
+    });
+    apme!.collector.ingestHook('s-tasksingle', 'UserPromptSubmit', { message: { content: 'a prompt' } });
+    apme!.collector.ingestHook('s-tasksingle', 'PostToolUse', {
+      tool_name: 'TodoWrite',
+      tool_input: { todos: [{ status: 'completed', content: 'a' }] },
+    });
+    apme!.collector.closeRun('s-tasksingle', 0, '/tmp/p');
+
+    const tasks = apme!.store.listTasksForRun(runId);
+    expect(tasks.length).toBeGreaterThan(0);
+    const tid = tasks[0].id;
+
+    const resp = await fetch(`${base}/apme/tasks/${tid}`);
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as {
+      task: { id: string; runId?: string; run_id?: string };
+      evals: unknown[];
+      turns: Array<{ task_id?: string; taskId?: string }>;
+    };
+    expect(body.task.id).toBe(tid);
+    expect(Array.isArray(body.turns)).toBe(true);
+
+    // 404 path
+    const missing = await fetch(`${base}/apme/tasks/no-such-task`);
+    expect(missing.status).toBe(404);
+  });
+
+  it('closeTaskExternal with manual signal records outcome + boundary_signal=manual', async () => {
+    apme!.collector.openRun({ sessionId: 's-manual', agentType: 'openclaw', projectName: 'p' });
+    apme!.collector.ingestHook('s-manual', 'UserPromptSubmit', { message: { content: 'hello' } });
+    const closed = apme!.collector.closeTaskExternal('s-manual', 'manual', 'abandoned');
+    expect(closed).toBe(true);
+
+    // Closing again returns false (no active task left).
+    const second = apme!.collector.closeTaskExternal('s-manual', 'manual');
+    expect(second).toBe(false);
+
+    apme!.collector.closeRun('s-manual');
+    const runs = apme!.store.listRuns({ agentType: 'openclaw', limit: 5 });
+    const tasks = apme!.store.listTasksForRun(runs[0].id);
+    const manualTask = tasks.find((t) => t.boundarySignal === 'manual');
+    expect(manualTask).toBeDefined();
+    expect(manualTask?.outcome).toBe('abandoned');
+  });
+
   it('GET /apme/scorecard returns model aggregates', async () => {
     const runId = apme.collector.openRun({
       sessionId: 's', agentType: 'claude-code', projectName: 'p',
