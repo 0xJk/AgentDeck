@@ -264,10 +264,15 @@ struct TimelineStripView: View {
         let isSelected = index == focusedIndex ||
             (focusedIndex < 0 && index == grouped.count - 1)
         let isChatEnd = group.entry.type == .chatEnd
-        // When chat_start has absorbed chat_end via groupConsecutive, the row
-        // represents a completed turn — icon flips to success, rotation stops.
-        let merged = group.mergedCompletion != nil || group.mergedResponse != nil
-        let isCompleted = group.mergedCompletion != nil
+        // The turn is "completed" the moment EITHER chat_response or
+        // chat_end is merged in — `GroupedEntry.hasResponse`. chat_end
+        // is unreliable in production (Stop hook ~18% reliability;
+        // chat_end is emitted from a Task that awaits a summarizer that
+        // can hang), so requiring it for the spinner-stop is what made
+        // the dashboard look frozen on already-delivered replies.
+        // Codex stop-time review #11 (2026-05-17).
+        let merged = group.hasResponse
+        let isCompleted = group.hasResponse
         let iconKey: TimelineIconKey = {
             if group.entry.type == .chatStart && isCompleted { return .success }
             return timelineIconKey(for: group.entry.type, status: group.entry.status)

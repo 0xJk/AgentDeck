@@ -37,8 +37,9 @@
 - **Tool routing 은 status / output 기반 strict**. `entry["detail"]` 처럼 시각용 blob 의 nil 여부로 start vs end 를 결정하면 input-only running 이 end 로 잘못 분기. routing 전용 helper (`gatewayToolHookFromEntry`) 를 testable 한 static 으로 분리.
 - **colMap 같은 single-source mapping table 은 silent-failure 위험**. 키 누락이 컴파일 에러 없이 SQL UPDATE 자체를 무력화. 헤더에 "extending 시 mirror 위치" 명시 + 회귀 가드 (round-trip 테스트) 필수.
 - **NSNull defense in depth**: JSON-decoded `[String: Any]` 의 explicit `null` 은 `Optional.some(NSNull())`. `!= nil` 통과. producer / router 양쪽에서 unwrap.
+- **spinner stop 은 chat_end 가 아닌 "응답 도착" 신호 기반**. chat_end 는 비신뢰성 path (Stop hook ~18% reliability + async summarize). chat_response 는 sync broadcast 라 더 신뢰성 있음. `GroupedEntry.hasResponse` = `mergedResponse != nil || mergedCompletion != nil` 둘 중 하나라도 도착하면 turn "delivered". chat_end 누락에도 spinner 정상 종료.
 
-회귀 가드 30+ 종 신규 (TimelineTests + ApmeTaskBoundaryTests). Codex stop-time review 10 차에 걸쳐 누적 발견된 race / mis-routing 시나리오를 케이스별로 명시 회귀 가드 + 메모리 노트 (timeline-turn-merge-lazy-task / openclaw-tool-payload-mapping / apme-updaterun-colmap-trap).
+회귀 가드 33+ 종 신규 (TimelineTests + ApmeTaskBoundaryTests). Codex stop-time review 11 차에 걸쳐 누적 발견된 race / mis-routing / hang-induced-spinner 시나리오를 케이스별로 명시 회귀 가드 + 메모리 노트 (timeline-turn-merge-lazy-task / openclaw-tool-payload-mapping / apme-updaterun-colmap-trap).
 
 ---
 

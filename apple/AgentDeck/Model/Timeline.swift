@@ -248,6 +248,23 @@ struct GroupedEntry: Identifiable, Sendable {
     /// Terminator metadata (chat_end) merged into this group. Carries the
     /// "Completed · Ns · topic" suffix + `summaryKind` backend pill.
     var mergedCompletion: TimelineEntry? = nil
+
+    /// True when the assistant has delivered something for this turn —
+    /// either the response body or the completion metadata. UIs use this
+    /// to decide whether to stop the chat_start spinner. Treating ONLY
+    /// `mergedCompletion` as completion leaves the spinner rotating
+    /// forever in two real production cases:
+    ///   1. Claude Code Stop hook is only ~18% reliable (memory note
+    ///      `feedback_apme_stop_hook.md`); chat_end is the row that
+    ///      hook emits, but chat_response arrives via a different path.
+    ///   2. `appendClaudeCodeChatEnd` builds chat_end inside a
+    ///      `Task { await TimelineSummarizer.summarize(...) }` so a hung
+    ///      summarizer prevents the chat_end broadcast even though
+    ///      chat_response was emitted synchronously above it.
+    /// In both cases the user has already seen the assistant's reply but
+    /// the row keeps spinning. Codex stop-time review #11 (2026-05-17).
+    var hasResponse: Bool { mergedResponse != nil || mergedCompletion != nil }
+
     /// Unique ID combining timestamp + type + count to avoid ForEach duplicate ID warnings
     var id: String { "\(entry.ts)-\(entry.type.rawValue)-\(count)" }
 }

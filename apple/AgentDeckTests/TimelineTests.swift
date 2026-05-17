@@ -319,6 +319,44 @@ final class TimelineTests: XCTestCase {
         XCTAssertNil(grouped[0].mergedCompletion)
     }
 
+    /// Codex stop-time review #11 (2026-05-17): chat_end is emitted
+    /// from an async Task that awaits a summarizer, and Claude Code's
+    /// Stop hook is only ~18% reliable. Both paths can drop chat_end
+    /// even though the user already saw the assistant's reply via
+    /// chat_response. The turn must read as "completed" (spinner off,
+    /// icon = success) the moment EITHER child arrives.
+    func testTurnHasResponseTrueWhenOnlyResponseMerged() {
+        let entries = [
+            TimelineEntry(ts: 1000, type: .chatStart, raw: "Q", sessionId: "s1", startedAt: 1000),
+            TimelineEntry(ts: 2000, type: .chatResponse, raw: "A", sessionId: "s1", startedAt: 1000, endedAt: 2000),
+            // No chat_end — summarizer hung / Stop hook dropped.
+        ]
+        let grouped = groupConsecutive(entries)
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertNotNil(grouped[0].mergedResponse)
+        XCTAssertNil(grouped[0].mergedCompletion)
+        XCTAssertTrue(grouped[0].hasResponse, "response without completion still counts as 'turn delivered'")
+    }
+
+    func testTurnHasResponseTrueWhenOnlyCompletionMerged() {
+        let entries = [
+            TimelineEntry(ts: 1000, type: .chatStart, raw: "Q", sessionId: "s1", startedAt: 1000),
+            TimelineEntry(ts: 2000, type: .chatEnd, raw: "Completed · 1s", sessionId: "s1", startedAt: 1000, endedAt: 2000),
+        ]
+        let grouped = groupConsecutive(entries)
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertNil(grouped[0].mergedResponse)
+        XCTAssertNotNil(grouped[0].mergedCompletion)
+        XCTAssertTrue(grouped[0].hasResponse)
+    }
+
+    func testTurnHasResponseFalseWhenStartAlone() {
+        let entry = TimelineEntry(ts: 1000, type: .chatStart, raw: "still going…", sessionId: "s1", startedAt: 1000)
+        let grouped = groupConsecutive([entry])
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertFalse(grouped[0].hasResponse, "lone chat_start = response not yet in")
+    }
+
     /// Legacy children with nil `startedAt` still merge — preserves
     /// behaviour for pre-anchor adapters.
     func testTurnMergeAllowsLegacyChildWithoutStartedAt() {
