@@ -15,6 +15,19 @@
 import SwiftUI
 import AppKit
 
+/// Publishes the vertical option list's natural height so the surrounding
+/// ScrollView frame can collapse to it instead of greedily filling
+/// `optionsCap`. Single GeometryReader source → reduce adopts latest.
+/// Defined file-local (not shared with ControlTowerPanel's ContentHeightKey)
+/// so the two scrollable surfaces inside the same popup don't fight over
+/// the same PreferenceKey bubble.
+private struct OptionsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct AttentionTheaterView: View {
     let session: SessionInfo
     let question: String?
@@ -26,6 +39,13 @@ struct AttentionTheaterView: View {
     let respond: (Int) -> Void
 
     @State private var breatheLarge: Bool = false
+
+    /// Natural height of the vertical option list. Same SwiftUI-ScrollView-
+    /// is-greedy mitigation as `ControlTowerPanel.measuredContentHeight`:
+    /// without this binding the inner ScrollView claims the full
+    /// `optionsCap` (e.g. 315pt) even when only 3 options render, leaving
+    /// empty space below the buttons and surfacing a scrollbar prematurely.
+    @State private var measuredOptionsHeight: CGFloat = 0
 
     private var agentType: String? { session.agentType }
     private var brandColor: Color { SessionBrand.color(for: agentType) }
@@ -136,14 +156,30 @@ struct AttentionTheaterView: View {
             // the sessions list and footer off the popup.
             let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
             let optionsCap = min(380, screenHeight * 0.35)
-            ScrollView(.vertical, showsIndicators: opts.count > 6) {
+            ScrollView(
+                .vertical,
+                showsIndicators: measuredOptionsHeight > optionsCap
+            ) {
                 VStack(spacing: 6) {
                     ForEach(opts) { option in
                         theaterButton(option: option, vertical: true)
                     }
                 }
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: OptionsHeightKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                )
             }
-            .frame(maxHeight: optionsCap)
+            .frame(
+                maxHeight: measuredOptionsHeight > 0
+                    ? min(optionsCap, measuredOptionsHeight)
+                    : optionsCap
+            )
+            .onPreferenceChange(OptionsHeightKey.self) { measuredOptionsHeight = $0 }
         }
     }
 

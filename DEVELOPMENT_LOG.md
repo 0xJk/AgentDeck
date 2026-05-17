@@ -34,6 +34,7 @@ macOS 메뉴바 드롭다운 (`ControlTowerPanel`) 팝업이 컨텐츠보다 작
 - **`max(140, measuredChromeHeight)` 형태의 fallback** 은 PreferenceKey 가 첫 frame 에 미발화 (한 runloop tick 뒤 도착) 인 경우를 위한 안전망. 일반적으로 실측치 ≥ 140 이라 `max()` 가 fallback 보다 큰 측정치를 채택해 동작에 영향 없음.
 - **여러 sizing cap 은 같은 화면 예산을 나눠 쓴다는 invariant 위에 설계해야**. AttentionTheater 옵션 cap (옵션이 헤더에 포함됨) + body floor 가 독립적으로 자기 몫 주장하면 popup_total > screen 으로 overflow. cap 들의 합 + chrome 추정치 ≤ screen 을 산식으로 명시하고 각 cap 을 그 산식 안에서 정함.
 - **ContentHeightKey 의 reduce 는 `value = nextValue()` (덮어쓰기), ChromeHeightKey 는 `value += nextValue()` (누적)**. 전자는 단일 GeometryReader 소스, 후자는 3 위치 합산. PreferenceKey reduce 시맨틱은 source 수에 따라 다르게 선택.
+- **같은 popup 안 두 ScrollView 는 둘 다 ContentHeight PreferenceKey 패턴 필요**. 1차 fix 는 ControlTowerPanel body 만 적용했고 AttentionTheater 옵션 ScrollView 는 cap 만 조절해 greedy 그대로 남겨 — Codex stop-time review 가 잡음. 2차 fix 에서 `OptionsHeightKey` 를 file-local 로 정의 (`ContentHeightKey` 와 분리해야 같은 root 의 onPreferenceChange bubble 에서 안 섞임) + 옵션 VStack 에 GeometryReader backing + `frame(maxHeight: min(optionsCap, measuredOptionsHeight))` 명시 바인딩. **교훈**: ScrollView 인스턴스 수만큼 별도 PreferenceKey + 별도 @State 필요.
 
 ---
 
