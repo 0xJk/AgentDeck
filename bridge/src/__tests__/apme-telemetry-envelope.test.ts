@@ -406,6 +406,46 @@ describe('ApmeCollector.ingestSpan dispatch', () => {
     expect(afterRunId).not.toBe(beforeRunId);
   });
 
+  it.each(['manual', 'idle_gap', 'todo_complete'] as const)(
+    'task_boundary span with signal=%s closes the active task',
+    (signal) => {
+      // Seed a turn so a task is opened (closeTask drops empty tasks otherwise).
+      for (const s of claudeHookToSpans(ctx(), 'UserPromptSubmit', { message: { content: 'work' } })) {
+        collector.ingestSpan('S', s);
+      }
+      const taskId = collector.getActiveTaskId('S');
+      expect(taskId).not.toBeNull();
+
+      let closedSignal: string | null = null;
+      collector.onTaskClosed = ({ boundarySignal }) => { closedSignal = boundarySignal; };
+
+      collector.ingestSpan('S', {
+        traceId: 'T', spanId: 'b', name: spanNameForKind('task_boundary'),
+        kind: 'task_boundary', ts: Date.now(),
+        attributes: { 'agentdeck.boundary_signal': signal },
+      });
+
+      expect(collector.getActiveTaskId('S')).toBeNull();
+      expect(closedSignal).toBe(signal);
+    },
+  );
+
+  it('task_boundary span with an unknown signal is dropped (no task close, no throw)', () => {
+    for (const s of claudeHookToSpans(ctx(), 'UserPromptSubmit', { message: { content: 'work' } })) {
+      collector.ingestSpan('S', s);
+    }
+    const taskBefore = collector.getActiveTaskId('S');
+    expect(taskBefore).not.toBeNull();
+
+    collector.ingestSpan('S', {
+      traceId: 'T', spanId: 'b', name: spanNameForKind('task_boundary'),
+      kind: 'task_boundary', ts: Date.now(),
+      attributes: { 'agentdeck.boundary_signal': 'made_up_value' },
+    });
+
+    expect(collector.getActiveTaskId('S')).toBe(taskBefore);
+  });
+
   it('raw_step span inserts a steps row without lifecycle effects', () => {
     for (const s of claudeHookToSpans(ctx(), 'UserPromptSubmit', { message: { content: 'q' } })) {
       collector.ingestSpan('S', s);

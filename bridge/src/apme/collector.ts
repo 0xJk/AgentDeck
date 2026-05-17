@@ -58,7 +58,7 @@ interface ActiveTask {
   lastTurnIndex: number | null;
 }
 
-export type TaskBoundarySignal = 'todo_complete' | 'clear' | 'session_end' | 'manual';
+export type TaskBoundarySignal = 'todo_complete' | 'clear' | 'session_end' | 'manual' | 'idle_gap';
 
 /** Callback fired after a task is closed in DB. Used to enqueue task-level eval
  *  without creating a direct dependency from collector → runner. */
@@ -505,11 +505,20 @@ export class ApmeCollector {
           this.splitRun(sessionId, (a['agentdeck.cwd'] as string | undefined));
           return;
         }
-        // Other boundary signals (todo_complete, session_end) are handled
-        // automatically: tool_result detects todo_complete, closeRun closes
-        // the current task with session_end. Adapters that emit those
-        // spans explicitly are no-ops here by design — preserving the
-        // single-source-of-truth for those transitions.
+        // Adapter-emitted boundaries (OpenClaw chat.aborted → 'manual',
+        // OpenClaw idle-gap timer → 'idle_gap', OpenCode TodoWrite
+        // all-completed → 'todo_complete') must close the active task.
+        // Without this route those spans were silently swallowed and the
+        // task only closed on session_end, breaking task_judge enqueue
+        // and Timeline task_end emission.
+        //
+        // `session_end` is intentionally excluded: closeRun fires that
+        // path itself, and a duplicate here would double-emit onTaskClosed.
+        if (signal === 'todo_complete' || signal === 'manual' || signal === 'idle_gap') {
+          this.closeTask(sessionId, signal);
+          return;
+        }
+        debug('APME', `task_boundary span dropped: unknown signal=${signal ?? '<none>'}`);
         return;
       }
       case 'session_meta': {
