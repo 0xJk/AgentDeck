@@ -21,6 +21,15 @@ final class ApmeCollector {
     /// a judge.
     var runner: ApmeRunner?
 
+    /// Bridge to the daemon's timeline store + WS broadcast. DaemonServer
+    /// wires this up during startServices so task_start / task_end rows the
+    /// collector mints land on disk and reach the dashboard. Without this
+    /// the dashboard only sees chat_start / chat_end rows and the leading
+    /// task icon spins forever after `/clear` (no task_end ever arrives to
+    /// pair with task_start). Mirrors the `emitTimeline` callback the Node
+    /// bridge wires in bridge/src/apme/index.ts:72-103.
+    var emitTimelineEntry: ((DaemonTimelineEntry) -> Void)?
+
     /// Maps a hookSessionId → runId. A hookSessionId is generated per
     /// session_start and lives until session_end.
     private var sessionToRun: [String: String] = [:]
@@ -59,10 +68,43 @@ final class ApmeCollector {
         let startedAt: Int
         var firstTurnIndex: Int?
         var lastTurnIndex: Int?
+        /// True once a `task_start` row has been broadcast to the dashboard
+        /// timeline. Stays false for short single-turn conversations that
+        /// never trip TodoWrite or a second prompt — keeping the noisy
+        /// "TASK" header off the dashboard until a real multi-turn task or
+        /// explicit TodoWrite plan signals one is actually in flight.
+        var timelineEmitted: Bool = false
     }
     private var activeTask: ActiveTask?
     /// runId → next task_index. Lives across task close/open within a run.
     private var runTaskCount: [String: Int] = [:]
+
+    /// Pending idle-gap timer. After every `closeTurn` we arm a 90 s timer
+    /// (`idleGapSec`); if no new `user_prompt_submit` arrives, the timer
+    /// fires `closeTask(boundarySignal: "idle_gap")` so the open task
+    /// doesn't linger and its TASK header doesn't spin forever. Mirrors
+    /// `bridge/src/apme/adapters/openclaw-hook.ts::OPENCLAW_IDLE_GAP_MS`.
+    private var idleGapTask: Task<Void, Never>?
+
+    /// Idle-gap threshold for auto-closing tasks after the last turn. Exposed
+    /// as a var so tests can compress the wait. Default 90 s mirrors the
+    /// Node bridge OpenClaw adapter (the closest cross-platform reference).
+    var idleGapSec: TimeInterval = 90
+
+    /// Minimum age of `activeTurn` (in seconds) for `setTurnResponse` to be
+    /// allowed to arm the idle-gap timer. Defends against the late-arriving
+    /// Stop-hook response race documented in `DaemonServer.swift:2792`:
+    /// `setTurnResponse` is dispatched via `Task { await … }`, so a fast
+    /// follow-up `user_prompt_submit` can `closeTurn` + open a fresh new
+    /// turn before the response callback actually runs. Without this guard
+    /// the late callback sees `activeTurn` = the brand-new (still
+    /// generating) turn and arms idle-gap on it — exactly the
+    /// "fresh active turn" Codex stop-time review flagged 2026-05-15.
+    ///
+    /// Production default 0.5 s — plausible agent responses take at least
+    /// that long, so a turn younger than 0.5 s receiving a response
+    /// callback is almost certainly the race. Tests inject smaller values.
+    var idleGapMinTurnAgeSec: TimeInterval = 0.5
 
     init(store: ApmeStore) {
         self.store = store
@@ -138,9 +180,31 @@ final class ApmeCollector {
 
             // ── Turn management ──
             if event.lowercased() == "user_prompt_submit" || event == "UserPromptSubmit" {
+                // User is active again — cancel any pending idle-gap close
+                // we armed after the previous turn.
+                idleGapTask?.cancel()
+                idleGapTask = nil
+
                 // Claude Code sends { message: { content: "..." } }, legacy sends { prompt: "..." }
                 let prompt = data["prompt"] as? String
                     ?? (data["message"] as? [String: Any])?["content"] as? String
+
+                // /clear: Claude Code's slash command to wipe the conversation.
+                // Treat it as a task boundary, not a real turn — close the
+                // active task with signal "clear" and skip the open-new-turn
+                // path. The next non-/clear prompt will reopen a fresh task
+                // via openTaskIfNone. Mirrors bridge/src/apme/adapters/
+                // claude-hook.ts:47-49 (which routes /clear to a task_boundary
+                // span) + bridge/src/apme/collector.ts splitRun. Without this,
+                // closeTask is only ever called on TodoWrite-complete /
+                // session_end, so /clear leaves the open task — and its
+                // task_start timeline row — spinning forever.
+                if let p = prompt, Self.isClearCommand(p) {
+                    closeTurn(runId: runId)
+                    closeTask(boundarySignal: "clear")
+                    return
+                }
+
                 // Close previous turn
                 closeTurn(runId: runId)
                 // Open new turn
@@ -152,12 +216,23 @@ final class ApmeCollector {
                 // openTaskIfNone is idempotent — back-to-back turns within a task
                 // all share the same task_id until a boundary signal closes it.
                 let task = openTaskIfNone(runId: runId)
+                let priorFirstTurn = activeTask?.firstTurnIndex
                 if var t = activeTask {
                     if t.firstTurnIndex == nil { t.firstTurnIndex = turnIndex }
                     t.lastTurnIndex = turnIndex
                     activeTask = t
                 }
                 store.insertTurn(id: turnId, runId: runId, turnIndex: turnIndex, prompt: prompt, startedAt: nowMs(), taskId: task?.id)
+
+                // Multi-turn task signal: if the active task already had a
+                // turn before this one (priorFirstTurn != nil), the user is
+                // continuing a conversation rather than starting a single
+                // Q/A — promote the task to a visible row so the dashboard
+                // can show the hierarchy. Idempotent for tasks already
+                // promoted by TodoWrite.
+                if priorFirstTurn != nil {
+                    emitDeferredTaskStartIfNeeded()
+                }
 
                 // Set run's task_prompt from first prompt
                 let run = store.getRun(id: runId)
@@ -173,6 +248,15 @@ final class ApmeCollector {
                 if toolName == "Edit" { turn.filesModified += 1 }
                 if toolName == "Write" { turn.filesCreated += 1 }
                 activeTurn = turn
+
+                // Explicit task signal: the agent is using TodoWrite to plan
+                // multi-step work. Promote the active task to a visible
+                // timeline row on the first TodoWrite call so the user sees
+                // the TASK header alongside the planned todos. Subsequent
+                // TodoWrite calls are no-ops via the idempotent helper.
+                if toolName == "TodoWrite" {
+                    emitDeferredTaskStartIfNeeded()
+                }
             }
 
             // ── Task boundary: TodoWrite all-completed ──
@@ -257,6 +341,14 @@ final class ApmeCollector {
             "filesModified": turn.filesModified,
             "filesCreated": turn.filesCreated,
         ])
+        // NOTE: idle-gap arming used to live here, but `closeTurn` runs at
+        // the start of every `user_prompt_submit` — *just before* a new
+        // turn opens. That meant the timer was armed for 90 s of the
+        // freshly-started turn, and a long agent generation / tool call
+        // could trip it mid-turn. Codex stop-time review flagged the race.
+        // Arming now lives at the end of `setTurnResponse`, which fires
+        // when the assistant's reply lands (chat_end / Stop hook): the
+        // true "user is now idle" moment.
     }
 
     // MARK: - Task lifecycle
@@ -264,6 +356,13 @@ final class ApmeCollector {
     /// Open a new task if none is active for the current run. Idempotent —
     /// repeat calls while a task is already active return the existing one.
     /// Mirrors bridge/src/apme/collector.ts openTaskIfNone.
+    ///
+    /// The `task_start` timeline row is NOT emitted here — it is deferred to
+    /// `emitDeferredTaskStartIfNeeded()`, which the caller invokes when one
+    /// of the "real task" signals fires (TodoWrite plan, second turn on the
+    /// same task). Short single-turn conversations therefore never produce a
+    /// TASK header on the dashboard — keeping the timeline focused on the
+    /// turn rows the user actually wants to evaluate.
     @discardableResult
     private func openTaskIfNone(runId: String) -> ActiveTask? {
         if let existing = activeTask, existing.runId == runId { return existing }
@@ -275,7 +374,8 @@ final class ApmeCollector {
             index: nextIndex,
             startedAt: nowMs(),
             firstTurnIndex: nil,
-            lastTurnIndex: nil
+            lastTurnIndex: nil,
+            timelineEmitted: false
         )
         activeTask = task
         store.insertTask(ApmeTask(
@@ -288,12 +388,115 @@ final class ApmeCollector {
         return task
     }
 
+    /// Broadcast the deferred `task_start` row for the active task, if one
+    /// exists and hasn't yet been emitted. Idempotent — repeat calls are
+    /// no-ops once the emit happens. Uses the task's original `startedAt`
+    /// as the timeline timestamp so the TASK header anchors above the
+    /// first turn it groups instead of jumping in mid-conversation.
+    private func emitDeferredTaskStartIfNeeded() {
+        guard var task = activeTask, !task.timelineEmitted else { return }
+        let run = store.getRun(id: task.runId)
+        emitTimelineEntry?(DaemonTimelineEntry(
+            ts: Double(task.startedAt),
+            type: "task_start",
+            raw: "Task \(task.index + 1)",
+            agentType: run?.agentType,
+            projectName: run?.projectName,
+            sessionId: run?.sessionId,
+            startedAt: Double(task.startedAt),
+            runId: task.runId,
+            taskId: task.id
+        ))
+        task.timelineEmitted = true
+        activeTask = task
+    }
+
+    /// Arm the idle-gap timer. After `idleGapSec` of no new
+    /// `user_prompt_submit`, fires `closeTask(boundarySignal: "idle_gap")`
+    /// — mirroring the Node bridge OpenClaw adapter. Cancels any previously
+    /// armed timer so back-to-back turns don't pile up timers.
+    ///
+    /// Both the active task **and** the active turn are snapshotted at arm
+    /// time so `handleIdleGapFire` can refuse to close when a new turn
+    /// (continuation prompt) has opened in the interim. Without the turnId
+    /// guard, a continuation that wins the race against the timer cancel
+    /// can still see the task closed under it.
+    ///
+    /// In addition, arming is skipped when `activeTurn` is younger than
+    /// `idleGapMinTurnAgeSec`. That blocks the late-Stop-hook race where
+    /// the response callback for the *previous* turn arrives after the
+    /// next `user_prompt_submit` has already rotated `activeTurn` to a
+    /// brand-new (still generating) turn — without that guard the fresh
+    /// turn would get an idle-gap timer pointed at it.
+    private func scheduleIdleGapClose() {
+        idleGapTask?.cancel()
+        idleGapTask = nil
+        guard let snapshotTaskId = activeTask?.id else { return }
+        guard let turn = activeTurn else {
+            // No active turn → we're not at a "user is idle" boundary
+            // (we're either between session events or mid-cleanup). Arming
+            // here would be incorrect; skip.
+            return
+        }
+        let now = nowMs()
+        let turnAgeMs = max(0, now - turn.startedAt)
+        let minAgeMs = Int(idleGapMinTurnAgeSec * 1000)
+        if turnAgeMs < minAgeMs {
+            // Race-tainted: the active turn was opened so recently that the
+            // response we're claiming to have just captured almost certainly
+            // belongs to the previous (now closed) turn. Skip arming — a
+            // genuine setTurnResponse for the current turn will arrive
+            // later (after the agent finishes) and arm correctly then.
+            DaemonLogger.shared.debug(
+                "APME",
+                "scheduleIdleGapClose skipped — activeTurn age \(turnAgeMs)ms < min \(minAgeMs)ms (race guard)"
+            )
+            return
+        }
+        let snapshotTurnId = turn.id
+        let delaySec = idleGapSec
+        idleGapTask = Task { [weak self] in
+            let nanos = UInt64(max(0, delaySec) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled else { return }
+            await self?.handleIdleGapFire(snapshotTaskId: snapshotTaskId, snapshotTurnId: snapshotTurnId)
+        }
+    }
+
+    /// Called by the idle-gap Task when the timer matures. Closes only the
+    /// originally-snapshotted (task, turn) pair. If a new turn has opened —
+    /// continuation prompt arrived during the gap and beat the cancel to
+    /// the main actor — the snapshot mismatch keeps the task alive.
+    private func handleIdleGapFire(snapshotTaskId: String, snapshotTurnId: String) {
+        guard let active = activeTask, active.id == snapshotTaskId else { return }
+        guard let turn = activeTurn, turn.id == snapshotTurnId else { return }
+        closeTask(boundarySignal: "idle_gap")
+    }
+
+    /// Public wrapper for `closeTask` — used by the daemon HTTP route the
+    /// CLI / macOS detail-pane button hits. Mirrors
+    /// `bridge/src/apme/collector.ts::closeTaskExternal`. Returns true when
+    /// a task was closed, false when no task was active.
+    @discardableResult
+    func closeTaskExternal(boundarySignal: String = "manual", outcome: String? = nil) -> Bool {
+        guard let task = activeTask else { return false }
+        closeTask(boundarySignal: boundarySignal)
+        if let outcome = outcome {
+            store.updateTask(id: task.id, fields: ["outcome": outcome as Any?])
+        }
+        return true
+    }
+
     /// Close the active task with the given boundary signal, persisting
     /// metadata and firing `onTaskClosed`. Tasks that never saw a turn
     /// (firstTurnIndex == nil) are dropped rather than left as phantoms.
     private func closeTask(boundarySignal: String) {
         guard let task = activeTask else { return }
         activeTask = nil
+        // Always cancel any armed idle-gap timer when a task closes, so a
+        // late-firing timer can't reopen a closed-task race.
+        idleGapTask?.cancel()
+        idleGapTask = nil
 
         // Empty task: no turns ever attached. Drop the row.
         guard task.firstTurnIndex != nil else {
@@ -303,23 +506,69 @@ final class ApmeCollector {
         }
 
         // Inherit category from the run (best-effort).
-        let taskCategory = store.getRun(id: task.runId)?.taskCategory
+        let run = store.getRun(id: task.runId)
+        let taskCategory = run?.taskCategory
+        let endedAt = nowMs()
 
         store.updateTask(id: task.id, fields: [
-            "endedAt": nowMs(),
+            "endedAt": endedAt,
             "lastTurnIndex": task.lastTurnIndex ?? task.firstTurnIndex ?? 0,
             "boundarySignal": boundarySignal,
             "taskCategory": taskCategory as Any?,
         ])
-        DaemonLogger.shared.debug("APME", "closeTask \(task.id.prefix(8)) signal=\(boundarySignal)")
+        DaemonLogger.shared.debug("APME", "closeTask \(task.id.prefix(8)) signal=\(boundarySignal) emitted=\(task.timelineEmitted)")
 
-        // Wire to runner (App Store default backend = foundationModels).
+        // Emit task_end ONLY when the matching task_start reached the
+        // timeline. Single-turn tasks that never tripped TodoWrite or a
+        // second prompt left the dashboard quiet on open; emitting a
+        // stand-alone task_end would surface a "TASK END" row out of
+        // nowhere. The DB side still records the boundary so judge runs
+        // and analytics aren't affected.
+        if task.timelineEmitted {
+            let signalLabel: String
+            switch boundarySignal {
+            case "todo_complete": signalLabel = "TODO done"
+            case "clear":         signalLabel = "/clear"
+            case "session_end":   signalLabel = "Session end"
+            case "manual":        signalLabel = "Manual"
+            case "idle_gap":      signalLabel = "Idle gap"
+            default:              signalLabel = "Task end"
+            }
+            let durationSec = max(0, (endedAt - task.startedAt) / 1000)
+            emitTimelineEntry?(DaemonTimelineEntry(
+                ts: Double(endedAt),
+                type: "task_end",
+                raw: "\(signalLabel) · \(durationSec)s",
+                agentType: run?.agentType,
+                projectName: run?.projectName,
+                sessionId: run?.sessionId,
+                startedAt: Double(task.startedAt),
+                endedAt: Double(endedAt),
+                runId: task.runId,
+                taskId: task.id,
+                boundarySignal: boundarySignal
+            ))
+        }
+
+        // Wire to runner regardless of UI emission — evaluation is a
+        // DB-side concern and should fire for every closed task so APME
+        // metrics stay representative of real conversations.
         runner?.enqueueTask(
             runId: task.runId,
             taskId: task.id,
             category: taskCategory,
             boundarySignal: boundarySignal
         )
+    }
+
+    /// True when the prompt is just `/clear` (Claude Code's conversation
+    /// reset slash command). Mirrors the regex in
+    /// bridge/src/apme/adapters/claude-hook.ts:47-49 — `^\s*/clear\s*$` with
+    /// case-insensitive match. Surrounding whitespace tolerated so a stray
+    /// trailing newline from the hook payload doesn't slip through.
+    static func isClearCommand(_ prompt: String) -> Bool {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.lowercased() == "/clear"
     }
 
     /// Extract todos from a PostToolUse TodoWrite payload and check if every
@@ -356,25 +605,66 @@ final class ApmeCollector {
     /// immediately. Mirrors the TS `index.ts` fix from commit e76325f7 and is
     /// the Swift side of the category-aware pipeline.
     ///
+    /// `chatEndTs` is the millisecond timestamp of the originating `chat_end`
+    /// entry. The Claude Code stop-hook path in `DaemonServer.swift:2792`
+    /// dispatches via `Task { await … }`, so a fast follow-up
+    /// `user_prompt_submit` can rotate `activeTurn` to a *fresh new turn*
+    /// before this callback runs. Without disambiguation the response would
+    /// be written onto the wrong turn (Codex stop-time review flagged this
+    /// as "stale response still mutates fresh turns"). When `chatEndTs` is
+    /// supplied and predates `activeTurn.startedAt`, the response is
+    /// attributed to `lastClosedTurnByRun` instead — the turn that was
+    /// actually open when chat_end happened. Callers that have no
+    /// trustworthy timestamp (e.g. OpenClaw Gateway's `chat.final`, which
+    /// is delivered synchronously from the same MainActor) may omit the
+    /// parameter; the disambiguator is then a no-op and the original
+    /// "prefer activeTurn" policy applies.
+    ///
     /// Returns the turnId that was updated, or nil if no turn is in scope.
     @discardableResult
-    func setTurnResponse(_ response: String, runId overrideRunId: String? = nil) -> String? {
+    func setTurnResponse(_ response: String, runId overrideRunId: String? = nil, chatEndTs: Double? = nil) -> String? {
         guard store.isOpen else { return nil }
         guard !response.isEmpty else { return nil }
 
-        // Resolve target turn.
+        // Detect the late-stop-hook race: if `chatEndTs` predates the
+        // current `activeTurn`'s open time, the response was generated for
+        // a different (earlier, now closed) turn. Without this branch the
+        // response would clobber a freshly opened turn that's still mid
+        // generation — the fresh turn's eventual real response would
+        // overwrite it, but in the window the mid-session classifier and
+        // turn_judge could pick up the stale text and mis-evaluate.
+        let activeTurnIsStaleForResponse: Bool = {
+            guard let chatEndTs, let turn = activeTurn else { return false }
+            return Double(turn.startedAt) > chatEndTs
+        }()
+
+        // Resolve target turn. `attributedToActiveTurn` gates idle-gap
+        // arming at the bottom of this method — when the response lands on
+        // a closed turn via the stale-race fallback, the fresh activeTurn
+        // is still generating and must not get an idle-gap timer pointed
+        // at it. Codex stop-time review #4 (2026-05-15).
         let runId: String?
         let turnId: String?
-        if let turn = activeTurn {
+        let attributedToActiveTurn: Bool
+        if let turn = activeTurn, !activeTurnIsStaleForResponse {
             runId = turn.runId
             turnId = turn.id
+            attributedToActiveTurn = true
         } else if let rid = overrideRunId, let tid = lastClosedTurnByRun[rid] {
             runId = rid
             turnId = tid
+            attributedToActiveTurn = false
         } else if let hs = activeHookSession, let rid = sessionToRun[hs], let tid = lastClosedTurnByRun[rid] {
             runId = rid
             turnId = tid
+            attributedToActiveTurn = false
         } else {
+            // Stale response with no closed-turn fallback to land on — drop
+            // it rather than corrupt a fresh activeTurn. Logged so an
+            // unexpected drop is debuggable from the daemon log.
+            if activeTurnIsStaleForResponse {
+                DaemonLogger.shared.debug("APME", "setTurnResponse dropped — stale (chat_end pre-dates activeTurn) and no closed-turn fallback")
+            }
             return nil
         }
         guard let runId, let turnId else { return nil }
@@ -429,6 +719,20 @@ final class ApmeCollector {
         // Fire a category-aware turn_judge for non-code categories.
         if let category, Self.nonCodeCategories.contains(category) {
             runner?.enqueueTurn(runId: runId, turnId: turnId, category: category)
+        }
+
+        // Arm the idle-gap auto-close ONLY when the response was actually
+        // attributed to the active turn. If we routed to a closed turn via
+        // the stale-race fallback (`chatEndTs` < `activeTurn.startedAt`),
+        // the fresh activeTurn is still mid-generation; arming an
+        // idle-gap timer against it would race a closeTask onto a turn
+        // whose real response hasn't even been captured yet. Codex
+        // stop-time review #4 (2026-05-15). The age guard inside
+        // `scheduleIdleGapClose` is a defensive fallback for callers
+        // that don't pass `chatEndTs` (e.g. OpenClaw Gateway); this
+        // earlier gate is the precise fix for the late-callback path.
+        if attributedToActiveTurn {
+            scheduleIdleGapClose()
         }
 
         return turnId

@@ -109,6 +109,18 @@ final class ApmeStore: @unchecked Sendable {
 
     func updateRun(id: String, fields: [String: Any?]) {
         guard let db, !fields.isEmpty else { return }
+        // CRITICAL: every `runs` column that any caller can pass through
+        // `fields` must be listed here. Keys missing from `colMap` are
+        // silently dropped at the `guard let col = colMap[key]` below,
+        // so an omission produces an UPDATE with zero SET clauses (early
+        // return at `setClauses.isEmpty`) and the caller's write is lost
+        // without an error. Previous regression: outcome / outcome_confidence
+        // / efficiency_json / composite_score were missing here, so every
+        // `ApmeOutcomeEngine.evaluateOutcome → store.updateRun` call was a
+        // no-op and the same runs got re-evaluated every 30 s in
+        // `apmeEvalTick` forever (issue surfaced 2026-05-15: 6 stuck
+        // run IDs cycling 217×). Mirror the columns in `readRun` and
+        // `turns` / `tasks` colMaps when extending.
         let colMap: [String: String] = [
             "modelId": "model_id", "projectName": "project_name", "projectPath": "project_path",
             "taskPrompt": "task_prompt", "endedAt": "ended_at",
@@ -117,6 +129,8 @@ final class ApmeStore: @unchecked Sendable {
             "gitBefore": "git_before", "gitAfter": "git_after", "hwProfile": "hw_profile",
             "taskSignals": "task_signals", "taskCategory": "task_category",
             "taskCategorySource": "task_category_source",
+            "outcome": "outcome", "outcomeConfidence": "outcome_confidence",
+            "efficiencyJson": "efficiency_json", "compositeScore": "composite_score",
         ]
         var setClauses: [String] = []
         var values: [Any?] = []

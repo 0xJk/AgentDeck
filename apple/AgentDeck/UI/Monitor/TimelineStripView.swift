@@ -264,80 +264,141 @@ struct TimelineStripView: View {
         let isSelected = index == focusedIndex ||
             (focusedIndex < 0 && index == grouped.count - 1)
         let isChatEnd = group.entry.type == .chatEnd
-        let iconKey = timelineIconKey(for: group.entry.type, status: group.entry.status)
-        let iconColor = timelineTypeColor(for: group.entry.type)
+        // When chat_start has absorbed chat_end via groupConsecutive, the row
+        // represents a completed turn — icon flips to success, rotation stops.
+        let merged = group.mergedCompletion != nil || group.mergedResponse != nil
+        let isCompleted = group.mergedCompletion != nil
+        let iconKey: TimelineIconKey = {
+            if group.entry.type == .chatStart && isCompleted { return .success }
+            return timelineIconKey(for: group.entry.type, status: group.entry.status)
+        }()
+        let iconColor = group.entry.type == .chatStart && isCompleted
+            ? timelineTypeColor(for: .chatEnd)
+            : timelineTypeColor(for: group.entry.type)
         let brandColor = SessionBrand.color(for: group.entry.agentType)
         let countSuffix = group.count > 1 ? " ×\(group.count)" : ""
         let sessionLabel = rowPrefixLabel(for: group.entry)
+        let isRotating: Bool = {
+            if group.entry.type == .chatStart && isCompleted { return false }
+            return timelineIsRotatingEntry(group.entry, siblings: grouped.map(\.entry))
+        }()
 
-        return HStack(spacing: 4) {
-            // Indent turn rows under task headers — visual cue that this turn
-            // belongs to the task above it.
-            if group.entry.taskId != nil {
-                Spacer().frame(width: 8)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                // Indent turn rows under task headers — visual cue that this turn
+                // belongs to the task above it.
+                if group.entry.taskId != nil {
+                    Spacer().frame(width: 8)
+                }
+
+                Text(formatTime(group.entry.date))
+                    .font(.system(size: fontScale.sub, design: .monospaced))
+                    .foregroundStyle(TerrariumHUD.subtext.opacity(isChatEnd ? 0.4 : 0.5))
+
+                // Animate the leading icon when the row is in flight (running
+                // state). `.symbolEffect(.rotate)` would be cleaner but requires
+                // iOS 18 / macOS 15; the project's iOS deploy target is 17.0,
+                // so use a TimelineView-driven rotationEffect that works on iOS 17+.
+                RotatingTimelineIcon(
+                    symbolName: sfSymbol(for: iconKey),
+                    font: .system(size: fontScale.sub, weight: .bold),
+                    color: iconColor.opacity(isChatEnd ? 0.6 : 1),
+                    size: 12,
+                    isRotating: isRotating
+                )
+                .accessibilityLabel(iconKey.rawValue)
+
+                AgentBrandIcon(
+                    agentType: group.entry.agentType,
+                    tint: brandColor.opacity(isChatEnd ? 0.65 : 1),
+                    size: 10,
+                    contentInset: group.entry.agentType == "codex-cli" ? 0.9 : 0.5
+                )
+                .frame(width: 12, height: 12)
+
+                if !sessionLabel.isEmpty {
+                    Text(sessionLabel)
+                        .font(.system(size: fontScale.sub, weight: .medium, design: .monospaced))
+                        .foregroundStyle(TerrariumHUD.subtext.opacity(isChatEnd ? 0.55 : 0.75))
+                        .lineLimit(1)
+                }
+
+                // Strip markdown decorators from the summary so `**bold**` /
+                // `## heading` don't leak into the row as literal characters.
+                // (The regular detail pane / compact inline-expand still renders
+                // the full markdown.)
+                Text(strippedRaw(group.entry.raw) + countSuffix)
+                    .font(.system(size: fontScale.sub, design: .monospaced))
+                    .foregroundStyle(isChatEnd ? TerrariumHUD.text.opacity(0.6) : TerrariumHUD.text)
+                    .lineLimit(allowMultiline ? 2 : 1)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: allowMultiline)
+
+                Spacer()
+
+                // chat_end rows carry a tiny backend pill so the user can see
+                // which provider produced the topic suffix and confirm the
+                // Settings → Timeline summary picker is taking effect. Hidden
+                // for non-chat_end rows and for entries without a kind tag
+                // (legacy on-disk rows, gateway entries, plain heuristic).
+                // For merged turn rows, the pill is rendered on the completion
+                // sub-line instead so it sits next to the "Completed · …" suffix.
+                if isChatEnd && !merged,
+                   let kindLabel = summaryBackendLabel(group.entry.summaryKind) {
+                    Text(kindLabel)
+                        .font(.system(size: max(8, fontScale.label - 1), weight: .semibold, design: .monospaced))
+                        .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            TerrariumHUD.subtext.opacity(0.12),
+                            in: RoundedRectangle(cornerRadius: 3)
+                        )
+                        .accessibilityLabel("Summary backend: \(kindLabel)")
+                }
             }
 
-            Text(formatTime(group.entry.date))
-                .font(.system(size: fontScale.sub, design: .monospaced))
-                .foregroundStyle(TerrariumHUD.subtext.opacity(isChatEnd ? 0.4 : 0.5))
-
-            // Animate the leading icon when the row is in flight (running
-            // state). `.symbolEffect(.rotate)` would be cleaner but requires
-            // iOS 18 / macOS 15; the project's iOS deploy target is 17.0,
-            // so use a TimelineView-driven rotationEffect that works on iOS 17+.
-            RotatingTimelineIcon(
-                symbolName: sfSymbol(for: iconKey),
-                font: .system(size: fontScale.sub, weight: .bold),
-                color: iconColor.opacity(isChatEnd ? 0.6 : 1),
-                size: 12,
-                isRotating: timelineIsRotatingEntry(group.entry, siblings: grouped.map(\.entry))
-            )
-            .accessibilityLabel(iconKey.rawValue)
-
-            AgentBrandIcon(
-                agentType: group.entry.agentType,
-                tint: brandColor.opacity(isChatEnd ? 0.65 : 1),
-                size: 10,
-                contentInset: group.entry.agentType == "codex-cli" ? 0.9 : 0.5
-            )
-            .frame(width: 12, height: 12)
-
-            if !sessionLabel.isEmpty {
-                Text(sessionLabel)
-                    .font(.system(size: fontScale.sub, weight: .medium, design: .monospaced))
-                    .foregroundStyle(TerrariumHUD.subtext.opacity(isChatEnd ? 0.55 : 0.75))
-                    .lineLimit(1)
+            // Sub-line: assistant response body. Indented + dimmed so the
+            // user prompt above stays the primary reading anchor.
+            if let resp = group.mergedResponse {
+                HStack(alignment: .top, spacing: 4) {
+                    Spacer().frame(width: group.entry.taskId != nil ? 64 : 56)
+                    Text("→")
+                        .font(.system(size: fontScale.sub, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(TerrariumHUD.subtext.opacity(0.55))
+                    Text(strippedRaw(resp.raw))
+                        .font(.system(size: fontScale.sub, design: .monospaced))
+                        .foregroundStyle(TerrariumHUD.text.opacity(0.78))
+                        .lineLimit(allowMultiline ? 3 : 1)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: allowMultiline)
+                    Spacer(minLength: 0)
+                }
             }
 
-            // Strip markdown decorators from the summary so `**bold**` /
-            // `## heading` don't leak into the row as literal characters.
-            // (The regular detail pane / compact inline-expand still renders
-            // the full markdown.)
-            Text(strippedRaw(group.entry.raw) + countSuffix)
-                .font(.system(size: fontScale.sub, design: .monospaced))
-                .foregroundStyle(isChatEnd ? TerrariumHUD.text.opacity(0.6) : TerrariumHUD.text)
-                .lineLimit(allowMultiline ? 2 : 1)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: allowMultiline)
-
-            Spacer()
-
-            // chat_end rows carry a tiny backend pill so the user can see
-            // which provider produced the topic suffix and confirm the
-            // Settings → Timeline summary picker is taking effect. Hidden
-            // for non-chat_end rows and for entries without a kind tag
-            // (legacy on-disk rows, gateway entries, plain heuristic).
-            if isChatEnd, let kindLabel = summaryBackendLabel(group.entry.summaryKind) {
-                Text(kindLabel)
-                    .font(.system(size: max(8, fontScale.label - 1), weight: .semibold, design: .monospaced))
-                    .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(
-                        TerrariumHUD.subtext.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 3)
-                    )
-                    .accessibilityLabel("Summary backend: \(kindLabel)")
+            // Sub-line: terminator metadata ("Completed · 2s · topic") +
+            // the summary-backend pill.
+            if let end = group.mergedCompletion {
+                HStack(spacing: 4) {
+                    Spacer().frame(width: group.entry.taskId != nil ? 64 : 56)
+                    Text(strippedRaw(end.raw))
+                        .font(.system(size: fontScale.label, design: .monospaced))
+                        .foregroundStyle(TerrariumHUD.subtext.opacity(0.7))
+                        .lineLimit(1)
+                    if let kindLabel = summaryBackendLabel(end.summaryKind) {
+                        Text(kindLabel)
+                            .font(.system(size: max(8, fontScale.label - 1), weight: .semibold, design: .monospaced))
+                            .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(
+                                TerrariumHUD.subtext.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 3)
+                            )
+                            .accessibilityLabel("Summary backend: \(kindLabel)")
+                    }
+                    Spacer(minLength: 0)
+                }
             }
         }
         .padding(.horizontal, 4)
@@ -449,12 +510,16 @@ struct TimelineStripView: View {
             // Rotate the TASK marker while the task_start has no matching
             // task_end yet — gives an at-a-glance "this task is still running"
             // signal alongside the static `.task` glyph for closed tasks.
+            // Static state shows `list.bullet.rectangle.fill` (task identity);
+            // rotation swaps in `arrow.triangle.2.circlepath` so the spinner
+            // reads as a spinner rather than a flickering square.
             RotatingTimelineIcon(
                 symbolName: sfSymbol(for: .task),
                 font: .system(size: fontScale.body, weight: .bold),
                 color: accent,
                 size: 14,
-                isRotating: timelineIsRotatingEntry(entry, siblings: grouped.map(\.entry))
+                isRotating: timelineIsRotatingEntry(entry, siblings: grouped.map(\.entry)),
+                rotatingSymbolName: sfSymbol(for: .running)
             )
             Text(isEnd ? "TASK END" : "TASK")
                 .font(.system(size: fontScale.sub, weight: .heavy, design: .monospaced))
@@ -470,6 +535,16 @@ struct TimelineStripView: View {
                 .foregroundStyle(TerrariumHUD.text)
                 .lineLimit(1)
             Spacer()
+            // Eval badge — only meaningful on task_end. While the judge is
+            // still running (taskOutcome == nil / "pending"), shows a dim "…"
+            // placeholder so users learn that an evaluation is on the way.
+            if isEnd {
+                TaskEvalBadge(
+                    score: entry.taskScore,
+                    outcome: entry.taskOutcome,
+                    fontSize: fontScale.label
+                )
+            }
             Text(formatTime(entry.date))
                 .font(.system(size: fontScale.label, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext.opacity(0.6))
@@ -582,6 +657,41 @@ struct TimelineStripView: View {
                 }
 
                 Spacer().frame(height: 4)
+
+                // Task eval verdict — rendered between the lifecycle rows and
+                // the raw summary so the score is visible without scrolling.
+                // Only meaningful on task_end; non-task entries skip this view.
+                if group.entry.type == .taskEnd {
+                    HStack(alignment: .top, spacing: 6) {
+                        TaskEvalBadge(
+                            score: group.entry.taskScore,
+                            outcome: group.entry.taskOutcome,
+                            fontSize: fontScale.body
+                        )
+                        if let cat = group.entry.taskCategory, !cat.isEmpty {
+                            Text(cat)
+                                .font(.system(size: fontScale.label, weight: .medium, design: .monospaced))
+                                .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .stroke(TerrariumHUD.subtext.opacity(0.4), lineWidth: 0.5)
+                                )
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 8)
+                    if let summary = group.entry.taskSummary, !summary.isEmpty {
+                        Text(summary)
+                            .font(.system(size: fontScale.label, design: .monospaced))
+                            .foregroundStyle(TerrariumHUD.subtext.opacity(0.85))
+                            .lineLimit(3)
+                            .padding(.horizontal, 8)
+                            .padding(.top, 2)
+                    }
+                    Spacer().frame(height: 4)
+                }
 
                 // Summary
                 Text(group.entry.raw)
@@ -899,19 +1009,9 @@ func timelineSameContext(_ a: TimelineEntry, _ b: TimelineEntry) -> Bool {
     return a.projectName == nil && b.projectName == nil && a.agentType == b.agentType
 }
 
-func timelineIsMeaningfulChatStart(_ entry: TimelineEntry) -> Bool {
-    let raw = entry.raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !raw.isEmpty else { return false }
-    let normalized = raw.lowercased()
-    let syntheticStarts: Set<String> = [
-        "prompt sent",
-        "codex turn started",
-        "starting chat",
-        "connected",
-        "resumed",
-    ]
-    return !syntheticStarts.contains(normalized)
-}
+// `timelineIsMeaningfulChatStart` moved to Model/Timeline.swift so the
+// model-side `groupConsecutive` can apply the same predicate when deciding
+// whether to merge a chat_start with its trailing chat_response/chat_end.
 
 func timelineIsLowSignalEntry(_ entry: TimelineEntry) -> Bool {
     guard entry.agentType == "codex-cli",
@@ -923,11 +1023,67 @@ func timelineIsLowSignalEntry(_ entry: TimelineEntry) -> Bool {
     return ["tool", "tool completed", "unknown", "unknown completed", "exec", "exec completed"].contains(raw)
 }
 
+/// Score + outcome chip rendered at the right edge of a `task_end` header.
+/// The judge runs async, so on the first emit `score == nil` and we render a
+/// dim placeholder ("…"). When the second `task_end` arrives 5–30 s later
+/// the row upserts and the chip materializes with the score + outcome glyph.
+private struct TaskEvalBadge: View {
+    let score: Double?
+    let outcome: String?
+    let fontSize: CGFloat
+
+    var body: some View {
+        let glyph: String
+        let color: Color
+        switch outcome {
+        case "success":
+            glyph = "✓"; color = DesignTokens.UI.ok
+        case "partial":
+            glyph = "△"; color = DesignTokens.UI.attn
+        case "fail":
+            glyph = "✗"; color = DesignTokens.UI.error
+        case "abandoned":
+            // User explicitly closed the task via `agentdeck task cancel`
+            // (or the future detail-pane button). The judge preserves this
+            // outcome instead of overwriting with its score-derived class —
+            // render as a neutral "explicitly stopped" so the row doesn't
+            // masquerade as pending nor read as agent failure.
+            glyph = "⊘"; color = DesignTokens.UI.error.opacity(0.55)
+        default:
+            glyph = "…"; color = TerrariumHUD.subtext.opacity(0.6)
+        }
+        return HStack(spacing: 3) {
+            if let score {
+                Text(String(format: "%.2f", score))
+                    .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(color)
+            }
+            Text(glyph)
+                .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                .foregroundStyle(color)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(
+            RoundedRectangle(cornerRadius: 3)
+                .fill(color.opacity(score == nil ? 0.08 : 0.16))
+        )
+        .accessibilityLabel(score != nil ? "Task score \(String(format: "%.2f", score!)) \(outcome ?? "")" : "Task eval pending")
+    }
+}
+
 /// SF Symbol icon that rotates continuously when `isRotating == true`.
 /// Drives the rotation off `TimelineView(.animation)`'s context date so we
 /// don't need iOS 18's `.symbolEffect(.rotate)` (project iOS deploy target
 /// is 17.0). When `isRotating == false` it short-circuits to a plain Image
 /// so non-running rows pay zero animation cost.
+///
+/// When `rotatingSymbolName` is supplied, that symbol is shown during rotation
+/// and the static `symbolName` returns when rotation stops. This lets callers
+/// keep a semantic glyph for the resting state (e.g. `list.bullet.rectangle.fill`
+/// for the TASK marker) while swapping in a rotation-friendly shape (a
+/// circular arrow) while the spinner is active — a square glyph spinning on
+/// its centre reads as a glitch.
 private struct RotatingTimelineIcon: View {
     let symbolName: String
     let font: Font
@@ -936,6 +1092,8 @@ private struct RotatingTimelineIcon: View {
     /// font (used inside the detail-pane chip where the layout already pads).
     let size: CGFloat?
     let isRotating: Bool
+    /// Optional rotation-only symbol. nil = use `symbolName` in both states.
+    var rotatingSymbolName: String? = nil
 
     private static let rotationPeriod: Double = 1.8 // seconds per full revolution
 
@@ -946,18 +1104,24 @@ private struct RotatingTimelineIcon: View {
                     let elapsed = context.date.timeIntervalSince1970
                     let phase = elapsed.truncatingRemainder(dividingBy: Self.rotationPeriod)
                     let degrees = (phase / Self.rotationPeriod) * 360.0
-                    iconImage
+                    rotatingImage
                         .rotationEffect(.degrees(degrees))
                 }
             } else {
-                iconImage
+                staticImage
             }
         }
         .modifier(SizedFrame(size: size))
     }
 
-    private var iconImage: some View {
+    private var staticImage: some View {
         Image(systemName: symbolName)
+            .font(font)
+            .foregroundStyle(color)
+    }
+
+    private var rotatingImage: some View {
+        Image(systemName: rotatingSymbolName ?? symbolName)
             .font(font)
             .foregroundStyle(color)
     }

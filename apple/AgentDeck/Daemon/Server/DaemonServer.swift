@@ -251,7 +251,20 @@ final class DaemonServer {
     /// `ccChatStart` accounting; without it, chat_end fell back to the same
     /// response prefix as chat_response and the dashboard rendered the turn
     /// as two near-identical lines (one bright ◇, one dimmed ■).
-    private var claudeChatStartTsBySession: [String: Double] = [:]
+    /// FIFO queue of in-flight chat_start ts per session. A single `Double`
+    /// slot used to suffice, but it allowed `chat_start2` to overwrite
+    /// `chat_start1`'s ts before the (delayed) Stop hook for Q1 could
+    /// stamp `chat_end1.startedAt` — the stamp then anchored to Q2 and
+    /// the Timeline-side `sameTurnAnchor` guard accepted the cross-turn
+    /// attach as legit (Codex stop-time review #8, 2026-05-17). Queue:
+    /// append on every UserPromptSubmit, pop-first on every Stop hook —
+    /// FIFO matches Claude Code's serial turn semantics and tolerates
+    /// hook-arrival reorderings. Access only through
+    /// `enqueueClaudeChatStartTs(sid:ts:)`, `dequeueClaudeChatStartTs(sid:)`
+    /// and `clearClaudeChatStartQueue(sid:)`. Backing storage is the
+    /// reusable `ChatStartTsQueue` struct so the queue mechanics
+    /// themselves are unit-testable without spinning the daemon.
+    private var claudeChatStartQueue = ChatStartTsQueue()
 
     /// Bounded topic prefix (≤80 chars) extracted from the last Claude Code
     /// prompt per session. Mirrors the Node bridge's `ccLastPromptText` use
@@ -261,7 +274,11 @@ final class DaemonServer {
     /// later Stop without a fresh UserPromptSubmit cannot reuse a stale
     /// label from a different turn.
     private var claudeLastPromptTopicBySession: [String: String] = [:]
-    private var codexChatStartTsBySession: [String: Double] = [:]
+    /// Codex FIFO mirror of `claudeChatStartQueue`. Same race shape:
+    /// `appendCodexChatStart` overwrote the per-session slot, so a burst
+    /// of new turns could shift the anchor before the matching Stop
+    /// arrived. Access through the codex-prefixed enqueue/dequeue helpers.
+    private var codexChatStartQueue = ChatStartTsQueue()
     private var codexLastPromptTopicBySession: [String: String] = [:]
     private var codexCurrentToolBySession: [String: String] = [:]
 
@@ -516,6 +533,26 @@ final class DaemonServer {
             collector.runner = runner
             gatewayCollector.runner = runner
 
+            // Wire task lifecycle → timeline. The collector mints task_start /
+            // task_end DaemonTimelineEntry rows on TodoWrite-complete /
+            // /clear / session_end. The closure persists them via the same
+            // path as chat/tool rows: append to the on-disk store and push
+            // through the live WS broadcast (`claudeCodeEntryDict` carries
+            // the new taskId/boundarySignal keys added in F1). Without this
+            // the dashboard never sees a task_end and the leading task icon
+            // spins forever after `/clear`. Mirrors emitTimeline in
+            // bridge/src/apme/index.ts:72-103.
+            let timelineEmit: (DaemonTimelineEntry) -> Void = { [weak self] entry in
+                guard let self else { return }
+                Task { await self.timelineStore.add(entry) }
+                self.broadcastRaw([
+                    "type": "timeline_event",
+                    "entry": self.claudeCodeEntryDict(entry),
+                ] as [String: Any])
+            }
+            collector.emitTimelineEntry = timelineEmit
+            gatewayCollector.emitTimelineEntry = timelineEmit
+
             // Register the eval-result broadcaster. Mirrors the TS daemon's
             // `apme.runner.onResult` handler in bridge/src/daemon-server.ts
             // (lines 902-974). Persists turn-level outcome/composite, emits
@@ -525,6 +562,57 @@ final class DaemonServer {
                     guard let self else { return }
                     Task { @MainActor in
                         self.handleApmeResult(result)
+                    }
+                }
+            }
+
+            // Register the task-evaluated handler. When the task_judge writes
+            // its rollup (5–30 s after the original task_end emit), upsert the
+            // existing `task_end` timeline row by taskId so dashboard task
+            // headers gain a score + outcome badge without a duplicate row.
+            // Mirrors `runner.onTaskEvaluated` wiring in
+            // bridge/src/apme/index.ts.
+            Task {
+                await runner.onTaskEvaluated { [weak self] event in
+                    guard let self else { return }
+                    // The actor listener runs in a nonisolated context but
+                    // both `broadcastRaw` and `claudeCodeEntryDict` live on
+                    // the main actor — hop via `Task { @MainActor in ... }`
+                    // for parity with the `onResult` wiring above.
+                    Task { @MainActor in
+                        let signalLabel: String
+                        switch event.boundarySignal {
+                        case "todo_complete": signalLabel = "TODO done"
+                        case "clear":         signalLabel = "/clear"
+                        case "session_end":   signalLabel = "Session end"
+                        case "manual":        signalLabel = "Manual"
+                        case "idle_gap":      signalLabel = "Idle gap"
+                        default:              signalLabel = "Task end"
+                        }
+                        let durationSec = max(0, (event.endedAt - event.startedAt) / 1000)
+                        let updated = DaemonTimelineEntry(
+                            ts: Double(event.endedAt),
+                            type: "task_end",
+                            raw: "\(signalLabel) · \(durationSec)s",
+                            agentType: event.agentType,
+                            projectName: event.projectName,
+                            sessionId: event.sessionId,
+                            startedAt: Double(event.startedAt),
+                            endedAt: Double(event.endedAt),
+                            runId: event.runId,
+                            taskId: event.taskId,
+                            boundarySignal: event.boundarySignal,
+                            taskScore: event.compositeScore,
+                            taskOutcome: event.outcome,
+                            taskCategory: event.taskCategory,
+                            taskSummary: event.summary
+                        )
+                        Task { await self.timelineStore.upsert(updated) }
+                        self.broadcastRaw([
+                            "type": "timeline_event",
+                            "entry": self.claudeCodeEntryDict(updated),
+                            "upsert": true,
+                        ] as [String: Any])
                     }
                 }
             }
@@ -1024,6 +1112,46 @@ final class DaemonServer {
         await httpServer.post("/shutdown") { [weak self] _ in
             Task { @MainActor in await self?.shutdown() }
             return .json(["status": "shutting_down"])
+        }
+
+        // Manual APME task-close endpoint — mirrors the Node bridge
+        // POST /task/close route. Drives `closeTaskExternal` on the Swift
+        // collector. Body: { sessionId?: string, signal?: "manual",
+        // outcome?: "success"|"fail"|"partial"|"abandoned" }. The
+        // sessionId defaults to the daemon's active APME session id (which
+        // for the App Store build is the daemon meta-session — collector
+        // currently tracks a single active task per process).
+        await httpServer.post("/task/close") { [weak self] request in
+            guard let self else { return .json(["error": "daemon offline"], status: 503) }
+            var signal = "manual"
+            var outcome: String? = nil
+            if let body = request.body,
+               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                if let s = json["signal"] as? String { signal = s }
+                if let o = json["outcome"] as? String,
+                   ["success", "fail", "partial", "abandoned"].contains(o) {
+                    outcome = o
+                }
+            }
+            // Both APME collectors track their own active task (Claude Code
+            // hooks vs OpenClaw Gateway). Try gateway first because the
+            // macOS app's most common use is OpenClaw chats; fall back to
+            // the Claude collector when no gateway task is active. Returns
+            // 404 only when neither collector has anything to close.
+            let result: (closed: Bool, where: String) = await MainActor.run {
+                if let gw = self.apmeCollectorGateway,
+                   gw.closeTaskExternal(boundarySignal: signal, outcome: outcome) {
+                    return (true, "gateway")
+                }
+                if let cc = self.apmeCollector,
+                   cc.closeTaskExternal(boundarySignal: signal, outcome: outcome) {
+                    return (true, "claude")
+                }
+                return (false, "none")
+            }
+            var responseBody: [String: Any] = ["closed": result.closed, "signal": signal, "source": result.where]
+            if let outcome = outcome { responseBody["outcome"] = outcome }
+            return .json(responseBody, status: result.closed ? 200 : 404)
         }
 
         await httpServer.post("/hook") { [weak self] request in
@@ -1675,7 +1803,7 @@ final class DaemonServer {
         cachedSessions.removeAll { $0.id == sessionId }
         codexProcessingTouchedAtBySession.removeValue(forKey: sessionId)
         lastTerminalCodexEventBySession.removeValue(forKey: sessionId)
-        codexChatStartTsBySession.removeValue(forKey: sessionId)
+        clearCodexChatStartQueue(sid: sessionId)
         codexLastPromptTopicBySession.removeValue(forKey: sessionId)
         codexCurrentToolBySession.removeValue(forKey: sessionId)
         lastHookAtByPushedSession.removeValue(forKey: sessionId)
@@ -2084,10 +2212,10 @@ final class DaemonServer {
                 cachedSessions.removeAll { $0.id == sessionId }
                 codexProcessingTouchedAtBySession.removeValue(forKey: sessionId)
                 lastTerminalCodexEventBySession.removeValue(forKey: sessionId)
-                codexChatStartTsBySession.removeValue(forKey: sessionId)
+                clearCodexChatStartQueue(sid: sessionId)
                 codexLastPromptTopicBySession.removeValue(forKey: sessionId)
                 codexCurrentToolBySession.removeValue(forKey: sessionId)
-                claudeChatStartTsBySession.removeValue(forKey: sessionId)
+                clearClaudeChatStartQueue(sid: sessionId)
                 claudeLastPromptTopicBySession.removeValue(forKey: sessionId)
                 broadcastSessionsList()
             }
@@ -2301,10 +2429,10 @@ final class DaemonServer {
             lastHookAtByPushedSession.removeValue(forKey: sid)
             lastTerminalCodexEventBySession.removeValue(forKey: sid)
             codexProcessingTouchedAtBySession.removeValue(forKey: sid)
-            codexChatStartTsBySession.removeValue(forKey: sid)
+            clearCodexChatStartQueue(sid: sid)
             codexLastPromptTopicBySession.removeValue(forKey: sid)
             codexCurrentToolBySession.removeValue(forKey: sid)
-            claudeChatStartTsBySession.removeValue(forKey: sid)
+            clearClaudeChatStartQueue(sid: sid)
             claudeLastPromptTopicBySession.removeValue(forKey: sid)
             if currentHookSessionId == sid { currentHookSessionId = nil }
             if userFocusedSessionId == sid { userFocusedSessionId = nil }
@@ -2682,10 +2810,15 @@ final class DaemonServer {
                 guard let self else { return }
                 let lastEntry = await self.timelineStore.getLastEntry(type: "chat_end")
                 let responseText = (lastEntry?.detail ?? lastEntry?.raw) ?? ""
+                let chatEndTs = lastEntry?.ts
                 await MainActor.run {
-                    // APME: record the response even when voice assistant is inactive
+                    // APME: record the response even when voice assistant is inactive.
+                    // `chatEndTs` lets the collector reject the late-callback
+                    // race where a follow-up user_prompt_submit has already
+                    // rotated activeTurn to a fresh turn — without it, this
+                    // response would clobber the wrong turn's record.
                     if !responseText.isEmpty {
-                        self.apmeCollector?.setTurnResponse(responseText)
+                        self.apmeCollector?.setTurnResponse(responseText, chatEndTs: chatEndTs)
                     }
                     if self.voiceAssistant.state == .processing {
                         self.voiceAssistant.handleResponse(responseText.isEmpty ? "완료했습니다." : responseText)
@@ -2869,25 +3002,20 @@ final class DaemonServer {
                     }
                 } else if entryType == "tool_exec" {
                     // session.tool entries arrive via sessions.messages.subscribe.
-                    // Keep gatewayCurrentTool in sync AND wire tool events to APME.
-                    let toolName = entry["raw"] as? String
-                    let status = entry["status"] as? String
-                    let hasOutput = entry["detail"] != nil
-                    if status == "complete" || status == "error" || hasOutput {
+                    // Routing + payload extraction lives in the static helper
+                    // below so it stays unit-testable and so the start/end
+                    // discrimination logic is in one explicit place. State
+                    // machine bookkeeping (gatewayCurrentTool / processing
+                    // transition) is the only handler-local concern left here.
+                    let routed = Self.gatewayToolHookFromEntry(entry)
+                    let toolName = routed.data["tool_name"] as? String ?? ""
+                    if routed.event == "tool_end" {
                         if gatewayCurrentTool == toolName { gatewayCurrentTool = nil }
-                        apmeCollectorGateway?.handleHook(event: "tool_end", data: [
-                            "session_id": "openclaw-gateway",
-                            "tool_name": toolName as Any,
-                        ])
                     } else {
-                        // pending / no status yet — tool is starting
                         gatewayCurrentTool = toolName
                         if gatewaySessionState == "idle" { gatewaySessionState = "processing" }
-                        apmeCollectorGateway?.handleHook(event: "tool_start", data: [
-                            "session_id": "openclaw-gateway",
-                            "tool_name": toolName as Any,
-                        ])
                     }
+                    apmeCollectorGateway?.handleHook(event: routed.event, data: routed.data)
                     broadcastStateUpdate()
                 }
             }
@@ -4161,6 +4289,140 @@ final class DaemonServer {
 
     // MARK: - Helpers
 
+    /// Convert an OpenClaw Gateway `tool_exec` timeline entry dict into the
+    /// `(event, data)` shape the APME collector hook expects.
+    ///
+    /// Two responsibilities concentrated here so the routing decision stays
+    /// testable and the call site stays small:
+    ///
+    /// 1. **Field extraction.** OpenClawAdapter exposes the real tool
+    ///    name/input/output as out-of-band dict keys (`toolName`,
+    ///    `toolInput`, `toolOutput`) alongside the human-readable `raw`
+    ///    placeholder ("{name} · {status}"). Prefer the structured fields;
+    ///    fall back to splitting `raw` on " · " for legacy entries that
+    ///    pre-date the extras dict. Mirror the Claude Code hook payload
+    ///    shape so existing ApmeCollector branches (recordStep,
+    ///    allTodosCompleted, mergeEfficiencyJson) read the same keys.
+    ///
+    /// 2. **Start vs end routing.** OpenClaw's start-of-tool emit carries
+    ///    `status="running"` plus an `input` payload — the adapter builds
+    ///    that into a non-empty `detail` blob, so an `entry["detail"] != nil`
+    ///    "has output" heuristic mis-routes every tool start as `tool_end`
+    ///    (Codex stop-time review #5, 2026-05-16, surfaced in sqlite as
+    ///    `tool · running` rows being marked `tool_end`). Strict rules:
+    ///    - `status in {"complete","error","failed"}` → end (agent declared finish)
+    ///    - non-nil `toolOutput` → end (real result captured)
+    ///    - everything else (`status="running"/"pending"`, nil status, etc.) → start
+    ///
+    /// Static + nonisolated so unit tests can drive the function with any
+    /// dict shape without instantiating the full daemon.
+    static nonisolated func gatewayToolHookFromEntry(_ entry: [String: Any]) -> (event: String, data: [String: Any]) {
+        let rawString = (entry["raw"] as? String) ?? ""
+        let toolName: String = {
+            if let explicit = entry["toolName"] as? String, !explicit.isEmpty { return explicit }
+            // Fall back to splitting the legacy "{name} · {status}" shape.
+            return rawString.components(separatedBy: " · ").first ?? rawString
+        }()
+        let status = entry["status"] as? String
+        // Swift dicts that come from JSON wrap explicit nulls as `NSNull`,
+        // so `dict["k"]` returns `Optional.some(NSNull())` — non-nil at the
+        // Optional level. The fast `entry["toolOutput"] != nil` check used
+        // to misread `"toolOutput": null` as "real output present" and
+        // route a still-running tool as `tool_end` (Codex stop-time review
+        // #6, 2026-05-16). Treat NSNull as absent here defensively even
+        // though `OpenClawAdapter.firstJSONValue` already filters it on
+        // the producer side — keeps the router robust to any future
+        // emitter that forgets the same sanitization.
+        let toolInput = Self.unwrapJSONValue(entry["toolInput"])
+        let toolOutput = Self.unwrapJSONValue(entry["toolOutput"])
+
+        var data: [String: Any] = [
+            "session_id": "openclaw-gateway",
+            "tool_name": toolName,
+        ]
+        if let toolInput { data["tool_input"] = toolInput }
+        if let toolOutput { data["tool_response"] = toolOutput }
+        if let status { data["status"] = status }
+
+        let isEnd: Bool = {
+            if status == "complete" || status == "error" || status == "failed" { return true }
+            if toolOutput != nil { return true }
+            return false
+        }()
+        return (event: isEnd ? "tool_end" : "tool_start", data: data)
+    }
+
+    /// Return the dictionary value only when it's a real Swift value —
+    /// nil for both "key absent" and "key present with JSON `null`"
+    /// (which arrives as `NSNull`). Used by `gatewayToolHookFromEntry`
+    /// so a null `toolOutput` from a producer that forgot to filter NSNull
+    /// doesn't trip the routing or leak into the APME payload.
+    static nonisolated func unwrapJSONValue(_ value: Any?) -> Any? {
+        guard let value else { return nil }
+        if value is NSNull { return nil }
+        return value
+    }
+
+    // MARK: - chat_start ts FIFO queues
+    //
+    // sessionId-keyed FIFO queue: append on each UserPromptSubmit, pop-first
+    // on each Stop hook. Replaces the previous single-slot dict which let a
+    // fast follow-up chat_start overwrite the anchor that the next Stop
+    // hook should have stamped on the still-pending turn (Codex review #8).
+
+    // Wrapper accessors for the two `ChatStartTsQueue` instances. Kept
+    // as methods (not direct queue access) so the call sites read as
+    // "enqueue/dequeue per session" rather than "mutate this struct in
+    // place" — which is the historic naming the test target asserts on.
+    func enqueueClaudeChatStartTs(sid: String, ts: Double) {
+        claudeChatStartQueue.enqueue(sid: sid, ts: ts)
+    }
+
+    func dequeueClaudeChatStartTs(sid: String) -> Double? {
+        claudeChatStartQueue.dequeue(sid: sid)
+    }
+
+    func clearClaudeChatStartQueue(sid: String) {
+        claudeChatStartQueue.clear(sid: sid)
+    }
+
+    func claudeChatStartQueueDepth(sid: String) -> Int {
+        claudeChatStartQueue.depth(sid: sid)
+    }
+
+    func enqueueCodexChatStartTs(sid: String, ts: Double) {
+        codexChatStartQueue.enqueue(sid: sid, ts: ts)
+    }
+
+    /// **Latest** in-flight Codex chat_start ts (tail, not head). Used
+    /// by mid-turn stamps like `tool_exec.startedAt` — the tool belongs
+    /// to whatever turn is currently generating, which is the most
+    /// recently enqueued one. Returning the head (oldest pending)
+    /// caused follow-up turn events to attach to the previous turn's
+    /// row (Codex stop-time review #10, 2026-05-17).
+    private func peekLatestCodexChatStartTs(sid: String) -> Double? {
+        codexChatStartQueue.peekTail(sid: sid)
+    }
+
+    /// **Latest** in-flight Claude Code chat_start ts. Same role as the
+    /// Codex variant — used wherever a mid-turn row needs to anchor to
+    /// the currently active turn, not the oldest pending one.
+    private func peekLatestClaudeChatStartTs(sid: String) -> Double? {
+        claudeChatStartQueue.peekTail(sid: sid)
+    }
+
+    func dequeueCodexChatStartTs(sid: String) -> Double? {
+        codexChatStartQueue.dequeue(sid: sid)
+    }
+
+    func clearCodexChatStartQueue(sid: String) {
+        codexChatStartQueue.clear(sid: sid)
+    }
+
+    func codexChatStartQueueDepth(sid: String) -> Int {
+        codexChatStartQueue.depth(sid: sid)
+    }
+
     private func sessionToDict(_ s: DaemonSessionEntry) -> [String: Any] {
         var d: [String: Any] = ["id": s.id, "port": s.port, "alive": true, "projectName": s.projectName]
         if let a = s.agentType { d["agentType"] = a }
@@ -4499,29 +4761,19 @@ final class DaemonServer {
         guard let sessionId else { return }
         let prompt = claudeCodePromptText(from: json)
         guard !prompt.isEmpty, prompt != "Codex turn started" else { return }
-        if let existingTs = codexChatStartTsBySession[sessionId] {
-            var update = DaemonTimelineEntry(
-                ts: existingTs,
-                type: "chat_start",
-                raw: String(prompt.prefix(200)),
-                detail: prompt.count > 100 ? String(prompt.prefix(1000)) : nil,
-                approvalId: nil,
-                status: nil,
-                agentType: "codex-cli",
-                repeatCount: nil,
-                automated: nil
-            )
-            update.sessionId = sessionId
-            update.projectName = pushedSessionsById[sessionId]?.projectName
-            update.startedAt = existingTs
-            if let topic = Self.extractTopicHint(from: prompt) {
-                codexLastPromptTopicBySession[sessionId] = topic
-            }
-            Task { await timelineStore.upsert(update) }
-            broadcastRaw(["type": "timeline_event", "entry": claudeCodeEntryDict(update), "upsert": true] as [String: Any])
-            return
-        }
-        codexChatStartTsBySession.removeValue(forKey: sessionId)
+        // Every prompt-bearing chat_start event opens a fresh turn.
+        // Codex's turnStarted span carries `raw == "Codex turn started"`
+        // and is filtered by the guard above, so this function only ever
+        // sees the prompt event itself — one per turn.
+        //
+        // The previous "peek queue head → upsert" branch overwrote Q1's
+        // pending row with Q2's prompt whenever a follow-up arrived
+        // before Q1's Stop hook drained the queue: `peek` always returns
+        // the oldest pending ts, so the upsert mutated the wrong row
+        // (Codex stop-time review #9, 2026-05-17). Dropped entirely;
+        // each prompt enqueues a new ts and emits a new row, and the
+        // FIFO `ChatStartTsQueue` keeps every in-flight turn's anchor
+        // intact for its own Stop hook to claim.
         codexLastPromptTopicBySession.removeValue(forKey: sessionId)
 
         let ts = Date().timeIntervalSince1970 * 1000
@@ -4541,7 +4793,7 @@ final class DaemonServer {
         entry.sessionId = sessionId
         entry.projectName = pushedSessionsById[sessionId]?.projectName
         entry.startedAt = ts
-        codexChatStartTsBySession[sessionId] = ts
+        enqueueCodexChatStartTs(sid: sessionId, ts: ts)
         if let topic = Self.extractTopicHint(from: prompt) {
             codexLastPromptTopicBySession[sessionId] = topic
         }
@@ -4584,7 +4836,11 @@ final class DaemonServer {
         )
         entry.sessionId = sessionId
         entry.projectName = pushedSessionsById[sessionId]?.projectName
-        entry.startedAt = codexChatStartTsBySession[sessionId]
+        // tool_exec rows are intra-turn, so peek the **latest** pending
+        // chat_start ts (tail). The Stop hook owns the dequeue (head).
+        // Returning the head here would attach this tool to a previous
+        // turn whose Stop hook hasn't fired yet.
+        entry.startedAt = peekLatestCodexChatStartTs(sid: sessionId)
         Task { await timelineStore.add(entry) }
         broadcastRaw(["type": "timeline_event", "entry": claudeCodeEntryDict(entry)] as [String: Any])
     }
@@ -4593,14 +4849,19 @@ final class DaemonServer {
     private func appendCodexChatEnd(json: [String: Any], sessionId: String?) {
         guard let sessionId else { return }
         let now = Date().timeIntervalSince1970 * 1000
-        let startTs = codexChatStartTsBySession[sessionId]
+        // Dequeue the active turn's ts up front so both chat_response
+        // and chat_end stamp the same anchor and a delayed peer Stop
+        // hook can't reach in mid-handler.
+        let startTs = dequeueCodexChatStartTs(sid: sessionId)
         let assistantText = (json["last_assistant_message"] as? String)
             ?? (json["response"] as? String)
             ?? (json["output"] as? String)
             ?? (json["result"] as? String)
             ?? ""
         guard startTs != nil || !assistantText.isEmpty else {
-            codexChatStartTsBySession.removeValue(forKey: sessionId)
+            // No matching turn AND no response body — nothing to anchor;
+            // wipe only the session-scoped topic / tool to clear stale
+            // labels. The queue head was already popped above.
             codexLastPromptTopicBySession.removeValue(forKey: sessionId)
             codexCurrentToolBySession.removeValue(forKey: sessionId)
             return
@@ -4662,8 +4923,8 @@ final class DaemonServer {
         }
 
         // Cache cleanup synchronous on main actor — captured values above
-        // are by-value so the in-flight Task is unaffected.
-        codexChatStartTsBySession.removeValue(forKey: sessionId)
+        // are by-value so the in-flight Task is unaffected. The chat_start
+        // ts queue was already popped at the top of this handler.
         codexLastPromptTopicBySession.removeValue(forKey: sessionId)
         codexCurrentToolBySession.removeValue(forKey: sessionId)
     }
@@ -4673,15 +4934,13 @@ final class DaemonServer {
     /// dashboard timeline while OpenClaw/OpenCode sessions showed full turns.
     @MainActor
     private func appendClaudeCodeChatStart(json: [String: Any], sessionId: String?) {
-        // Invalidate any residual per-turn state up front. A previous turn
-        // that ended abnormally (Stop hook never fired, daemon restarted
-        // mid-turn) would otherwise leave its topic + start timestamp in the
-        // session-keyed caches; an unparseable new prompt (empty or yielding
-        // no topic) then falls through this function's `guard`/topic-extract
-        // branches without overwriting them, leaking the prior turn's label
-        // into this turn's chat_end row.
+        // Reset the per-session topic cache so a stale label from an
+        // abnormally-closed prior turn doesn't leak into this row. We do
+        // NOT wipe the chat_start ts queue here — that would discard an
+        // in-flight turn's anchor before its Stop hook arrives. The
+        // chat_end handler pops the queue itself, and session_end /
+        // stale-session paths call `clearClaudeChatStartQueue` explicitly.
         if let sid = sessionId {
-            claudeChatStartTsBySession.removeValue(forKey: sid)
             claudeLastPromptTopicBySession.removeValue(forKey: sid)
         }
         let prompt = claudeCodePromptText(from: json)
@@ -4706,11 +4965,9 @@ final class DaemonServer {
         entry.projectName = pushedSessionsById[sessionId ?? ""]?.projectName
         entry.startedAt = ts
         if let sid = sessionId {
-            claudeChatStartTsBySession[sid] = ts
-            // Store only the extracted topic so we never retain an unbounded
-            // amount of sensitive prompt text. The cache was already wiped
-            // for this session at the top of this function, so a nil topic
-            // simply leaves the entry absent — never stale.
+            // FIFO append — a delayed Stop hook for a prior turn pops
+            // *that* turn's ts off the head, not this fresh one.
+            enqueueClaudeChatStartTs(sid: sid, ts: ts)
             if let topic = Self.extractTopicHint(from: prompt) {
                 claudeLastPromptTopicBySession[sid] = topic
             }
@@ -4729,6 +4986,14 @@ final class DaemonServer {
         let assistantText = (json["last_assistant_message"] as? String) ?? ""
         let now = Date().timeIntervalSince1970 * 1000
         let projectName = pushedSessionsById[sessionId ?? ""]?.projectName
+        // Pop the queue **once** at the top of the handler so both
+        // chat_response and chat_end stamp the same anchor — and so a
+        // delayed follow-up Stop hook for a previous turn can't reach in
+        // and pull the active turn's ts out from under us mid-handler.
+        // Captured by value into the async Task body below; the daemon's
+        // queue is no longer mutated after this point in the current
+        // turn's emit flow.
+        let startTs: Double? = sessionId.flatMap { dequeueClaudeChatStartTs(sid: $0) }
         if !assistantText.isEmpty {
             let snippet = String(assistantText.prefix(200))
             let detail: String? = assistantText.count > 100
@@ -4747,7 +5012,7 @@ final class DaemonServer {
             )
             respEntry.sessionId = sessionId
             respEntry.projectName = projectName
-            respEntry.startedAt = sessionId.flatMap { claudeChatStartTsBySession[$0] }
+            respEntry.startedAt = startTs
             respEntry.endedAt = now
             Task { await timelineStore.add(respEntry) }
             broadcastRaw([
@@ -4761,7 +5026,6 @@ final class DaemonServer {
         // not render two near-identical lines (the dimmed chat_end row used
         // to repeat chat_response's response-text prefix verbatim, which read
         // as a duplicate at row-level opacity 0.4–0.6).
-        let startTs = sessionId.flatMap { claudeChatStartTsBySession[$0] }
         let topicFromPrompt = sessionId.flatMap { claudeLastPromptTopicBySession[$0] }
         let providerRaw = AppPreferences.shared.timelineSummaryProvider
         let provider = TimelineSummarizer.SummaryProvider(rawValue: providerRaw) ?? .auto
@@ -4814,10 +5078,13 @@ final class DaemonServer {
 
         // Cache cleanup runs synchronously so a follow-up turn that fires
         // before the Task above completes still gets a clean session state.
-        // The Task captured `startTs` / `topicFromPrompt` by value so the
-        // wipe here doesn't affect the in-flight chat_end entry.
+        // The Task captured `startTs` / `topicFromPrompt` by value, so
+        // mutating the dict here doesn't affect the in-flight chat_end
+        // entry. We don't touch the chat_start ts queue — `dequeueClaude
+        // ChatStartTs` at the top already consumed exactly this turn's
+        // slot, and wiping the whole queue would discard pending peers'
+        // anchors (the race shape Codex #8 surfaced).
         if let sid = sessionId {
-            claudeChatStartTsBySession.removeValue(forKey: sid)
             claudeLastPromptTopicBySession.removeValue(forKey: sid)
         }
     }
@@ -4949,6 +5216,21 @@ final class DaemonServer {
         // their own UI checks against summaryKind ("none" suppression, future
         // backend pill) silently no-op.
         if let v = e.summaryKind { dict["summaryKind"] = v }
+        // Task hierarchy keys — `timelineIsInFlightTask` in the dashboard
+        // pairs task_start ↔ task_end on `taskId`. Drop them from the live
+        // broadcast and the pair lookup fails (UI guard returns false on
+        // nil) so the leading task icon keeps spinning after /clear.
+        if let v = e.taskId { dict["taskId"] = v }
+        if let v = e.boundarySignal { dict["boundarySignal"] = v }
+        // Task-judge verdict, attached on the SECOND `task_end` emit (5–30 s
+        // after the boundary). Without these on the broadcast dict, the
+        // dashboard task header never gets a score badge even though the
+        // judge wrote the row to disk. Mirrors the four task* fields on
+        // shared/src/timeline.ts::TimelineEntry.
+        if let v = e.taskScore { dict["taskScore"] = v }
+        if let v = e.taskOutcome { dict["taskOutcome"] = v }
+        if let v = e.taskCategory { dict["taskCategory"] = v }
+        if let v = e.taskSummary { dict["taskSummary"] = v }
         return dict
     }
 
@@ -4971,7 +5253,26 @@ final class DaemonServer {
         entry.startedAt = (rawEntry["startedAt"] as? NSNumber)?.doubleValue ?? rawEntry["startedAt"] as? Double
         entry.endedAt = (rawEntry["endedAt"] as? NSNumber)?.doubleValue ?? rawEntry["endedAt"] as? Double
         entry.summaryKind = rawEntry["summaryKind"] as? String
-        Task { await timelineStore.add(entry) }
+        entry.taskId = rawEntry["taskId"] as? String
+        entry.boundarySignal = rawEntry["boundarySignal"] as? String
+        // Task-judge verdict fields — mirror the four task* keys on the
+        // encode side (`claudeCodeEntryDict`). Without these, Gateway-origin
+        // task_end rows with score data would silently drop their badge
+        // metadata on the way into the store.
+        entry.taskScore = (rawEntry["taskScore"] as? NSNumber)?.doubleValue ?? rawEntry["taskScore"] as? Double
+        entry.taskOutcome = rawEntry["taskOutcome"] as? String
+        entry.taskCategory = rawEntry["taskCategory"] as? String
+        entry.taskSummary = rawEntry["taskSummary"] as? String
+        // Gateway-origin task_end rows may arrive twice (initial boundary +
+        // judge follow-up). Route through `upsert` so the score-bearing
+        // follow-up merges with the existing row by (type, taskId) instead
+        // of stacking a duplicate. Non-task entries fall through to `add`
+        // because their stable key is (ts, type).
+        if entry.type == "task_end", entry.taskId != nil {
+            Task { await timelineStore.upsert(entry) }
+        } else {
+            Task { await timelineStore.add(entry) }
+        }
         broadcastRaw(["type": "timeline_event", "entry": rawEntry] as [String: Any])
     }
 
@@ -5051,6 +5352,60 @@ final class DaemonServer {
                 "tuner: accepted=\(outcome.accepted) reason=\(outcome.reason) new_version=\(outcome.newVersion.map { String($0) } ?? "n/a")"
             )
         }
+    }
+}
+
+// MARK: - chat_start ts FIFO queue (per-session)
+//
+// Pulled out of `DaemonServer` so the queue mechanics can be unit-tested
+// in isolation. The bug shape Codex stop-time review #8 surfaced is a
+// pure data-structure concern (per-session FIFO vs single slot) — gating
+// its correctness on the full daemon constructor would have made the
+// regression test prohibitively heavy.
+
+struct ChatStartTsQueue: Equatable, Sendable {
+    private var queues: [String: [Double]] = [:]
+
+    mutating func enqueue(sid: String, ts: Double) {
+        queues[sid, default: []].append(ts)
+    }
+
+    /// Pop the *oldest* pending ts for `sid`. nil if the queue is empty.
+    mutating func dequeue(sid: String) -> Double? {
+        guard var queue = queues[sid], !queue.isEmpty else { return nil }
+        let ts = queue.removeFirst()
+        if queue.isEmpty {
+            queues.removeValue(forKey: sid)
+        } else {
+            queues[sid] = queue
+        }
+        return ts
+    }
+
+    /// Look at the head (oldest pending) without consuming. Use for
+    /// FIFO-shape inspections — e.g. "which Stop hook is up next".
+    func peek(sid: String) -> Double? {
+        queues[sid]?.first
+    }
+
+    /// Look at the tail (most-recently enqueued) without consuming.
+    /// Used by mid-turn handlers (tool_exec, etc.) that need to anchor
+    /// to the *currently active* turn — under our serial-turn model
+    /// the latest enqueue is the one Codex is generating against right
+    /// now, even if older turns are still queued waiting for their
+    /// Stop hook (Codex stop-time review #10, 2026-05-17). Without
+    /// `peekTail`, a Q2 tool_exec would stamp Q1's ts and attach to
+    /// the previous turn's row.
+    func peekTail(sid: String) -> Double? {
+        queues[sid]?.last
+    }
+
+    mutating func clear(sid: String) {
+        queues.removeValue(forKey: sid)
+    }
+
+    func depth(sid: String) -> Int {
+        queues[sid]?.count ?? 0
     }
 }
 

@@ -1345,23 +1345,25 @@ actor OpenClawAdapter {
             ?? nested?["name"] as? String
             ?? nested?["tool"] as? String
             ?? "tool"
-        let status = payload["status"] as? String
-            ?? payload["state"] as? String
-            ?? nested?["status"] as? String
+        let status = (payload["status"] as? String)
+            ?? (payload["state"] as? String)
+            ?? (nested?["status"] as? String)
         // Include tool input summary in detail so the timeline row shows what
         // the tool was actually called with, not just its name.
-        let input = payload["input"]
-            ?? payload["arguments"]
-            ?? payload["args"]
-            ?? payload["tool_input"]
-            ?? nested?["input"]
-            ?? nested?["arguments"]
-        let output = payload["output"]
-            ?? payload["result"]
-            ?? payload["error"]
-            ?? nested?["output"]
-            ?? nested?["result"]
-            ?? nested?["error"]
+        //
+        // `??` short-circuits on `Optional.some(NSNull())`, so a JSON
+        // `"input": null` payload would still "succeed" the first
+        // candidate and propagate NSNull downstream. `Self.firstJSONValue`
+        // unwraps NSNull as absent, so the fallback chain skips past
+        // explicit-null fields the way the field-not-present case does.
+        let input = Self.firstJSONValue([
+            payload["input"], payload["arguments"], payload["args"],
+            payload["tool_input"], nested?["input"], nested?["arguments"],
+        ])
+        let output = Self.firstJSONValue([
+            payload["output"], payload["result"], payload["error"],
+            nested?["output"], nested?["result"], nested?["error"],
+        ])
         var detailParts: [String] = []
         if let status { detailParts.append("status: \(status)") }
         if let inputSummary = Self.compactDebugValue(input, max: 600) {
@@ -1384,10 +1386,48 @@ actor OpenClawAdapter {
             automated: nil,
             runId: currentRunId
         )
-        emitTimelineEntry(entry)
+        // Expose structured tool fields alongside the placeholder `raw` so
+        // downstream consumers (DaemonServer → APME hook → steps table)
+        // get the real tool name + input/output instead of parsing
+        // "{name} · {status}" out of `raw`. Without these the steps table
+        // was capturing tool_name="tool" placeholder and an empty payload,
+        // making OpenClaw runs uneval­uable on the dashboard and in APME.
+        //
+        // `firstJSONValue` upstream already strips NSNull, so `input` /
+        // `output` are guaranteed nil-or-value here — preventing an
+        // `output: null` JSON payload from leaking through as a
+        // non-nil `Optional.some(NSNull())` extras value that the router
+        // would then mis-classify as "has output → tool_end".
+        var extras: [String: Any] = ["toolName": toolName]
+        if let input, JSONSerialization.isValidJSONObject(["v": input]) {
+            extras["toolInput"] = input
+        } else if let inputSummary = Self.compactDebugValue(input, max: 4000) {
+            extras["toolInput"] = inputSummary
+        }
+        if let output, JSONSerialization.isValidJSONObject(["v": output]) {
+            extras["toolOutput"] = output
+        } else if let outputSummary = Self.compactDebugValue(output, max: 4000) {
+            extras["toolOutput"] = outputSummary
+        }
+        emitTimelineEntry(entry, extras: extras)
     }
 
-    private func emitTimelineEntry(_ entry: DaemonTimelineEntry) {
+    /// Walk an ordered list of `Any?` candidates and return the first one
+    /// that is genuinely present — neither Swift `nil` (key absent) nor a
+    /// JSON-decoded `NSNull` placeholder (key present with explicit
+    /// `null`). `??` alone treats `Optional.some(NSNull())` as "set" and
+    /// short-circuits the fallback chain, which is exactly the bug Codex
+    /// flagged for tool routing.
+    private static func firstJSONValue(_ candidates: [Any?]) -> Any? {
+        for c in candidates {
+            guard let v = c else { continue }
+            if v is NSNull { continue }
+            return v
+        }
+        return nil
+    }
+
+    private func emitTimelineEntry(_ entry: DaemonTimelineEntry, extras: [String: Any] = [:]) {
         var entryDict: [String: Any] = [
             "ts": entry.ts,
             "type": entry.type,
@@ -1404,6 +1444,12 @@ actor OpenClawAdapter {
         if let sessionId = entry.sessionId { entryDict["sessionId"] = sessionId }
         if let startedAt = entry.startedAt { entryDict["startedAt"] = startedAt }
         if let endedAt = entry.endedAt { entryDict["endedAt"] = endedAt }
+        // Out-of-band keys (e.g. structured tool name/input/output) that
+        // aren't part of the canonical `DaemonTimelineEntry` schema but
+        // the immediate consumer (DaemonServer's gateway_timeline_entry
+        // handler) needs for APME wiring. WS clients that don't recognize
+        // these keys ignore them.
+        for (k, v) in extras { entryDict[k] = v }
         _onEvent?([
             "type": "gateway_timeline_entry",
             "entry": entryDict,

@@ -87,6 +87,7 @@ enum TaskBoundarySignal: String, Codable, Sendable, Equatable {
     case clear
     case sessionEnd = "session_end"
     case manual
+    case idleGap = "idle_gap"
 }
 
 // MARK: - Timeline Entry
@@ -126,6 +127,19 @@ struct TimelineEntry: Codable, Sendable, Identifiable {
     ///   - "none"      : last-resort fallback (literal "Completed", bare tool name, etc.)
     /// nil for legacy entries — clients should treat as "heuristic" (don't aggressively suppress).
     var summaryKind: String?
+    /// Per-task evaluation rollup, attached on the second `task_end` emit the
+    /// runner fires once the LLM judge resolves (5–30 s after the initial
+    /// boundary). Stores upsert by (type == .taskEnd, taskId). Nil on the
+    /// initial emit and for non-task entries / pre-existing on-disk rows.
+    /// Mirrors the four task* fields on shared/src/timeline.ts::TimelineEntry.
+    ///   - `taskScore`    : 0..1 composite (matches `tasks.composite_score`)
+    ///   - `taskOutcome`  : "success" | "partial" | "fail" | "pending"
+    ///   - `taskCategory` : task_rollup category
+    ///   - `taskSummary`  : one-line judge summary
+    var taskScore: Double?
+    var taskOutcome: String?
+    var taskCategory: String?
+    var taskSummary: String?
 
     var id: Double { ts }
 
@@ -136,6 +150,7 @@ struct TimelineEntry: Codable, Sendable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case ts, type, raw, detail, approvalId, status, agentType, projectName
         case sessionId, runId, startedAt, endedAt, taskId, boundarySignal, summaryKind
+        case taskScore, taskOutcome, taskCategory, taskSummary
     }
 
     init(
@@ -153,7 +168,11 @@ struct TimelineEntry: Codable, Sendable, Identifiable {
         endedAt: Double? = nil,
         taskId: String? = nil,
         boundarySignal: TaskBoundarySignal? = nil,
-        summaryKind: String? = nil
+        summaryKind: String? = nil,
+        taskScore: Double? = nil,
+        taskOutcome: String? = nil,
+        taskCategory: String? = nil,
+        taskSummary: String? = nil
     ) {
         self.ts = ts
         self.type = type
@@ -170,6 +189,10 @@ struct TimelineEntry: Codable, Sendable, Identifiable {
         self.taskId = taskId
         self.boundarySignal = boundarySignal
         self.summaryKind = summaryKind
+        self.taskScore = taskScore
+        self.taskOutcome = taskOutcome
+        self.taskCategory = taskCategory
+        self.taskSummary = taskSummary
     }
 
     init(from decoder: Decoder) throws {
@@ -194,6 +217,21 @@ struct TimelineEntry: Codable, Sendable, Identifiable {
             self.boundarySignal = nil
         }
         self.summaryKind = try c.decodeIfPresent(String.self, forKey: .summaryKind)
+        // Task-judge rollup fields, attached on the second `task_end` emit
+        // the bridge runner fires once the LLM judge resolves. The custom
+        // `init(from:)` above enumerates every field explicitly — without
+        // these four `decodeIfPresent` calls the JSON keys arrive over WS
+        // but Swift silently leaves the properties at their default nil,
+        // so the dashboard task header never gets a score badge even
+        // though the daemon broadcast it. Same trap as
+        // `DaemonTimelineEntry`'s 3-site dict round-trip — patch in
+        // lockstep when adding new TimelineEntry fields. Tolerate unknown
+        // future `taskOutcome` strings by holding them verbatim; the
+        // badge switch handles unknown values as the pending placeholder.
+        self.taskScore = try c.decodeIfPresent(Double.self, forKey: .taskScore)
+        self.taskOutcome = try c.decodeIfPresent(String.self, forKey: .taskOutcome)
+        self.taskCategory = try c.decodeIfPresent(String.self, forKey: .taskCategory)
+        self.taskSummary = try c.decodeIfPresent(String.self, forKey: .taskSummary)
     }
 }
 
@@ -202,6 +240,14 @@ struct TimelineEntry: Codable, Sendable, Identifiable {
 struct GroupedEntry: Identifiable, Sendable {
     let entry: TimelineEntry
     var count: Int = 1
+    /// Assistant response body (chat_response) merged into this group. The
+    /// daemon emits chat_start / chat_response / chat_end as three separate
+    /// timeline entries; the UI presents them as one turn row so users see
+    /// a single evaluable unit instead of three near-duplicate lines.
+    var mergedResponse: TimelineEntry? = nil
+    /// Terminator metadata (chat_end) merged into this group. Carries the
+    /// "Completed · Ns · topic" suffix + `summaryKind` backend pill.
+    var mergedCompletion: TimelineEntry? = nil
     /// Unique ID combining timestamp + type + count to avoid ForEach duplicate ID warnings
     var id: String { "\(entry.ts)-\(entry.type.rawValue)-\(count)" }
 }
@@ -226,6 +272,40 @@ func groupConsecutive(_ entries: [TimelineEntry], windowSeconds: Double = 60) ->
             continue
         }
 
+        // Turn merge: an in-flight chat_start absorbs the chat_response and
+        // chat_end the daemon emits for the same session, so the UI shows
+        // one row per user prompt instead of three. sessionId + the
+        // chat_start anchor (`entry.startedAt == chat_start.ts`) are the
+        // gate — wall-clock isn't, because long assistant responses
+        // (multi-fix Claude Code tasks run 20 min+) push chat_end far
+        // past any reasonable window. The anchor match is critical:
+        // without it an out-of-order chat_end that arrives *after* the
+        // next user_prompt_submit would attach to the fresh chat_start,
+        // cross-talking Q1's completion onto Q2's row (Codex stop-time
+        // review #7, 2026-05-17). Legacy entries with nil startedAt
+        // fall back to allowing the merge — pre-anchor emitters
+        // shouldn't regress, and the iteration order itself constrains
+        // the worst case.
+        //
+        // Synthetic chat_start placeholders ("Prompt sent" /
+        // "Codex turn started") are still excluded — the dashboard
+        // filter promotes the trailing chat_end as the visible row,
+        // and merging would hide that completion entirely.
+        if current.entry.type == .chatStart &&
+           current.mergedCompletion == nil &&
+           timelineIsMeaningfulChatStart(current.entry) &&
+           sameSession(current.entry, entry) &&
+           sameTurnAnchor(start: current.entry, child: entry) {
+            if entry.type == .chatResponse && current.mergedResponse == nil {
+                current.mergedResponse = entry
+                continue
+            }
+            if entry.type == .chatEnd {
+                current.mergedCompletion = entry
+                continue
+            }
+        }
+
         if entry.type == current.entry.type &&
            entry.raw == current.entry.raw &&
            timeDiff <= windowSeconds * 1000 {
@@ -237,6 +317,51 @@ func groupConsecutive(_ entries: [TimelineEntry], windowSeconds: Double = 60) ->
     }
     result.append(current)
     return result
+}
+
+/// Same-session test for the turn merge. Treats two entries as the same
+/// session when either both carry the same non-empty sessionId, or both
+/// have nil sessionId (legacy / single-session) — keeps the merge
+/// working on entries that predate sessionId attribution.
+private func sameSession(_ a: TimelineEntry, _ b: TimelineEntry) -> Bool {
+    switch (a.sessionId, b.sessionId) {
+    case (nil, nil): return true
+    case let (x?, y?): return x == y
+    default: return false
+    }
+}
+
+/// True when `child` (a chat_response or chat_end) actually belongs to
+/// `start`. The daemon stamps every child's `startedAt` with the
+/// originating chat_start's `ts` (`DaemonServer.swift::appendClaudeCodeChatEnd`),
+/// so an exact match is the safest anchor. Legacy / pre-anchor emitters
+/// don't carry `startedAt` — for those we permit the merge so behaviour
+/// doesn't regress; the iteration order (entries ascending by ts) keeps
+/// the worst case bounded to "the immediately next chat_start".
+private func sameTurnAnchor(start: TimelineEntry, child: TimelineEntry) -> Bool {
+    guard let anchor = child.startedAt else { return true }
+    return anchor == start.ts
+}
+
+/// True when a `chat_start` row carries a genuine user prompt (and thus is
+/// worth showing as a turn row). False for adapter-emitted placeholders
+/// like "Prompt sent" / "Codex turn started" where the user-visible text
+/// is uninformative; those rows are absorbed by their following completion
+/// row in `timelineDisplayGroupsForDashboard` rather than spawning a
+/// synthetic head. Lives in the model because both `groupConsecutive`
+/// (which uses it to decide whether to merge) and the UI filter call it.
+func timelineIsMeaningfulChatStart(_ entry: TimelineEntry) -> Bool {
+    let raw = entry.raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !raw.isEmpty else { return false }
+    let normalized = raw.lowercased()
+    let syntheticStarts: Set<String> = [
+        "prompt sent",
+        "codex turn started",
+        "starting chat",
+        "connected",
+        "resumed",
+    ]
+    return !syntheticStarts.contains(normalized)
 }
 
 // Type display functions moved to TimelineStripView.swift (timelineTypeIcon, timelineTypeColor)

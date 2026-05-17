@@ -129,6 +129,54 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(decoded.summaryKind, "heuristic")
     }
 
+    // Task-judge rollup fields must survive both directions of the WS
+    // round-trip — the custom `init(from:)` enumerates every property
+    // explicitly, so adding new fields to the struct without also
+    // adding `decodeIfPresent` calls there silently drops them on the
+    // wire. Regression: Codex stop-time review caught the first miss.
+    func testTimelineEntryRoundTripsTaskEvalFields() throws {
+        let original = TimelineEntry(
+            ts: 1, type: .taskEnd, raw: "TODO done · 12s",
+            taskId: "task-456",
+            boundarySignal: .todoComplete,
+            taskScore: 0.83,
+            taskOutcome: "success",
+            taskCategory: "refactoring",
+            taskSummary: "added auth-middleware tests"
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(TimelineEntry.self, from: data)
+        XCTAssertEqual(decoded.taskScore ?? .nan, 0.83, accuracy: 0.0001)
+        XCTAssertEqual(decoded.taskOutcome, "success")
+        XCTAssertEqual(decoded.taskCategory, "refactoring")
+        XCTAssertEqual(decoded.taskSummary, "added auth-middleware tests")
+    }
+
+    // The custom Codable init also has to round-trip raw JSON keys
+    // matching the bridge daemon's `claudeCodeEntryDict` payload — not
+    // just our own encoded form. This is closer to the actual WS flow.
+    func testTimelineEntryDecodesTaskEvalFieldsFromBridgePayload() throws {
+        let payload = """
+        {
+          "ts": 1,
+          "type": "task_end",
+          "raw": "Manual · 30s",
+          "taskId": "task-789",
+          "boundarySignal": "manual",
+          "taskScore": 0.55,
+          "taskOutcome": "abandoned",
+          "taskCategory": "general",
+          "taskSummary": "stopped halfway"
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(TimelineEntry.self, from: payload)
+        XCTAssertEqual(decoded.taskScore ?? .nan, 0.55, accuracy: 0.0001)
+        XCTAssertEqual(decoded.taskOutcome, "abandoned")
+        XCTAssertEqual(decoded.taskCategory, "general")
+        XCTAssertEqual(decoded.taskSummary, "stopped halfway")
+        XCTAssertEqual(decoded.boundarySignal, .manual)
+    }
+
     // MARK: - groupConsecutive — task entries never group
 
     func testTaskEntriesNeverGroup() {
@@ -143,6 +191,158 @@ final class TimelineTests: XCTestCase {
         // identical raw within window).
         XCTAssertEqual(grouped.count, 4)
         XCTAssertTrue(grouped.allSatisfy { $0.count == 1 })
+    }
+
+    // MARK: - Turn merge (chat_start + chat_response + chat_end → one group)
+
+    func testTurnMergeCombinesChatStartResponseEnd() {
+        let entries = [
+            TimelineEntry(ts: 1000, type: .chatStart,    raw: "hello",      sessionId: "s1"),
+            TimelineEntry(ts: 2000, type: .chatResponse, raw: "Hi there",   sessionId: "s1"),
+            TimelineEntry(ts: 3000, type: .chatEnd,      raw: "Completed · 2s", sessionId: "s1"),
+        ]
+        let grouped = groupConsecutive(entries, windowSeconds: 60)
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertEqual(grouped[0].entry.type, .chatStart)
+        XCTAssertEqual(grouped[0].entry.raw, "hello")
+        XCTAssertEqual(grouped[0].mergedResponse?.raw, "Hi there")
+        XCTAssertEqual(grouped[0].mergedCompletion?.raw, "Completed · 2s")
+    }
+
+    func testTurnMergeWorksWithoutResponseRow() {
+        // The bridge sometimes emits chat_start + chat_end only (assistant
+        // text was empty or filtered). The merge should still pull the
+        // chat_end into the chat_start group so the row collapses to one.
+        let entries = [
+            TimelineEntry(ts: 1000, type: .chatStart, raw: "ping", sessionId: "s1"),
+            TimelineEntry(ts: 1500, type: .chatEnd,   raw: "Completed · 1s", sessionId: "s1"),
+        ]
+        let grouped = groupConsecutive(entries)
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertEqual(grouped[0].entry.type, .chatStart)
+        XCTAssertNil(grouped[0].mergedResponse)
+        XCTAssertEqual(grouped[0].mergedCompletion?.raw, "Completed · 1s")
+    }
+
+    func testTurnMergeKeepsSyntheticChatStartSeparate() {
+        // Synthetic placeholder chat_starts (e.g. "Prompt sent") are not
+        // worth showing as a row in their own right; the dashboard filter
+        // promotes the trailing chat_end instead. The merge must NOT absorb
+        // the completion or the trailing row would vanish entirely.
+        let entries = [
+            TimelineEntry(ts: 1000, type: .chatStart, raw: "Prompt sent", sessionId: "s1"),
+            TimelineEntry(ts: 2000, type: .chatEnd,   raw: "Completed · 1s", sessionId: "s1"),
+        ]
+        let grouped = groupConsecutive(entries)
+        XCTAssertEqual(grouped.count, 2)
+        XCTAssertEqual(grouped[0].entry.type, .chatStart)
+        XCTAssertNil(grouped[0].mergedCompletion)
+        XCTAssertEqual(grouped[1].entry.type, .chatEnd)
+    }
+
+    func testTurnMergeDoesNotCrossSessions() {
+        let entries = [
+            TimelineEntry(ts: 1000, type: .chatStart, raw: "ask A", sessionId: "session-a"),
+            TimelineEntry(ts: 1500, type: .chatEnd,   raw: "B done", sessionId: "session-b"),
+        ]
+        let grouped = groupConsecutive(entries)
+        XCTAssertEqual(grouped.count, 2)
+        XCTAssertNil(grouped[0].mergedCompletion)
+    }
+
+    /// Long assistant responses (xcodebuild + multi-fix sessions easily
+    /// run 20 min+) must NOT break the chat-turn merge. The 60 s window
+    /// applies only to dedup grouping; chat merge is bounded by the
+    /// next `user_prompt_submit`, not wall-clock. Regression: previously
+    /// the merge shared `windowSeconds`, so a 20-minute response left
+    /// the chat_start spinner rotating forever and produced three
+    /// separate dashboard rows for one turn (Codex stop-time review
+    /// surfaced via direct app screenshot 2026-05-17).
+    func testTurnMergeAllowsLongAssistantResponse() {
+        let entries = [
+            TimelineEntry(ts: 0,           type: .chatStart, raw: "do a lot of work", sessionId: "s1"),
+            TimelineEntry(ts: 1_200_000,   type: .chatResponse, raw: "Done.",         sessionId: "s1"), // +20 min
+            TimelineEntry(ts: 1_200_001,   type: .chatEnd,   raw: "Completed · 1200s · fix", sessionId: "s1"),
+        ]
+        // windowSeconds=60 (the default) used to break this; the chat
+        // branch now ignores the window entirely.
+        let grouped = groupConsecutive(entries, windowSeconds: 60)
+        XCTAssertEqual(grouped.count, 1, "long response must still collapse to one turn row")
+        XCTAssertEqual(grouped[0].mergedResponse?.raw, "Done.")
+        XCTAssertEqual(grouped[0].mergedCompletion?.raw, "Completed · 1200s · fix")
+    }
+
+    /// Codex stop-time review #7 (2026-05-17): without wall-clock
+    /// bounding, an out-of-order chat_end from a previous turn could
+    /// attach to the next fresh chat_start by sessionId alone, putting
+    /// Q1's completion onto Q2's row. The anchor predicate
+    /// (`chat_end.startedAt == chat_start.ts`) blocks that.
+    func testTurnMergeRejectsDelayedCompletionOnNextPrompt() {
+        let q1 = TimelineEntry(
+            ts: 1000, type: .chatStart, raw: "Q1",
+            sessionId: "s1", startedAt: 1000
+        )
+        let q2 = TimelineEntry(
+            ts: 2000, type: .chatStart, raw: "Q2",
+            sessionId: "s1", startedAt: 2000
+        )
+        // chat_end for Q1 arrives AFTER Q2 has opened — startedAt anchors
+        // back to Q1 (ts=1000), not Q2.
+        let q1End = TimelineEntry(
+            ts: 3000, type: .chatEnd, raw: "Completed · Q1",
+            sessionId: "s1", startedAt: 1000, endedAt: 3000
+        )
+        let grouped = groupConsecutive([q1, q2, q1End])
+        // Q2 must NOT absorb Q1's completion. The completion lands as
+        // its own standalone group rather than poisoning Q2's row.
+        let q2Group = grouped.first(where: { $0.entry.raw == "Q2" })
+        XCTAssertNotNil(q2Group)
+        XCTAssertNil(q2Group?.mergedCompletion, "delayed Q1 completion must not attach to Q2")
+        XCTAssertEqual(
+            grouped.contains(where: { $0.entry.type == .chatEnd && $0.entry.raw == "Completed · Q1" }),
+            true,
+            "orphaned Q1 chat_end falls through as its own group rather than cross-talking"
+        )
+    }
+
+    /// Anchor mismatch must be detected even when startedAt is present
+    /// on the child but doesn't equal the head's ts (e.g. a malformed
+    /// emitter or replayed history).
+    func testTurnMergeRejectsMismatchedStartedAt() {
+        let head = TimelineEntry(ts: 100, type: .chatStart, raw: "real Q", sessionId: "s1", startedAt: 100)
+        let child = TimelineEntry(
+            ts: 200, type: .chatEnd, raw: "Completed",
+            sessionId: "s1", startedAt: 50, endedAt: 200
+        )
+        let grouped = groupConsecutive([head, child])
+        XCTAssertEqual(grouped.count, 2)
+        XCTAssertNil(grouped[0].mergedCompletion)
+    }
+
+    /// Legacy children with nil `startedAt` still merge — preserves
+    /// behaviour for pre-anchor adapters.
+    func testTurnMergeAllowsLegacyChildWithoutStartedAt() {
+        let head = TimelineEntry(ts: 100, type: .chatStart, raw: "ask", sessionId: "s1", startedAt: 100)
+        let legacyEnd = TimelineEntry(
+            ts: 200, type: .chatEnd, raw: "Completed",
+            sessionId: "s1", startedAt: nil, endedAt: 200
+        )
+        let grouped = groupConsecutive([head, legacyEnd])
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertEqual(grouped[0].mergedCompletion?.raw, "Completed")
+    }
+
+    /// The dedup-grouping branch (identical-raw rows close in time)
+    /// keeps its 60 s window. A repeated `tool_request` two minutes
+    /// apart must NOT collapse — the chat-merge window loosening must
+    /// not bleed into other types.
+    func testDedupGroupingStillRespectsWindow() {
+        let entries = [
+            TimelineEntry(ts: 0,       type: .toolRequest, raw: "Read"),
+            TimelineEntry(ts: 120_000, type: .toolRequest, raw: "Read"), // 2 min later
+        ]
+        let grouped = groupConsecutive(entries, windowSeconds: 60)
+        XCTAssertEqual(grouped.count, 2, "dedup grouping still bounded by windowSeconds")
     }
 
     // MARK: - Grouping
@@ -266,9 +466,19 @@ final class TimelineTests: XCTestCase {
             ),
         ]
 
+        // After the turn-merge rewrite the three entries collapse to a single
+        // chat_start group carrying the response + completion as merged
+        // fields. The dashboard renders one row per user prompt; the body
+        // and the "Completed · 1s · …" suffix appear as sub-lines on that
+        // same row instead of two follow-up rows.
         let displayed = timelineDisplayGroupsForDashboard(groupConsecutive(entries))
-        XCTAssertEqual(displayed.map(\.entry.type), [.chatStart, .chatResponse])
+        XCTAssertEqual(displayed.count, 1)
+        XCTAssertEqual(displayed.first?.entry.type, .chatStart)
         XCTAssertEqual(displayed.first?.entry.raw, "hello")
+        XCTAssertEqual(displayed.first?.mergedResponse?.type, .chatResponse)
+        XCTAssertEqual(displayed.first?.mergedResponse?.raw, "Hello. What do you want to work on?")
+        XCTAssertEqual(displayed.first?.mergedCompletion?.type, .chatEnd)
+        XCTAssertEqual(displayed.first?.mergedCompletion?.raw, "Completed · 1s")
     }
 
     func testDashboardDisplayStillHidesSyntheticCompletedStart() {
