@@ -13,6 +13,7 @@
 
 #if os(macOS)
 import SwiftUI
+import AppKit
 
 struct AttentionTheaterView: View {
     let session: SessionInfo
@@ -121,14 +122,28 @@ struct AttentionTheaterView: View {
                 }
             }
         } else {
-            ScrollView(.vertical, showsIndicators: opts.count > 5) {
+            // Adaptive cap that shares the screen budget with the body
+            // ScrollView + footer chrome below. Sizing rule:
+            //   options + ~140 (badge/question chrome) + ~150 (banner+
+            //   pill+footer) + 80 (body floor) + 24 (safety) ≤ screen
+            // → options ≤ screen - 394. We use 0.35 * screen with an
+            // absolute 380pt ceiling: that satisfies the invariant on
+            // typical screens (≥800pt) while keeping the cap reasonable
+            // on 4K displays. Typical prompts (Yes/No/Always, plan-
+            // approval trios, ≤8 options) never reach the ceiling so no
+            // scrollbar appears; pathological lists (e.g. /openclaw
+            // scope's 30+ entries) scroll internally instead of pushing
+            // the sessions list and footer off the popup.
+            let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
+            let optionsCap = min(380, screenHeight * 0.35)
+            ScrollView(.vertical, showsIndicators: opts.count > 6) {
                 VStack(spacing: 6) {
                     ForEach(opts) { option in
                         theaterButton(option: option, vertical: true)
                     }
                 }
             }
-            .frame(maxHeight: 220)
+            .frame(maxHeight: optionsCap)
         }
     }
 

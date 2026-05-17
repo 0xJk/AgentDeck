@@ -31,31 +31,53 @@ struct ControlTowerPanel: View {
     /// NotificationCenter observers below.
     @State private var dashboardVisible: Bool = false
 
+    /// Cumulative height of the popup's chrome (header + banner+pill bar +
+    /// footer), measured via `ChromeHeightKey` PreferenceKey. Replaces the
+    /// previous fixed 140pt reserve so `scrollContentMaxHeight` reflects
+    /// the actual chrome footprint — chrome shrinks (CalmHeader, no banner)
+    /// → scroll budget grows; chrome grows (AttentionTheater + offline
+    /// banner) → scroll budget shrinks to match.
+    @State private var measuredChromeHeight: CGFloat = 0
+
+    /// Natural height of the body ScrollView's content, measured via
+    /// `ContentHeightKey`. Used to bind the ScrollView's frame to
+    /// `min(scrollContentMaxHeight, contentHeight)` so the ScrollView
+    /// shrinks to fit when content is shorter than the cap — SwiftUI's
+    /// ScrollView is otherwise greedy and claims the full proposed
+    /// maxHeight, which surfaces a scrollbar even when content fits.
+    @State private var measuredContentHeight: CGFloat = 0
+
     var body: some View {
         VStack(spacing: 0) {
             // Header: Attention Theater when any session awaits input,
             // otherwise a quiet "all calm" strip with the AgentDeck mark.
-            if let awaiting = featuredAwaitingSession {
-                let isFocused = awaiting.id == effectiveFocusedSessionId
-                AttentionTheaterView(
-                    session: awaiting,
-                    question: questionFor(awaiting),
-                    options: isFocused ? stateHolder.state.options : [],
-                    promptType: isFocused ? stateHolder.state.promptType : nil,
-                    cursorIndex: isFocused ? stateHolder.state.cursorIndex : 0,
-                    navigable: isFocused ? stateHolder.state.navigable : false,
-                    respond: { index in respondToAwaiting(index, session: awaiting) }
-                )
-            } else {
-                CalmHeaderView(
-                    sessionCount: sortedSessions.count,
-                    processingCount: activeSessions.count,
-                    daemonPort: daemonService.port,
-                    bridgeConnected: daemonService.isRunning || daemonService.isUsingExternalDaemon
-                )
+            Group {
+                if let awaiting = featuredAwaitingSession {
+                    let isFocused = awaiting.id == effectiveFocusedSessionId
+                    AttentionTheaterView(
+                        session: awaiting,
+                        question: questionFor(awaiting),
+                        options: isFocused ? stateHolder.state.options : [],
+                        promptType: isFocused ? stateHolder.state.promptType : nil,
+                        cursorIndex: isFocused ? stateHolder.state.cursorIndex : 0,
+                        navigable: isFocused ? stateHolder.state.navigable : false,
+                        respond: { index in respondToAwaiting(index, session: awaiting) }
+                    )
+                } else {
+                    CalmHeaderView(
+                        sessionCount: sortedSessions.count,
+                        processingCount: activeSessions.count,
+                        daemonPort: daemonService.port,
+                        bridgeConnected: daemonService.isRunning || daemonService.isUsingExternalDaemon
+                    )
+                }
             }
+            .measureChromeHeight()
 
-            ScrollView(.vertical, showsIndicators: true) {
+            ScrollView(
+                .vertical,
+                showsIndicators: measuredContentHeight > scrollContentMaxHeight
+            ) {
                 VStack(alignment: .leading, spacing: 14) {
                     sessionsListSection
                     topologySection
@@ -65,12 +87,28 @@ struct ControlTowerPanel: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                // Tell the ScrollView its ideal height equals the content
-                // height so it shrinks to fit when devices are sparse, and
-                // only engages scrolling once the outer maxHeight cap kicks in.
-                .fixedSize(horizontal: false, vertical: true)
+                // Publishes the body's natural height to the parent
+                // ScrollView frame so it can shrink to fit instead of
+                // greedily claiming `scrollContentMaxHeight`.
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: ContentHeightKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                )
             }
-            .frame(maxHeight: scrollContentMaxHeight)
+            // Bind the ScrollView frame to the body's measured height,
+            // capped at `scrollContentMaxHeight`. When content fits, no
+            // scrollbar appears and the popup shrinks; only the overflow
+            // portion engages scrolling.
+            .frame(
+                maxHeight: measuredContentHeight > 0
+                    ? min(scrollContentMaxHeight, measuredContentHeight)
+                    : scrollContentMaxHeight
+            )
+            .onPreferenceChange(ContentHeightKey.self) { measuredContentHeight = $0 }
 
             VStack(spacing: 0) {
                 if showDaemonOfflineBanner {
@@ -87,10 +125,12 @@ struct ControlTowerPanel: View {
                     .frame(height: 0.5),
                 alignment: .top
             )
+            .measureChromeHeight()
 
             footerSection
+                .measureChromeHeight()
         }
-        .frame(width: 380)
+        .frame(minWidth: 380, idealWidth: 420, maxWidth: 460)
         // Dark ocean theme matching Dashboard / Monitor HUD.
         // `deepSea` → `midWater` gives the popup a subtle gradient so the
         // top edge reads as shallower water and the bottom reads as the
@@ -103,6 +143,7 @@ struct ControlTowerPanel: View {
             )
         )
         .foregroundColor(TerrariumHUD.text)
+        .onPreferenceChange(ChromeHeightKey.self) { measuredChromeHeight = $0 }
         .onAppear {
             refreshStreamDeckDetectionIfStale()
             dashboardVisible = evaluateDashboardVisibility()
@@ -191,17 +232,28 @@ struct ControlTowerPanel: View {
     // MARK: - Layout sizing
 
     /// Cap on the inner ScrollView height so the popover never overruns
-    /// the screen when the user has many devices wired up. We size to ~85%
-    /// of the visible screen area so the menu bar and Dock still stay out
-    /// of the panel's footprint. Below this cap, the ScrollView reports
-    /// its content's natural height (via `fixedSize(vertical: true)`), so
-    /// the panel shrinks to fit when devices are sparse.
+    /// the screen when the user has many devices wired up. The cap is
+    /// computed against `visibleFrame` (already excludes menu bar + Dock)
+    /// minus the *measured* chrome (header + banner+pill bar + footer)
+    /// rather than a fixed reserve — so AttentionTheater + offline banner
+    /// don't crowd content, and CalmHeader doesn't waste headroom. Below
+    /// the cap, the ScrollView reports its content's natural height (via
+    /// `fixedSize(vertical: true)`) so the panel shrinks to fit when
+    /// devices are sparse.
     private var scrollContentMaxHeight: CGFloat {
         let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
-        // Reserve ~140pt for header + pill bar + footer + padding so the
-        // surrounding chrome is never clipped at extreme content heights.
-        let chromeReserve: CGFloat = 140
-        return max(360, screenHeight * 0.85 - chromeReserve)
+        // First frame may render before PreferenceKey lands — fall back to
+        // the legacy 140pt reserve so the popup never starts overflowing.
+        let chrome = max(140, measuredChromeHeight)
+        // Visual cushion against the visibleFrame edge (Dock auto-hide,
+        // multi-display chrome).
+        let safety: CGFloat = 24
+        // Low floor (80pt ≈ one session row visible). When chrome is huge
+        // — AttentionTheater with many options + DaemonOfflineBanner —
+        // the body shrinks and scrolls internally instead of pushing the
+        // popup past the screen edge. The previous 360pt floor stacked
+        // with the AttentionTheater options cap to exceed visibleFrame.
+        return max(80, screenHeight - chrome - safety)
     }
 
     // MARK: - Session Classification
@@ -968,6 +1020,47 @@ struct StreamDeckDetection {
             return false
         }
         return !set.isEmpty
+    }
+}
+
+// MARK: - Chrome height measurement
+
+/// Sums the measured heights of every chrome region in the popup. The root
+/// `ControlTowerPanel` reads the total via `onPreferenceChange` to compute
+/// its inner ScrollView's max height against the *actual* chrome footprint
+/// instead of a fixed 140pt reserve.
+private struct ChromeHeightKey: PreferenceKey {
+    // `let` keeps Swift 6 strict-concurrency happy — PreferenceKey only
+    // uses defaultValue as an initial accumulator, never mutates it.
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value += nextValue()
+    }
+}
+
+/// Carries the body ScrollView content's natural height so the parent
+/// can shrink the ScrollView's frame to fit. Unlike `ChromeHeightKey`,
+/// this is a single-source measurement (one GeometryReader on the
+/// content VStack), so reduce just adopts the latest value.
+private struct ContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private extension View {
+    /// Adds this view's measured height to the cumulative `ChromeHeightKey`
+    /// total carried up the SwiftUI tree.
+    func measureChromeHeight() -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ChromeHeightKey.self,
+                    value: proxy.size.height
+                )
+            }
+        )
     }
 }
 #endif
