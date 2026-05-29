@@ -324,14 +324,18 @@ export function renderSessionSlot(
   }
 
   const watermark = `<g transform="translate(92, 80)" opacity="${isIdle ? '0.62' : '0.55'}">${agentLogoIcon(agent, 72, 1, 0, 0)}</g>`;
-  const badgeObj = isIdle ? `<rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" /><text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">ACT</text>` : '';
+  const isObserved = session.controlMode === 'observed';
+  const badgeObj = isIdle && !isObserved ? `<rect x="100" y="14" width="28" height="16" rx="8" fill="#ffffff" opacity="0.1" /><text x="114" y="25" font-size="10" font-weight="700" text-anchor="middle" fill="#A1A1AA" font-family="${fontFam}">ACT</text>` : '';
+  const observedEye = isObserved
+    ? `<g transform="translate(120, 24)" opacity="0.85"><ellipse cx="0" cy="0" rx="11" ry="6.5" fill="#0C0C0E" stroke="#9CA3AF" stroke-width="1.4"/><circle cx="0" cy="0" r="3.4" fill="#9CA3AF"/></g>`
+    : '';
   const toolStr = isWorking ? 'Running task' : modelText;
 
   const elements = [
     `<defs>${defs}</defs>`,
     `<rect width="${SIZE}" height="${SIZE}" rx="16" fill="url(#${gradId})"/>`,
     `<rect x="8" y="8" width="128" height="128" rx="12" fill="#2C2C2E" opacity="0.8"/>`,
-    stateBorder, activeRing, watermark, askDot, runBadge, badgeObj,
+    stateBorder, activeRing, watermark, askDot, runBadge, badgeObj, observedEye,
     `<text x="20" y="32" font-size="17" font-weight="800" text-anchor="start" fill="${colorText}" font-family="${fontFam}">${escXml(stateLbl)}</text>`,
     `<text x="20" y="52" font-size="13" font-weight="600" text-anchor="start" fill="#E2E8F0" font-family="${fontFam}">${escXml(truncate(nameForDisplay, 13))}</text>`,
     `<text x="20" y="120" font-size="${isWorking ? '13' : '14'}" font-weight="500" text-anchor="start" fill="${colorText}" opacity="0.8" font-family="${fontFam}">${escXml(toolStr)}</text>`,
