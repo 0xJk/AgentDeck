@@ -34,9 +34,7 @@ import {
 } from './encoder-takeover.js';
 import { setVoiceTextExitCallback } from './encoder-registry.js';
 import { dlog, dinfo } from './log.js';
-import { existsSync } from 'fs';
-import { execSync } from 'child_process';
-import { homedir } from 'os';
+import { getGlobalSettings, computeSetupRequired } from './bridge-settings.js';
 
 // Encoder actions
 import {
@@ -78,20 +76,24 @@ import {
   getFocusedSession,
   setDaemonConnected,
 } from './actions/session-slot-button.js';
-import { timelineStore } from './timeline-store.js';
+import { timelineStore, setTimelineBridge } from './timeline-store.js';
+import { BridgeConnectionAction } from './actions/bridge-connection.js';
 
 // ---- Setup detection ----
 let setupRequired = false;
 
-function detectSetupState(): void {
-  const bridgeEverStarted = existsSync(`${homedir()}/.agentdeck/`);
-  let sdcInPath = false;
-  try {
-    execSync('which agentdeck', { stdio: 'ignore', timeout: 3000 });
-    sdcInPath = true;
-  } catch { /* not found */ }
-  setupRequired = !bridgeEverStarted && !sdcInPath;
-  dinfo('Plugin', `detectSetupState: bridgeEverStarted=${bridgeEverStarted} agentdeckInPath=${sdcInPath} setupRequired=${setupRequired}`);
+async function detectSetupState(): Promise<void> {
+  // Remote-only topology (plan 001 §2f): setup is complete once the user has
+  // paired at least one bridge via the Property Inspector. We never probe the
+  // local machine for a daemon — the MacBook never runs one.
+  const settings = await getGlobalSettings();
+  setupRequired = computeSetupRequired(settings);
+  // Per-bridge timeline namespace (plan 001 §2h): point the timeline store at
+  // the active bridge so M4 ↔ M1 switches never bleed stale history.
+  if (settings.activeBridgeId) {
+    setTimelineBridge(settings.activeBridgeId);
+  }
+  dinfo('Plugin', `detectSetupState: pairedBridges=${settings.pairedBridges.length} setupRequired=${setupRequired}`);
 }
 
 function propagateSetupRequired(value: boolean): void {
@@ -662,6 +664,7 @@ streamDeck.actions.registerAction(new VoiceDialAction());
 streamDeck.actions.registerAction(new UtilityDialAction());
 streamDeck.actions.registerAction(new UsageDialAction());
 streamDeck.actions.registerAction(new SessionSlotButtonAction());
+streamDeck.actions.registerAction(new BridgeConnectionAction());
 
 // ---- Slot Map Reporting (Phase A7) ----
 
@@ -744,12 +747,13 @@ function sendSlotMap(): void {
 
 streamDeck.connect().then(() => {
   dinfo('Plugin', 'Stream Deck connected, starting daemon-only connection');
-  detectSetupState();
-  if (setupRequired) {
-    propagateSetupRequired(true);
-    broadcastStateUpdate();
-  }
-  connMgr.start();
+  void detectSetupState().then(() => {
+    if (setupRequired) {
+      propagateSetupRequired(true);
+      broadcastStateUpdate();
+    }
+    void connMgr.start();
+  });
 
   // Auto-switch to the bundled profile that matches the physical key grid.
   // SD+ has 8 keys + encoders; classic Stream Deck has 15 keys and no

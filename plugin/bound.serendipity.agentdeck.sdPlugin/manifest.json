@@ -99,6 +99,20 @@
         }
       },
       "UUID": "bound.serendipity.agentdeck.iterm-dial"
+    },
+    {
+      "Icon": "static/imgs/option",
+      "Name": "Bridge Connection",
+      "States": [
+        {
+          "Image": "static/imgs/option",
+          "Name": "Bridge Connection",
+          "ShowTitle": false
+        }
+      ],
+      "Controllers": ["Keypad"],
+      "PropertyInspectorPath": "ui/bridge-connection-pi.html",
+      "UUID": "bound.serendipity.agentdeck.bridge-connection"
     }
   ],
   "Author": "AgentDeck",

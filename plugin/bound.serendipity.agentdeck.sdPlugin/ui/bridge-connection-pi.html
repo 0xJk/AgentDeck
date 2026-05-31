@@ -1,0 +1,163 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bridge Connection</title>
+  <script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+  <style>
+    .bridge-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .bridge-row .meta { flex: 1; min-width: 0; }
+    .bridge-row .id { font-weight: 600; }
+    .bridge-row .addr { opacity: 0.7; font-size: 11px; }
+    .bridge-row .active-badge { color: var(--sdpi-color, #1e90ff); font-size: 11px; }
+    .status { padding: 6px 0; font-size: 12px; }
+    .status.error { color: #e44; }
+    .empty { opacity: 0.6; padding: 6px 0; }
+    fieldset { border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; margin-top: 10px; }
+    legend { padding: 0 4px; opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <div id="status" class="status"></div>
+
+  <sdpi-item label="Paired bridges">
+    <div id="bridge-list"><div class="empty">No bridges paired yet.</div></div>
+  </sdpi-item>
+
+  <fieldset>
+    <legend>Add bridge</legend>
+    <sdpi-item label="ID">
+      <sdpi-textfield id="f-id" placeholder="my-laptop"></sdpi-textfield>
+    </sdpi-item>
+    <sdpi-item label="Host">
+      <sdpi-textfield id="f-host" placeholder="192.168.1.20"></sdpi-textfield>
+    </sdpi-item>
+    <sdpi-item label="Port">
+      <sdpi-textfield id="f-port" type="number" value="9120"></sdpi-textfield>
+    </sdpi-item>
+    <sdpi-item label="Token">
+      <sdpi-password id="f-token" placeholder="paired token"></sdpi-password>
+    </sdpi-item>
+    <sdpi-item label="">
+      <sdpi-button id="f-add">Add bridge</sdpi-button>
+    </sdpi-item>
+  </fieldset>
+
+  <script>
+    let sd = null;       // streamDeckClient (connection)
+    let actionInfo = null;
+
+    function val(id) {
+      const el = document.getElementById(id);
+      if (!el) return '';
+      // sdpi-components expose .value
+      return (el.value ?? '').toString().trim();
+    }
+
+    function setStatus(text, isError) {
+      const el = document.getElementById('status');
+      el.textContent = text || '';
+      el.className = 'status' + (isError ? ' error' : '');
+    }
+
+    function sendToPlugin(payload) {
+      if (sd && typeof sd.send === 'function') {
+        sd.send(JSON.stringify({
+          event: 'sendToPlugin',
+          action: actionInfo.action,
+          context: actionInfo.context,
+          payload,
+        }));
+      }
+    }
+
+    function renderState(state) {
+      const list = document.getElementById('bridge-list');
+      const bridges = state.pairedBridges || [];
+      list.innerHTML = '';
+      if (bridges.length === 0) {
+        list.innerHTML = '<div class="empty">No bridges paired yet.</div>';
+      } else {
+        for (const b of bridges) {
+          const isActive = b.id === state.activeBridgeId;
+          const row = document.createElement('div');
+          row.className = 'bridge-row';
+          row.innerHTML =
+            '<div class="meta"><div class="id"></div><div class="addr"></div></div>';
+          row.querySelector('.id').textContent = b.id;
+          row.querySelector('.addr').textContent = b.host + ':' + b.port;
+          if (isActive) {
+            const badge = document.createElement('span');
+            badge.className = 'active-badge';
+            badge.textContent = 'active';
+            row.querySelector('.meta').appendChild(badge);
+          } else {
+            const setBtn = document.createElement('sdpi-button');
+            setBtn.textContent = 'Set active';
+            setBtn.addEventListener('click', () =>
+              sendToPlugin({ event: 'setActive', id: b.id }));
+            row.appendChild(setBtn);
+          }
+          const delBtn = document.createElement('sdpi-button');
+          delBtn.textContent = 'Delete';
+          delBtn.addEventListener('click', () =>
+            sendToPlugin({ event: 'deleteBridge', id: b.id }));
+          row.appendChild(delBtn);
+          list.appendChild(row);
+        }
+      }
+
+      // Status line: keychain + pairing/error.
+      if (state.status === 'keychain_error' || state.keychainAvailable === false) {
+        setStatus('Keychain unavailable — token stored in memory only.', true);
+      } else if (state.status === 'pairing') {
+        setStatus('Pairing with bridge...', false);
+      } else if (state.status === 'error') {
+        setStatus('Connection error.', true);
+      } else if (state.activeBridgeId) {
+        setStatus('Active: ' + state.activeBridgeId, false);
+      } else {
+        setStatus('No active bridge.', false);
+      }
+    }
+
+    document.getElementById('f-add').addEventListener('click', () => {
+      const id = val('f-id');
+      const host = val('f-host');
+      const port = parseInt(val('f-port') || '9120', 10) || 9120;
+      const token = val('f-token');
+      if (!id || !host) {
+        setStatus('ID and Host are required.', true);
+        return;
+      }
+      sendToPlugin({ event: 'addBridge', bridge: { id, host, port }, token });
+      const t = document.getElementById('f-token');
+      if (t) t.value = '';
+    });
+
+    // Stream Deck SDK connection entry point.
+    function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
+      actionInfo = JSON.parse(inActionInfo);
+      sd = new WebSocket('ws://127.0.0.1:' + inPort);
+      sd.onopen = () => {
+        sd.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
+        sendToPlugin({ event: 'getState' });
+      };
+      sd.onmessage = (e) => {
+        let data;
+        try { data = JSON.parse(e.data); } catch { return; }
+        if (data.event === 'sendToPropertyInspector' && data.payload && data.payload.event === 'state') {
+          renderState(data.payload);
+        }
+      };
+    }
+    window.connectElgatoStreamDeckSocket = connectElgatoStreamDeckSocket;
+  </script>
+</body>
+</html>

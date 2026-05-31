@@ -137,3 +137,138 @@ describe('BridgeClient — port provider', () => {
     }
   }, 15_000);
 });
+
+// ---- Plan 001 §2a: host/port/token constructor + close-code ----
+
+describe('BridgeClient — host/port/token URL (test 5)', () => {
+  let client: BridgeClient;
+
+  afterEach(() => {
+    if (client) client.disconnect();
+  });
+
+  // The URL is computed lazily in attemptConnect via buildUrl(). We assert the
+  // private helper rather than spin a real server per case.
+  function buildUrl(c: BridgeClient): string {
+    return (c as unknown as { buildUrl(): string }).buildUrl();
+  }
+
+  it('builds ws://host:port?token with encodeURIComponent on the token', () => {
+    client = new BridgeClient({ host: '192.168.1.5', port: 9120, token: 'a b/c?d&e' });
+    expect(buildUrl(client)).toBe(
+      `ws://192.168.1.5:9120?token=${encodeURIComponent('a b/c?d&e')}`,
+    );
+  });
+
+  it('defaults host to localhost', () => {
+    client = new BridgeClient({ port: 9120 });
+    expect(buildUrl(client)).toBe('ws://localhost:9120');
+  });
+
+  it('omits the token query param for localhost with empty token', () => {
+    client = new BridgeClient({ host: 'localhost', port: 9120, token: '' });
+    expect(buildUrl(client)).toBe('ws://localhost:9120');
+  });
+
+  it('omits the token query param for 127.0.0.1 with empty token', () => {
+    client = new BridgeClient({ host: '127.0.0.1', port: 9120 });
+    expect(buildUrl(client)).toBe('ws://127.0.0.1:9120');
+  });
+
+  it('still appends a token for localhost when a token is provided', () => {
+    client = new BridgeClient({ host: 'localhost', port: 9120, token: 'tok' });
+    expect(buildUrl(client)).toBe('ws://localhost:9120?token=tok');
+  });
+});
+
+describe("BridgeClient — close event carries {code, reason} (test 6)", () => {
+  let client: BridgeClient;
+
+  afterEach(() => {
+    if (client) client.disconnect();
+  });
+
+  it("emits 'close' with the WS close code and reason", async () => {
+    const server = await createTestServer();
+    try {
+      server.wss.on('connection', (ws) => {
+        // Close with a custom code + reason once the client connects.
+        setTimeout(() => ws.close(4002, 'bye'), 20);
+      });
+
+      client = new BridgeClient({ host: '127.0.0.1', port: server.port });
+      const closes: Array<{ code: number; reason: string }> = [];
+      client.on('close', (info: { code: number; reason: string }) => closes.push(info));
+
+      client.connect();
+      await wait(400);
+
+      expect(closes.length).toBeGreaterThanOrEqual(1);
+      expect(closes[0].code).toBe(4002);
+      expect(closes[0].reason).toBe('bye');
+    } finally {
+      await server.close();
+    }
+  }, 10_000);
+});
+
+describe('BridgeClient — close code 4001 stops reconnect (test 7)', () => {
+  let client: BridgeClient;
+
+  afterEach(() => {
+    if (client) client.disconnect();
+  });
+
+  it('does NOT schedule a reconnect when the daemon closes with 4001', async () => {
+    const server = await createTestServer();
+    try {
+      server.wss.on('connection', (ws) => {
+        setTimeout(() => ws.close(4001, 'Unauthorized'), 20);
+      });
+
+      client = new BridgeClient({ host: '127.0.0.1', port: server.port });
+      const scheduleSpy = vi.spyOn(
+        client as unknown as { scheduleReconnect(gen: number): void },
+        'scheduleReconnect',
+      );
+      const closes: Array<{ code: number }> = [];
+      client.on('close', (info: { code: number }) => closes.push(info));
+
+      client.connect();
+      await wait(400);
+
+      expect(closes.some((c) => c.code === 4001)).toBe(true);
+      expect(scheduleSpy).not.toHaveBeenCalled();
+      // No pending reconnect timer remains armed.
+      expect(
+        (client as unknown as { reconnectTimeout: unknown }).reconnectTimeout,
+      ).toBeNull();
+    } finally {
+      await server.close();
+    }
+  }, 10_000);
+
+  it('still schedules a reconnect for a non-4001 close', async () => {
+    const server = await createTestServer();
+    try {
+      server.wss.on('connection', (ws) => {
+        // 4002 is a valid application close code (1006 is reserved and cannot
+        // be sent explicitly). Any non-4001 code must still trigger reconnect.
+        setTimeout(() => ws.close(4002, 'transient'), 20);
+      });
+
+      client = new BridgeClient({ host: '127.0.0.1', port: server.port });
+      const scheduleSpy = vi.spyOn(
+        client as unknown as { scheduleReconnect(gen: number): void },
+        'scheduleReconnect',
+      );
+
+      client.connect();
+      await wait(400);
+
+      expect(scheduleSpy).toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  }, 10_000);
+});

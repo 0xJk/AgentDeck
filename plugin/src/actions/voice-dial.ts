@@ -17,7 +17,8 @@ import {
   setVoiceTextTakeover,
 } from '../encoder-registry.js';
 import { dlog } from '../log.js';
-import { pasteText, osascript } from '../utility-modes/macos.js';
+import { pasteText } from '../utility-modes/paste.js';
+import { routeVoiceText } from './voice-routing.js';
 import { startLocalRecording, stopLocalRecording, cancelLocalRecording } from '../voice-local.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import {
@@ -272,19 +273,7 @@ function onVtUp(): void {
   // Short press: confirm transcription
   if (lastTranscription) {
     if (bridge.isConnected()) {
-      const caps = bridge.getCapabilities();
-      if (caps && !caps.hasTerminal) {
-        // OpenClaw: no terminal → always send via Gateway (state-independent)
-        dlog('VoiceDial', `vtSendOC: "${lastTranscription.slice(0, 60)}"`);
-        bridge.send({ type: 'send_prompt', text: lastTranscription });
-      } else if (currentState === State.IDLE) {
-        // Claude Code: IDLE → send via PTY
-        dlog('VoiceDial', `vtSend: "${lastTranscription.slice(0, 60)}"`);
-        bridge.send({ type: 'send_prompt', text: lastTranscription });
-      } else {
-        dlog('VoiceDial', `vtPaste: "${lastTranscription.slice(0, 60)}"`);
-        smartPaste(lastTranscription);
-      }
+      routeVoiceText(bridge, lastTranscription, currentState);
     } else {
       // Bridge disconnected: OpenClaw has no terminal, so smartPaste is useless → show error
       const lastCaps = bridge.getCapabilities();
@@ -303,6 +292,10 @@ function onVtUp(): void {
   exitVoiceTextTakeover();
   refreshVoiceDials();
 }
+
+// routeVoiceText (the confirmed-transcription router, plan 001 §2g) lives in
+// ./voice-routing.ts so it can be unit-tested without the heavy renderer graph.
+export { routeVoiceText } from './voice-routing.js';
 
 /**
  * Paste text at cursor.

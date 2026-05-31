@@ -121,9 +121,9 @@ export function renderSetupPrompt(): string {
   const accent = '#818cf8';
   return svgWrap(`
     <rect width="${W}" height="${H}" fill="#0f172a"/>
-    <text x="100" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="${accent}">INSTALL</text>
+    <text x="100" y="18" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="${accent}">NO BRIDGE</text>
     <text x="82" y="55" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" fill="${accent}" opacity="0.7">\uD83D\uDCE6</text>
-    <text x="120" y="55" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="${accent}" opacity="0.6">Push START</text>
+    <text x="120" y="55" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="${accent}" opacity="0.6">Open PI</text>
     <rect x="10" y="90" width="180" height="2" rx="1" fill="${accent}" opacity="0.2"/>
   `);
 }

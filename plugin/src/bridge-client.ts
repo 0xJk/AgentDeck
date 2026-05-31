@@ -13,17 +13,68 @@ import { dlog, dwarn, derr } from './log.js';
 
 export type PortProvider = () => number | null;
 
+export interface BridgeClientOptions {
+  host?: string;
+  port?: number;
+  token?: string;
+}
+
+function isLocalHost(host: string): boolean {
+  return host === 'localhost' || host === '127.0.0.1';
+}
+
 export class BridgeClient extends EventEmitter implements AgentLink {
   private ws: WebSocket | null = null;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private _watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private _lastActivityAt = 0;
   private _connected = false;
+  private _host = 'localhost';
   private _port = BRIDGE_WS_PORT;
+  private _token = '';
   private _connectGeneration = 0;
   private _capabilities: AgentCapabilities | null = null;
   private _portProvider: PortProvider | null = null;
   private _backoffIdx = 0;
+
+  constructor(opts?: BridgeClientOptions) {
+    super();
+    if (opts?.host != null) this._host = opts.host;
+    if (opts?.port != null) this._port = opts.port;
+    if (opts?.token != null) this._token = opts.token;
+  }
+
+  /** Active bridge host (default 'localhost'). */
+  getHost(): string {
+    return this._host;
+  }
+
+  /** True when the active bridge host is not loopback. */
+  isRemote(): boolean {
+    return !isLocalHost(this._host);
+  }
+
+  /**
+   * AgentLink contract: a single BridgeClient's "active bridge" is simply its
+   * own host, so this mirrors isRemote(). ConnectionManager overrides the
+   * semantics at the manager level (active = the selected paired bridge).
+   */
+  isRemoteActiveBridge(): boolean {
+    return this.isRemote();
+  }
+
+  /**
+   * Compute the WebSocket URL for the current host/port/token. The token query
+   * param is appended only when non-empty; loopback hosts with an empty token
+   * (local daemon) connect without it (plan 001 §2a).
+   */
+  private buildUrl(): string {
+    const base = `ws://${this._host}:${this._port}`;
+    if (this._token) {
+      return `${base}?token=${encodeURIComponent(this._token)}`;
+    }
+    return base;
+  }
 
   /**
    * Install a port provider. Called before each (re)connect attempt.
@@ -160,8 +211,9 @@ export class BridgeClient extends EventEmitter implements AgentLink {
     }
 
     try {
-      dlog('Bridge', `attemptConnect ws://localhost:${this._port} (gen=${gen})`);
-      this.ws = new WebSocket(`ws://localhost:${this._port}`);
+      const url = this.buildUrl();
+      dlog('Bridge', `attemptConnect ${url} (gen=${gen})`);
+      this.ws = new WebSocket(url);
 
       this.ws.on('open', () => {
         if (gen !== this._connectGeneration) return;
@@ -193,10 +245,21 @@ export class BridgeClient extends EventEmitter implements AgentLink {
         }
       });
 
-      this.ws.on('close', () => {
+      this.ws.on('close', (code: number, reason: Buffer) => {
         if (gen !== this._connectGeneration) return;
         const wasConnected = this._connected;
         this._connected = false;
+        // Surface the close-code so ConnectionManager can distinguish auth
+        // rejection (4001) from a normal drop (plan 001 §2a).
+        this.emit('close', { code, reason: reason?.toString() ?? '' });
+        // 4001 = bad/expired token. Do NOT auto-reconnect — that would race the
+        // ConnectionManager's pairing transition (codex r3 finding 5). Let the
+        // manager decide the next step.
+        if (code === 4001) {
+          dlog('Bridge', 'WebSocket closed 4001 (unauthorized) — no auto-reconnect');
+          if (wasConnected) this.emit('disconnected');
+          return;
+        }
         if (wasConnected) {
           dlog('Bridge', 'WebSocket closed (was connected)');
           this.emit('disconnected');

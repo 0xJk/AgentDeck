@@ -870,7 +870,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   });
 
   // WS connect/disconnect journal
-  core.wsServer.onClientDisconnect(() => {
+  core.wsServer.onClientDisconnect((_ws) => {
     journal.write('ws_event', 'ws', { action: 'disconnect', clients: core.wsServer.getClientCount() });
     hookServer?.setMeta({ clientCount: core.wsServer.getClientCount() });
   });

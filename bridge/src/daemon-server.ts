@@ -696,6 +696,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   });
   timelineRelay.start();
 
+  // Per-WS-connection client tokens for per-client focus isolation
+  const clientTokens = new WeakMap<import('ws').WebSocket, import('./session-focus-relay.js').ClientToken>();
+  // Reverse map (token -> WS) so focus_lost notifications can reach the exact
+  // plugin WS whose focused session died. Cleaned up on client disconnect.
+  const tokenToWs = new Map<import('./session-focus-relay.js').ClientToken, import('ws').WebSocket>();
+
   // Session focus relay — allows SD plugin to interact with a specific session via daemon
   const focusRelay = new SessionFocusRelay();
   focusRelay.setEventHandler((evt) => {
@@ -730,6 +736,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     } else {
       // prompt_options — relay as-is
       core.wsServer.broadcast(evt);
+    }
+  });
+
+  // When a focused session's bridge WS dies, push focus_lost to the affected
+  // plugin WS only (reverse-map lookup) so it can clear its local focus.
+  focusRelay.setOnFocusLost((token, sessionId) => {
+    const ws = tokenToWs.get(token);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: 'focus_lost', sessionId }));
+      } catch { /* socket half-dead - ignore */ }
     }
   });
 
@@ -1110,7 +1127,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     return false; // not consumed — pass to command handler
   });
 
-  core.wsServer.onCommand((cmd) => {
+  core.wsServer.onCommand((cmd, sender) => {
+    // Resolve per-client token; fall back to a stable symbol if sender unknown
+    const token = sender ? (clientTokens.get(sender) ?? Symbol('unknown')) : Symbol('dispatch');
     debug('daemon', `cmd: ${cmd.type}`);
     if (gatewayAdapter?.isAlive() && gatewayAdapter.handleCommand(cmd)) {
       switch (cmd.type) {
@@ -1124,7 +1143,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     if (cmd.type === 'switch_agent') {
       userFocusedSessionId = null;
-      focusRelay.unfocus(); // Clear session focus on agent switch
+      if (sender) focusRelay.unfocus(token); // Clear per-client focus on agent switch
       const target = (cmd as any).agent as string;
       if (target === 'openclaw' && gatewayAdapter?.isAlive()) {
         // Force broadcast OpenClaw state to all clients
@@ -1154,19 +1173,20 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       userFocusedSessionId = sessionId;
       broadcastFocusedState();
       if (sessionId === 'openclaw-gateway' && gatewayAdapter?.isAlive()) {
-        focusRelay.unfocus();
+        if (sender) focusRelay.unfocus(token);
         return;
       }
-      focusRelay.focus(sessionId);
+      if (sender) focusRelay.focus(token, sessionId);
       return;
     }
     if (cmd.type === 'clear_session_focus') {
       userFocusedSessionId = null;
-      focusRelay.unfocus();
+      if (sender) focusRelay.unfocus(token);
       broadcastFocusedState();
       return;
     }
-    // Session-scoped command: forward inner command to a specific session's bridge
+    // Session-scoped command: forward inner command to a specific session's bridge.
+    // Awaits the session WS being OPEN — no setTimeout race.
     if (cmd.type === 'session_command') {
       const { sessionId, command } = cmd as any;
       if (!sessionId || !command) return;
@@ -1176,16 +1196,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         debug('daemon', `session_command: session ${sessionId} not found`);
         return;
       }
-      // Focus the session first, then route the command
       userFocusedSessionId = sessionId;
       broadcastFocusedState();
-      focusRelay.focus(sessionId);
-      // Small delay to let focus take effect, then route
-      setTimeout(() => focusRelay.routeCommand(command), 100);
+      // routeCommand implicitly focuses for this client if needed, then awaits OPEN
+      focusRelay.routeCommand(token, command, sessionId).catch((err) => {
+        debug('daemon', `session_command route failed: ${err}`);
+      });
       return;
     }
     // Route interactive commands to focused session (if any)
-    if (focusRelay.getFocusedSessionId() && focusRelay.routeCommand(cmd)) {
+    if (focusRelay.getFocusedSessionId()) {
+      focusRelay.routeCommand(token, cmd).catch(() => {});
       return;
     }
     if (cmd.type === 'query_usage') {
@@ -1198,6 +1219,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   // ===== Client connect =====
   core.wsServer.onClientConnect((ws) => {
+    // Assign a unique identity token for per-client focus tracking
+    const token = Symbol('plugin-client');
+    clientTokens.set(ws, token);
+    tokenToWs.set(token, ws);
+
     const gwAlive = gatewayAdapter?.isAlive() ?? false;
     core.sendInitialState(ws, {
       agentType: gwAlive ? 'openclaw' : 'daemon' as any,
@@ -1215,6 +1241,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           if (core.cachedApiUsage) core.apiUsageStale = true;
         }
       });
+    }
+  });
+
+  // ===== Client disconnect =====
+  // When a plugin WS closes, decrement refcount for any session it was focused on.
+  core.wsServer.onClientDisconnect((ws) => {
+    const token = clientTokens.get(ws);
+    if (token) {
+      focusRelay.unfocus(token);
+      clientTokens.delete(ws);
+      tokenToWs.delete(token);
     }
   });
 

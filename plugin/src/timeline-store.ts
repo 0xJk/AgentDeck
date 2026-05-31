@@ -1,14 +1,16 @@
 /**
  * Timeline event store for OpenClaw mode.
- * Singleton — bridge produces events, E2/E3 dials consume for rendering.
+ * Per-bridge instance — bridge produces events, E2/E3 dials consume for rendering.
  *
  * Scroll operates on grouped display (consecutive duplicates collapsed).
  * Past events (max 20 displayed) + scheduled/future events (max 10).
  *
- * Persisted to ~/.agentdeck/timeline.json so events survive plugin restarts.
+ * Persisted to ~/.agentdeck/timeline-<bridgeId>.json so events survive plugin
+ * restarts and stay isolated per bridge. Use getTimelineStore() to access the
+ * active store and setTimelineBridge(id) when the active bridge changes.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import type { TimelineEntry as SharedTimelineEntry, TimelineEntryType as SharedType } from '@agentdeck/shared';
@@ -48,7 +50,14 @@ const AUTO_TRACK_DELAY = 3000;
 const GROUP_WINDOW_MS = 60_000;
 const TOOL_GROUP_WINDOW_MS = 10_000;
 const SAVE_DEBOUNCE_MS = 500;
-const TIMELINE_FILE = join(homedir(), '.agentdeck', 'timeline.json');
+const AGENTDECK_DIR = join(homedir(), '.agentdeck');
+/** Legacy single-file path (pre per-bridge namespace). Migrated once per bridge. */
+const LEGACY_TIMELINE_FILE = join(AGENTDECK_DIR, 'timeline.json');
+
+/** Per-bridge timeline file path. */
+function timelineFileFor(bridgeId: string): string {
+  return join(AGENTDECK_DIR, `timeline-${bridgeId}.json`);
+}
 
 /** Group consecutive entries with same type + raw text within window (60s default, 10s for tool_request).
  *  chat_end entries group by type only (ignoring raw) since each has different duration/tools. */
@@ -77,7 +86,7 @@ function groupConsecutive(entries: readonly TimelineEntry[]): GroupedEntry[] {
   return groups;
 }
 
-class TimelineStore {
+export class TimelineStore {
   private entries: TimelineEntry[] = [];
   private _scheduled: TimelineEntry[] = [];
   private _scrollIndex = 0;       // index into grouped display
@@ -87,14 +96,33 @@ class TimelineStore {
   private autoTrackTimer: ReturnType<typeof setTimeout> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private loaded = false;
+  private readonly file: string;
+
+  constructor(bridgeId: string) {
+    this.file = timelineFileFor(bridgeId);
+  }
 
   // ===== Persistence =====
+
+  /** One-time legacy migration: rename ~/.agentdeck/timeline.json to the
+   *  per-bridge file the first time this bridge loads, but only when the
+   *  per-bridge file does NOT already exist (never overwrite). Idempotent. */
+  private migrateLegacyIfNeeded(): void {
+    try {
+      if (existsSync(this.file)) return; // per-bridge file wins — never overwrite
+      if (!existsSync(LEGACY_TIMELINE_FILE)) return; // nothing to migrate
+      renameSync(LEGACY_TIMELINE_FILE, this.file);
+    } catch {
+      // Migration best-effort — fall back to fresh state on any error
+    }
+  }
 
   private ensureLoaded(): void {
     if (this.loaded) return;
     this.loaded = true;
+    this.migrateLegacyIfNeeded();
     try {
-      const data = readFileSync(TIMELINE_FILE, 'utf-8');
+      const data = readFileSync(this.file, 'utf-8');
       const parsed = JSON.parse(data) as TimelineEntry[];
       if (Array.isArray(parsed)) {
         this.entries = parsed.slice(-MAX_ENTRIES);
@@ -109,8 +137,8 @@ class TimelineStore {
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       try {
-        mkdirSync(dirname(TIMELINE_FILE), { recursive: true });
-        writeFileSync(TIMELINE_FILE, JSON.stringify(this.entries), 'utf-8');
+        mkdirSync(dirname(this.file), { recursive: true });
+        writeFileSync(this.file, JSON.stringify(this.entries), 'utf-8');
       } catch {
         // Ignore write errors
       }
@@ -362,4 +390,42 @@ class TimelineStore {
   }
 }
 
-export const timelineStore = new TimelineStore();
+// ===== Per-bridge factory =====
+
+/** Default bridge id used before any bridge is selected. */
+const DEFAULT_BRIDGE_ID = 'default';
+
+let activeStore: TimelineStore = new TimelineStore(DEFAULT_BRIDGE_ID);
+
+/** The timeline store for the currently active bridge. */
+export function getTimelineStore(): TimelineStore {
+  return activeStore;
+}
+
+/** Switch the active bridge — creates a fresh, isolated store instance so
+ *  history never bleeds across bridges. Triggers a one-time legacy migration
+ *  on first load for the new bridge. */
+export function setTimelineBridge(bridgeId: string): void {
+  activeStore = new TimelineStore(bridgeId);
+}
+
+/**
+ * Live-binding singleton: a Proxy that always forwards to the *current* active
+ * store. Existing call sites (`timelineStore.addEntry(...)`, `.onChange(...)`,
+ * etc.) keep working unchanged, and `setTimelineBridge()` transparently swaps
+ * the backing instance so per-bridge history stays isolated.
+ *
+ * NOTE: listeners registered via `timelineStore.onChange()` bind to whichever
+ * instance is active at registration time — dials re-register on onWillAppear,
+ * and broadcastStateUpdate re-renders after a bridge switch, so the new store's
+ * notifications reach the UI.
+ */
+export const timelineStore: TimelineStore = new Proxy({} as TimelineStore, {
+  get(_t, prop, receiver) {
+    const value = Reflect.get(activeStore as object, prop, receiver);
+    return typeof value === 'function' ? value.bind(activeStore) : value;
+  },
+  set(_t, prop, value) {
+    return Reflect.set(activeStore as object, prop, value);
+  },
+});

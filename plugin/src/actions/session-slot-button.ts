@@ -192,9 +192,9 @@ function getDisconnectedSlotConfig(slot: number, layout: DeckLayout): Disconnect
   const role = computeCenterCluster(layout).quadrantFor(slot);
   if (role == null) return { kind: 'empty' };
   if (role === 'full') {
-    return { kind: 'open-app', label: 'OFFLINE', subtitle: 'Open AgentDeck' };
+    return { kind: 'open-app', label: 'OFFLINE', subtitle: 'Open PI to pair' };
   }
-  return { kind: 'open-app', label: 'OFFLINE', subtitle: 'Open AgentDeck', quadrant: role };
+  return { kind: 'open-app', label: 'OFFLINE', subtitle: 'Open PI to pair', quadrant: role };
 }
 
 function refreshAll(): void {
@@ -336,7 +336,7 @@ export class SessionSlotButtonAction extends SingletonAction {
 
     if (!daemonConnected) {
       if (computeCenterCluster(layout).quadrantFor(slot) != null) {
-        dlog('SesSlot', 'keyDown: launching AgentDeck app or GitHub');
+        dlog('SesSlot', 'keyDown: opening Property Inspector to pair');
         void openAgentDeckAppOrGitHub().catch(() => {});
       }
       return;

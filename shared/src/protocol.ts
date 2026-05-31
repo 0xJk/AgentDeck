@@ -270,6 +270,11 @@ export interface DisplayStateEvent {
   displayOn: boolean;
 }
 
+export interface FocusLostEvent {
+  type: 'focus_lost';
+  sessionId: string;
+}
+
 // ===== Multi-session Discovery =====
 
 export interface SessionInfo {
@@ -431,6 +436,7 @@ export type BridgeEvent =
   | VoiceAssistantStateEvent
   | WakeWordDetectedEvent
   | DisplayStateEvent
+  | FocusLostEvent
   | SessionsListEvent
   | EncoderStateEvent
   | DeckSlotMapEvent

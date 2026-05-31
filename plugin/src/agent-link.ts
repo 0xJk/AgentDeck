@@ -16,4 +16,10 @@ export interface AgentLink extends EventEmitter {
   isConnected(): boolean;
   getCapabilities(): AgentCapabilities | null;
   disconnect(): void;
+  /**
+   * True when the active bridge host is not loopback (localhost / 127.0.0.1).
+   * Used by remote-aware routing (e.g. voice prompts always go over WS to a
+   * remote daemon instead of pasting into the local foreground app).
+   */
+  isRemoteActiveBridge(): boolean;
 }

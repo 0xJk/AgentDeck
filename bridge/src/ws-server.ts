@@ -7,10 +7,10 @@ import { WS_PING_INTERVAL_MS } from '@agentdeck/shared';
 
 export class WsServer {
   private wss: WebSocketServer;
-  private commandCallback: ((cmd: PluginCommand) => void) | null = null;
+  private commandCallback: ((cmd: PluginCommand, sender: WebSocket) => void) | null = null;
   private rawMessageCallback: ((msg: Record<string, unknown>, sender: WebSocket) => boolean) | null = null;
   private onConnectCallback: ((ws: WebSocket) => void) | null = null;
-  private onDisconnectCallback: (() => void) | null = null;
+  private onDisconnectCallback: ((ws: WebSocket) => void) | null = null;
   private clientAlive = new Map<WebSocket, boolean>();
   private pingTimer: ReturnType<typeof setInterval>;
 
@@ -78,7 +78,7 @@ export class WsServer {
             return; // handled
           }
           if (this.commandCallback) {
-            this.commandCallback(msg as unknown as PluginCommand);
+            this.commandCallback(msg as unknown as PluginCommand, ws);
           }
         } catch (err) {
           debug('WS', `Failed to parse message: ${err}`);
@@ -89,7 +89,7 @@ export class WsServer {
         debug('WS', 'Plugin disconnected');
         this.clientAlive.delete(ws);
         if (this.onDisconnectCallback) {
-          this.onDisconnectCallback();
+          this.onDisconnectCallback(ws);
         }
       });
 
@@ -121,13 +121,15 @@ export class WsServer {
     }
   }
 
-  onCommand(callback: (cmd: PluginCommand) => void): void {
+  onCommand(callback: (cmd: PluginCommand, sender: WebSocket) => void): void {
     this.commandCallback = callback;
   }
 
   /** Inject a command from a non-WS source (e.g., D200H agent via stdout/stdin pipe). */
   dispatchCommand(cmd: PluginCommand): void {
-    this.commandCallback?.(cmd);
+    // Non-WS sources don't have a sender; cast to satisfy the type signature.
+    // daemon-server.ts guards for this with `sender ?` checks.
+    this.commandCallback?.(cmd, null as unknown as WebSocket);
   }
 
   /** Register a callback for raw messages before PluginCommand dispatch. Return true to consume. */
@@ -149,7 +151,7 @@ export class WsServer {
     this.onConnectCallback = callback;
   }
 
-  onClientDisconnect(callback: () => void): void {
+  onClientDisconnect(callback: (ws: WebSocket) => void): void {
     this.onDisconnectCallback = callback;
   }
 
