@@ -239,6 +239,10 @@ initSessionSlots((result) => {
     }
 
     case 'exit-detail':
+      // Release the daemon-side focus so the relay closes the session WS; the
+      // next enter-detail opens a fresh WS and replays prompt_options. Without
+      // this, re-entering the same session shows no options (interaction audit #1).
+      connMgr.clearSessionFocus();
       exitDetailView();
       broadcastStateUpdate();  // refresh encoders (timeline ↔ normal)
       break;
@@ -627,8 +631,11 @@ function broadcastStateUpdate(): void {
   const agentType = proxiedAgentType;
   const caps = capsForProxiedAgent();
 
-  // Encoder actions — manage takeover lifecycle
-  const shouldTakeover = isInteractiveState(currentState) && currentOptions.length > 0;
+  // Encoder actions — manage takeover lifecycle.
+  // Gate on detail-view membership: after exiting detail (view==='list') the
+  // takeover must release even if interactive options are still cached, so the
+  // option strip doesn't linger over the session list (interaction audit #3).
+  const shouldTakeover = isInDetailView() && isInteractiveState(currentState) && currentOptions.length > 0;
 
   if (shouldTakeover && !isEncoderTakeoverActive()) {
     // Exit VT before encoder takeover (clears all panels atomically)

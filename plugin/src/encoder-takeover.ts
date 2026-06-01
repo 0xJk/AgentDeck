@@ -7,7 +7,6 @@ import {
   renderFocusPanel,
   renderListPanel,
   renderDetailPanel,
-  renderWideOptionList,
 } from './renderers/option-renderer.js';
 import { dlog } from './log.js';
 
@@ -18,11 +17,6 @@ setRefreshTakeoverCallback((state, options, selectedIndex, question, currentTool
 
 let active = false;
 let generation = 0;
-
-// Wide scroll state for option list (E2-E4)
-let wideScrollY = 0;
-let wideMaxScroll = 0;
-let wideLineHeight = 22;
 
 export function isEncoderTakeoverActive(): boolean {
   return active;
@@ -72,7 +66,6 @@ export async function enterEncoderTakeover(): Promise<void> {
   }
   const gen = ++generation;
   active = true;
-  resetWideScroll();
   const groups = getActiveGroups();
   dlog('Takeover', `enter ${groups.length} groups (util=${encoderRegistry.utilityIds.length} opt=${encoderRegistry.optionIds.length} usage=${encoderRegistry.usageIds.length} voice=${encoderRegistry.voiceIds.length})`);
 
@@ -117,30 +110,21 @@ export async function exitEncoderTakeover(): Promise<void> {
   }
 }
 
-/** Auto-scroll so selectedIndex is visible in wide canvas */
-function autoScrollToIndex(selectedIndex: number): void {
-  const itemTop = selectedIndex * wideLineHeight;
-  const itemBottom = itemTop + wideLineHeight;
-  const visibleH = 100; // panel height
-
-  if (itemTop < wideScrollY) {
-    wideScrollY = itemTop;
-  } else if (itemBottom > wideScrollY + visibleH) {
-    wideScrollY = itemBottom - visibleH;
-  }
-  wideScrollY = Math.max(0, Math.min(wideScrollY, wideMaxScroll));
-}
-
-/** Reset wide scroll state (called on new takeover entry) */
-export function resetWideScroll(): void {
-  wideScrollY = 0;
-  wideMaxScroll = 0;
-}
-
 /**
  * Refresh all taken-over encoder LCDs with SVG pixmap rendering.
- * E1 = context panel, E2-E4 = wide option list canvas.
- * Falls back to single-panel focus view when only 1 group is active.
+ *
+ * Each dial gets a SELF-CONTAINED 200px panel — we never span one logical
+ * canvas across the physically-separate dial LCDs (that produced the bezel
+ * seams / 断层). The option list lives on ONE dial as a vertically-windowed
+ * list centered on the selection (renderListPanel), so no row is ever clipped
+ * (fixes 显示不全). Remaining dials show purpose-built context/focus/detail.
+ *
+ * Panel assignment by dial index:
+ *   0 = context (SELECT k/N + question + tool)
+ *   1 = windowed option list (the primary interactive surface)
+ *   2 = focus (the currently-selected option, large/legible)
+ *   3 = detail (full label, word-wrapped, + tool args for permission/diff)
+ * Fewer than 4 active groups simply use the leading panels.
  */
 export function refreshEncoderTakeover(
   state: State,
@@ -155,44 +139,26 @@ export function refreshEncoderTakeover(
   const opt = options[selectedIndex];
   if (!opt) return;
 
-  const isPermission = state === State.AWAITING_PERMISSION;
-  const isDiff = state === State.AWAITING_DIFF;
-  const isPermOrDiff = isPermission || isDiff;
-
+  const isPermOrDiff = state === State.AWAITING_PERMISSION || state === State.AWAITING_DIFF;
   const groups = getActiveGroups();
+  const total = options.length;
 
-  dlog('Takeover', `refresh ${groups.length} groups idx=${selectedIndex}/${options.length}`);
+  dlog('Takeover', `refresh ${groups.length} groups idx=${selectedIndex}/${total}`);
 
   if (groups.length <= 1) {
-    // Single encoder: show focus panel only
-    const svg = renderFocusPanel({
-      opt, selectedIndex, total: options.length,
-      isPermOrDiff, state, currentTool, fourEnc: false,
-    });
-    if (groups[0]) setCanvasFeedback(groups[0], svg);
+    // Single encoder: the windowed list is the most useful self-contained view.
+    if (groups[0]) setCanvasFeedback(groups[0], renderListPanel({ options, selectedIndex, isPermOrDiff, state }));
     return;
   }
 
-  // E1 = context panel (first group)
-  const contextSvg = renderContextPanel({
-    state, selectedIndex, total: options.length,
-    question, currentTool,
-  });
-  setCanvasFeedback(groups[0], contextSvg);
+  const panels = [
+    renderContextPanel({ state, selectedIndex, total, question, currentTool }),
+    renderListPanel({ options, selectedIndex, isPermOrDiff, state }),
+    renderFocusPanel({ opt, selectedIndex, total, isPermOrDiff, state, currentTool, fourEnc: groups.length >= 4 }),
+    renderDetailPanel({ opt, isPermOrDiff, state, selectedIndex, total, toolInput, question }),
+  ];
 
-  // E2-E4 = wide option list (remaining groups)
-  const wideGroups = groups.slice(1);
-  autoScrollToIndex(selectedIndex);
-
-  const result = renderWideOptionList(
-    options, selectedIndex, isPermOrDiff, state,
-    wideGroups.length, wideScrollY,
-  );
-
-  wideMaxScroll = result.maxScrollY;
-  wideLineHeight = result.lineHeight;
-
-  for (let i = 0; i < wideGroups.length; i++) {
-    setCanvasFeedback(wideGroups[i], result.panels[i]);
+  for (let i = 0; i < groups.length; i++) {
+    setCanvasFeedback(groups[i], panels[Math.min(i, panels.length - 1)]);
   }
 }

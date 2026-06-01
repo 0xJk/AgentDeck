@@ -163,6 +163,19 @@ export class ConnectionManager extends EventEmitter implements AgentLink {
     this.send({ type: 'focus_session', sessionId } as PluginCommand);
   }
 
+  /**
+   * Release the daemon-side focus for the current session. Without this the
+   * daemon focus-relay stays subscribed after the user leaves the detail view,
+   * so re-entering the same session short-circuits and never replays
+   * prompt_options — the options silently vanish (plan 002 interaction audit #1).
+   */
+  clearSessionFocus(): void {
+    if (this.focusedSessionId === null) return;
+    dinfo(TAG, `clearSessionFocus(${this.focusedSessionId})`);
+    this.focusedSessionId = null;
+    this.send({ type: 'clear_session_focus' } as PluginCommand);
+  }
+
   getFocusedSessionId(): string | null {
     return this.focusedSessionId;
   }

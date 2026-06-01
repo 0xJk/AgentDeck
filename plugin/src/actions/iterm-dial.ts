@@ -183,7 +183,7 @@ export class UsageDialAction extends SingletonAction {
   }
 
   override async onTouchTap(_ev: TouchTapEvent): Promise<void> {
-    if (isEncoderTakeoverActive()) return;
+    if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
     if (isVoiceTextTakeoverActive()) return;
     if (isOcDetailView()) {
       timelineStore.toggleDetail();

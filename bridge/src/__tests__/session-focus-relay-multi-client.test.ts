@@ -242,4 +242,74 @@ describe('SessionFocusRelay multi-client isolation', () => {
 
     relay.stop();
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Interaction audit #1 — 选项时有时无: an idempotent re-focus (e.g. re-entering
+  // the detail view while the session WS is still open) must REPLAY the last
+  // state_update + prompt_options. The old code short-circuited with a bare
+  // return, so the options vanished until the session next emitted.
+  // ──────────────────────────────────────────────────────────────────────────
+  it('replays cached state + options on idempotent re-focus (no WS reconnect)', async () => {
+    // Fake bridge A pushes a state_update + prompt_options on every connection.
+    const stateEvt = { type: 'state_update', state: 'awaiting_option', options: [{ index: 0, label: 'Delete' }] };
+    const optsEvt = { type: 'prompt_options', promptType: 'multi_select', options: [{ index: 0, label: 'Delete' }, { index: 1, label: 'Keep' }] };
+    let connections = 0;
+    bridgeA.wss.on('connection', (ws) => {
+      connections++;
+      ws.send(JSON.stringify(stateEvt));
+      ws.send(JSON.stringify(optsEvt));
+    });
+
+    const relay = new SessionFocusRelay();
+    const received: any[] = [];
+    relay.setEventHandler((e) => received.push(e));
+    const tokenA = makeToken('clientA');
+
+    // First focus → opens WS → bridge pushes state + options → both relayed.
+    relay.focus(tokenA, 'session-A');
+    await waitUntil(() => received.some(e => e.type === 'prompt_options'));
+    const afterFirst = received.length;
+    expect(connections).toBe(1);
+
+    // Re-focus the SAME session (idempotent). Must replay cached state + options
+    // WITHOUT opening a new WS connection.
+    received.length = 0;
+    relay.focus(tokenA, 'session-A');
+    await waitUntil(() => received.some(e => e.type === 'prompt_options'));
+
+    expect(connections).toBe(1); // no reconnect
+    expect(received.some(e => e.type === 'state_update' && e.state === 'awaiting_option')).toBe(true);
+    expect(received.find(e => e.type === 'prompt_options')?.options).toHaveLength(2);
+    expect(afterFirst).toBeGreaterThan(0);
+
+    relay.stop();
+  });
+
+  it('does NOT replay stale options after the session leaves the interactive state', async () => {
+    const optsEvt = { type: 'prompt_options', promptType: 'multi_select', options: [{ index: 0, label: 'Delete' }] };
+    bridgeA.wss.on('connection', (ws) => {
+      ws.send(JSON.stringify({ type: 'state_update', state: 'awaiting_option', options: [{ index: 0, label: 'Delete' }] }));
+      ws.send(JSON.stringify(optsEvt));
+      // Then the prompt is answered — session goes idle (no options).
+      setTimeout(() => ws.send(JSON.stringify({ type: 'state_update', state: 'idle', options: [] })), 30);
+    });
+
+    const relay = new SessionFocusRelay();
+    const received: any[] = [];
+    relay.setEventHandler((e) => received.push(e));
+    const tokenA = makeToken('clientA');
+
+    relay.focus(tokenA, 'session-A');
+    await waitUntil(() => received.some(e => e.type === 'state_update' && e.state === 'idle'));
+
+    received.length = 0;
+    relay.focus(tokenA, 'session-A'); // re-focus after idle
+    await waitUntil(() => received.some(e => e.type === 'state_update'));
+
+    // Cached state replays as idle; the stale options must NOT replay.
+    expect(received.some(e => e.type === 'state_update' && e.state === 'idle')).toBe(true);
+    expect(received.some(e => e.type === 'prompt_options')).toBe(false);
+
+    relay.stop();
+  });
 });

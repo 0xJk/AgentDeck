@@ -183,7 +183,8 @@ export class UtilityDialAction extends SingletonAction {
 
   override async onTouchTap(ev: TouchTapEvent): Promise<void> {
     dlog('UtilDial', `onTouchTap: takeover=${isEncoderTakeoverActive()} modes=${modes.length} hold=${ev.payload.hold}`);
-    if (isEncoderTakeoverActive()) return;
+    // During an option takeover, tapping any dial strip selects (audit #5).
+    if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
     if (modes.length <= 1) return;
 
     // Pause current mode (stops polling etc. but preserves state)

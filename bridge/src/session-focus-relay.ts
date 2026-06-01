@@ -71,6 +71,13 @@ export class SessionFocusRelay {
   private clientFocus = new Map<ClientToken, FocusEntry>();
   /** Shared WS connections keyed by sessionId (refcounted) */
   private sessionConns = new Map<string, SessionConn>();
+  /**
+   * Last relayed state_update + prompt_options per session. Lets an idempotent
+   * re-focus (re-entering the detail view while the WS stays open) replay the
+   * current prompt instead of showing nothing until the session next emits.
+   * See interaction audit #1 (选项时有时无).
+   */
+  private lastRelayed = new Map<string, { state?: BridgeEvent; options?: BridgeEvent }>();
   /** Single event handler (daemon merges & broadcasts) */
   private onEvent: FocusEventHandler | null = null;
   /**
@@ -117,7 +124,11 @@ export class SessionFocusRelay {
 
     const existing = this.clientFocus.get(token);
     if (existing && existing.sessionId === sessionId) {
-      debug(TAG, `[${String(token)}] Already focused on ${sessionId}`);
+      // Idempotent re-focus (e.g. re-entering the detail view): the WS stays
+      // open so onClientConnect won't re-fire on the session side. Replay the
+      // cached state so the prompt repaints instead of vanishing (audit #1).
+      debug(TAG, `[${String(token)}] Already focused on ${sessionId} — replaying cached state`);
+      this._replayCached(sessionId);
       return;
     }
 
@@ -203,6 +214,41 @@ export class SessionFocusRelay {
     }
     this.sessionConns.clear();
     this.clientFocus.clear();
+    this.lastRelayed.clear();
+  }
+
+  /** Interactive states whose prompt_options are worth replaying on re-focus. */
+  private static readonly INTERACTIVE_STATES = new Set([
+    'awaiting_option', 'awaiting_permission', 'awaiting_diff',
+  ]);
+
+  /** Remember the latest relayed state/options so a re-focus can replay them. */
+  private _cacheRelayed(sessionId: string, evt: BridgeEvent): void {
+    let entry = this.lastRelayed.get(sessionId);
+    if (!entry) { entry = {}; this.lastRelayed.set(sessionId, entry); }
+    if (evt.type === 'state_update') {
+      entry.state = evt;
+      // Once the session leaves an interactive state, its cached options are
+      // stale — drop them so we never replay a prompt that's already answered.
+      const st = (evt as unknown as { state?: string }).state;
+      if (!st || !SessionFocusRelay.INTERACTIVE_STATES.has(st)) entry.options = undefined;
+    } else if (evt.type === 'prompt_options') {
+      entry.options = evt;
+    }
+  }
+
+  /** Re-emit the cached state_update (+ prompt_options) for a session. */
+  private _replayCached(sessionId: string): void {
+    const entry = this.lastRelayed.get(sessionId);
+    if (!entry) return;
+    if (entry.state) {
+      debug(TAG, `Replay cached state_update for session ${sessionId}`);
+      this.onEvent?.(entry.state);
+    }
+    if (entry.options) {
+      debug(TAG, `Replay cached prompt_options for session ${sessionId}`);
+      this.onEvent?.(entry.options);
+    }
   }
 
   // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -245,6 +291,7 @@ export class SessionFocusRelay {
         const evt = JSON.parse(raw.toString()) as BridgeEvent;
         if (RELAYED_EVENTS.has(evt.type)) {
           debug(TAG, `Relay ${evt.type} from session ${sessionId}`);
+          this._cacheRelayed(sessionId, evt);
           this.onEvent?.(evt);
         }
       } catch {
@@ -266,6 +313,7 @@ export class SessionFocusRelay {
         }
         debug(TAG, `Session ${sessionId} WS closed (evicting from conn pool)`);
         this.sessionConns.delete(sessionId);
+        this.lastRelayed.delete(sessionId); // session gone — cached prompt is stale
       }
     });
 
@@ -291,6 +339,7 @@ export class SessionFocusRelay {
       conn.ws.removeAllListeners();
       conn.ws.close();
       this.sessionConns.delete(sessionId);
+      this.lastRelayed.delete(sessionId); // last focuser left — cached prompt is stale
       debug(TAG, `Closed WS for session ${sessionId} (refcount=0)`);
     }
   }

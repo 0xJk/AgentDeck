@@ -60,7 +60,6 @@ import {
   renderFocusPanel,
   renderListPanel,
   renderDetailPanel,
-  renderWideOptionList,
 } from '../renderers/option-renderer.js';
 
 // ===== button-renderer =====
@@ -400,13 +399,17 @@ describe('option-renderer snapshots', () => {
     })).toMatchSnapshot();
   });
 
-  it('renderWideOptionList returns correct panel count', () => {
-    const options = Array.from({ length: 5 }, (_, i) =>
+  it('renderListPanel windows a long list centered on selection (no clip)', () => {
+    const options = Array.from({ length: 8 }, (_, i) =>
       makeOption({ label: `Choice ${i + 1}`, index: i }),
     );
-    const result = renderWideOptionList(options, 2, false, State.AWAITING_OPTION, 3, 0);
-    expect(result.panels).toHaveLength(3);
-    expect(result.panels[0]).toMatchSnapshot();
+    // Selection near the end must still be visible (windowing, not clipping).
+    expect(renderListPanel({
+      options,
+      selectedIndex: 7,
+      isPermOrDiff: false,
+      state: State.AWAITING_OPTION,
+    })).toMatchSnapshot();
   });
 });
 

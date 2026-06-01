@@ -284,6 +284,12 @@ export function handleTakeoverPush(): void {
         bridge.send({ type: 'respond', value: shortcut });
       }
     }
+  } else if (currentState === State.IDLE && bridge) {
+    // Idle (no takeover): the option dial press/tap sends the chosen suggestion.
+    const { list } = getEffectivePrompts();
+    const cmd = list[promptIndex];
+    dlog('ResDial', `takeoverPush: send_prompt "${cmd}"`);
+    bridge.send({ type: 'send_prompt', text: cmd });
   }
 }
 
@@ -421,31 +427,7 @@ export class ResponseDialAction extends SingletonAction {
       timelineStore.toggleDetail();
       return;
     }
-    if (currentState === State.AWAITING_OPTION && currentOptions.length > 0) {
-      dlog('ResDial', `push: select_option idx=${selectedIndex} "${currentOptions[selectedIndex]?.label}"`);
-      bridge.send({ type: 'select_option', index: selectedIndex });
-    } else if (
-      (currentState === State.AWAITING_PERMISSION || currentState === State.AWAITING_DIFF) &&
-      currentOptions.length > 0
-    ) {
-      if (navigable) {
-        // Navigable TUI (❯ cursor): use select_option (arrow keys + Enter)
-        dlog('ResDial', `push: select_option (nav) idx=${selectedIndex} "${currentOptions[selectedIndex]?.label}"`);
-        bridge.send({ type: 'select_option', index: selectedIndex });
-      } else {
-        const opt = currentOptions[selectedIndex];
-        const shortcut = opt?.shortcut || opt?.label?.charAt(0).toLowerCase();
-        if (shortcut) {
-          dlog('ResDial', `push: respond "${opt.label}" (${shortcut})`);
-          bridge.send({ type: 'respond', value: shortcut });
-        }
-      }
-    } else if (currentState === State.IDLE && bridge) {
-      const { list } = getEffectivePrompts();
-      const cmd = list[promptIndex];
-      dlog('ResDial', `push: send_prompt "${cmd}"`);
-      bridge.send({ type: 'send_prompt', text: cmd });
-    }
+    handleTakeoverPush();
   }
 
   override async onDialUp(_ev: DialUpEvent): Promise<void> {
@@ -454,6 +436,9 @@ export class ResponseDialAction extends SingletonAction {
 
   override async onTouchTap(_ev: TouchTapEvent): Promise<void> {
     if (isVoiceTextTakeoverActive()) { handleVtDown(); return; }
+    // Tapping the option strip commits the highlighted option, same as
+    // pressing the dial — tap is the natural gesture on a touchscreen.
+    if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {

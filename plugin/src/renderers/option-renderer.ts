@@ -30,13 +30,6 @@ function truncate(str: string, max: number, fontSize?: number): string {
   return str.length > max ? str.slice(0, max - 1) + '\u2026' : str;
 }
 
-/** Truncate by pixel width directly (for wide canvas). */
-function truncateByPx(str: string, maxPx: number, fontSize: number): string {
-  if (measureTextWidth(str, fontSize) <= maxPx) return str;
-  const ellipsisPx = measureTextWidth('\u2026', fontSize);
-  const [fit] = sliceByPx(str, maxPx - ellipsisPx, fontSize);
-  return fit + '\u2026';
-}
 
 function wrapTextLines(text: string, maxChars: number, maxLines: number): string[] {
   const words = text.split(/\s+/);
@@ -193,7 +186,8 @@ export function renderListPanel(data: ListPanelData): string {
     const isSelected = optIdx === selectedIndex;
     const y = 2 + i * ROW_H;
     const label = processLabel(rowOpt.label);
-    const text = truncate(`${optIdx + 1}. ${label.main}`, 26, 14);
+    // Tighter width when scrollable, to leave room for the ▲/▼ chevrons.
+    const text = truncate(`${optIdx + 1}. ${label.main}`, options.length > ROWS ? 23 : 26, 14);
 
     // Use color to distinguish recommended/selected instead of badges
     const rowColors = isPermOrDiff ? colorForOption(rowOpt) : null;
@@ -214,13 +208,19 @@ export function renderListPanel(data: ListPanelData): string {
     }
   }
 
-  // Scroll indicator (right-side thumb bar) when more than ROWS
+  // Scroll affordances when more options than fit: a right-edge thumb bar PLUS
+  // ▲/▼ chevrons so the user always knows more options exist above/below (the
+  // bottom option being silently hidden was the core 显示不全 complaint).
   if (options.length > ROWS) {
     const trackH = ROWS * ROW_H - 2;
     const thumbH = Math.max(10, (ROWS / options.length) * trackH);
     const thumbY = 2 + (windowStart / (options.length - ROWS)) * (trackH - thumbH);
-    rows += `<rect x="196" y="2" width="3" height="${trackH}" rx="1.5" fill="#1e293b"/>`;
-    rows += `<rect x="196" y="${thumbY}" width="3" height="${thumbH}" rx="1.5" fill="#475569"/>`;
+    rows += `<rect x="197" y="2" width="2" height="${trackH}" rx="1" fill="#1e293b"/>`;
+    rows += `<rect x="197" y="${thumbY}" width="2" height="${thumbH}" rx="1" fill="#475569"/>`;
+    const moreAbove = windowStart > 0;
+    const moreBelow = windowStart + ROWS < options.length;
+    if (moreAbove) rows += `<text x="190" y="11" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#64748b">▲</text>`;
+    if (moreBelow) rows += `<text x="190" y="97" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#64748b">▼</text>`;
   }
 
   return svgWrap(rows);
@@ -304,107 +304,6 @@ export function renderDetailPanel(data: DetailPanelData): string {
   }
 
   return svgWrap(inner, defs);
-}
-
-// ====== Wide Option List (E2-E4 unified canvas) ======
-
-export interface WideOptionListResult {
-  panels: string[];
-  maxScrollY: number;
-  lineHeight: number;
-}
-
-export function renderWideOptionList(
-  options: PromptOption[],
-  selectedIndex: number,
-  isPermOrDiff: boolean,
-  state: State,
-  panelCount: number,
-  scrollY: number,
-): WideOptionListResult {
-  const totalW = panelCount * W;
-  const ROW_H = 22;
-  const PAD_X = 10;
-  const VISIBLE_H = H; // 100px
-  const totalContentH = options.length * ROW_H;
-  const maxScrollY = Math.max(0, totalContentH - VISIBLE_H);
-  const sy = Math.max(0, Math.min(scrollY, maxScrollY));
-
-  // Build rows
-  let rows = '';
-  for (let i = 0; i < options.length; i++) {
-    const opt = options[i];
-    const y = i * ROW_H;
-    const label = processLabel(opt.label);
-    const isSelected = i === selectedIndex;
-
-    const rowColors = isPermOrDiff ? colorForOption(opt) : null;
-    const isRecommended = !isPermOrDiff && opt.recommended;
-    const isChosen = !isPermOrDiff && opt.selected;
-
-    // Use full label on wide canvas — pixel-based truncation for CJK support
-    const fullText = label.sub ? `${label.main} ${label.sub}` : label.main;
-    const numberedText = `${i + 1}. ${fullText}`;
-    const maxPx = totalW - 40; // 10px pad each side + 20px badge area
-    const text = truncateByPx(numberedText, maxPx, 14);
-
-    if (isSelected) {
-      const bgColor = rowColors?.color ?? (isRecommended ? '#1e4d2b' : '#1e3a5f');
-      rows += `<rect x="${PAD_X - 4}" y="${y + 1}" width="${totalW - PAD_X * 2 + 8}" height="${ROW_H - 2}" rx="4" fill="${bgColor}"/>`;
-      rows += `<text x="${PAD_X + 2}" y="${y + 16}" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#ffffff">\u25B6 ${escapeXml(text)}</text>`;
-
-      // Badge on right side
-      const badge = opt.recommended ? '\u2605 Rec'
-        : opt.selected ? '\u2713 Sel'
-        : opt.shortcut ? `[${opt.shortcut}]` : '';
-      if (badge) {
-        rows += `<text x="${totalW - PAD_X}" y="${y + 16}" text-anchor="end" font-family="Arial,sans-serif" font-size="11" fill="#94a3b8">${badge}</text>`;
-      }
-    } else {
-      const dimColor = rowColors?.color ?? (isRecommended ? '#1e4d2b' : isChosen ? '#1e3a5f' : null);
-      if (dimColor) {
-        rows += `<rect x="${PAD_X - 4}" y="${y + 1}" width="${totalW - PAD_X * 2 + 8}" height="${ROW_H - 2}" rx="4" fill="${dimColor}" opacity="0.2"/>`;
-      }
-      const textColor = isRecommended ? '#86efac' : isChosen ? '#93c5fd' : '#94a3b8';
-      rows += `<text x="${PAD_X + 8}" y="${y + 16}" font-family="Arial,sans-serif" font-size="14" fill="${textColor}">${escapeXml(text)}</text>`;
-
-      const badge = opt.recommended ? '\u2605'
-        : opt.selected ? '\u2713'
-        : '';
-      if (badge) {
-        const badgeColor = opt.recommended ? '#86efac' : '#93c5fd';
-        rows += `<text x="${totalW - PAD_X}" y="${y + 16}" text-anchor="end" font-family="Arial,sans-serif" font-size="11" fill="${badgeColor}">${badge}</text>`;
-      }
-    }
-  }
-
-  // Scroll indicator on right edge
-  let scrollBar = '';
-  if (totalContentH > VISIBLE_H) {
-    const trackH = VISIBLE_H - 4;
-    const thumbH = Math.max(12, (VISIBLE_H / totalContentH) * trackH);
-    const thumbY = 2 + (sy / maxScrollY) * (trackH - thumbH);
-    scrollBar = `<rect x="${totalW - 4}" y="2" width="3" height="${trackH}" rx="1.5" fill="#1e293b"/>`
-      + `<rect x="${totalW - 4}" y="${thumbY}" width="3" height="${thumbH}" rx="1.5" fill="#475569"/>`;
-  }
-
-  // Assemble wide SVG and slice
-  const defs = `<defs><clipPath id="ol"><rect x="0" y="0" width="${totalW}" height="${VISIBLE_H}"/></clipPath></defs>`;
-  const content = `<rect width="${totalW}" height="${H}" fill="#0f172a"/>`
-    + `<g clip-path="url(#ol)"><g transform="translate(0,${-sy})">${rows}</g></g>`
-    + scrollBar;
-
-  const panels: string[] = [];
-  for (let i = 0; i < panelCount; i++) {
-    panels.push(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
-      + defs
-      + `<g transform="translate(${-i * W},0)">${content}</g>`
-      + `</svg>`,
-    );
-  }
-
-  return { panels, maxScrollY, lineHeight: ROW_H };
 }
 
 /** Word-wrap for monospace text (handles multi-line input) */
