@@ -1069,13 +1069,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // ===== State changed → broadcast =====
   core.stateMachine.on('state_changed', (snapshot) => {
     const gwAlive = gatewayAdapter?.isAlive() ?? false;
-    const stateEvent = attachFocusedSessionId(core.buildStateEvent({
-      agentType: gwAlive ? 'openclaw' : 'daemon' as any,
-      agentCapabilities: gwAlive ? OPENCLAW_CAPABILITIES : undefined,
-      snapshot,
-    }));
-    lastStateEvent = stateEvent;
-    core.wsServer.broadcast(stateEvent);
+    // When a plugin is focused on a real session bridge, the focus relay owns
+    // the broadcast state for that client (relaying the session's own
+    // state_update / prompt_options). Broadcasting the daemon's own state here
+    // would flicker/overwrite the focused session's real state (e.g.
+    // awaiting_option + options) on a periodic daemon state change. Still run
+    // the sessions-list + usage refreshes, just don't clobber the focused state.
+    const hasFocusedSession = focusRelay.getFocusedSessionId() != null;
+    if (!hasFocusedSession) {
+      const stateEvent = attachFocusedSessionId(core.buildStateEvent({
+        agentType: gwAlive ? 'openclaw' : 'daemon' as any,
+        agentCapabilities: gwAlive ? OPENCLAW_CAPABILITIES : undefined,
+        snapshot,
+      }));
+      lastStateEvent = stateEvent;
+      core.wsServer.broadcast(stateEvent);
+    }
     core.maybeBroadcastSessionsList();
     core.broadcastUsage();
 
@@ -1171,11 +1180,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       const sessionId = (cmd as any).sessionId as string;
       if (!sessionId) return;
       userFocusedSessionId = sessionId;
-      broadcastFocusedState();
+      // The OpenClaw virtual session has no independent session bridge — its
+      // state lives in the daemon's own state machine, so broadcast it here.
       if (sessionId === 'openclaw-gateway' && gatewayAdapter?.isAlive()) {
+        broadcastFocusedState();
         if (sender) focusRelay.unfocus(token);
         return;
       }
+      // For a real session bridge, do NOT pre-broadcast the daemon's own state
+      // (disconnected / cached OpenClaw metadata) — it races the focus relay and
+      // flickers/overwrites the session's real state (e.g. awaiting_option +
+      // options) that arrives a moment later. focusRelay.focus() subscribes to
+      // the session bridge, which pushes its current state on connect.
       if (sender) focusRelay.focus(token, sessionId);
       return;
     }
