@@ -20,6 +20,8 @@ import { BridgeLogStream } from './log-stream.js';
 import { PassiveSessionObserver } from './passive-observer.js';
 import { SessionTimelineRelay } from './session-timeline-relay.js';
 import { SessionFocusRelay } from './session-focus-relay.js';
+import { resolveCommandToken } from './command-token.js';
+import { gatewayShouldHandle } from './gateway-routing.js';
 import { updatePushState } from './session-aggregator.js';
 import { VoiceManager } from './voice.js';
 import { VoiceAssistantManager } from './voice-assistant.js';
@@ -230,6 +232,8 @@ export interface DaemonOptions {
   port?: number;
   debug?: boolean;
   wakeWord?: boolean;
+  /** Advertise via mDNS/Bonjour. Default true; set false for IP-direct topologies. */
+  mdns?: boolean;
 }
 
 function buildNodeModuleHealth(startedModules: DeviceModule[]): Record<string, unknown> {
@@ -750,11 +754,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
   });
 
-  // mDNS + device modules
+  // Install the process-level safety net (uncaughtException/unhandledRejection/exit)
+  // BEFORE starting mDNS + device modules. initModules() awaits device probing for
+  // several seconds, during which mDNS is live; a transient mDNS socket error in that
+  // window must be swallowed by isIgnorableProcessError(), not crash the daemon.
+  core.registerProcessHandlers('agentdeck');
+
+  // mDNS + device modules. mDNS defaults on; disable with `daemon start --no-mdns`
+  // (IP-direct topologies don't need discovery and sidestep mDNS name conflicts).
   const deviceModules = createDefaultModules('daemon' as any);
   const startedModules = await initModules(
     deviceModules,
-    { mdns: true, adb: 'auto', serial: 'auto', pixoo: 'auto', d200h: 'auto' },
+    { mdns: opts.mdns !== false, adb: 'auto', serial: 'auto', pixoo: 'auto', d200h: 'auto' },
     { port, authToken: core.authToken, projectName: 'AgentDeck', wsServer: core.wsServer },
   );
 
@@ -1137,10 +1148,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   });
 
   core.wsServer.onCommand((cmd, sender) => {
-    // Resolve per-client token; fall back to a stable symbol if sender unknown
-    const token = sender ? (clientTokens.get(sender) ?? Symbol('unknown')) : Symbol('dispatch');
+    // Resolve the focus-relay token. Non-WS dispatch (sender == null) MUST use a
+    // single stable token — minting a fresh Symbol per call leaked a focus entry +
+    // session-WS refcount on every command (no onClientDisconnect to release it).
+    const token = resolveCommandToken(sender, clientTokens);
     debug('daemon', `cmd: ${cmd.type}`);
-    if (gatewayAdapter?.isAlive() && gatewayAdapter.handleCommand(cmd)) {
+    // Gateway-vs-session priority: when the user has focused a REAL session
+    // bridge, interactive commands belong to that session — the OpenClaw gateway
+    // (whose handleCommand returns true unconditionally for them) must not
+    // preempt them here. See gatewayShouldHandle() / plan 002 #2.
+    const realSessionFocused =
+      userFocusedSessionId !== null && userFocusedSessionId !== 'openclaw-gateway';
+    if (
+      gatewayAdapter?.isAlive() &&
+      gatewayShouldHandle(realSessionFocused, cmd.type) &&
+      gatewayAdapter.handleCommand(cmd)
+    ) {
       switch (cmd.type) {
         case 'respond': core.stateMachine.handleUserAction('respond'); break;
         case 'interrupt': core.stateMachine.handleUserAction('interrupt'); break;
@@ -1570,7 +1593,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     setTimeout(() => process.exit(0), 5000).unref();
   });
 
-  core.registerProcessHandlers('agentdeck');
+  // (process handlers were registered earlier, before initModules — see above)
 
   log(`[agentdeck] Daemon running. Gateway probe active.`);
 }

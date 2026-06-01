@@ -49,6 +49,41 @@ export interface BridgeCoreOptions {
   httpServer: Server;
 }
 
+// ===== Process error classification =====
+
+/**
+ * Decide whether an uncaught exception / unhandled rejection is a non-fatal
+ * transient the daemon should swallow rather than crash on:
+ * - mDNS name conflicts and multicast (port 5353) bind failures — network
+ *   interface churn (sleep/wake, WiFi reconnect, VPN toggle, a stale peer
+ *   holding the same `_agentdeck._tcp` name) causes these; mDNS is non-critical.
+ * - Client-disconnect stream errors (EPIPE/ECONNRESET/…, write-after-end) —
+ *   a peer closing mid-write surfaces asynchronously and must not kill the hub.
+ *
+ * Anything else is a genuine fault and should propagate (crash + log).
+ */
+export function isIgnorableProcessError(err: unknown): boolean {
+  const msg = (err as { message?: string })?.message ?? '';
+  const code = (err as NodeJS.ErrnoException)?.code ?? '';
+  // mDNS — non-critical
+  if (
+    msg.includes('already in use on the network') ||
+    (msg.includes('EADDRNOTAVAIL') && msg.includes('5353'))
+  ) {
+    return true;
+  }
+  // Stream/network — client disconnects
+  if (
+    code === 'EPIPE' || code === 'ECONNRESET' || code === 'ENOTCONN' ||
+    code === 'ENXIO' || code === 'EIO' || code === 'EBADF' ||
+    msg.includes('ERR_STREAM_DESTROYED') || msg.includes('ERR_STREAM_WRITE_AFTER_END') ||
+    msg.includes('write after end') || msg.includes('This socket has been ended')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 // ===== BridgeCore =====
 
 /**
@@ -721,27 +756,16 @@ export class BridgeCore {
     process.on('uncaughtException', (err) => {
       const msg = err?.message ?? '';
       const code = (err as NodeJS.ErrnoException)?.code ?? '';
-      // mDNS errors are non-critical — network interface changes (sleep/wake,
-      // WiFi reconnect, VPN toggle) cause transient multicast failures.
-      // Null out the mDNS instance so the recovery timer can re-publish.
-      if (
-        msg.includes('already in use on the network') ||
-        (msg.includes('EADDRNOTAVAIL') && msg.includes('5353'))
-      ) {
-        debug('mDNS', `error (ignored): ${msg}`);
-        invalidateMdnsInstance();
-        return;
-      }
-      // Stream/network errors are non-critical — client disconnects can cause
-      // EPIPE, ECONNRESET, or stream-destroyed errors asynchronously.
-      // Log and continue rather than killing the daemon.
-      if (
-        code === 'EPIPE' || code === 'ECONNRESET' || code === 'ENOTCONN' ||
-        code === 'ENXIO' || code === 'EIO' || code === 'EBADF' ||
-        msg.includes('ERR_STREAM_DESTROYED') || msg.includes('ERR_STREAM_WRITE_AFTER_END') ||
-        msg.includes('write after end') || msg.includes('This socket has been ended')
-      ) {
-        debug('core', `Stream/network error (ignored): ${code || msg}`);
+      // Non-fatal transients (mDNS churn, client-disconnect stream errors) —
+      // swallow rather than crash. See isIgnorableProcessError() for the catalog.
+      if (isIgnorableProcessError(err)) {
+        // mDNS conflict/bind: null the instance so the recovery timer re-publishes.
+        if (msg.includes('already in use on the network') || msg.includes('5353')) {
+          debug('mDNS', `error (ignored): ${msg}`);
+          invalidateMdnsInstance();
+        } else {
+          debug('core', `Stream/network error (ignored): ${code || msg}`);
+        }
         return;
       }
       // Log full stack trace to stderr AND append to crash log

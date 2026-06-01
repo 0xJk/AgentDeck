@@ -1,69 +1,20 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { writeFileSync, unlinkSync, existsSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { BRIDGE_WS_PORT } from './types.js';
+import { buildPlist, PLIST_PATH, LAUNCH_AGENT_LOG_DIR } from './launch-agent.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json') as { version: string };
 
 function log(msg: string): void {
   process.stderr.write(msg + '\n');
-}
-
-// ===== LaunchAgent plist =====
-
-const PLIST_LABEL = 'dev.agentdeck.daemon';
-const PLIST_PATH = join(homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
-
-function getAgentdeckBin(): string {
-  try {
-    return execSync('which agentdeck', { encoding: 'utf-8' }).trim();
-  } catch {
-    const distDir = new URL('.', import.meta.url).pathname;
-    return join(distDir, 'cli.js');
-  }
-}
-
-function buildPlist(): string {
-  const bin = getAgentdeckBin();
-  const logDir = join(homedir(), '.agentdeck');
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${PLIST_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${bin}</string>
-    <string>daemon</string>
-    <string>start</string>
-    <string>--foreground</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>StandardOutPath</key>
-  <string>${logDir}/daemon-stdout.log</string>
-  <key>StandardErrorPath</key>
-  <string>${logDir}/daemon-stderr.log</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>${process.env.PATH}</string>
-  </dict>
-</dict>
-</plist>`;
 }
 
 // ===== Helpers =====
@@ -220,6 +171,7 @@ daemon
   .option('-d, --debug', 'Enable debug logging')
   .option('-f, --foreground', 'Run in foreground (default: background fork)')
   .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
+  .option('--no-mdns', 'Disable mDNS/Bonjour advertisement (IP-direct topologies)')
   .action(async (opts) => {
     const { findExistingDaemon, readDaemonInfo } = await import('./session-registry.js');
     const daemonInfo = readDaemonInfo();
@@ -242,6 +194,7 @@ daemon
       if (opts.port !== String(BRIDGE_WS_PORT)) args.push('-p', opts.port);
       if (opts.debug) args.push('-d');
       if (opts.wakeWord) args.push('--wake-word');
+      if (opts.mdns === false) args.push('--no-mdns');
 
       // Use log files instead of 'ignore' — preserves device access (mic, etc.)
       const out = openSync(join(logDir, 'daemon-stdout.log'), 'w');
@@ -261,6 +214,7 @@ daemon
       port: parseInt(opts.port, 10),
       debug: opts.debug,
       wakeWord: !!opts.wakeWord,
+      mdns: opts.mdns !== false,
     });
   });
 
@@ -325,6 +279,10 @@ daemon
       log('LaunchAgent is macOS-only');
       process.exit(1);
     }
+    // launchd opens StandardOutPath/StandardErrorPath (~/.agentdeck/daemon-*.log)
+    // when it spawns the job. If the dir is missing it can't open them and the
+    // job silently fails to start (never binds 9120). Create it up front. (plan 002 #3)
+    mkdirSync(LAUNCH_AGENT_LOG_DIR, { recursive: true });
     const plist = buildPlist();
     writeFileSync(PLIST_PATH, plist, 'utf-8');
     log(`Wrote ${PLIST_PATH}`);

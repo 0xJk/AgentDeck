@@ -179,6 +179,10 @@ export class OutputParser extends EventEmitter {
     // so word spacing is preserved (Claude Code TUI uses cursor movement instead of spaces/newlines)
     const spaced = rawData
       .replace(/\x1b\[\d*C/g, ' ')              // cursor forward → space (existing)
+      // CHA (cursor horizontal absolute, ESC [ <col> G) — Claude Code v2.x positions
+      // each word/label segment with a column jump instead of literal spaces. Without
+      // this, stripAnsi drops it and words collapse ("Yes, I trust" → "Yes,Itrust").
+      .replace(/\x1b\[\d*G/g, ' ')              // CHA → space
       .replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, '\n') // CUP/HVP → newline
       .replace(/\x1b\[\d*[ABEF]/g, '\n');        // CUU/CUD/CNL/CPL → newline
     const clean = stripAnsi(spaced);
@@ -915,26 +919,24 @@ export class OutputParser extends EventEmitter {
     }
     // Collect contiguous option lines scanning backward. Tolerates:
     // - Blank/separator lines (unlimited — TUI redraws create variable blank runs)
-    // - Indented text lines (option descriptions, up to MAX_DESC_GAP between options)
+    // - Indented text lines (option descriptions — unlimited; long options wrap)
     // Breaks on unindented text (real content boundaries like "Would you like to proceed?")
     let blockStart = blockEnd;
     let foundOption = false;
-    let descGap = 0;
-    const MAX_DESC_GAP = 2; // max indented description lines between consecutive options
     const sepRe = /^[\s\u2500-\u257F]*$/; // box-drawing characters + whitespace only
     while (blockStart > 0) {
       const line = allLines[blockStart - 1];
       if (optLineRe.test(line)) {
         blockStart--;
         foundOption = true;
-        descGap = 0;
       } else if (line.trim() === '' || sepRe.test(line)) {
         // Blank or separator line — always tolerate (TUI redraws create variable blank runs)
         blockStart--;
       } else if (foundOption && /^\s/.test(line)) {
-        // Indented text line — likely option description, tolerate within limit
-        descGap++;
-        if (descGap > MAX_DESC_GAP) break;
+        // Indented text line — option description continuation, tolerate (unbounded wrap).
+        // Claude v2.x long options wrap their description across several indented lines,
+        // so any fixed cap drops the leading options when a description wraps past it.
+        // Non-consecutive ghosts are discarded by the contiguous-run filter below.
         blockStart--;
       } else {
         // Unindented text or no options found yet — hard block boundary

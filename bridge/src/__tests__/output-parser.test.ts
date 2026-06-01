@@ -1,6 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { OutputParser } from '../output-parser.js';
 import type { PromptOption } from '../types.js';
+
+const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+/** Load a captured PTY chunk sequence: [{ ts, raw }] in arrival order. */
+function loadChunksFixture(name: string): Array<{ ts: number; raw: string }> {
+  return readFileSync(join(FIXTURES_DIR, name), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const { ts, b64 } = JSON.parse(line);
+      return { ts, raw: Buffer.from(b64, 'base64').toString('utf8') };
+    });
+}
 
 function createParser(): OutputParser {
   return new OutputParser();
@@ -3051,6 +3066,87 @@ describe('OutputParser', () => {
       p.feed('Set model to Opus 4.7 (1M context) (default) with max effort\n');
       expect(events).toHaveLength(1);
       expect(events[0]).toEqual({ level: 'max' });
+    });
+  });
+
+  // === CHA (Cursor Horizontal Absolute) column positioning ===
+  // Claude Code v2.x lays out option labels using CHA (ESC [ <col> G) jumps
+  // instead of literal spaces. Grammar confirmed from a real v2.1.159 PTY capture
+  // (see fixtures/claude-v2.1.159-trust-prompt.b64).
+  describe('CHA column positioning', () => {
+    const E = '\x1b';
+
+    it('preserves word spacing across CHA column jumps in option labels', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+      // Real grammar: "1." at col 4, then each word positioned via CHA.
+      p.feed(
+        `${E}[4G1.${E}[7GManual${E}[14Greview${E}[21Gmode\r\r\n` +
+        `${E}[4G2.${E}[7GAutomatic${E}[17Gpipeline\r\r\n`,
+      );
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      const opts = events[0].options;
+      expect(opts).toHaveLength(2);
+      expect(opts[0].label).toBe('Manual review mode');
+      expect(opts[1].label).toBe('Automatic pipeline');
+    });
+
+    it('parses the real Claude v2.1.159 trust-folder prompt with proper spacing', () => {
+      // Startup prompt (pre-idle), so no arming — replay the captured chunk sequence
+      // with real inter-chunk timing so the option debounce fires exactly as it did live.
+      // The prompt may surface as option_prompt or permission_prompt depending on micro-
+      // timing; either is correct — what matters is that CHA spacing is preserved.
+      const p = createParser();
+      const emits: PromptOption[][] = [];
+      p.on('option_prompt', (d: any) => emits.push(d.options));
+      p.on('permission_prompt', (d: any) => emits.push(d.options));
+      const chunks = loadChunksFixture('claude-v2.1.159-trust-prompt.chunks.jsonl');
+      let prevTs = chunks[0].ts;
+      for (const { ts, raw } of chunks) {
+        vi.advanceTimersByTime(ts - prevTs);
+        prevTs = ts;
+        p.feed(raw);
+      }
+      vi.advanceTimersByTime(400);
+
+      const trustEmit = emits.find(opts =>
+        opts.some(o => o.label === 'Yes, I trust this folder'),
+      );
+      expect(trustEmit, 'expected an emit with the trust-folder options').toBeDefined();
+      const labels = trustEmit!.map(o => o.label);
+      expect(labels).toContain('Yes, I trust this folder');
+      expect(labels).toContain('No, exit');
+    });
+
+    it('groups multi-line wrapped option descriptions (long AskUserQuestion options)', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+      // 3 options, each title followed by a description that wraps to 3 lines.
+      // Wrapped continuation lines are positioned via CHA (indented after CHA→space).
+      // The ❯ cursor marks the default option (navigable list), as Claude renders it.
+      p.feed(
+        `${E}[2G❯${E}[4G1.${E}[7GDelete packages\r\r\n` +
+        `${E}[7GThese are app installers that can be removed\r\r\n` +
+        `${E}[7Gand re-downloaded later when needed, freeing\r\r\n` +
+        `${E}[7Gup roughly 1.4GB from the home directory.\r\r\n` +
+        `${E}[4G2.${E}[7GMove to Downloads\r\r\n` +
+        `${E}[7GRelocate the installers into the Downloads\r\r\n` +
+        `${E}[7Gfolder so the home directory looks tidy, but\r\r\n` +
+        `${E}[7Gthe 1.4GB of disk space is still in use.\r\r\n` +
+        `${E}[4G3.${E}[7GLeave them in place\r\r\n` +
+        `${E}[7GKeep everything where it is and skip the\r\r\n` +
+        `${E}[7Gpackage cleanup entirely for this session.\r\r\n`,
+      );
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      const opts = events[0].options;
+      expect(opts.map(o => o.index)).toEqual([0, 1, 2]);
+      expect(opts[0].label).toBe('Delete packages');
+      expect(opts[1].label).toBe('Move to Downloads');
+      expect(opts[2].label).toBe('Leave them in place');
     });
   });
 });

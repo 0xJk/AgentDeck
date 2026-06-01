@@ -38,6 +38,15 @@ const ROUTED_COMMANDS = new Set([
   'switch_mode',
 ]);
 
+/**
+ * Whether a command is an interactive command that targets the focused session
+ * (respond / select_option / send_prompt / navigate / interrupt / mode switch).
+ * Used by the daemon to decide gateway-vs-session routing priority.
+ */
+export function isRoutedCommand(type: string): boolean {
+  return ROUTED_COMMANDS.has(type);
+}
+
 export type FocusEventHandler = (event: BridgeEvent) => void;
 
 /** Unique identity for each plugin WS connection. */
