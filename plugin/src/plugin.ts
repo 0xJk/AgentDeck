@@ -77,7 +77,7 @@ import {
   setDaemonConnected,
 } from './actions/session-slot-button.js';
 import { timelineStore, setTimelineBridge } from './timeline-store.js';
-import { BridgeConnectionAction } from './actions/bridge-connection.js';
+import { BridgeConnectionAction, initBridgeConnection, refreshBridgeConnectionPI } from './actions/bridge-connection.js';
 
 // ---- Setup detection ----
 let setupRequired = false;
@@ -187,6 +187,17 @@ function sendFocusedSessionCommand(command: { type: string; [key: string]: unkno
 
 // ---- Instances ----
 const connMgr = new ConnectionManager();
+
+// Wire the bridge-connection PI to the live connection state. The PI shows the
+// ACTIVE bridge's real status (connected vs pairing/keychain_error), and a
+// "Set active" / delete in the PI triggers connMgr to (re)connect. connMgr
+// state changes re-render the open PI so a bogus token surfaces as "pairing"
+// rather than a misleading "active".
+initBridgeConnection({
+  getConnectionState: () => connMgr.getState(),
+  onActiveBridgeChanged: () => { void connMgr.switchActiveBridge(); },
+});
+connMgr.on('state_change', () => refreshBridgeConnectionPI());
 
 // ---- Initialize action modules ----
 initOptionDial(connMgr);

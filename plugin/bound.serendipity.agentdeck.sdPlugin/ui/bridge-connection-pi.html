@@ -4,82 +4,114 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Bridge Connection</title>
-  <script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
   <style>
-    .bridge-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 4px 0;
+    :root { color-scheme: dark; }
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      font-size: 13px;
+      color: #d8d8d8;
+      background: #2d2d2d;
+      margin: 0;
+      padding: 12px;
     }
+    .status { padding: 6px 0; font-size: 12px; min-height: 16px; }
+    .status.error { color: #ff6b6b; }
+    .status.ok { color: #4ade80; }
+    fieldset { border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; margin: 10px 0; padding: 8px 10px; }
+    legend { padding: 0 4px; opacity: 0.8; }
+    .field { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+    .field label { width: 56px; opacity: 0.85; text-align: right; }
+    .field input {
+      flex: 1; background: #1e1e1e; border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 4px; color: #fff; padding: 5px 7px; font-size: 13px; min-width: 0;
+    }
+    button {
+      background: #444; border: 1px solid rgba(255,255,255,0.2); color: #fff;
+      border-radius: 4px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+    }
+    button:hover { background: #555; }
+    button.primary { background: #1e6fd9; border-color: #1e6fd9; }
+    button.primary:hover { background: #2a7ee8; }
+    button.danger { background: #5a2222; border-color: #7a3030; }
+    .bridge-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.08); }
+    .bridge-row:first-child { border-top: none; }
     .bridge-row .meta { flex: 1; min-width: 0; }
     .bridge-row .id { font-weight: 600; }
-    .bridge-row .addr { opacity: 0.7; font-size: 11px; }
-    .bridge-row .active-badge { color: var(--sdpi-color, #1e90ff); font-size: 11px; }
-    .status { padding: 6px 0; font-size: 12px; }
-    .status.error { color: #e44; }
-    .empty { opacity: 0.6; padding: 6px 0; }
-    fieldset { border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; margin-top: 10px; }
-    legend { padding: 0 4px; opacity: 0.8; }
+    .bridge-row .addr { opacity: 0.65; font-size: 11px; }
+    .bridge-row .badge { font-size: 11px; margin-left: 6px; }
+    .badge.connected { color: #4ade80; }
+    .badge.connecting { color: #fbbf24; }
+    .badge.pairing { color: #ff6b6b; }
+    .badge.error { color: #ff6b6b; }
+    .badge.selected { color: #9ca3af; }
+    .empty { opacity: 0.55; padding: 6px 0; }
+    .actions { display: flex; gap: 6px; }
   </style>
 </head>
 <body>
   <div id="status" class="status"></div>
 
-  <sdpi-item label="Paired bridges">
+  <fieldset>
+    <legend>Paired bridges</legend>
     <div id="bridge-list"><div class="empty">No bridges paired yet.</div></div>
-  </sdpi-item>
+  </fieldset>
 
   <fieldset>
     <legend>Add bridge</legend>
-    <sdpi-item label="ID">
-      <sdpi-textfield id="f-id" placeholder="my-laptop"></sdpi-textfield>
-    </sdpi-item>
-    <sdpi-item label="Host">
-      <sdpi-textfield id="f-host" placeholder="192.168.1.20"></sdpi-textfield>
-    </sdpi-item>
-    <sdpi-item label="Port">
-      <sdpi-textfield id="f-port" type="number" value="9120"></sdpi-textfield>
-    </sdpi-item>
-    <sdpi-item label="Token">
-      <sdpi-password id="f-token" placeholder="paired token"></sdpi-password>
-    </sdpi-item>
-    <sdpi-item label="">
-      <sdpi-button id="f-add">Add bridge</sdpi-button>
-    </sdpi-item>
+    <div class="field"><label>ID</label><input id="f-id" placeholder="M4" autocomplete="off" /></div>
+    <div class="field"><label>Host</label><input id="f-host" placeholder="192.168.1.108" autocomplete="off" /></div>
+    <div class="field"><label>Port</label><input id="f-port" type="number" value="9120" /></div>
+    <div class="field"><label>Token</label><input id="f-token" type="password" placeholder="paired token" autocomplete="off" /></div>
+    <div class="field"><label></label><button id="f-add" class="primary">Add bridge</button></div>
   </fieldset>
 
   <script>
-    let sd = null;       // streamDeckClient (connection)
+    let ws = null;
+    let uuid = null;
     let actionInfo = null;
+    let connected = false;
 
     function val(id) {
       const el = document.getElementById(id);
-      if (!el) return '';
-      // sdpi-components expose .value
-      return (el.value ?? '').toString().trim();
+      return el ? (el.value ?? '').toString().trim() : '';
     }
 
-    function setStatus(text, isError) {
+    function setStatus(text, kind) {
       const el = document.getElementById('status');
       el.textContent = text || '';
-      el.className = 'status' + (isError ? ' error' : '');
+      el.className = 'status' + (kind ? ' ' + kind : '');
     }
 
     function sendToPlugin(payload) {
-      if (sd && typeof sd.send === 'function') {
-        sd.send(JSON.stringify({
-          event: 'sendToPlugin',
-          action: actionInfo.action,
-          context: actionInfo.context,
-          payload,
-        }));
+      if (!ws || ws.readyState !== WebSocket.OPEN || !actionInfo) {
+        setStatus('Not connected to plugin yet — try again.', 'error');
+        return false;
+      }
+      ws.send(JSON.stringify({
+        event: 'sendToPlugin',
+        action: actionInfo.action,
+        context: uuid,
+        payload,
+      }));
+      return true;
+    }
+
+    // Map the active bridge's live connection state → badge {text, class}.
+    // Non-active bridges get no badge (they're merely paired, not selected).
+    function badgeFor(connState) {
+      switch (connState) {
+        case 'connected':     return { text: '● connected', cls: 'connected' };
+        case 'connecting':    return { text: '… connecting', cls: 'connecting' };
+        case 'pairing':       return { text: '✗ token rejected', cls: 'pairing' };
+        case 'keychain_error':return { text: '✗ keychain error', cls: 'error' };
+        default:              return { text: '○ selected', cls: 'selected' };
       }
     }
 
     function renderState(state) {
       const list = document.getElementById('bridge-list');
       const bridges = state.pairedBridges || [];
+      const connState = state.connectionState || 'idle';
       list.innerHTML = '';
       if (bridges.length === 0) {
         list.innerHTML = '<div class="empty">No bridges paired yet.</div>';
@@ -88,42 +120,60 @@
           const isActive = b.id === state.activeBridgeId;
           const row = document.createElement('div');
           row.className = 'bridge-row';
-          row.innerHTML =
-            '<div class="meta"><div class="id"></div><div class="addr"></div></div>';
-          row.querySelector('.id').textContent = b.id;
-          row.querySelector('.addr').textContent = b.host + ':' + b.port;
+
+          const meta = document.createElement('div');
+          meta.className = 'meta';
+          const idDiv = document.createElement('div');
+          idDiv.className = 'id';
+          idDiv.textContent = b.id;
           if (isActive) {
+            // Only the ACTIVE bridge shows a status, and it reflects the REAL
+            // connection result — not merely that it's selected.
+            const bd = badgeFor(connState);
             const badge = document.createElement('span');
-            badge.className = 'active-badge';
-            badge.textContent = 'active';
-            row.querySelector('.meta').appendChild(badge);
-          } else {
-            const setBtn = document.createElement('sdpi-button');
-            setBtn.textContent = 'Set active';
-            setBtn.addEventListener('click', () =>
-              sendToPlugin({ event: 'setActive', id: b.id }));
-            row.appendChild(setBtn);
+            badge.className = 'badge ' + bd.cls;
+            badge.textContent = bd.text;
+            idDiv.appendChild(badge);
           }
-          const delBtn = document.createElement('sdpi-button');
+          const addrDiv = document.createElement('div');
+          addrDiv.className = 'addr';
+          addrDiv.textContent = b.host + ':' + b.port;
+          meta.appendChild(idDiv);
+          meta.appendChild(addrDiv);
+          row.appendChild(meta);
+
+          const actions = document.createElement('div');
+          actions.className = 'actions';
+          if (!isActive) {
+            const setBtn = document.createElement('button');
+            setBtn.textContent = 'Set active';
+            setBtn.addEventListener('click', () => sendToPlugin({ event: 'setActive', id: b.id }));
+            actions.appendChild(setBtn);
+          }
+          const delBtn = document.createElement('button');
+          delBtn.className = 'danger';
           delBtn.textContent = 'Delete';
-          delBtn.addEventListener('click', () =>
-            sendToPlugin({ event: 'deleteBridge', id: b.id }));
-          row.appendChild(delBtn);
+          delBtn.addEventListener('click', () => sendToPlugin({ event: 'deleteBridge', id: b.id }));
+          actions.appendChild(delBtn);
+          row.appendChild(actions);
+
           list.appendChild(row);
         }
       }
 
-      // Status line: keychain + pairing/error.
-      if (state.status === 'keychain_error' || state.keychainAvailable === false) {
-        setStatus('Keychain unavailable — token stored in memory only.', true);
-      } else if (state.status === 'pairing') {
-        setStatus('Pairing with bridge...', false);
-      } else if (state.status === 'error') {
-        setStatus('Connection error.', true);
-      } else if (state.activeBridgeId) {
-        setStatus('Active: ' + state.activeBridgeId, false);
+      // Status line mirrors the active bridge's real connection state.
+      if (state.keychainAvailable === false || connState === 'keychain_error') {
+        setStatus('Keychain unavailable — cannot store token securely.', 'error');
+      } else if (!state.activeBridgeId) {
+        setStatus('No active bridge — add one and click "Set active".', null);
+      } else if (connState === 'connected') {
+        setStatus('Connected to ' + state.activeBridgeId, 'ok');
+      } else if (connState === 'connecting') {
+        setStatus('Connecting to ' + state.activeBridgeId + '…', null);
+      } else if (connState === 'pairing') {
+        setStatus('Token rejected by ' + state.activeBridgeId + ' — check the token and re-add.', 'error');
       } else {
-        setStatus('No active bridge.', false);
+        setStatus('Active: ' + state.activeBridgeId + ' (' + connState + ')', null);
       }
     }
 
@@ -133,29 +183,34 @@
       const port = parseInt(val('f-port') || '9120', 10) || 9120;
       const token = val('f-token');
       if (!id || !host) {
-        setStatus('ID and Host are required.', true);
+        setStatus('ID and Host are required.', 'error');
         return;
       }
-      sendToPlugin({ event: 'addBridge', bridge: { id, host, port }, token });
-      const t = document.getElementById('f-token');
-      if (t) t.value = '';
+      if (sendToPlugin({ event: 'addBridge', bridge: { id, host, port }, token })) {
+        setStatus('Adding ' + id + '…', null);
+        const t = document.getElementById('f-token');
+        if (t) t.value = '';
+      }
     });
 
-    // Stream Deck SDK connection entry point.
+    // Standard Stream Deck Property Inspector entry point.
     function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
-      actionInfo = JSON.parse(inActionInfo);
-      sd = new WebSocket('ws://127.0.0.1:' + inPort);
-      sd.onopen = () => {
-        sd.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
+      uuid = inUUID;
+      try { actionInfo = JSON.parse(inActionInfo); } catch (e) { actionInfo = { action: 'bound.serendipity.agentdeck.bridge-connection' }; }
+      ws = new WebSocket('ws://127.0.0.1:' + inPort);
+      ws.onopen = () => {
+        connected = true;
+        ws.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
         sendToPlugin({ event: 'getState' });
       };
-      sd.onmessage = (e) => {
+      ws.onmessage = (e) => {
         let data;
         try { data = JSON.parse(e.data); } catch { return; }
         if (data.event === 'sendToPropertyInspector' && data.payload && data.payload.event === 'state') {
           renderState(data.payload);
         }
       };
+      ws.onclose = () => { connected = false; };
     }
     window.connectElgatoStreamDeckSocket = connectElgatoStreamDeckSocket;
   </script>
