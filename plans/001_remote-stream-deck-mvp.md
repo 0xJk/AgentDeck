@@ -350,12 +350,17 @@ A 必须先 merge（shared protocol 类型）→ B 开始。
 
 ---
 
-## 后续 todo（不在 001，绝大多数到 000）
+## 后续 todo（不在 001）
 
+- **落地实测发现的 follow-ups → [plan 002](002_remote-mvp-followups.md)**：PTY 多行选项解析、OpenClaw gateway 路由优先级、daemon LaunchAgent 自启、mDNS 冲突崩溃、非-WS dispatch 泄漏
 - mDNS auto-discovery（plan 000）
 - 删除 server token 广播 + Apple/Android URL 拆分 + Apple fetchHealthInfo localToken 修复 + Swift in-process daemon parity（全部 plan 000）
 - Cursor / VS Code 扩展适配器（永不在 001 scope）
 - SessionFocusRelay reconnect on session bridge death（POC 3 已知 gap）
+
+## 实施结果（已 merge）
+
+001 已实现并 merge 到 master（`b9a5dd1`），实机端到端验证通过：MacBook Stream Deck 跨 LAN 配对 M4 daemon（token 认证）→ focus M4 的 managed claude 会话 → 真实状态 + 选项稳定上 encoder。落地中另修 2 个既有 bug（daemon focus 时序闪烁 `6792412`、PI 通信 `b9a5dd1`）。卡在最末端的 PTY 多行选项解析等 5 项既有问题 → [plan 002](002_remote-mvp-followups.md)。
 
 ---
 
