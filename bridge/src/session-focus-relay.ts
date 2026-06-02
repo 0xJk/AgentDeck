@@ -35,6 +35,9 @@ const ROUTED_COMMANDS = new Set([
   'select_option',
   'send_prompt',
   'navigate_option',
+  'toggle_option',
+  'submit_prompt',
+  'switch_question',
   'switch_mode',
 ]);
 

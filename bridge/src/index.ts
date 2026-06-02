@@ -823,6 +823,28 @@ export async function startSession(opts: SessionOptions): Promise<void> {
         break;
       }
 
+      // --- Multi-select (AskUserQuestion) ---
+      case 'toggle_option': {
+        // Space toggles the focused checkbox (☐↔☒) / activates the [✔] submit item.
+        adapter.prepareForNavigation?.();
+        adapter.writeInput(' ');
+        break;
+      }
+
+      case 'submit_prompt': {
+        // Enter submits the whole multi-select form.
+        adapter.writeInput('\r');
+        core.stateMachine.handleUserAction('select_option');
+        break;
+      }
+
+      case 'switch_question': {
+        // ← / → moves between question cards.
+        adapter.prepareForNavigation?.();
+        adapter.writeInput(cmd.direction === 'prev' ? '\x1b[D' : '\x1b[C');
+        break;
+      }
+
       case 'send_prompt': {
         let text = cmd.text;
         const templateMatch = text.match(/^__template:(\d+)$/);

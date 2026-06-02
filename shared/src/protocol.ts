@@ -464,6 +464,20 @@ export interface NavigateOptionCommand {
   direction: 'up' | 'down';
 }
 
+// --- Multi-select (AskUserQuestion ☐/☒) ---
+export interface ToggleOptionCommand {
+  type: 'toggle_option'; // Space — toggle the focused checkbox / activate [✔]
+}
+
+export interface SubmitPromptCommand {
+  type: 'submit_prompt'; // Enter — submit the multi-select form
+}
+
+export interface SwitchQuestionCommand {
+  type: 'switch_question'; // ← / → — move between question cards
+  direction: 'prev' | 'next';
+}
+
 export interface SendPromptCommand {
   type: 'send_prompt';
   text: string;
@@ -576,6 +590,9 @@ export type PluginCommand =
   | ResponseCommand
   | SelectOptionCommand
   | NavigateOptionCommand
+  | ToggleOptionCommand
+  | SubmitPromptCommand
+  | SwitchQuestionCommand
   | SendPromptCommand
   | SwitchModeCommand
   | InterruptCommand

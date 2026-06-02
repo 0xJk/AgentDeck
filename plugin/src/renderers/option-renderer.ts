@@ -187,8 +187,10 @@ export function renderListPanel(data: ListPanelData): string {
     const isSelected = optIdx === selectedIndex;
     const y = 2 + i * ROW_H;
     const label = processLabel(rowOpt.label);
+    // Multi-select: show the checkbox state (☐/☒). Single-select: numbered.
+    const cb = rowOpt.checked === undefined ? '' : (rowOpt.checked ? '☒ ' : '☐ ');
     // Tighter width when scrollable, to leave room for the ▲/▼ chevrons.
-    const text = truncate(`${optIdx + 1}. ${label.main}`, options.length > ROWS ? 23 : 26, 14);
+    const text = truncate(`${optIdx + 1}. ${cb}${label.main}`, options.length > ROWS ? 23 : 26, 14);
 
     // Use color to distinguish recommended/selected instead of badges
     const rowColors = isPermOrDiff ? colorForOption(rowOpt) : null;

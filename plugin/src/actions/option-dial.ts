@@ -272,8 +272,18 @@ export function requestTakeoverRefresh(): void {
  * Takeover delegation: any encoder can confirm the current selection.
  * Called by other dials when they receive a push during encoder takeover.
  */
+/** Multi-select prompt? (AskUserQuestion ☐/☒ — options carry a checked flag.) */
+export function isMultiSelectPrompt(): boolean {
+  return currentOptions.some(o => o.checked !== undefined);
+}
+
 export function handleTakeoverPush(): void {
-  if (currentState === State.AWAITING_OPTION && currentOptions.length > 0) {
+  if (currentState === State.AWAITING_OPTION && isMultiSelectPrompt()) {
+    // Multi-select: a press toggles the focused checkbox (Space), it does not
+    // submit. Submit is a screen tap (→ submit_prompt). See multi-select audit.
+    dlog('ResDial', `takeoverPush: toggle_option idx=${selectedIndex} "${currentOptions[selectedIndex]?.label}"`);
+    bridge.send({ type: 'toggle_option' });
+  } else if (currentState === State.AWAITING_OPTION && currentOptions.length > 0) {
     dlog('ResDial', `takeoverPush: select_option idx=${selectedIndex} "${currentOptions[selectedIndex]?.label}"`);
     bridge.send({ type: 'select_option', index: selectedIndex });
   } else if (
@@ -299,6 +309,17 @@ export function handleTakeoverPush(): void {
     dlog('ResDial', `takeoverPush: send_prompt "${cmd}"`);
     bridge.send({ type: 'send_prompt', text: cmd });
   }
+}
+
+/**
+ * Horizontal switch between multi-select question cards (← / →). Wired to a
+ * SECOND dial (the context dial) so the option dial keeps vertical navigation.
+ * No-op unless this is a multi-select prompt. See multi-select audit.
+ */
+export function handleTakeoverHorizontal(ticks: number): void {
+  if (!bridge || !isMultiSelectPrompt()) return;
+  dlog('ResDial', `takeoverHorizontal: switch_question ${ticks > 0 ? 'next' : 'prev'}`);
+  bridge.send({ type: 'switch_question', direction: ticks > 0 ? 'next' : 'prev' });
 }
 
 /**
@@ -445,12 +466,16 @@ export class ResponseDialAction extends SingletonAction {
   override async onTouchTap(ev: TouchTapEvent): Promise<void> {
     if (isVoiceTextTakeoverActive()) { handleVtDown(); return; }
     if (isEncoderTakeoverActive()) {
-      // Long-press on the strip cancels the prompt (Esc); a tap selects the
-      // highlighted option. Dial press is unaffected (audit #8 — safe cancel).
+      // Long-press on the strip cancels the prompt (Esc) — always.
       if (ev.payload.hold) {
         dlog('ResDial', 'touch hold → escape (cancel prompt)');
         bridge.send({ type: 'escape' });
+      } else if (isMultiSelectPrompt()) {
+        // Multi-select: a tap SUBMITS the form (Enter); toggling is the dial press.
+        dlog('ResDial', 'touch tap → submit_prompt (multi-select)');
+        bridge.send({ type: 'submit_prompt' });
       } else {
+        // Single-select: a tap selects the highlighted option (same as dial press).
         handleTakeoverPush();
       }
       return;
