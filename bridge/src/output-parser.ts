@@ -599,13 +599,20 @@ export class OutputParser extends EventEmitter {
               debug('Parser', `EMIT cursor_update: cursorIndex=${parsed.cursorIndex}`);
               this.emit('cursor_update', { cursorIndex: parsed.cursorIndex });
             }
-          } else {
-            // Options disappeared (Esc, selection made, etc.) — exit navigable state
+          } else if (parsed.options.length === 0) {
+            // Genuinely no options left in the buffer — the prompt ended (Esc /
+            // selection / screen clear). Exit navigable state.
             this.lastNavigableEmit = false;
             this.lastCursorIndex = 0;
             this.interactiveActive = false; this.lastOptionCount = 0;
             debug('Parser', 'navigable options disappeared — emitting idle');
             this.emit('idle');
+          } else {
+            // Options still in the buffer but navigable read false — a partial
+            // carousel redraw landed the ❯ cursor on a label-only row (only the
+            // last option keeps its "N." prefix). The prompt is still up; keep it,
+            // do NOT emit idle. Genuine end arrives via spinner/bare-idle. (audit)
+            debug('Parser', 'cursor on label-only option row — keeping prompt (no idle)');
           }
         }, OPTION_DEBOUNCE_MS);
         return;

@@ -3234,5 +3234,28 @@ describe('OutputParser', () => {
       vi.advanceTimersByTime(200);
       expect(opts.at(-1).options).toHaveLength(2);
     });
+
+    it('does not emit idle when a no-number cursor redraw lands on a label-only row', () => {
+      const p = armParser();
+      const idles = collectEvents(p, 'idle');
+      const opts = collectEvents(p, 'option_prompt');
+
+      // Establish a 4-option navigable prompt.
+      p.feed('❯ 1. Red\n  2. Blue\n  3. Green\n  4. Chat about this\n');
+      vi.advanceTimersByTime(200);
+      expect(opts.at(-1).options).toHaveLength(4);
+
+      // Scroll the full render out, then keep one numbered option in the buffer.
+      p.feed('x'.repeat(2200) + '\n');
+      p.feed('  4. Chat about this\n');
+      vi.advanceTimersByTime(200);
+
+      // A cursor redraw with NO number in the chunk (cursor on a label-only row)
+      // routes through the cursor-redraw branch; navigable reads false but options
+      // remain in the buffer → must NOT emit idle (the prompt is still up).
+      p.feed('❯ Blue\n');
+      vi.advanceTimersByTime(400);
+      expect(idles).toHaveLength(0);
+    });
   });
 });
