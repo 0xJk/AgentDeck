@@ -364,6 +364,9 @@
           "$ref": "#/definitions/DisplayStateEvent"
         },
         {
+          "$ref": "#/definitions/FocusLostEvent"
+        },
+        {
           "$ref": "#/definitions/SessionsListEvent"
         },
         {
@@ -629,6 +632,23 @@
       ],
       "type": "object"
     },
+    "FocusLostEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "focus_lost",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "sessionId"
+      ],
+      "type": "object"
+    },
     "ModelCatalogEntry": {
       "additionalProperties": false,
       "properties": {
@@ -726,6 +746,10 @@
     "PromptOption": {
       "additionalProperties": false,
       "properties": {
+        "checked": {
+          "description": "Multi-select checkbox state (AskUserQuestion ☐/☒). Undefined for single-select.",
+          "type": "boolean"
+        },
         "index": {
           "type": "number"
         },
@@ -950,6 +974,10 @@
           "description": "OpenClaw Gateway has doctor warnings/errors",
           "type": "boolean"
         },
+        "isCarousel": {
+          "description": "Part of a multi-QUESTION carousel — the context dial switches question cards.",
+          "type": "boolean"
+        },
         "mlxModels": {
           "description": "MLX local server model list",
           "items": {
@@ -970,6 +998,10 @@
           "additionalProperties": {},
           "description": "Daemon-owned hardware/module health, intentionally loose for cross-version clients",
           "type": "object"
+        },
+        "multiSelect": {
+          "description": "Multi-select prompt (AskUserQuestion checkboxes ☐/☒).",
+          "type": "boolean"
         },
         "navigable": {
           "type": "boolean"

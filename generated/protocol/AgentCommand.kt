@@ -46,6 +46,37 @@ sealed class AgentCommand {
         }
     }
 
+    object ToggleOption : AgentCommand() {
+        override val typeTag: String = "toggle_option"
+        override fun toJson(): String {
+            val buf = StringBuilder()
+            buf.append("{\"type\":\"toggle_option\"")
+            buf.append("}")
+            return buf.toString()
+        }
+    }
+
+    object SubmitPrompt : AgentCommand() {
+        override val typeTag: String = "submit_prompt"
+        override fun toJson(): String {
+            val buf = StringBuilder()
+            buf.append("{\"type\":\"submit_prompt\"")
+            buf.append("}")
+            return buf.toString()
+        }
+    }
+
+    data class SwitchQuestion(val direction: String) : AgentCommand() {
+        override val typeTag: String = "switch_question"
+        override fun toJson(): String {
+            val buf = StringBuilder()
+            buf.append("{\"type\":\"switch_question\"")
+            buf.append(",\"direction\":").append(encode(direction))
+            buf.append("}")
+            return buf.toString()
+        }
+    }
+
     data class SendPrompt(val text: String) : AgentCommand() {
         override val typeTag: String = "send_prompt"
         override fun toJson(): String {

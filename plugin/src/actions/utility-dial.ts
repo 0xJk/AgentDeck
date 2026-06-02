@@ -11,7 +11,8 @@ import streamDeck, {
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
 import { isEncoderTakeoverActive } from '../encoder-takeover.js';
-import { handleTakeoverPush, handleTakeoverRotate, handleTakeoverHorizontal, isMultiSelectPrompt, requestTakeoverRefresh } from './option-dial.js';
+import { handleTakeoverPush, handleTakeoverRotate, handleTakeoverHorizontal, isMultiSelectPrompt, isCarouselPrompt, requestTakeoverRefresh } from './option-dial.js';
+import { shouldSwitchCard } from '../option-nav.js';
 import { isPickerActive, scrollPicker, selectProject } from '../project-picker.js';
 import { encoderRegistry, isVoiceTextTakeoverActive, handleVtRotate, handleVtDown, handleVtUp } from '../encoder-registry.js';
 import { createModes, modeDots, type UtilityMode } from '../utility-modes/index.js';
@@ -210,9 +211,10 @@ export class UtilityDialAction extends SingletonAction {
     dlog('UtilDial', `onDialRotate: takeover=${isEncoderTakeoverActive()} modes=${modes.length} ticks=${ev.payload.ticks}`);
     if (isPickerActive()) { scrollPicker(ev.payload.ticks); return; }
     if (isEncoderTakeoverActive()) {
-      // Multi-select: the context dial switches question cards (←/→); the option
-      // dial keeps vertical nav. Single-select: both dials do vertical nav.
-      if (isMultiSelectPrompt()) handleTakeoverHorizontal(ev.payload.ticks);
+      // Carousel (multi-QUESTION): the context dial switches question cards (←/→)
+      // for ANY card type incl. single-select; the option dial keeps vertical nav.
+      // Non-carousel prompts: this dial does vertical nav.
+      if (shouldSwitchCard(isCarouselPrompt(), isMultiSelectPrompt())) handleTakeoverHorizontal(ev.payload.ticks);
       else handleTakeoverRotate(ev.payload.ticks);
       return;
     }

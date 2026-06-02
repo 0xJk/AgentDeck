@@ -65,6 +65,11 @@ let currentTool: string | undefined;
 let currentToolInput: string | undefined;
 let rotateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let currentSuggestedPrompt: string | null = null;
+// Carousel/multi-select flags from the bridge (StateUpdateEvent). These let the
+// plugin keep routing the context dial to card-switching on a single-select card
+// (which carries no per-option checked field). See multi-question carousel audit.
+let currentMultiSelectFlag = false;
+let currentIsCarousel = false;
 let currentAgentType: AgentType | null = null;
 let currentCapabilities: AgentCapabilities | null = null;
 let currentSessionStatus: OcSessionStatus | null = null;
@@ -274,7 +279,18 @@ export function requestTakeoverRefresh(): void {
  */
 /** Multi-select prompt? (AskUserQuestion ☐/☒ — options carry a checked flag.) */
 export function isMultiSelectPrompt(): boolean {
-  return currentOptions.some(o => o.checked !== undefined);
+  return currentMultiSelectFlag || currentOptions.some(o => o.checked !== undefined);
+}
+
+/** Part of a multi-QUESTION carousel? (the context dial switches question cards) */
+export function isCarouselPrompt(): boolean {
+  return currentIsCarousel;
+}
+
+/** Update carousel/multi-select flags from a StateUpdateEvent (bridge → plugin). */
+export function setCarouselFlags(multiSelect: boolean, isCarousel: boolean): void {
+  currentMultiSelectFlag = multiSelect;
+  currentIsCarousel = isCarousel;
 }
 
 export function handleTakeoverPush(): void {
@@ -317,7 +333,8 @@ export function handleTakeoverPush(): void {
  * No-op unless this is a multi-select prompt. See multi-select audit.
  */
 export function handleTakeoverHorizontal(ticks: number): void {
-  if (!bridge || !isMultiSelectPrompt()) return;
+  // Switch cards for ANY carousel card (incl. single-select, no checked field).
+  if (!bridge || !isCarouselPrompt()) return;
   dlog('ResDial', `takeoverHorizontal: switch_question ${ticks > 0 ? 'next' : 'prev'}`);
   bridge.send({ type: 'switch_question', direction: ticks > 0 ? 'next' : 'prev' });
 }

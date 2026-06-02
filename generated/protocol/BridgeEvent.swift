@@ -40,12 +40,16 @@ struct ADBridgeEvent: Codable, Equatable {
     var gatewayConnected: Bool?
     /// OpenClaw Gateway has doctor warnings/errors
     var gatewayHasError: Bool?
+    /// Part of a multi-QUESTION carousel — the context dial switches question cards.
+    var isCarousel: Bool?
     /// MLX local server model list
     var mlxModels: [String]?
     var modelCatalog: [ADModelCatalogEntry]?
     var modelName: String?
     /// Daemon-owned hardware/module health, intentionally loose for cross-version clients
     var moduleHealth: [String: JSONAny]?
+    /// Multi-select prompt (AskUserQuestion checkboxes ☐/☒).
+    var multiSelect: Bool?
     var navigable: Bool?
     /// Ollama process status + running models
     var ollamaStatus: ADOllamaStatus?
@@ -138,10 +142,12 @@ struct ADBridgeEvent: Codable, Equatable {
         case gatewayAvailable = "gatewayAvailable"
         case gatewayConnected = "gatewayConnected"
         case gatewayHasError = "gatewayHasError"
+        case isCarousel = "isCarousel"
         case mlxModels = "mlxModels"
         case modelCatalog = "modelCatalog"
         case modelName = "modelName"
         case moduleHealth = "moduleHealth"
+        case multiSelect = "multiSelect"
         case navigable = "navigable"
         case ollamaStatus = "ollamaStatus"
         case options = "options"
@@ -244,10 +250,12 @@ extension ADBridgeEvent {
         gatewayAvailable: Bool?? = nil,
         gatewayConnected: Bool?? = nil,
         gatewayHasError: Bool?? = nil,
+        isCarousel: Bool?? = nil,
         mlxModels: [String]?? = nil,
         modelCatalog: [ADModelCatalogEntry]?? = nil,
         modelName: String?? = nil,
         moduleHealth: [String: JSONAny]?? = nil,
+        multiSelect: Bool?? = nil,
         navigable: Bool?? = nil,
         ollamaStatus: ADOllamaStatus?? = nil,
         options: [ADPromptOption]?? = nil,
@@ -330,10 +338,12 @@ extension ADBridgeEvent {
             gatewayAvailable: gatewayAvailable ?? self.gatewayAvailable,
             gatewayConnected: gatewayConnected ?? self.gatewayConnected,
             gatewayHasError: gatewayHasError ?? self.gatewayHasError,
+            isCarousel: isCarousel ?? self.isCarousel,
             mlxModels: mlxModels ?? self.mlxModels,
             modelCatalog: modelCatalog ?? self.modelCatalog,
             modelName: modelName ?? self.modelName,
             moduleHealth: moduleHealth ?? self.moduleHealth,
+            multiSelect: multiSelect ?? self.multiSelect,
             navigable: navigable ?? self.navigable,
             ollamaStatus: ollamaStatus ?? self.ollamaStatus,
             options: options ?? self.options,
@@ -1244,6 +1254,8 @@ extension ADOllamaModel {
 
 // MARK: - ADPromptOption
 struct ADPromptOption: Codable, Equatable {
+    /// Multi-select checkbox state (AskUserQuestion ☐/☒). Undefined for single-select.
+    var checked: Bool?
     var index: Double
     var label: String
     var recommended: Bool?
@@ -1251,6 +1263,7 @@ struct ADPromptOption: Codable, Equatable {
     var shortcut: String?
 
     enum CodingKeys: String, CodingKey {
+        case checked = "checked"
         case index = "index"
         case label = "label"
         case recommended = "recommended"
@@ -1278,6 +1291,7 @@ extension ADPromptOption {
     }
 
     func with(
+        checked: Bool?? = nil,
         index: Double? = nil,
         label: String? = nil,
         recommended: Bool?? = nil,
@@ -1285,6 +1299,7 @@ extension ADPromptOption {
         shortcut: String?? = nil
     ) -> ADPromptOption {
         return ADPromptOption(
+            checked: checked ?? self.checked,
             index: index ?? self.index,
             label: label ?? self.label,
             recommended: recommended ?? self.recommended,
@@ -1877,6 +1892,7 @@ enum ADType: String, Codable, Equatable {
     case deckSlotMap = "deck_slot_map"
     case displayState = "display_state"
     case encoderState = "encoder_state"
+    case focusLost = "focus_lost"
     case promptOptions = "prompt_options"
     case sessionsList = "sessions_list"
     case stateUpdate = "state_update"

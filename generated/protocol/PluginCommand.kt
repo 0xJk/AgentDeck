@@ -152,11 +152,15 @@ data class Device (
 
 enum class Direction(val value: String) {
     Down("down"),
+    Next("next"),
+    Prev("prev"),
     Up("up");
 
     companion object {
         public fun fromValue(value: String): Direction = when (value) {
             "down" -> Down
+            "next" -> Next
+            "prev" -> Prev
             "up"   -> Up
             else   -> throw IllegalArgumentException()
         }
@@ -193,8 +197,11 @@ enum class Type(val value: String) {
     SelectOption("select_option"),
     SendPrompt("send_prompt"),
     SessionCommand("session_command"),
+    SubmitPrompt("submit_prompt"),
     SwitchAgent("switch_agent"),
     SwitchMode("switch_mode"),
+    SwitchQuestion("switch_question"),
+    ToggleOption("toggle_option"),
     Utility("utility"),
     Voice("voice");
 
@@ -214,8 +221,11 @@ enum class Type(val value: String) {
             "select_option"       -> SelectOption
             "send_prompt"         -> SendPrompt
             "session_command"     -> SessionCommand
+            "submit_prompt"       -> SubmitPrompt
             "switch_agent"        -> SwitchAgent
             "switch_mode"         -> SwitchMode
+            "switch_question"     -> SwitchQuestion
+            "toggle_option"       -> ToggleOption
             "utility"             -> Utility
             "voice"               -> Voice
             else                  -> throw IllegalArgumentException()

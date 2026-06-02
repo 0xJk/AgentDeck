@@ -93,6 +93,11 @@ data class BridgeEvent (
     val gatewayHasError: Boolean? = null,
 
     /**
+     * Part of a multi-QUESTION carousel — the context dial switches question cards.
+     */
+    val isCarousel: Boolean? = null,
+
+    /**
      * MLX local server model list
      */
     val mlxModels: List<String>? = null,
@@ -104,6 +109,11 @@ data class BridgeEvent (
      * Daemon-owned hardware/module health, intentionally loose for cross-version clients
      */
     val moduleHealth: Map<String, Any?>? = null,
+
+    /**
+     * Multi-select prompt (AskUserQuestion checkboxes ☐/☒).
+     */
+    val multiSelect: Boolean? = null,
 
     val navigable: Boolean? = null,
 
@@ -615,6 +625,11 @@ data class OllamaModel (
 )
 
 data class PromptOption (
+    /**
+     * Multi-select checkbox state (AskUserQuestion ☐/☒). Undefined for single-select.
+     */
+    val checked: Boolean? = null,
+
     val index: Double,
     val label: String,
     val recommended: Boolean? = null,
@@ -888,6 +903,7 @@ enum class Type(val value: String) {
     DeckSlotMap("deck_slot_map"),
     DisplayState("display_state"),
     EncoderState("encoder_state"),
+    FocusLost("focus_lost"),
     PromptOptions("prompt_options"),
     SessionsList("sessions_list"),
     StateUpdate("state_update"),
@@ -909,6 +925,7 @@ enum class Type(val value: String) {
             "deck_slot_map"         -> DeckSlotMap
             "display_state"         -> DisplayState
             "encoder_state"         -> EncoderState
+            "focus_lost"            -> FocusLost
             "prompt_options"        -> PromptOptions
             "sessions_list"         -> SessionsList
             "state_update"          -> StateUpdate

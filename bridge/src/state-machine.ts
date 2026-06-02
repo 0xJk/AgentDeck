@@ -59,6 +59,8 @@ export class StateMachine extends EventEmitter {
   private question: string | null = null;
   private navigable = false;
   private cursorIndex = 0;
+  private multiSelect = false;
+  private isCarousel = false;
   private cursorAuthority: 'pty' | 'optimistic' = 'pty';
   private optimisticCursorTime = 0;
   private projectName: string | null = null;
@@ -116,6 +118,8 @@ export class StateMachine extends EventEmitter {
         this.options = [];
         this.question = null;
         this.navigable = false;
+        this.multiSelect = false;
+        this.isCarousel = false;
         this.cursorIndex = 0;
         this.transition(State.IDLE, 'stop', 'hook');
         break;
@@ -182,6 +186,8 @@ export class StateMachine extends EventEmitter {
         this.options = [];
         this.question = null;
         this.navigable = false;
+        this.multiSelect = false;
+        this.isCarousel = false;
         this.cursorIndex = 0;
         this.transition(State.IDLE, 'stop', 'hook');
         break;
@@ -214,6 +220,8 @@ export class StateMachine extends EventEmitter {
         this.options = (data?.options as PromptOption[]) || [];
         this.navigable = (data?.navigable as boolean) ?? false;
         this.cursorIndex = (data?.cursorIndex as number) ?? 0;
+        this.multiSelect = (data?.multiSelect as boolean) ?? false;
+        this.isCarousel = (data?.isCarousel as boolean) ?? false;
         if (this.state === State.AWAITING_OPTION) {
           // Already in AWAITING_OPTION — just update options and re-emit snapshot
           // (debounced chunks may re-parse with more complete data)
@@ -252,6 +260,8 @@ export class StateMachine extends EventEmitter {
             this.options = [];
             this.question = null;
             this.navigable = false;
+            this.multiSelect = false;
+            this.isCarousel = false;
             this.cursorIndex = 0;
             this.toolInput = null;
           }
@@ -273,6 +283,8 @@ export class StateMachine extends EventEmitter {
           this.options = [];
           this.question = null;
           this.navigable = false;
+          this.multiSelect = false;
+          this.isCarousel = false;
           this.cursorIndex = 0;
           this.transition(State.IDLE, 'idle_detected', 'pty');
         }
@@ -291,6 +303,8 @@ export class StateMachine extends EventEmitter {
           this.options = [];
           this.question = null;
           this.navigable = false;
+          this.multiSelect = false;
+          this.isCarousel = false;
           this.cursorIndex = 0;
           this.transition(State.IDLE, 'idle_detected', 'pty');
         }
@@ -414,6 +428,8 @@ export class StateMachine extends EventEmitter {
           this.options = [];
           this.question = null;
           this.navigable = false;
+          this.multiSelect = false;
+          this.isCarousel = false;
           this.cursorIndex = 0;
           this.toolInput = null;
           this.transition(State.PROCESSING, 'user_response', 'user');
@@ -429,6 +445,8 @@ export class StateMachine extends EventEmitter {
           this.options = [];
           this.question = null;
           this.navigable = false;
+          this.multiSelect = false;
+          this.isCarousel = false;
           this.cursorIndex = 0;
           this.toolInput = null;
           this.transition(State.PROCESSING, 'user_selection', 'user');
@@ -449,6 +467,8 @@ export class StateMachine extends EventEmitter {
         this.options = [];
         this.question = null;
         this.navigable = false;
+        this.multiSelect = false;
+        this.isCarousel = false;
         this.cursorIndex = 0;
         this.transition(State.IDLE, 'interrupt', 'user');
         break;
@@ -495,6 +515,8 @@ export class StateMachine extends EventEmitter {
         this.options = [];
         this.question = null;
         this.navigable = false;
+        this.multiSelect = false;
+        this.isCarousel = false;
         this.cursorIndex = 0;
         this.transition(State.IDLE, 'stuck_timeout', 'internal');
       }, STUCK_TIMEOUT_MS);
@@ -519,6 +541,8 @@ export class StateMachine extends EventEmitter {
         this.options = [];
         this.question = null;
         this.navigable = false;
+        this.multiSelect = false;
+        this.isCarousel = false;
         this.cursorIndex = 0;
         this.transition(State.IDLE, 'stuck_timeout', 'internal');
       }, STUCK_TIMEOUT_MS);
@@ -578,6 +602,8 @@ export class StateMachine extends EventEmitter {
       question: this.question,
       navigable: this.navigable,
       cursorIndex: this.cursorIndex,
+      multiSelect: this.multiSelect,
+      isCarousel: this.isCarousel,
       projectName: this.projectName,
       modelName: this.modelName,
       effortLevel: this.effortLevel,

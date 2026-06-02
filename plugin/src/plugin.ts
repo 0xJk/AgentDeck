@@ -42,6 +42,7 @@ import {
   initOptionDial,
   updateOptionDialState,
   setOptionSetupRequired,
+  setCarouselFlags,
 } from './actions/option-dial.js';
 import {
   VoiceDialAction,
@@ -338,6 +339,9 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   if (ev.cursorIndex !== undefined) {
     currentCursorIndex = ev.cursorIndex;
   }
+  // Capture carousel/multi-select flags (bridge sends undefined when false).
+  // Drives card-switch routing on the context dial (incl. single-select cards).
+  setCarouselFlags(ev.multiSelect ?? false, ev.isCarousel ?? false);
 
   // Capture suggested prompt
   if (ev.suggestedPrompt !== undefined) {

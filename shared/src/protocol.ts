@@ -132,6 +132,10 @@ export interface StateUpdateEvent {
   question?: string;
   navigable?: boolean;
   cursorIndex?: number;
+  /** Multi-select prompt (AskUserQuestion checkboxes ☐/☒). */
+  multiSelect?: boolean;
+  /** Part of a multi-QUESTION carousel — the context dial switches question cards. */
+  isCarousel?: boolean;
   suggestedPrompt?: string;
   modelCatalog?: ModelCatalogEntry[];
   sessionStatus?: OcSessionStatus;

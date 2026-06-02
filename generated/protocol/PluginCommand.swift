@@ -285,6 +285,8 @@ extension ADDevice {
 
 enum ADDirection: String, Codable, Equatable {
     case down = "down"
+    case next = "next"
+    case prev = "prev"
     case up = "up"
 }
 
@@ -309,8 +311,11 @@ enum ADType: String, Codable, Equatable {
     case selectOption = "select_option"
     case sendPrompt = "send_prompt"
     case sessionCommand = "session_command"
+    case submitPrompt = "submit_prompt"
     case switchAgent = "switch_agent"
     case switchMode = "switch_mode"
+    case switchQuestion = "switch_question"
+    case toggleOption = "toggle_option"
     case utility = "utility"
     case voice = "voice"
 }

@@ -11,6 +11,9 @@ public enum AgentCommand: Equatable {
     case respond(value: String)
     case selectOption(index: Int)
     case navigateOption(direction: String)
+    case toggleOption
+    case submitPrompt
+    case switchQuestion(direction: String)
     case sendPrompt(text: String)
     case switchMode(mode: String?)
     case interrupt
@@ -40,6 +43,14 @@ public enum AgentCommand: Equatable {
             return dict
         case .navigateOption(let direction):
             var dict: [String: Any] = ["type": "navigate_option"]
+            dict["direction"] = direction
+            return dict
+        case .toggleOption:
+            return ["type": "toggle_option"]
+        case .submitPrompt:
+            return ["type": "submit_prompt"]
+        case .switchQuestion(let direction):
+            var dict: [String: Any] = ["type": "switch_question"]
             dict["direction"] = direction
             return dict
         case .sendPrompt(let text):
@@ -112,6 +123,9 @@ public enum AgentCommand: Equatable {
         case .respond: return "respond"
         case .selectOption: return "select_option"
         case .navigateOption: return "navigate_option"
+        case .toggleOption: return "toggle_option"
+        case .submitPrompt: return "submit_prompt"
+        case .switchQuestion: return "switch_question"
         case .sendPrompt: return "send_prompt"
         case .switchMode: return "switch_mode"
         case .interrupt: return "interrupt"

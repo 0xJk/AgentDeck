@@ -34,3 +34,17 @@ export function resolveSelectedIndex(
   // Same prompt redraw — keep the user's local navigation, just clamp into range.
   return Math.min(Math.max(current, 0), optionsLen - 1);
 }
+
+/**
+ * During an encoder takeover, should the context dial switch question CARDS
+ * (left/right) rather than navigate options (up/down)?
+ *
+ * Card switching applies to ANY card in a multi-QUESTION carousel — including a
+ * single-select card that carries no checkbox state. Gating only on multi-select
+ * (checked fields) stranded the dial on single-select cards (Bug 1: stuck, can't
+ * switch back). A plain single-QUESTION multi-select (no carousel) toggles in
+ * place, so the dial navigates instead.
+ */
+export function shouldSwitchCard(isCarousel: boolean, _isMultiSelect: boolean): boolean {
+  return isCarousel;
+}

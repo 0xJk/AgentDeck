@@ -308,6 +308,8 @@ export class BridgeCore {
                    snapshot.state === State.AWAITING_PERMISSION ||
                    snapshot.state === State.AWAITING_DIFF)
                    ? snapshot.cursorIndex : undefined,
+      multiSelect: snapshot.multiSelect || undefined,
+      isCarousel: snapshot.isCarousel || undefined,
       suggestedPrompt: snapshot.suggestedPrompt ?? undefined,
       modelCatalog: this.cachedModelCatalog ?? undefined,
       remoteUrl: snapshot.remoteUrl ?? undefined,

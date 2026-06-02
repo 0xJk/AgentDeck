@@ -221,6 +221,15 @@
           "$ref": "#/definitions/NavigateOptionCommand"
         },
         {
+          "$ref": "#/definitions/ToggleOptionCommand"
+        },
+        {
+          "$ref": "#/definitions/SubmitPromptCommand"
+        },
+        {
+          "$ref": "#/definitions/SwitchQuestionCommand"
+        },
+        {
           "$ref": "#/definitions/SendPromptCommand"
         },
         {
@@ -362,6 +371,19 @@
       ],
       "type": "object"
     },
+    "SubmitPromptCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "submit_prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
     "SwitchAgentCommand": {
       "additionalProperties": false,
       "properties": {
@@ -396,6 +418,40 @@
         },
         "type": {
           "const": "switch_mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "SwitchQuestionCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "enum": [
+            "prev",
+            "next"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "switch_question",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "ToggleOptionCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "toggle_option",
           "type": "string"
         }
       },

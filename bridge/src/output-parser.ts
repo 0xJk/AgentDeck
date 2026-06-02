@@ -18,6 +18,16 @@ const OPTION_BULLET = /^\s*[►▸●○]\s+.+/m;
 // redraws drop it). Triggers option detection even when no number is present.
 const OPTION_CHECKBOX = /^\s*❯?\s*(?:\d{1,2}[.)]\s*)?\[[ xX]\]\s+\S/m;
 
+/** Result of parseOptions / parseCarousel — a parsed interactive option set. */
+interface ParsedOptions {
+  options: PromptOption[];
+  navigable: boolean;
+  cursorIndex: number;
+  multiSelect: boolean;
+  /** True when part of a multi-QUESTION carousel (a ☐/☒ card-nav row is present). */
+  isCarousel: boolean;
+}
+
 // Claude Code uses ❯ as its prompt char. May have \u00A0 (nbsp) or spaces around it.
 // v2.1.49+: autocomplete suggestions appear on the same line (e.g. "❯ Try "refactor..."")
 // so we can't require end-of-line. Just check for ❯ at start of line.
@@ -160,6 +170,20 @@ export class OutputParser extends EventEmitter {
   // row, and only the last option carries its "N." prefix) — not a real shrink.
   // Reset when the prompt resolves (idle/spinner). See carousel audit.
   private lastOptionCount = 0;
+  // Label-identity tracking for the stable-count guard. Count alone cannot tell a
+  // same-question cursor-only redraw (suppress) from a card switch to a smaller
+  // question (must emit) from a checkbox toggle (must emit with new checked). We
+  // track the established label set + per-label option so the guard keys on
+  // identity, not count. See multi-question carousel first-principles audit.
+  private lastOptionLabels: Set<string> = new Set();
+  private lastOptionsByLabel: Map<string, PromptOption> = new Map();
+  private lastMultiSelectEmit = false;
+  private lastCarouselEmit = false;
+  // Raw (un-stripped) PTY tail. Multi-question carousel SINGLE-select cards encode
+  // the cursor ONLY as a foreground color (accent 38;2;177;185;249) and mark
+  // descriptions gray (38;2;153;153;153); processFeed's stripAnsi destroys both, so
+  // parseCarousel reads this raw tail to recover bare-label options + cursor.
+  private rawTail = '';
   private pendingAnsi = '';
   // Cooldown after emitting permission/diff prompt — suppresses false idle
   // from user prompt echo (❯ text) in the same PTY batch
@@ -203,6 +227,13 @@ export class OutputParser extends EventEmitter {
 
     if (this.buffer.length > 8192) {
       this.buffer = this.buffer.slice(-4096);
+    }
+
+    // Accumulate the RAW (color-bearing) tail for parseCarousel. Larger cap than
+    // this.buffer because ANSI escapes inflate the byte count ~3-4x.
+    this.rawTail += rawData;
+    if (this.rawTail.length > 16384) {
+      this.rawTail = this.rawTail.slice(-12288);
     }
 
     const preview = clean.replace(/[\n\r]/g, '\\n').replace(/[\x00-\x1f]/g, '?').slice(0, 100);
@@ -423,7 +454,7 @@ export class OutputParser extends EventEmitter {
           this.emit('spinner_stop');
           this.resetIdleTimer();
           this.idleTimer = setTimeout(() => {
-            this.interactiveActive = false; this.lastOptionCount = 0;
+            this.interactiveActive = false; this.clearOptionTracking();
             debug('Parser', 'EMIT idle');
             this.emit('idle');
           }, IDLE_DEBOUNCE_MS);
@@ -444,7 +475,7 @@ export class OutputParser extends EventEmitter {
         if (!this.spinnerActive) {
           this.spinnerActive = true;
           this.clearSuggestion();
-          this.interactiveActive = false; this.lastOptionCount = 0;
+          this.interactiveActive = false; this.clearOptionTracking();
           debug('Parser', 'EMIT spinner_start');
           this.emit('spinner_start');
         }
@@ -525,49 +556,37 @@ export class OutputParser extends EventEmitter {
     // Claude response text never contains "❯ 1." so this bypasses the size guard safely.
     const chunkNonWs = chunk.replace(/\s/g, '').length;
     const hasNavigableCursor = /^\s*❯\s*(?:\d{1,2}[.)]|\[[ xX]\])/m.test(chunk);
-    if ((OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk) || OPTION_CHECKBOX.test(chunk)) && (hasNavigableCursor || chunkNonWs < 200)) {
+    // Multi-question carousel card-nav row (Unicode ☐/☒). Single-select cards carry
+    // NO numbered/checkbox option marker, so the card row is their ONLY trigger.
+    const hasCarouselCard = /[☐☒]/.test(chunk);
+    if ((OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk) || OPTION_CHECKBOX.test(chunk) || hasCarouselCard) && (hasNavigableCursor || hasCarouselCard || chunkNonWs < 200)) {
       debug('Parser', 'option pattern detected — starting/resetting debounce');
       this.resetIdleTimer();
       this.resetOptionTimer();
       this.optionTimer = setTimeout(() => {
         this.optionTimer = null;
-        const parsed = this.parseOptions(this.buffer.slice(-2000));
-        if (parsed.options.length > 0) {
-          // Stable-count guard: while a navigable prompt is up, a parse with
-          // FEWER options than the established set is a partial carousel redraw
-          // (only the cursor row was in the buffer window) — treat it as a cursor
-          // move, never let it clobber the option set. See carousel audit.
-          if (this.lastNavigableEmit && parsed.options.length < this.lastOptionCount) {
-            if (parsed.cursorIndex !== this.lastCursorIndex) {
-              this.lastCursorIndex = parsed.cursorIndex;
-              debug('Parser', `EMIT cursor_update (partial-redraw downgrade): cursorIndex=${parsed.cursorIndex}`);
-              this.emit('cursor_update', { cursorIndex: parsed.cursorIndex });
-            }
-            return;
-          }
-          this.lastOptionCount = parsed.options.length;
-          // Check if this looks like a permission prompt (Yes/No style from tool approval)
-          if (this.looksLikePermission(parsed.options) && !this.isCursorSelectionUI()) {
-            const options = parsed.options.map(opt => ({
-              ...opt,
-              shortcut: opt.shortcut || this.inferShortcut(opt.label),
-            }));
-            debug('Parser', `EMIT permission_prompt (${options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, reclassified from numbered, debounced)`);
-            this.lastNavigableEmit = parsed.navigable;
-            this.lastCursorIndex = parsed.cursorIndex;
-            this.emit('permission_prompt', { options, promptType: 'yes_no_always', navigable: parsed.navigable, cursorIndex: parsed.cursorIndex });
-          } else {
-            this.lastNavigableEmit = parsed.navigable;
-            this.lastCursorIndex = parsed.cursorIndex;
-            debug('Parser', `EMIT option_prompt (${parsed.options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, debounced)`);
-            this.emit('option_prompt', {
-              options: parsed.options,
-              navigable: parsed.navigable,
-              cursorIndex: parsed.cursorIndex,
-              multiSelect: parsed.multiSelect,
-            });
-          }
-        }
+        // Prefer the color-aware carousel parser (reads the RAW tail): it recovers
+        // single-select bare-label options and gray-description exclusion that the
+        // stripped-buffer parseOptions cannot. Falls back when not a carousel.
+        const parsed = this.parseCarousel(this.rawTail) ?? this.parseOptions(this.buffer.slice(-2000));
+        this.emitParsedOptions(parsed);
+      }, OPTION_DEBOUNCE_MS);
+      return;
+    }
+
+    // --- Carousel within-card redraw (markerless) ---
+    // While a multi-question carousel is up, a within-card cursor move repaints
+    // bare label rows with NO ☐/☒ card row and NO option marker — invisible to the
+    // block above and to the legacy ❯-based branches below (single-select cursor is
+    // color-only). Re-run the color-aware parser on the raw tail so the move/toggle
+    // still propagates. Never emits idle (the prompt is still up).
+    if (this.lastCarouselEmit && (chunk.includes('❯') || (chunkNonWs > 0 && chunkNonWs < 200))) {
+      this.resetIdleTimer();
+      this.resetOptionTimer();
+      this.optionTimer = setTimeout(() => {
+        this.optionTimer = null;
+        const c = this.parseCarousel(this.rawTail);
+        if (c && c.options.length > 0) this.emitParsedOptions(c);
       }, OPTION_DEBOUNCE_MS);
       return;
     }
@@ -608,7 +627,7 @@ export class OutputParser extends EventEmitter {
             // selection / screen clear). Exit navigable state.
             this.lastNavigableEmit = false;
             this.lastCursorIndex = 0;
-            this.interactiveActive = false; this.lastOptionCount = 0;
+            this.interactiveActive = false; this.clearOptionTracking();
             debug('Parser', 'navigable options disappeared — emitting idle');
             this.emit('idle');
           } else {
@@ -675,7 +694,7 @@ export class OutputParser extends EventEmitter {
       this.resetIdleTimer();
       this.resetOptionTimer();
       this.idleTimer = setTimeout(() => {
-        this.interactiveActive = false; this.lastOptionCount = 0;
+        this.interactiveActive = false; this.clearOptionTracking();
         debug('Parser', 'EMIT idle');
         this.emit('idle');
       }, IDLE_DEBOUNCE_MS);
@@ -949,7 +968,158 @@ export class OutputParser extends EventEmitter {
     return hasYes && hasNo;
   }
 
-  private parseOptions(rawText: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number; multiSelect: boolean } {
+  /** Clear all option/carousel tracking when a prompt resolves (idle/spinner/reset). */
+  private clearOptionTracking(): void {
+    this.lastOptionCount = 0;
+    this.lastNavigableEmit = false;
+    this.lastMultiSelectEmit = false;
+    this.lastCarouselEmit = false;
+    this.lastOptionLabels = new Set();
+    this.lastOptionsByLabel = new Map();
+    this.rawTail = '';
+  }
+
+  /** Snapshot the established option set so the label-identity guard can compare. */
+  private recordOptionEmit(parsed: ParsedOptions): void {
+    this.lastOptionCount = parsed.options.length;
+    this.lastNavigableEmit = parsed.navigable;
+    this.lastCursorIndex = parsed.cursorIndex;
+    this.lastMultiSelectEmit = parsed.multiSelect;
+    this.lastCarouselEmit = parsed.isCarousel;
+    this.lastOptionLabels = new Set(parsed.options.map(o => o.label));
+    this.lastOptionsByLabel = new Map(parsed.options.map(o => [o.label, { ...o }]));
+  }
+
+  /**
+   * Emit option_prompt / permission_prompt from a parse result, applying the
+   * label-IDENTITY stable guard. Count alone cannot distinguish three events that
+   * all yield fewer options: a same-question cursor-only redraw (suppress), a card
+   * switch to a smaller question (emit), and a checkbox toggle (emit, merged). We
+   * key on the established label set + per-label checked. See carousel audit.
+   */
+  private emitParsedOptions(parsed: ParsedOptions): void {
+    if (parsed.options.length === 0) return;
+    if ((this.lastNavigableEmit || this.lastMultiSelectEmit || this.lastCarouselEmit) && this.lastOptionLabels.size > 0) {
+      const parsedLabels = parsed.options.map(o => o.label);
+      const isSubset = parsedLabels.every(l => this.lastOptionLabels.has(l));
+      const checkedChanged = parsed.options.some(o =>
+        o.checked !== undefined && this.lastOptionsByLabel.get(o.label)?.checked !== o.checked);
+      if (isSubset && parsed.options.length < this.lastOptionCount) {
+        if (checkedChanged) {
+          // Toggle partial redraw: merge new checked into the established set and
+          // re-emit the FULL set — never clobber it with the 1-row partial.
+          for (const o of parsed.options) {
+            if (o.checked === undefined) continue;
+            const prev = this.lastOptionsByLabel.get(o.label);
+            if (prev) prev.checked = o.checked;
+          }
+          const merged = Array.from(this.lastOptionsByLabel.values()).map((o, i) => ({ ...o, index: i }));
+          debug('Parser', `EMIT option_prompt (checked-merge, ${merged.length} options)`);
+          this.emit('option_prompt', {
+            options: merged,
+            navigable: this.lastNavigableEmit,
+            cursorIndex: this.lastCursorIndex,
+            multiSelect: this.lastMultiSelectEmit,
+            isCarousel: this.lastCarouselEmit,
+          });
+          return;
+        }
+        // Same question, shrinking redraw = cursor move — keep the set.
+        if (parsed.cursorIndex !== this.lastCursorIndex) {
+          this.lastCursorIndex = parsed.cursorIndex;
+          debug('Parser', `EMIT cursor_update (partial-redraw downgrade): cursorIndex=${parsed.cursorIndex}`);
+          this.emit('cursor_update', { cursorIndex: parsed.cursorIndex });
+        }
+        return;
+      }
+    }
+    this.recordOptionEmit(parsed);
+    if (this.looksLikePermission(parsed.options) && !this.isCursorSelectionUI()) {
+      const options = parsed.options.map(opt => ({
+        ...opt,
+        shortcut: opt.shortcut || this.inferShortcut(opt.label),
+      }));
+      this.lastMultiSelectEmit = false;
+      debug('Parser', `EMIT permission_prompt (${options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, reclassified from numbered, debounced)`);
+      this.emit('permission_prompt', { options, promptType: 'yes_no_always', navigable: parsed.navigable, cursorIndex: parsed.cursorIndex });
+    } else {
+      debug('Parser', `EMIT option_prompt (${parsed.options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, carousel=${parsed.isCarousel}, debounced)`);
+      this.emit('option_prompt', {
+        options: parsed.options,
+        navigable: parsed.navigable,
+        cursorIndex: parsed.cursorIndex,
+        multiSelect: parsed.multiSelect,
+        isCarousel: parsed.isCarousel,
+      });
+    }
+  }
+
+  /**
+   * Parse a multi-QUESTION AskUserQuestion carousel from the RAW (color-bearing)
+   * tail. Returns null when no ≥2-card ☐/☒ row is present (caller falls back to
+   * parseOptions on the stripped buffer).
+   *
+   * The card row and option labels survive stripAnsi, but the cursor (accent fg
+   * 38;2;177;185;249) and description marker (gray 38;2;153;153;153) do NOT — so we
+   * read color here. Single-select cards render options as bare labels; multi-select
+   * cards prefix "[ ]"/"[x]". Gray descriptions are excluded.
+   */
+  private parseCarousel(rawTail: string): ParsedOptions | null {
+    const ACCENT = '38;2;177;185;249';
+    const GRAY = '38;2;153;153;153';
+    // CUF/CHA → space, CUP/CUD → newline, drop erase-line — keep SGR for color cues.
+    const s = rawTail
+      .replace(/\x1b\[\d*C/g, ' ')
+      .replace(/\x1b\[\d*G/g, ' ')
+      .replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, '\n')
+      .replace(/\x1b\[\d*[ABEF]/g, '\n')
+      .replace(/\x1b\[\d*K/g, '');
+    const lines = s.split('\n');
+    const plain = (l: string) => stripAnsi(l);
+    const cardCount = (l: string) => (plain(l).match(/[☐☒]/g) || []).length;
+    // Current card row = the LAST line with ≥2 card markers (older rows are stale).
+    let cardIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (cardCount(lines[i]) >= 2) cardIdx = i;
+    }
+    if (cardIdx < 0) return null;
+    const opts: PromptOption[] = [];
+    let cursorIndex = 0;
+    // Scan from just after the card row to the footer. The ？-title is SKIPPED (not a
+    // boundary) — option-1 can render above it via CUU (the off-by-one). Stop at the
+    // footer, a new card row, or once options were found and the run breaks.
+    for (let i = cardIdx + 1; i < lines.length; i++) {
+      const rawLine = lines[i];
+      const t = plain(rawLine).trim();
+      if (!t) continue;
+      if (/Enter\s*to\s*select|Esc\s*to\s*cancel|to\s*navigate|cancel\s*$/i.test(t)) break;
+      if (cardCount(rawLine) >= 2) break;          // next card row
+      if (/^[─-╿-]{3,}$/.test(t)) continue; // box-drawing separator
+      if (/[？?]\s*$/.test(t)) continue;             // question title — skip, not a boundary
+      const cb = t.match(/^❯?\s*(?:\d{1,2}[.)]\s*)?\[([ xX])\]\s*(.+)/);
+      const num = !cb ? t.match(/^❯?\s*\d{1,2}[.)]\s*(.+)/) : null;
+      const isGray = rawLine.includes(GRAY) && !rawLine.includes(ACCENT);
+      const hasCursor = rawLine.includes(ACCENT) || t.startsWith('❯');
+      if (isGray && !cb && !num) continue;           // gray description — skip
+      let rawLabel: string;
+      let checked: boolean | undefined;
+      if (cb) { checked = /[xX]/.test(cb[1]); rawLabel = cb[2]; }
+      else if (num) { rawLabel = num[1]; }
+      else { rawLabel = t; }                          // bare single-select label
+      const label = this.cleanOptionLabel(rawLabel.replace(/^❯\s*/, '').trim());
+      if (!label) continue;
+      if (hasCursor) cursorIndex = opts.length;
+      const opt: PromptOption = { index: opts.length, label };
+      if (checked !== undefined) opt.checked = checked;
+      opts.push(opt);
+    }
+    if (opts.length === 0) return null;
+    // Carousel options respond to ↑/↓ arrows (navigable), even when the cursor is
+    // color-only — so the plugin sends navigate_option on rotate.
+    return { options: opts, navigable: true, cursorIndex, multiSelect: opts.some(o => o.checked !== undefined), isCarousel: true };
+  }
+
+  private parseOptions(rawText: string): ParsedOptions {
     // Carousel/multi-select renders use bare CR (\r) to put each option on its own
     // row (no LF). Treat CR as a line break so options aren't concatenated into one
     // unsplittable line. See multi-select audit.
@@ -1047,7 +1217,7 @@ export class OutputParser extends EventEmitter {
         opts.push(opt);
       }
       if (opts.length > 0) {
-        return { options: opts, navigable, cursorIndex, multiSelect: opts.some(o => o.checked !== undefined) };
+        return { options: opts, navigable, cursorIndex, multiSelect: opts.some(o => o.checked !== undefined), isCarousel: /[☐☒]/.test(rawText) };
       }
     }
 
@@ -1140,7 +1310,7 @@ export class OutputParser extends EventEmitter {
     // Re-index to 0-based for downstream consumers
     const contiguous = bestRun.map((opt, i) => ({ ...opt, index: i }));
     const finalOptions = contiguous.length >= 2 ? contiguous : sorted;
-    return { options: finalOptions, navigable, cursorIndex, multiSelect };
+    return { options: finalOptions, navigable, cursorIndex, multiSelect, isCarousel: /[☐☒]/.test(rawText) };
   }
 
   /**
@@ -1235,7 +1405,7 @@ export class OutputParser extends EventEmitter {
     this.buffer = '';
     this.pendingAnsi = '';
     this.spinnerActive = false;
-    this.interactiveActive = false; this.lastOptionCount = 0;
+    this.interactiveActive = false; this.clearOptionTracking();
     this.seenFirstIdle = false;
     this.pendingModeSwitch = false;
     this.projectName = null;

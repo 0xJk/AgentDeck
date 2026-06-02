@@ -74,6 +74,10 @@ export interface StateSnapshot {
   question: string | null;
   navigable: boolean;
   cursorIndex: number;
+  /** Multi-select prompt (AskUserQuestion checkboxes ☐/☒). */
+  multiSelect: boolean;
+  /** Part of a multi-QUESTION carousel (a ☐/☒ card-nav row is present). */
+  isCarousel: boolean;
   projectName: string | null;
   modelName: string | null;
   effortLevel: string | null;

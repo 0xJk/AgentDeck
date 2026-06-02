@@ -9,6 +9,9 @@ import type {
   ResponseCommand,
   SelectOptionCommand,
   NavigateOptionCommand,
+  ToggleOptionCommand,
+  SubmitPromptCommand,
+  SwitchQuestionCommand,
   SendPromptCommand,
   SwitchModeCommand,
   InterruptCommand,
@@ -35,6 +38,15 @@ export const agentCommand = {
   },
   navigateOption(direction: 'up' | 'down'): NavigateOptionCommand {
     return { type: "navigate_option", direction };
+  },
+  toggleOption(): ToggleOptionCommand {
+    return { type: "toggle_option" };
+  },
+  submitPrompt(): SubmitPromptCommand {
+    return { type: "submit_prompt" };
+  },
+  switchQuestion(direction: 'prev' | 'next'): SwitchQuestionCommand {
+    return { type: "switch_question", direction };
   },
   sendPrompt(text: string): SendPromptCommand {
     return { type: "send_prompt", text };

@@ -45,3 +45,23 @@ describe('optionsSignature', () => {
     expect(optionsSignature(['A', 'B'])).not.toBe(optionsSignature(['A', 'X']));
   });
 });
+
+import { shouldSwitchCard } from '../option-nav.js';
+
+describe('shouldSwitchCard (carousel dial routing)', () => {
+  it('switches question cards when in a carousel even if the current card is single-select', () => {
+    // Bug 1: a single-select card has no checked fields → isMultiSelect false,
+    // but the context dial must still switch cards because we are in a carousel.
+    expect(shouldSwitchCard(true, false)).toBe(true);
+  });
+  it('switches cards for a multi-select carousel card', () => {
+    expect(shouldSwitchCard(true, true)).toBe(true);
+  });
+  it('does NOT switch cards for a plain single-question multi-select (no carousel)', () => {
+    // A single-question multi-select toggles in place; the dial navigates options.
+    expect(shouldSwitchCard(false, true)).toBe(false);
+  });
+  it('does NOT switch cards for a plain numbered single-select', () => {
+    expect(shouldSwitchCard(false, false)).toBe(false);
+  });
+});
