@@ -3264,7 +3264,8 @@ describe('OutputParser', () => {
     it('flags multiSelect and parses checked state, stripping the checkbox prefix', () => {
       const p = armParser();
       const events = collectEvents(p, 'option_prompt');
-      p.feed('❯ 1. [ ] 选项 A\n  2. [x] 选项 B\n  3. ☒ 选项 C\n  4. ☐ 选项 D\n');
+      // Real Claude options use ASCII [ ]/[x]; Unicode ☐/☒ are question CARDS.
+      p.feed('❯ 1. [ ] 选项 A\n  2. [x] 选项 B\n  3. [x] 选项 C\n  4. [ ] 选项 D\n');
       vi.advanceTimersByTime(200);
 
       expect(events).toHaveLength(1);
@@ -3284,6 +3285,56 @@ describe('OutputParser', () => {
       vi.advanceTimersByTime(200);
       expect(events[0].multiSelect).toBe(false);
       expect(events[0].options[0].checked).toBeUndefined();
+    });
+
+    it('detects options by checkbox marker even when redraws drop the numbers', () => {
+      // Real failure: ink minimal-diff redraws keep "N." only on some lines; the
+      // [ ] checkbox is the reliable per-option marker. (Unicode ☐ is a card, not
+      // an option, and must be ignored.)
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+      p.feed(
+        '←  ☐ 功能选择  ☐ 测试方式  ✔ Submit  →\n' +   // card row (Unicode ☐) — NOT options
+        '你想测试哪些功能？\n' +
+        '❯ 1. [ ] 弹出选择框\n' +
+        '[ ] 权限提示\n' +
+        '[ ] 后台任务\n' +
+        '[x] 进度通知\n',
+      );
+      vi.advanceTimersByTime(200);
+
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      const ev = events[events.length - 1];
+      expect(ev.multiSelect).toBe(true);
+      const labels = ev.options.map((o: PromptOption) => o.label);
+      expect(labels).toEqual(['弹出选择框', '权限提示', '后台任务', '进度通知']);
+      expect(ev.options[3].checked).toBe(true);   // [x]
+      expect(ev.options[0].checked).toBe(false);  // [ ]
+      // The Unicode-☐ card row must not appear as an option.
+      expect(labels.some((l: string) => l.includes('功能选择') || l.includes('Submit'))).toBe(false);
+    });
+
+    it('parses the real 3-question multi-select capture (CR-separated, dropped numbers)', () => {
+      // Real M4 capture: ink minimal-diff render with bare-CR line breaks, only some
+      // options keeping "N.", and 3 question cards in the buffer. Must extract the
+      // CURRENT question's full option set (功能选择), not collapse to the last items.
+      const raw = readFileSync(join(FIXTURES_DIR, 'claude-multiselect-3q.raw'), 'utf8');
+      const p = createParser();
+      const events = collectEvents(p, 'option_prompt');
+      p.feed('❯ \n');
+      vi.advanceTimersByTime(400);
+      for (let i = 0; i < raw.length; i += 120) p.feed(raw.slice(i, i + 120));
+      vi.advanceTimersByTime(400);
+
+      const last = events[events.length - 1];
+      expect(last).toBeDefined();
+      expect(last.multiSelect).toBe(true);
+      const labels = last.options.map((o: PromptOption) => o.label);
+      expect(labels).toContain('弹出选择框');
+      expect(labels).toContain('权限提示');
+      expect(labels).toContain('后台任务');
+      expect(labels).toContain('进度通知');
+      expect(last.options.length).toBeGreaterThanOrEqual(4);
     });
   });
 });

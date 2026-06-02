@@ -14,6 +14,9 @@ const DIFF_PROMPT = /\(V\)iew diff.*\(A\)pply.*\(D\)eny|\(a\)pply.*\(d\)eny.*\(v
 // ANSI stripping can remove spaces (e.g. "❯3.Haiku" instead of "❯ 3. Haiku")
 const OPTION_NUMBERED = /^\s*❯?\s*\d{1,2}[.)]\s*.+/m;
 const OPTION_BULLET = /^\s*[►▸●○]\s+.+/m;
+// Multi-select option line carrying an ASCII checkbox (number optional — minimal-diff
+// redraws drop it). Triggers option detection even when no number is present.
+const OPTION_CHECKBOX = /^\s*❯?\s*(?:\d{1,2}[.)]\s*)?\[[ xX]\]\s+\S/m;
 
 // Claude Code uses ❯ as its prompt char. May have \u00A0 (nbsp) or spaces around it.
 // v2.1.49+: autocomplete suggestions appear on the same line (e.g. "❯ Try "refactor..."")
@@ -392,7 +395,7 @@ export class OutputParser extends EventEmitter {
     const hasInteractive =
       DIFF_PROMPT.test(chunk) || YES_NO_ALWAYS.test(chunk) ||
       PERMISSION_YN.test(chunk) ||
-      OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk);
+      OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk) || OPTION_CHECKBOX.test(chunk);
     // Mark interactive so ghost-text detection is suppressed until the prompt
     // resolves (cleared at the idle/spinner emits below). Audit #6.
     if (hasInteractive) this.interactiveActive = true;
@@ -521,8 +524,8 @@ export class OutputParser extends EventEmitter {
     // Exception: ❯ cursor before a numbered option is a definitive TUI indicator —
     // Claude response text never contains "❯ 1." so this bypasses the size guard safely.
     const chunkNonWs = chunk.replace(/\s/g, '').length;
-    const hasNavigableCursor = /^\s*❯\s*\d{1,2}[.)]/m.test(chunk);
-    if ((OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk)) && (hasNavigableCursor || chunkNonWs < 200)) {
+    const hasNavigableCursor = /^\s*❯\s*(?:\d{1,2}[.)]|\[[ xX]\])/m.test(chunk);
+    if ((OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk) || OPTION_CHECKBOX.test(chunk)) && (hasNavigableCursor || chunkNonWs < 200)) {
       debug('Parser', 'option pattern detected — starting/resetting debounce');
       this.resetIdleTimer();
       this.resetOptionTimer();
@@ -946,7 +949,11 @@ export class OutputParser extends EventEmitter {
     return hasYes && hasNo;
   }
 
-  private parseOptions(text: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number; multiSelect: boolean } {
+  private parseOptions(rawText: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number; multiSelect: boolean } {
+    // Carousel/multi-select renders use bare CR (\r) to put each option on its own
+    // row (no LF). Treat CR as a line break so options aren't concatenated into one
+    // unsplittable line. See multi-select audit.
+    const text = rawText.replace(/\r/g, '\n');
     // ANSI cursor movement removal can leave numbered options concatenated without newlines.
     // Insert a newline before number patterns that aren't preceded by one.
     // (?![a-z\d]) prevents matching version numbers like "4.6" and file extensions like "_01.png"
@@ -997,6 +1004,52 @@ export class OutputParser extends EventEmitter {
     let navigable = false;
     let cursorIndex = 0;
     let multiSelect = false;
+
+    // --- Checkbox / multi-select block ---
+    // When option lines carry an ASCII "[ ]"/"[x]" checkbox, the option NUMBERS are
+    // unreliable (ink minimal-diff redraws drop them on most lines), so index by
+    // POSITION and use the checkbox as the per-option marker. The buffer may hold
+    // several question renders; isolate the CURRENT question with its own bounded
+    // scan (stop at a question title "…？", a card row with Unicode ☐/☒, the
+    // ←/→ card-nav row, or the prompt footer). See multi-select audit.
+    const cbLineRe = /^\s*❯?\s*(?:\d{1,2}[.)]\s*)?\[[ xX]\]\s*\S/;
+    const numLineRe = /^\s*❯?\s*\d{1,2}[.)]\s*\S/;
+    const isCbOption = (l: string) => cbLineRe.test(l) || numLineRe.test(l);
+    const isQuestionBoundary = (l: string) =>
+      /[←→]/.test(l) ||                              // card-nav row
+      /[☐☒]/.test(l) ||                              // Unicode card row
+      /[？?]\s*$/.test(l.trim()) ||                  // question title
+      /Enter\s*to\s*select|to\s*navigate|Esc\s*to\s*cancel|✔\s*Submit/i.test(l); // footer / submit
+    if (allLines.some(l => cbLineRe.test(l))) {
+      // End at the last checkbox/number option line.
+      let cbEnd = allLines.length;
+      while (cbEnd > 0 && !isCbOption(allLines[cbEnd - 1])) cbEnd--;
+      // Scan up, including option + description lines, stopping at a boundary.
+      let cbStart = cbEnd;
+      while (cbStart > 0 && !isQuestionBoundary(allLines[cbStart - 1])) cbStart--;
+      const opts: PromptOption[] = [];
+      for (const line of allLines.slice(cbStart, cbEnd)) {
+        const hasCursor = /^\s*❯/.test(line);
+        const cbm = line.match(/^\s*❯?\s*(?:\d{1,2}[.)]\s*)?\[([ xX])\]\s*(.+)/);
+        const num = !cbm ? line.match(/^\s*❯?\s*\d{1,2}[.)]\s*(.+)/) : null;
+        let rawLabel: string | null = null;
+        let checked: boolean | undefined;
+        if (cbm) { checked = /[xX]/.test(cbm[1]); rawLabel = cbm[2]; }
+        else if (num) { rawLabel = num[1]; }
+        if (rawLabel === null) continue; // description / non-option line
+        rawLabel = rawLabel.replace(/\s{2,}(?:Esc|Enter|Next|Submit|Tab|ctrl\+\w)\b.*/i, '').trim();
+        if (!rawLabel || /^[a-z]{1,10}\)$/.test(rawLabel)) continue;
+        const label = this.cleanOptionLabel(rawLabel);
+        const idx = opts.length;
+        if (hasCursor) { navigable = true; cursorIndex = idx; }
+        const opt: PromptOption = { index: idx, label };
+        if (checked !== undefined) opt.checked = checked;
+        opts.push(opt);
+      }
+      if (opts.length > 0) {
+        return { options: opts, navigable, cursorIndex, multiSelect: opts.some(o => o.checked !== undefined) };
+      }
+    }
 
     // Use a Map keyed by index so later (newer) lines overwrite earlier (stale) ones
     const byIndex = new Map<number, PromptOption>();
