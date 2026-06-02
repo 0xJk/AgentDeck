@@ -561,6 +561,7 @@ export class OutputParser extends EventEmitter {
               options: parsed.options,
               navigable: parsed.navigable,
               cursorIndex: parsed.cursorIndex,
+              multiSelect: parsed.multiSelect,
             });
           }
         }
@@ -945,7 +946,7 @@ export class OutputParser extends EventEmitter {
     return hasYes && hasNo;
   }
 
-  private parseOptions(text: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number } {
+  private parseOptions(text: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number; multiSelect: boolean } {
     // ANSI cursor movement removal can leave numbered options concatenated without newlines.
     // Insert a newline before number patterns that aren't preceded by one.
     // (?![a-z\d]) prevents matching version numbers like "4.6" and file extensions like "_01.png"
@@ -995,6 +996,7 @@ export class OutputParser extends EventEmitter {
 
     let navigable = false;
     let cursorIndex = 0;
+    let multiSelect = false;
 
     // Use a Map keyed by index so later (newer) lines overwrite earlier (stale) ones
     const byIndex = new Map<number, PromptOption>();
@@ -1013,13 +1015,23 @@ export class OutputParser extends EventEmitter {
         raw = raw.trim();
         // Skip file extension artifacts from tool call paths: "png)", "json)", "ts)" etc.
         if (/^[a-z]{1,10}\)$/.test(raw)) continue;
+        // Multi-select checkbox prefix (AskUserQuestion): "[ ]"/"[x]" or ☐/☒/◻/◼.
+        // Strip it, record checked state, and flag the prompt as multi-select.
+        let checked: boolean | undefined;
+        const cb = raw.match(/^(\[[ xX]\]|[☐☑☒◻◼▢▣])\s*/);
+        if (cb) {
+          checked = /[xX☑☒◼▣]/.test(cb[1]);
+          raw = raw.slice(cb[0].length).trim();
+          multiSelect = true;
+        }
         const recommended = /\(recommended\)/i.test(raw);
         const selected = /✔/.test(raw);
         const label = this.cleanOptionLabel(raw);
-        debug('Parser', `option[${idx}]: "${label}"${recommended ? ' ★' : ''}${selected ? ' ✓' : ''}${hasCursor ? ' ❯' : ''}`);
+        debug('Parser', `option[${idx}]: "${label}"${recommended ? ' ★' : ''}${selected ? ' ✓' : ''}${checked !== undefined ? (checked ? ' ☒' : ' ☐') : ''}${hasCursor ? ' ❯' : ''}`);
         const opt: PromptOption = { index: idx, label };
         if (recommended) opt.recommended = true;
         if (selected) opt.selected = true;
+        if (checked !== undefined) opt.checked = checked;
         byIndex.set(idx, opt);
         continue;
       }
@@ -1075,7 +1087,7 @@ export class OutputParser extends EventEmitter {
     // Re-index to 0-based for downstream consumers
     const contiguous = bestRun.map((opt, i) => ({ ...opt, index: i }));
     const finalOptions = contiguous.length >= 2 ? contiguous : sorted;
-    return { options: finalOptions, navigable, cursorIndex };
+    return { options: finalOptions, navigable, cursorIndex, multiSelect };
   }
 
   /**

@@ -3258,4 +3258,32 @@ describe('OutputParser', () => {
       expect(idles).toHaveLength(0);
     });
   });
+
+  // === Multi-select (AskUserQuestion ☐/☒ checkboxes) ===
+  describe('multi-select detection', () => {
+    it('flags multiSelect and parses checked state, stripping the checkbox prefix', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+      p.feed('❯ 1. [ ] 选项 A\n  2. [x] 选项 B\n  3. ☒ 选项 C\n  4. ☐ 选项 D\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      const ev = events[0];
+      expect(ev.multiSelect).toBe(true);
+      const opts: PromptOption[] = ev.options;
+      expect(opts[0]).toMatchObject({ label: '选项 A', checked: false });
+      expect(opts[1]).toMatchObject({ label: '选项 B', checked: true });
+      expect(opts[2]).toMatchObject({ label: '选项 C', checked: true });
+      expect(opts[3]).toMatchObject({ label: '选项 D', checked: false });
+    });
+
+    it('does not flag multiSelect for a plain single-select list', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+      p.feed('❯ 1. Red\n  2. Green\n  3. Blue\n');
+      vi.advanceTimersByTime(200);
+      expect(events[0].multiSelect).toBe(false);
+      expect(events[0].options[0].checked).toBeUndefined();
+    });
+  });
 });

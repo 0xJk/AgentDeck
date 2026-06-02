@@ -60,6 +60,8 @@ export interface PromptOption {
   shortcut?: string;
   recommended?: boolean;
   selected?: boolean;
+  /** Multi-select checkbox state (AskUserQuestion ☐/☒). Undefined for single-select. */
+  checked?: boolean;
 }
 
 export interface StateSnapshot {
