@@ -13,6 +13,7 @@ import { State, PromptOption } from '@agentdeck/shared';
 import type { AgentType, AgentCapabilities, OcSessionStatus } from '@agentdeck/shared';
 import type { AgentLink } from '../agent-link.js';
 import { isEncoderTakeoverActive } from '../encoder-takeover.js';
+import { resolveSelectedIndex, optionsSignature } from '../option-nav.js';
 import { encoderRegistry, encoderLayout, isVoiceTextTakeoverActive, handleVtRotate, handleVtDown, handleVtUp, fireRefreshTakeover } from '../encoder-registry.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import {
@@ -56,6 +57,9 @@ let currentState = State.DISCONNECTED;
 let currentOptions: PromptOption[] = [];
 let selectedIndex = 0;
 let navigable = false;
+// Signature of the options last shown, to tell a new prompt from a redraw so a
+// stale echoed PTY cursor can't override active local dial navigation.
+let lastOptionsSig = '';
 let currentQuestion: string | undefined;
 let currentTool: string | undefined;
 let currentToolInput: string | undefined;
@@ -113,7 +117,6 @@ export function updateOptionDialState(
   if (sessionStatus !== undefined) currentSessionStatus = sessionStatus ?? null;
   const prevSuggestion = currentSuggestedPrompt;
   const prevState = currentState;
-  const prevOptions = currentOptions;
   currentState = state;
   currentOptions = options;
   currentQuestion = question;
@@ -131,14 +134,19 @@ export function updateOptionDialState(
     promptIndex = promptIndex > 0 ? promptIndex - 1 : 0;
   }
 
+  // Detect a genuinely new prompt (state or option labels changed) vs a redraw
+  // of the same prompt. The carousel re-emits prompt_options on every redraw, so
+  // reference inequality of `options` is not enough — compare by label.
+  const sig = optionsSignature(options.map(o => o.label));
+  const isNewPrompt = state !== prevState || sig !== lastOptionsSig;
+  lastOptionsSig = sig;
+
   if (isInteractive() && options.length > 0) {
-    // Sync cursor from PTY if provided, otherwise reset to 0 on new prompt
-    if (cursorIdx !== undefined && cursorIdx >= 0 && cursorIdx < options.length) {
-      selectedIndex = cursorIdx;
-    } else if (state !== prevState || options !== prevOptions) {
-      selectedIndex = 0;
-    }
-    dlog('ResDial', `options received: ${options.length} items, nav=${navigable}, cursor=${selectedIndex}`);
+    // On a new prompt adopt the PTY cursor; on a same-prompt redraw keep the
+    // user's local dial navigation so a stale echoed cursor can't pull the
+    // selection back (e.g. stuck at the last carousel row).
+    selectedIndex = resolveSelectedIndex(selectedIndex, cursorIdx, isNewPrompt, options.length);
+    dlog('ResDial', `options received: ${options.length} items, nav=${navigable}, cursor=${selectedIndex}, new=${isNewPrompt}`);
   }
   refreshOptionDials();
 }
