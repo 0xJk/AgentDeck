@@ -152,6 +152,11 @@ export class OutputParser extends EventEmitter {
   // Cursor-only redraw detection for navigable option lists
   private lastNavigableEmit = false;
   private lastCursorIndex = 0;
+  // Established option count for the current prompt. A subsequent parse with
+  // FEWER options is a partial navigation redraw (ink rewrites only the cursor
+  // row, and only the last option carries its "N." prefix) — not a real shrink.
+  // Reset when the prompt resolves (idle/spinner). See carousel audit.
+  private lastOptionCount = 0;
   private pendingAnsi = '';
   // Cooldown after emitting permission/diff prompt — suppresses false idle
   // from user prompt echo (❯ text) in the same PTY batch
@@ -415,7 +420,7 @@ export class OutputParser extends EventEmitter {
           this.emit('spinner_stop');
           this.resetIdleTimer();
           this.idleTimer = setTimeout(() => {
-            this.interactiveActive = false;
+            this.interactiveActive = false; this.lastOptionCount = 0;
             debug('Parser', 'EMIT idle');
             this.emit('idle');
           }, IDLE_DEBOUNCE_MS);
@@ -436,7 +441,7 @@ export class OutputParser extends EventEmitter {
         if (!this.spinnerActive) {
           this.spinnerActive = true;
           this.clearSuggestion();
-          this.interactiveActive = false;
+          this.interactiveActive = false; this.lastOptionCount = 0;
           debug('Parser', 'EMIT spinner_start');
           this.emit('spinner_start');
         }
@@ -525,6 +530,19 @@ export class OutputParser extends EventEmitter {
         this.optionTimer = null;
         const parsed = this.parseOptions(this.buffer.slice(-2000));
         if (parsed.options.length > 0) {
+          // Stable-count guard: while a navigable prompt is up, a parse with
+          // FEWER options than the established set is a partial carousel redraw
+          // (only the cursor row was in the buffer window) — treat it as a cursor
+          // move, never let it clobber the option set. See carousel audit.
+          if (this.lastNavigableEmit && parsed.options.length < this.lastOptionCount) {
+            if (parsed.cursorIndex !== this.lastCursorIndex) {
+              this.lastCursorIndex = parsed.cursorIndex;
+              debug('Parser', `EMIT cursor_update (partial-redraw downgrade): cursorIndex=${parsed.cursorIndex}`);
+              this.emit('cursor_update', { cursorIndex: parsed.cursorIndex });
+            }
+            return;
+          }
+          this.lastOptionCount = parsed.options.length;
           // Check if this looks like a permission prompt (Yes/No style from tool approval)
           if (this.looksLikePermission(parsed.options) && !this.isCursorSelectionUI()) {
             const options = parsed.options.map(opt => ({
@@ -585,7 +603,7 @@ export class OutputParser extends EventEmitter {
             // Options disappeared (Esc, selection made, etc.) — exit navigable state
             this.lastNavigableEmit = false;
             this.lastCursorIndex = 0;
-            this.interactiveActive = false;
+            this.interactiveActive = false; this.lastOptionCount = 0;
             debug('Parser', 'navigable options disappeared — emitting idle');
             this.emit('idle');
           }
@@ -646,7 +664,7 @@ export class OutputParser extends EventEmitter {
       this.resetIdleTimer();
       this.resetOptionTimer();
       this.idleTimer = setTimeout(() => {
-        this.interactiveActive = false;
+        this.interactiveActive = false; this.lastOptionCount = 0;
         debug('Parser', 'EMIT idle');
         this.emit('idle');
       }, IDLE_DEBOUNCE_MS);
@@ -924,7 +942,11 @@ export class OutputParser extends EventEmitter {
     // ANSI cursor movement removal can leave numbered options concatenated without newlines.
     // Insert a newline before number patterns that aren't preceded by one.
     // (?![a-z\d]) prevents matching version numbers like "4.6" and file extensions like "_01.png"
-    const normalized = text.replace(/([^\n\d.\u276F])((?:\s*)❯?\s*\d{1,2}[.)](?![a-z\d]))/g, '$1\n$2');
+    const split = text.replace(/([^\n\d.\u276F])((?:\s*)❯?\s*\d{1,2}[.)](?![a-z\d]))/g, '$1\n$2');
+    // The split above also breaks "❯ 4. label" into "❯ \n4. label" (space after
+    // ❯ matched group 1), orphaning the cursor marker so the backward scan drops it.
+    // Re-join cursor-marker + number onto one line. See carousel first-principles audit.
+    const normalized = split.replace(/(❯[ \t]*)\n(\s*\d{1,2}[.)])/g, '$1$2');
 
     // Backward scan: restrict to the last contiguous block of option lines.
     // This prevents stale numbered list items (e.g. "5. Deploy") from earlier in the
@@ -1141,7 +1163,7 @@ export class OutputParser extends EventEmitter {
     this.buffer = '';
     this.pendingAnsi = '';
     this.spinnerActive = false;
-    this.interactiveActive = false;
+    this.interactiveActive = false; this.lastOptionCount = 0;
     this.seenFirstIdle = false;
     this.pendingModeSwitch = false;
     this.projectName = null;

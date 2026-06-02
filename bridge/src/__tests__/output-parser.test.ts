@@ -3185,4 +3185,54 @@ describe('OutputParser', () => {
       expect(events.some(e => e.text === 'refactor the parser')).toBe(true);
     });
   });
+
+  // === Carousel partial-redraw degraded emit (5-agent first-principles audit) ===
+  // Claude's ink TUI redraws navigation as minimal diffs: only the cursor row is
+  // rewritten, and only the LAST option carries its "N." number prefix. Once the
+  // full render scrolls out of the parse window, re-parsing the tail finds a
+  // single numbered line ("❯ 4. Chat about this") and would emit a degraded
+  // 1-option set, clobbering the established list and breaking navigation.
+  describe('carousel partial-redraw does not clobber the option set', () => {
+    it('keeps the established option count and emits cursor_update on a shrinking partial parse', () => {
+      const p = armParser();
+      const opts = collectEvents(p, 'option_prompt');
+      const cursorUpdates = collectEvents(p, 'cursor_update');
+
+      // Full 4-option navigable prompt.
+      p.feed('❯ 1. Download\n  2. Other path\n  3. Type something.\n  4. Chat about this\n');
+      vi.advanceTimersByTime(200);
+      expect(opts.at(-1).options).toHaveLength(4);
+
+      // Lots of unrelated output scrolls the full render out of the 2000-char window.
+      p.feed('x'.repeat(2200) + '\n');
+
+      // Partial nav redraw: only the cursor row, carrying its "4." number prefix.
+      p.feed('  Type something.\n❯ 4. Chat about this\n');
+      vi.advanceTimersByTime(200);
+
+      // Must NOT replace the 4-option set with a degraded 1-option set.
+      expect(opts.at(-1).options).toHaveLength(4);
+      // Instead it should report the cursor moving to the last option (index 3).
+      expect(cursorUpdates.at(-1)).toMatchObject({ cursorIndex: 3 });
+    });
+
+    it('still allows a genuinely new prompt with fewer options after the previous one resolves', () => {
+      const p = armParser();
+      const opts = collectEvents(p, 'option_prompt');
+
+      // 4-option prompt.
+      p.feed('❯ 1. Alpha\n  2. Beta\n  3. Gamma\n  4. Delta\n');
+      vi.advanceTimersByTime(200);
+      expect(opts.at(-1).options).toHaveLength(4);
+
+      // Prompt resolves to idle (clears the stable count).
+      p.feed('❯ \n');
+      vi.advanceTimersByTime(400);
+
+      // A brand-new 2-option prompt must NOT be suppressed.
+      p.feed('❯ 1. Cat\n  2. Dog\n');
+      vi.advanceTimersByTime(200);
+      expect(opts.at(-1).options).toHaveLength(2);
+    });
+  });
 });
