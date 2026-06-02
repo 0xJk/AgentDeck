@@ -351,10 +351,9 @@ export class SessionSlotButtonAction extends SingletonAction {
       return;
     }
 
-    if (result.action === 'exit-detail') {
-      manager.exitDetailView();
-      refreshAll();
-    }
+    // exit-detail teardown is owned solely by the bridge callback
+    // (plugin.ts → exitDetailView() + clearSessionFocus()); doing it here too
+    // ran exitDetailView twice and split the cleanup. Delegate only.
 
     // Delegate to bridge callback
     if (onSlotAction) {

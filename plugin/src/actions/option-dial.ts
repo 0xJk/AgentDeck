@@ -434,11 +434,19 @@ export class ResponseDialAction extends SingletonAction {
     if (isVoiceTextTakeoverActive()) { handleVtUp(); return; }
   }
 
-  override async onTouchTap(_ev: TouchTapEvent): Promise<void> {
+  override async onTouchTap(ev: TouchTapEvent): Promise<void> {
     if (isVoiceTextTakeoverActive()) { handleVtDown(); return; }
-    // Tapping the option strip commits the highlighted option, same as
-    // pressing the dial — tap is the natural gesture on a touchscreen.
-    if (isEncoderTakeoverActive()) { handleTakeoverPush(); return; }
+    if (isEncoderTakeoverActive()) {
+      // Long-press on the strip cancels the prompt (Esc); a tap selects the
+      // highlighted option. Dial press is unaffected (audit #8 — safe cancel).
+      if (ev.payload.hold) {
+        dlog('ResDial', 'touch hold → escape (cancel prompt)');
+        bridge.send({ type: 'escape' });
+      } else {
+        handleTakeoverPush();
+      }
+      return;
+    }
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {

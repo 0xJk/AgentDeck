@@ -129,6 +129,11 @@ function isUiChrome(text: string): boolean {
 export class OutputParser extends EventEmitter {
   private buffer = '';
   private spinnerActive = false;
+  // True while an interactive prompt (option/permission/diff) is on screen.
+  // Suppresses idle ghost-text detection so carousel redraw text doesn't leak
+  // into the suggested-prompt carousel (interaction audit #6). Cleared when the
+  // prompt resolves (idle/spinner emit).
+  private interactiveActive = false;
   private spinnerTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private optionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -213,6 +218,9 @@ export class OutputParser extends EventEmitter {
     if (!this.seenFirstIdle) return;
     // Ghost text only appears at the idle prompt — skip during processing
     if (this.spinnerActive) return;
+    // ...and skip while an interactive prompt is up, so carousel/option redraw
+    // text isn't mistaken for an autocomplete suggestion (audit #6).
+    if (this.interactiveActive) return;
 
     // Strategy 1 (high confidence): "Try ..." visible in clean text on the prompt line.
     // Claude Code renders ghost text as `❯ Try "command"` — detectable without ANSI parsing.
@@ -284,6 +292,10 @@ export class OutputParser extends EventEmitter {
 
     // Reject pure numbers or digit+operator fragments (e.g. diff line numbers "65", "96 +")
     if (/^[\d\s+\-*/=<>]+$/.test(text)) return;
+
+    // Reject AskUserQuestion carousel headers/rows (checkbox/radio glyphs) — these
+    // are interactive-prompt chrome, not autocomplete suggestions (audit #6).
+    if (/[☐☑☒◯◉◌○●▢▣]/.test(text)) return;
 
     // Reject text entirely enclosed in parentheses — placeholders/status, not actionable prompts
     // e.g. "(no content)", "(loading...)", "(empty)"
@@ -376,6 +388,9 @@ export class OutputParser extends EventEmitter {
       DIFF_PROMPT.test(chunk) || YES_NO_ALWAYS.test(chunk) ||
       PERMISSION_YN.test(chunk) ||
       OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk);
+    // Mark interactive so ghost-text detection is suppressed until the prompt
+    // resolves (cleared at the idle/spinner emits below). Audit #6.
+    if (hasInteractive) this.interactiveActive = true;
 
     // --- Spinner + prompt handling ---
     if (this.spinnerActive) {
@@ -400,6 +415,7 @@ export class OutputParser extends EventEmitter {
           this.emit('spinner_stop');
           this.resetIdleTimer();
           this.idleTimer = setTimeout(() => {
+            this.interactiveActive = false;
             debug('Parser', 'EMIT idle');
             this.emit('idle');
           }, IDLE_DEBOUNCE_MS);
@@ -420,6 +436,7 @@ export class OutputParser extends EventEmitter {
         if (!this.spinnerActive) {
           this.spinnerActive = true;
           this.clearSuggestion();
+          this.interactiveActive = false;
           debug('Parser', 'EMIT spinner_start');
           this.emit('spinner_start');
         }
@@ -568,6 +585,7 @@ export class OutputParser extends EventEmitter {
             // Options disappeared (Esc, selection made, etc.) — exit navigable state
             this.lastNavigableEmit = false;
             this.lastCursorIndex = 0;
+            this.interactiveActive = false;
             debug('Parser', 'navigable options disappeared — emitting idle');
             this.emit('idle');
           }
@@ -628,6 +646,7 @@ export class OutputParser extends EventEmitter {
       this.resetIdleTimer();
       this.resetOptionTimer();
       this.idleTimer = setTimeout(() => {
+        this.interactiveActive = false;
         debug('Parser', 'EMIT idle');
         this.emit('idle');
       }, IDLE_DEBOUNCE_MS);
@@ -1122,6 +1141,7 @@ export class OutputParser extends EventEmitter {
     this.buffer = '';
     this.pendingAnsi = '';
     this.spinnerActive = false;
+    this.interactiveActive = false;
     this.seenFirstIdle = false;
     this.pendingModeSwitch = false;
     this.projectName = null;

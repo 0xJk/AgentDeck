@@ -3149,4 +3149,40 @@ describe('OutputParser', () => {
       expect(opts[2].label).toBe('Leave them in place');
     });
   });
+
+  // === Carousel suggestion leak (interaction audit #6) ===
+  // Claude's AskUserQuestion carousel redraws gray text (incl. "☐ ..." headers)
+  // while the option prompt is up. That text must NOT leak into the idle
+  // suggested-prompt carousel.
+  describe('carousel suggestion leak', () => {
+    it('rejects checkbox-glyph text from idle suggestions', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+      p.feed('❯ Try "☐ DMG handling delete installers"\n');
+      vi.advanceTimersByTime(600);
+      expect(events.filter(e => e.text)).toHaveLength(0);
+    });
+
+    it('suppresses ghost-text suggestions while an interactive prompt is active', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+      p.feed('  1. Alpha\n  2. Beta\n');        // option prompt → interactive
+      vi.advanceTimersByTime(200);
+      p.feed('❯ Try "refactor the parser"\n');  // ghost text arrives while awaiting
+      vi.advanceTimersByTime(600);
+      expect(events.filter(e => e.text)).toHaveLength(0);
+    });
+
+    it('re-enables ghost-text suggestions after the prompt resolves to idle', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'suggested_prompt');
+      p.feed('  1. Alpha\n  2. Beta\n');
+      vi.advanceTimersByTime(200);
+      p.feed('❯ \n');                            // genuine idle → resolves prompt
+      vi.advanceTimersByTime(400);
+      p.feed('❯ Try "refactor the parser"\n');
+      vi.advanceTimersByTime(600);
+      expect(events.some(e => e.text === 'refactor the parser')).toBe(true);
+    });
+  });
 });

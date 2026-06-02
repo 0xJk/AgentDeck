@@ -104,7 +104,8 @@ export function renderContextPanel(data: ContextPanelData): string {
     <text x="10" y="16" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="${labelColor}">${ctxLabel}</text>
     <text x="190" y="15" text-anchor="end" font-family="Arial,sans-serif" font-size="10" fill="#64748b">${selectedIndex + 1}/${total}</text>
     <text x="100" y="44" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#e2e8f0">${toolName}</text>
-    ${questionLines.map((l, i) => `<text x="100" y="${66 + i * 16}" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#94a3b8">${escapeXml(l)}</text>`).join('')}
+    ${questionLines.map((l, i) => `<text x="100" y="${64 + i * 16}" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#94a3b8">${escapeXml(l)}</text>`).join('')}
+    <text x="100" y="95" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#475569">↻ move · tap select · hold cancel</text>
   `;
 
   return svgWrap(inner, defs);
