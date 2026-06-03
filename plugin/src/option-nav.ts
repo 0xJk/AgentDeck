@@ -1,3 +1,4 @@
+import type { PromptOption } from '@agentdeck/shared';
 /**
  * Option dial navigation helpers (pure — no Stream Deck SDK deps so it's unit-testable).
  *
@@ -47,4 +48,22 @@ export function resolveSelectedIndex(
  */
 export function shouldSwitchCard(isCarousel: boolean, _isMultiSelect: boolean): boolean {
   return isCarousel;
+}
+
+/**
+ * Override each option's `checked` with a locally-remembered toggle state.
+ *
+ * Claude's TUI shows a toggled checkbox only as a one-shot CUP-positioned ☒ glyph
+ * overwrite; every full re-render still emits "[ ] label" (unchecked) in the byte
+ * stream, so the linear parser can never recover checked state. The plugin therefore
+ * owns checked: it remembers the user's toggles (by label, unique per card) and
+ * re-applies them over the parser's always-unchecked values on every redraw and
+ * card switch. Mirrors the cursor-authority pattern in resolveSelectedIndex.
+ */
+export function mergeCarouselChecked(options: PromptOption[], remembered: Map<string, boolean>): PromptOption[] {
+  return options.map(o =>
+    (o.checked !== undefined && remembered.has(o.label))
+      ? { ...o, checked: remembered.get(o.label)! }
+      : o,
+  );
 }

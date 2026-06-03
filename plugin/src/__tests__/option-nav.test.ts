@@ -65,3 +65,31 @@ describe('shouldSwitchCard (carousel dial routing)', () => {
     expect(shouldSwitchCard(false, false)).toBe(false);
   });
 });
+
+import { mergeCarouselChecked } from '../option-nav.js';
+import type { PromptOption } from '@agentdeck/shared';
+
+describe('mergeCarouselChecked (plugin owns multi-select checked state)', () => {
+  it('overrides parser checked with the locally-remembered toggle state', () => {
+    // The PTY only ever reports [ ] (unchecked) for an option whose ☒ was painted
+    // via a CUP overwrite the linear parser cannot see. The plugin remembers the
+    // user's toggle and must keep showing it on every redraw.
+    const opts: PromptOption[] = [
+      { index: 0, label: '继续测试', checked: false },
+      { index: 1, label: '停止测试', checked: false },
+    ];
+    const remembered = new Map([['继续测试', true]]);
+    const merged = mergeCarouselChecked(opts, remembered);
+    expect(merged[0].checked).toBe(true);   // remembered toggle wins
+    expect(merged[1].checked).toBe(false);  // untouched
+  });
+  it('leaves options without a remembered entry unchanged', () => {
+    const opts: PromptOption[] = [{ index: 0, label: 'A', checked: false }];
+    expect(mergeCarouselChecked(opts, new Map())[0].checked).toBe(false);
+  });
+  it('does not add checked to single-select options (checked undefined)', () => {
+    const opts: PromptOption[] = [{ index: 0, label: 'macOS' }];
+    const merged = mergeCarouselChecked(opts, new Map([['macOS', true]]));
+    expect(merged[0].checked).toBeUndefined();
+  });
+});

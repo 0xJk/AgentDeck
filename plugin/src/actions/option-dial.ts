@@ -13,7 +13,7 @@ import { State, PromptOption } from '@agentdeck/shared';
 import type { AgentType, AgentCapabilities, OcSessionStatus } from '@agentdeck/shared';
 import type { AgentLink } from '../agent-link.js';
 import { isEncoderTakeoverActive } from '../encoder-takeover.js';
-import { resolveSelectedIndex, optionsSignature } from '../option-nav.js';
+import { resolveSelectedIndex, optionsSignature, mergeCarouselChecked } from '../option-nav.js';
 import { encoderRegistry, encoderLayout, isVoiceTextTakeoverActive, handleVtRotate, handleVtDown, handleVtUp, fireRefreshTakeover } from '../encoder-registry.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import {
@@ -70,6 +70,11 @@ let currentSuggestedPrompt: string | null = null;
 // (which carries no per-option checked field). See multi-question carousel audit.
 let currentMultiSelectFlag = false;
 let currentIsCarousel = false;
+// Plugin-owned multi-select checked state (by option label). The PTY only shows a
+// toggle as a transient CUP-positioned ☒ overwrite the parser can't recover, so the
+// plugin remembers toggles and re-applies them over the parser's always-unchecked
+// values. Cleared when the prompt resolves. See multi-question carousel audit.
+const carouselChecked = new Map<string, boolean>();
 let currentAgentType: AgentType | null = null;
 let currentCapabilities: AgentCapabilities | null = null;
 let currentSessionStatus: OcSessionStatus | null = null;
@@ -123,7 +128,14 @@ export function updateOptionDialState(
   const prevSuggestion = currentSuggestedPrompt;
   const prevState = currentState;
   currentState = state;
-  currentOptions = options;
+  // Plugin owns multi-select checked state (the PTY only paints a transient ☒ the
+  // parser can't recover). Clear remembered toggles when the prompt resolves;
+  // otherwise re-apply them over the parser's always-unchecked options.
+  const interactiveNow = state === State.AWAITING_OPTION
+    || state === State.AWAITING_PERMISSION
+    || state === State.AWAITING_DIFF;
+  if (!interactiveNow) carouselChecked.clear();
+  currentOptions = carouselChecked.size > 0 ? mergeCarouselChecked(options, carouselChecked) : options;
   currentQuestion = question;
   currentTool = tool;
   currentToolInput = toolInput;
@@ -299,6 +311,15 @@ export function handleTakeoverPush(): void {
     // submit. Submit is a screen tap (→ submit_prompt). See multi-select audit.
     dlog('ResDial', `takeoverPush: toggle_option idx=${selectedIndex} "${currentOptions[selectedIndex]?.label}"`);
     bridge.send({ type: 'toggle_option' });
+    // Optimistic local toggle: the PTY only paints a transient ☒ the parser can't
+    // recover, so the plugin owns checked. Flip it now + remember it so redraws and
+    // card switches keep showing it. See multi-question carousel audit.
+    const opt = currentOptions[selectedIndex];
+    if (opt && opt.checked !== undefined) {
+      opt.checked = !opt.checked;
+      carouselChecked.set(opt.label, opt.checked);
+      refreshOptionDials();
+    }
   } else if (currentState === State.AWAITING_OPTION && currentOptions.length > 0) {
     dlog('ResDial', `takeoverPush: select_option idx=${selectedIndex} "${currentOptions[selectedIndex]?.label}"`);
     bridge.send({ type: 'select_option', index: selectedIndex });
