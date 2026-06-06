@@ -23,7 +23,7 @@ import { handleTakeoverPush, handleTakeoverRotate, requestTakeoverRefresh } from
 import { isPickerActive, scrollPicker, selectProject } from '../project-picker.js';
 import { encoderRegistry, isVoiceTextTakeoverActive, handleVtRotate, handleVtDown, handleVtUp, setTakeoverExitCallback, setUpdateUsageDialStateCallback } from '../encoder-registry.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
-import { renderUsageOverview, renderUsageDetail, renderUsageSession, renderUsageExtra, renderUsageDisconnected, USAGE_PAGES, type UsagePage } from '../renderers/usage-dial-renderer.js';
+import { renderUsageOverview, renderUsageDetail, renderUsageSession, renderUsageExtra, renderUsageDisconnected, resolveUsageDisplayMode, USAGE_PAGES, type UsagePage } from '../renderers/usage-dial-renderer.js';
 import { type UsageModeData, updateUsageModeData, getUsageModeData, fireUsageRefresh } from '../utility-modes/usage.js';
 import { isInDetailView, getFocusedSession } from './session-slot-button.js';
 import { timelineStore } from '../timeline-store.js';
@@ -72,8 +72,9 @@ export function updateUsageDialData(data: UsageModeData): void {
 
 export function updateUsageDialState(state: State, agentType?: AgentType | null, sessionStatus?: OcSessionStatus | null, capabilities?: AgentCapabilities | null): void {
   currentState = state;
-  // Drop cached usage on daemon disconnect so the dial stops showing stale numbers.
-  if (state === State.DISCONNECTED) hasReceivedData = false;
+  // Drop cached usage only on a real DAEMON disconnect (usage is daemon-global, not
+  // session-scoped) — a session ending or the home view must NOT wipe valid usage.
+  if (!(bridgeRef?.isConnected() ?? false)) hasReceivedData = false;
   if (agentType !== undefined) currentAgentType = agentType;
   if (capabilities !== undefined) currentCapabilities = capabilities ?? null;
   if (sessionStatus !== undefined) currentSessionStatus = sessionStatus ?? null;
@@ -130,16 +131,18 @@ function refreshUsageDials(): void {
   let svg: string;
 
   // Collapse the dial to the disconnected placeholder when upstream has no
-  // live usage to show. Three distinct reasons, rendered with distinct labels
-  // so "Waiting..." is reserved for the genuine first-payload-not-yet case —
-  // stale / missing-subscription is honestly labeled "No usage data".
-  const connected = currentState !== State.DISCONNECTED;
-  const usageUnavailable = data.usageStale === true || data.fiveHourPercent == null;
-  if (!connected) {
+  // live usage to show. Connectivity is keyed on the DAEMON WS (usage is
+  // daemon-global), not the focused session's state — otherwise the home view
+  // (no focused session) wrongly shows "Offline" while usage is flowing.
+  // Three distinct reasons keep distinct labels: "Waiting..." for the genuine
+  // first-payload-not-yet case, "No usage data" for stale / missing-subscription.
+  const daemonConnected = bridgeRef?.isConnected() ?? false;
+  const mode = resolveUsageDisplayMode(daemonConnected, hasReceivedData, data.usageStale === true, data.fiveHourPercent);
+  if (mode === 'offline') {
     svg = renderUsageDisconnected(false, 'offline');
-  } else if (!hasReceivedData) {
+  } else if (mode === 'waiting') {
     svg = renderUsageDisconnected(true, 'waiting');
-  } else if (usageUnavailable) {
+  } else if (mode === 'unavailable') {
     svg = renderUsageDisconnected(true, 'unavailable');
   } else {
     const page = USAGE_PAGES[pageIdx];

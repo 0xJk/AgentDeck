@@ -39,6 +39,26 @@ function formatBillingDate(until?: string): string {
 export type UsagePage = 'overview' | '5h' | '7d' | 'session' | 'extra';
 export const USAGE_PAGES: UsagePage[] = ['overview', '5h', '7d', 'session', 'extra'];
 
+export type UsageDisplayMode = 'offline' | 'waiting' | 'unavailable' | 'data';
+
+/**
+ * Decide what the usage dial should show. Usage is DAEMON-GLOBAL, so connectivity is
+ * keyed on the daemon WS connection — NOT the focused Claude session's state. On the
+ * home view no session is focused, but usage still flows from the daemon; gating on the
+ * session state wrongly showed "Offline" there. See usage-dial fix plan.
+ */
+export function resolveUsageDisplayMode(
+  daemonConnected: boolean,
+  hasReceivedData: boolean,
+  usageStale: boolean,
+  fiveHourPercent: number | null | undefined,
+): UsageDisplayMode {
+  if (!daemonConnected) return 'offline';
+  if (!hasReceivedData) return 'waiting';
+  if (usageStale === true || fiveHourPercent == null) return 'unavailable';
+  return 'data';
+}
+
 /** Overview: 5h + 7d gauges stacked — % and reset on separate lines */
 export function renderUsageOverview(data: UsageModeData): string {
   const pct5 = data.fiveHourPercent ?? 0;
